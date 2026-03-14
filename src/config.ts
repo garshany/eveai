@@ -6,14 +6,30 @@ function required(name: string): string {
   return value;
 }
 
+function requiredInt(name: string): number {
+  const raw = required(name);
+  const num = Number(raw);
+  if (!Number.isFinite(num)) throw new Error(`Env var ${name} must be a number, got: "${raw}"`);
+  return num;
+}
+
 function optional(name: string, fallback: string): string {
-  return process.env[name] || fallback;
+  const value = process.env[name];
+  return (value !== undefined && value !== '') ? value : fallback;
+}
+
+function optionalInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const num = Number(raw);
+  if (!Number.isFinite(num)) throw new Error(`Env var ${name} must be a number, got: "${raw}"`);
+  return num;
 }
 
 export const config = {
   telegram: {
     botToken: required('TELEGRAM_BOT_TOKEN'),
-    allowedUserId: Number(required('ALLOWED_TELEGRAM_USER_ID')),
+    allowedUserId: requiredInt('ALLOWED_TELEGRAM_USER_ID'),
   },
   openai: {
     apiKey: required('OPENAI_API_KEY'),
@@ -25,7 +41,7 @@ export const config = {
     callbackUrl: optional('EVE_CALLBACK_URL', 'http://localhost:3000/auth/eve/callback'),
   },
   server: {
-    port: Number(optional('PORT', '3000')),
+    port: optionalInt('PORT', 3000),
     host: optional('HOST', '0.0.0.0'),
   },
   db: {

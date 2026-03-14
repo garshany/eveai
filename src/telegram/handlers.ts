@@ -66,12 +66,31 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     await ctx.reply('Conversation cleared.');
   });
 
+  // Non-text messages -- inform user
+  bot.on('message', async (ctx, next) => {
+    if (!ctx.message?.text) {
+      await ctx.reply('I only understand text messages.');
+      return;
+    }
+    await next();
+  });
+
   // Text messages -> agent runtime
   bot.on('message:text', async (ctx) => {
     ensureSession(db, ctx);
 
     const chatId = ctx.chat.id;
-    const text = ctx.message.text;
+    const text = ctx.message.text.trim();
+
+    // Skip empty/whitespace messages
+    if (!text) return;
+
+    // Limit input length to prevent excessive token usage
+    const MAX_INPUT_LENGTH = 2000;
+    if (text.length > MAX_INPUT_LENGTH) {
+      await ctx.reply(`Message too long (${text.length} chars). Maximum: ${MAX_INPUT_LENGTH} characters.`);
+      return;
+    }
 
     // Get or create thread
     let thread = db.prepare('SELECT thread_id FROM agent_threads WHERE chat_id = ? ORDER BY created_at DESC LIMIT 1').get(chatId) as

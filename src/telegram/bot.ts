@@ -6,6 +6,15 @@ import { registerHandlers } from './handlers.js';
 export function createBot(db: Db): Bot<Context> {
   const bot = new Bot(config.telegram.botToken);
 
+  // Private chat only -- reject group chats to prevent data leaks
+  bot.use(async (ctx, next) => {
+    if (ctx.chat && ctx.chat.type !== 'private') {
+      await ctx.reply('This bot only works in private chats.');
+      return;
+    }
+    await next();
+  });
+
   // Single-user guard
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;

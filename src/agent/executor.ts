@@ -63,7 +63,8 @@ export async function handleAgentMessage(db: Db, threadId: string, userText: str
       return finalText;
     }
 
-    // Execute tool calls
+    // Execute tool calls and persist results for multi-turn context
+    const toolSummaries: string[] = [];
     for (const toolCall of msg.tool_calls) {
       const result = await executeToolCall(db, requestId, userText, toolCall);
 
@@ -73,11 +74,24 @@ export async function handleAgentMessage(db: Db, threadId: string, userText: str
         replanOnFailure(db, requestId, errMsg);
       }
 
+      const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
       messages.push({
         role: 'tool',
         tool_call_id: toolCall.id,
-        content: typeof result === 'string' ? result : JSON.stringify(result),
+        content: resultStr,
       });
+
+      // Build summary for persistent storage
+      const toolName = toolCall.type === 'function' ? toolCall.function.name : 'unknown';
+      const truncResult = resultStr.length > 500 ? resultStr.slice(0, 500) + '...' : resultStr;
+      toolSummaries.push(`[${toolName}]: ${truncResult}`);
+    }
+
+    // Persist tool interaction as assistant message for cross-turn context
+    if (toolSummaries.length > 0) {
+      db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(
+        threadId, 'assistant', toolSummaries.join('\n')
+      );
     }
   }
 

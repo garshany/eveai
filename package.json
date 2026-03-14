@@ -8,16 +8,20 @@
   },
   "scripts": {
     "build": "tsc",
+    "clean": "rm -rf dist",
     "start": "node dist/app.js",
     "dev": "tsx src/app.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
     "typecheck": "tsc --noEmit",
+    "check": "tsc --noEmit && vitest run",
     "db:migrate": "tsx src/db/migrations.ts",
     "sde:load": "tsx src/eve/sde-loader.ts",
     "sde:download": "tsx src/eve/sde-downloader.ts",
-    "ocli:setup": "tsx src/eve/ocli-setup.ts"
+    "ocli:setup": "tsx src/eve/ocli-setup.ts",
+    "setup": "npm run ocli:setup && npm run sde:download && npm run sde:load"
   },
   "dependencies": {
     "grammy": "^1.35.0",

@@ -64,9 +64,13 @@ const PROFILES: ProfileDef[] = [
       'GET:/fw/*',
       // Public contracts
       'GET:/contracts/public/*',
-      // Market prices & groups (public subset)
+      // Market (all public market endpoints)
       'GET:/markets/prices/*',
       'GET:/markets/groups/*',
+      'GET:/markets/groups/{market_group_id}/*',
+      'GET:/markets/{region_id}/history/*',
+      'GET:/markets/{region_id}/orders/*',
+      'GET:/markets/{region_id}/types/*',
       // Character public info (no auth needed)
       'POST:/characters/affiliation/*',
       'GET:/characters/{character_id}/corporationhistory/*',
@@ -140,15 +144,8 @@ const PROFILES: ProfileDef[] = [
   },
   {
     name: 'eve-market',
-    description: 'Market: regional data, character orders, structure market',
+    description: 'Market: character orders, structure market (public market data is in eve-public)',
     endpoints: [
-      // Public market endpoints
-      'GET:/markets/{region_id}/history/*',
-      'GET:/markets/{region_id}/orders/*',
-      'GET:/markets/{region_id}/types/*',
-      'GET:/markets/prices/*',
-      'GET:/markets/groups/*',
-      'GET:/markets/groups/{market_group_id}/*',
       // Character orders (requires auth)
       'GET:/characters/{character_id}/orders/*',
       'GET:/characters/{character_id}/orders/history/*',

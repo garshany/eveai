@@ -123,7 +123,8 @@ function extractName(nameField: unknown): string {
 }
 
 /**
- * Find a JSONL file by trying multiple possible names and searching subdirectories.
+ * Find a JSONL file by trying multiple possible names.
+ * Searches recursively up to 4 levels deep (CCP zips can nest: sde/fsd/universe/...).
  */
 function findJsonlFile(sdeDir: string, patterns: string[]): string | null {
   // Try direct match first
@@ -132,23 +133,34 @@ function findJsonlFile(sdeDir: string, patterns: string[]): string | null {
     if (existsSync(direct)) return direct;
   }
 
-  // Search one level deep in subdirectories
-  try {
-    const entries = readdirSync(sdeDir);
-    for (const entry of entries) {
-      const subdir = join(sdeDir, entry);
-      if (statSync(subdir).isDirectory()) {
+  // Recursive search up to 4 levels deep
+  function searchDir(dir: string, depth: number): string | null {
+    if (depth > 4) return null;
+    try {
+      const entries = readdirSync(dir);
+      for (const entry of entries) {
+        const fullPath = join(dir, entry);
+        // Check if this entry matches any pattern
         for (const pattern of patterns) {
-          const nested = join(subdir, pattern);
-          if (existsSync(nested)) return nested;
+          if (entry === pattern) return fullPath;
+        }
+        // Recurse into subdirectories
+        try {
+          if (statSync(fullPath).isDirectory()) {
+            const found = searchDir(fullPath, depth + 1);
+            if (found) return found;
+          }
+        } catch {
+          // Skip inaccessible entries
         }
       }
+    } catch (err) {
+      console.warn(`[sde-loader] Cannot read directory ${dir}: ${(err as Error).message}`);
     }
-  } catch {
-    // ignore
+    return null;
   }
 
-  return null;
+  return searchDir(sdeDir, 0);
 }
 
 async function loadJsonlFile(
@@ -184,6 +196,7 @@ async function loadJsonlFile(
   const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
 
   let count = 0;
+  let skipped = 0;
   const insertMany = db.transaction((rows: unknown[][]) => {
     for (const row of rows) {
       stmt.run(...row);
@@ -230,7 +243,7 @@ async function loadJsonlFile(
         insertMany(batch.splice(0));
       }
     } catch {
-      // Skip malformed lines
+      skipped++;
     }
   }
 
@@ -238,6 +251,9 @@ async function loadJsonlFile(
     insertMany(batch);
   }
 
+  if (skipped > 0) {
+    console.warn(`  [warn] ${basename(filePath)}: ${skipped} lines skipped (malformed)`);
+  }
   return count;
 }
 
