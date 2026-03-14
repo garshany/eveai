@@ -34,6 +34,7 @@ export const config = {
   openai: {
     apiKey: required('OPENAI_API_KEY'),
     model: optional('OPENAI_MODEL', 'gpt-5.4'),
+    baseUrl: optional('OPENAI_BASE_URL', ''),
   },
   eve: {
     clientId: required('EVE_CLIENT_ID'),

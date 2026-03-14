@@ -13,7 +13,10 @@ import { replanOnFailure } from './replanner.js';
 const MAX_ITERATIONS = 10;
 const MAX_HISTORY_MESSAGES = 20;
 
-const openai = new OpenAI({ apiKey: config.openai.apiKey });
+const openai = new OpenAI({
+  apiKey: config.openai.apiKey,
+  ...(config.openai.baseUrl ? { baseURL: config.openai.baseUrl } : {}),
+});
 
 /**
  * Main agent loop. Takes user text, runs tool calls in a loop, returns final text.
