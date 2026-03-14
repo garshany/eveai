@@ -127,6 +127,15 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       return reply.status(500).send({ error: `Auth error: ${(err as Error).message}` });
     }
   });
+
+  // Alias: GET /callback -- for EVE apps registered with http://localhost:PORT/callback
+  app.get<{ Querystring: CallbackQuery }>('/callback', async (req, reply) => {
+    // Redirect to the main callback handler
+    const qs = new URLSearchParams();
+    if (req.query.code) qs.set('code', req.query.code);
+    if (req.query.state) qs.set('state', req.query.state);
+    return reply.redirect(`/auth/eve/callback?${qs.toString()}`);
+  });
 }
 
 function decodeJwtPayload(token: string): JwtPayload {
