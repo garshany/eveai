@@ -70,8 +70,7 @@ export async function handleAgentMessage(db: Db, threadId: string, userText: str
       // Check if tool failed and trigger replanning
       if (typeof result === 'object' && result !== null && 'error' in result) {
         const errMsg = String((result as Record<string, unknown>).error);
-        // Try to replan if there's an active plan
-        replanOnFailure(db, requestId, toolCall.id, errMsg);
+        replanOnFailure(db, requestId, errMsg);
       }
 
       messages.push({

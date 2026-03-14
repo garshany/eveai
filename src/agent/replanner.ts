@@ -3,19 +3,27 @@ import { getPlan, updatePlan, type PlanStep } from './planner.js';
 
 /**
  * Replanning logic.
- * Checks if any steps failed and adjusts the plan.
- * Called by the executor when a tool call returns an error.
+ * When a tool call fails, find the currently "running" step in the plan
+ * and mark it as failed, then block its dependents.
  */
 export function replanOnFailure(
   db: Db,
   requestId: string,
-  failedStepId: string,
   errorMessage: string,
 ): { replanned: boolean; plan: ReturnType<typeof getPlan> } {
   const plan = getPlan(db, requestId);
   if (!plan) {
     return { replanned: false, plan: null };
   }
+
+  // Find the first "running" step -- that's the one that likely failed
+  const runningStep = plan.steps.find((s) => s.status === 'running');
+  if (!runningStep) {
+    // No running step to fail -- nothing to replan
+    return { replanned: false, plan };
+  }
+
+  const failedStepId = runningStep.id;
 
   const updatedSteps: PlanStep[] = plan.steps.map((step) => {
     if (step.id === failedStepId) {
