@@ -1,0 +1,40 @@
+{
+  "name": "eve-agent",
+  "version": "0.1.0",
+  "description": "Single-user EVE Online agent with Telegram bot, ESI via ocli, and local SDE",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/app.js",
+    "dev": "tsx src/app.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "tsx src/db/migrations.ts",
+    "sde:load": "tsx src/eve/sde-loader.ts",
+    "sde:download": "tsx src/eve/sde-downloader.ts",
+    "ocli:setup": "tsx src/eve/ocli-setup.ts"
+  },
+  "dependencies": {
+    "grammy": "^1.35.0",
+    "fastify": "^5.2.0",
+    "better-sqlite3": "^11.8.0",
+    "openai": "^5.0.0",
+    "openapi-to-cli": "^0.1.8",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "vitest": "^3.0.0",
+    "eslint": "^9.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0"
+  }
+}
