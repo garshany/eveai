@@ -3,10 +3,15 @@ import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
 import { ALL_REQUESTED_SCOPES } from '../eve/scopes.js';
 import { randomUUID } from 'node:crypto';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { refreshUserProfile } from '../eve/user-profile.js';
+import { linkCharacterToChat } from '../eve/sso.js';
 
 interface CallbackQuery {
   code?: string;
   state?: string;
+  error?: string;
+  error_description?: string;
 }
 
 interface TokenResponse {
@@ -25,9 +30,14 @@ interface JwtPayload {
   aud?: string | string[];
 }
 
+const JWKS = createRemoteJWKSet(new URL('https://login.eveonline.com/oauth/jwks'));
+
 export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
   // GET /auth/eve/start -- redirect to EVE SSO (browser entry point)
   app.get('/auth/eve/start', async (_req, reply) => {
+    if (!config.security.allowWebAuth) {
+      return reply.status(403).send({ error: 'Web auth disabled. Use /eve_login from Telegram.' });
+    }
     const state = randomUUID();
 
     // Store state for CSRF validation -- use a special chat_id=0 for web-initiated auth
@@ -50,7 +60,10 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
 
   // GET /auth/eve/callback -- handle OAuth callback
   app.get<{ Querystring: CallbackQuery }>('/auth/eve/callback', async (req, reply) => {
-    const { code, state } = req.query;
+    const { code, state, error, error_description } = req.query;
+    if (error) {
+      return reply.status(400).send({ error: `SSO error: ${error_description ?? error}` });
+    }
     if (!code) {
       return reply.status(400).send({ error: 'Missing authorization code' });
     }
@@ -81,6 +94,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
         body: new URLSearchParams({
           grant_type: 'authorization_code',
           code,
+          redirect_uri: config.eve.callbackUrl,
         }),
       });
 
@@ -92,9 +106,8 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
 
       const tokens = (await tokenRes.json()) as TokenResponse;
 
-      // Decode and validate JWT
-      const payload = decodeJwtPayload(tokens.access_token);
-      validateJwt(payload);
+      // Verify JWT (signature + claims)
+      const payload = await verifyAccessToken(tokens.access_token);
 
       const characterId = extractCharacterId(payload.sub);
       const scopes = Array.isArray(payload.scp) ? payload.scp : payload.scp ? [payload.scp] : [];
@@ -118,6 +131,22 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
         JSON.stringify(scopes),
       );
 
+      if (session.chat_id && session.chat_id > 0) {
+        linkCharacterToChat(db, session.chat_id, characterId);
+      }
+
+      void refreshUserProfile(db, session.chat_id)
+        .then((result) => {
+          if (!result.ok) {
+            console.warn(`[auth] USER.md refresh skipped: ${result.error}`);
+          } else {
+            console.log(`[auth] USER.md updated: ${result.data.path}`);
+          }
+        })
+        .catch((err) => {
+          console.warn(`[auth] USER.md refresh failed: ${(err as Error).message}`);
+        });
+
       console.log(`[auth] Character linked: ${payload.name} (${characterId}), ${scopes.length} scopes`);
       return reply.type('text/html').send(
         `<h1>Success!</h1><p>Character <strong>${payload.name}</strong> linked with ${scopes.length} scopes. You can close this tab and return to Telegram.</p>`
@@ -134,51 +163,40 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     const qs = new URLSearchParams();
     if (req.query.code) qs.set('code', req.query.code);
     if (req.query.state) qs.set('state', req.query.state);
+    if (req.query.error) qs.set('error', req.query.error);
+    if (req.query.error_description) qs.set('error_description', req.query.error_description);
     return reply.redirect(`/auth/eve/callback?${qs.toString()}`);
   });
 }
 
-function decodeJwtPayload(token: string): JwtPayload {
-  const parts = token.split('.');
-  if (parts.length !== 3) throw new Error('Invalid JWT format');
-  const payload = Buffer.from(parts[1], 'base64url').toString('utf-8');
-  return JSON.parse(payload) as JwtPayload;
-}
-
 /**
- * Validate JWT claims per EVE SSO docs:
+ * Verify JWT signature and claims per EVE SSO docs:
  * - iss must be login.eveonline.com
- * - exp must be in the future
+ * - aud must include client_id and "EVE Online"
+ * - exp must be in the future (jwtVerify enforces)
  * - sub must contain CHARACTER:EVE:
- *
- * Note: Full JWKS signature verification would require fetching
- * https://login.eveonline.com/oauth/jwks and verifying RS256.
- * Since the token comes directly from EVE SSO over HTTPS in the
- * token exchange response, claim validation provides reasonable security.
  */
-function validateJwt(payload: JwtPayload): void {
-  // Validate issuer
-  if (payload.iss && payload.iss !== 'login.eveonline.com' && payload.iss !== 'https://login.eveonline.com') {
-    throw new Error(`Invalid JWT issuer: ${payload.iss}`);
+async function verifyAccessToken(token: string): Promise<JwtPayload> {
+  const { payload } = await jwtVerify(token, JWKS, {
+    issuer: ['login.eveonline.com', 'https://login.eveonline.com'],
+  });
+
+  const data = payload as unknown as JwtPayload;
+  const aud = Array.isArray(data.aud) ? data.aud : data.aud ? [data.aud] : [];
+
+  if (!aud.includes(config.eve.clientId) || !aud.includes('EVE Online')) {
+    throw new Error(`Invalid JWT audience: ${aud.join(', ') || 'missing'}`);
   }
 
-  // Validate expiration
-  if (payload.exp) {
-    const now = Math.floor(Date.now() / 1000);
-    if (payload.exp < now) {
-      throw new Error('JWT token has expired');
-    }
+  if (!data.sub || !data.sub.startsWith('CHARACTER:EVE:')) {
+    throw new Error(`Invalid JWT subject: ${data.sub}`);
   }
 
-  // Validate subject format
-  if (!payload.sub || !payload.sub.startsWith('CHARACTER:EVE:')) {
-    throw new Error(`Invalid JWT subject: ${payload.sub}`);
-  }
-
-  // Validate name exists
-  if (!payload.name) {
+  if (!data.name) {
     throw new Error('JWT missing character name');
   }
+
+  return data;
 }
 
 function extractCharacterId(sub: string): number {

@@ -2,14 +2,14 @@
 
 ## Goal
 
-Build a single-user EVE Online agent with:
+Build and maintain a single-user EVE Online agent with:
 
-- Telegram input via grammY (long polling)
+- Telegram input via grammY long polling
 - EVE SSO for private data access
-- ESI access via ocli CLI wrapper (not hundreds of tools)
-- Local SDE index from JSON Lines
-- SQLite storage via better-sqlite3
-- Fastify only for EVE SSO callback + health
+- Native ESI access through generated endpoint tools
+- Local SDE index in SQLite from JSON Lines
+- Fastify only for auth callback and health endpoints
+- OpenAI-driven agent runtime over native codex-proxy `responses`
 
 ## Hard rules
 
@@ -17,103 +17,139 @@ Build a single-user EVE Online agent with:
 - No Postgres
 - No image features
 - No raw shell access from model-facing code
-- No webhooks for Telegram (use long polling)
+- No Telegram webhooks
 - No multi-user support
-- All ESI access must go through the `safe_exec_ocli` wrapper
-- All private ESI requests must check scopes via `get_eve_capabilities` first
-- Model never sees tokens, refresh logic, rate-limit handling, or pagination internals
-- Keep the codebase simple and single-process
+- All private ESI access must check permissions through `get_eve_capabilities` first when access is not already known
+- Model never sees tokens, refresh logic, pagination internals, or rate-limit handling
+- Keep the codebase single-process and simple
 - TypeScript strict mode everywhere
 
 ## Stack
 
-| Component        | Library / Tool       | Purpose                              |
-| ---------------- | -------------------- | ------------------------------------ |
-| Runtime          | Node.js + TypeScript | Main platform                        |
-| Telegram         | grammY               | Bot framework, long polling          |
-| HTTP server      | Fastify              | EVE SSO callback + /health only      |
-| Database         | better-sqlite3       | All persistence                      |
-| ESI CLI          | openapi-to-cli       | Runtime CLI from EVE OpenAPI spec    |
-| OpenAPI helpers  | kin-openapi          | Spec validation/patching if needed   |
-| AI model         | GPT-5.4 via OpenAI   | Agent reasoning                      |
+| Component | Library / Tool | Purpose |
+| --- | --- | --- |
+| Runtime | Node.js + TypeScript | Main platform |
+| Telegram | grammY | Bot framework, long polling |
+| HTTP server | Fastify | EVE SSO callback + `/health` |
+| Database | better-sqlite3 | All persistence |
+| ESI catalog | Live ESI swagger + local cache | Generated endpoint tool metadata |
+| Auth/JWT | jose | EVE SSO JWT verification |
+| AI model | Native codex-proxy `/v1/responses` | Hosted `tool_search`, tool loop, reasoning |
 
 ## Architecture overview
 
-```
+```text
 Telegram user
    |
-grammy bot (long polling)
+grammY bot (long polling)
    |
-Agent runtime (planner -> executor -> replanner -> finalizer)
+Agent runtime (native responses loop -> hosted tool_search -> deferred tools -> finalizer)
    |
-tools: safe_exec_ocli | query_sde | get_eve_capabilities | update_plan
+tools: tool_search | get_eve_capabilities | web_search | update_plan | deferred ESI ops | deferred SDE tools
    |
-infra: EVE SSO service | ocli gateway | SQLite | SDE local index
+infra: EVE SSO | native ESI client | SQLite | local SDE index
 ```
 
 Single process. No workers. No queues. No event bus.
 
-## 4 tools the model sees
+## Model-facing tools
 
-1. **safe_exec_ocli** -- search, help, run ESI commands through whitelisted ocli profiles
-2. **query_sde** -- query local static data index (types, groups, regions, blueprints, etc.)
-3. **get_eve_capabilities** -- check current character binding, scopes, allowed profiles
-4. **update_plan** -- store/update execution plan for multi-step requests
+Always-on:
 
-## 10 ocli profiles
+1. `tool_search`
+2. `get_eve_capabilities`
+3. `web_search`
+4. `update_plan`
 
-- `eve-public` -- universe, status, routes, dogma, alliances, wars, sovereignty, public contracts, FW, public industry
-- `eve-character` -- info, skills, location, clones, contacts, standings, fittings, killmails, notifications, bookmarks, search
-- `eve-wallet` -- balance, journal, transactions
-- `eve-assets` -- assets, locations, names
-- `eve-market` -- regional orders/history, character orders, structure market
-- `eve-industry` -- jobs, blueprints, mining, PI, public facilities
-- `eve-contracts` -- character contracts, bids/items, public contracts
-- `eve-mail` -- inbox, labels, mailing lists
-- `eve-corp` -- members, roles, structures, starbases, wallets, assets, contracts, industry, blueprints
-- `eve-ui` -- autopilot waypoints, open in-game windows
+Deferred:
+
+- One tool per ESI `operationId`
+- SDE namespace tools for types, universe, dogma, and dataset lookup
+
+## Agent runtime
+
+- Native `/v1/responses` only
+- Hosted `tool_search`
+- Parallel tool calls for read-only batches
+- Stores user/assistant messages plus tool audit messages in SQLite
+- Uses thread summaries for compaction
+- Refreshes `USER.md`-style user profile data in the background when needed
+- Uses backend web search when non-ESI background information is needed
 
 ## SQLite tables
 
-- `telegram_sessions` -- chat_id, username, last_seen_at
-- `agent_threads` -- thread_id, chat_id, created_at, updated_at
-- `messages` -- id, thread_id, role, content, created_at
-- `eve_accounts` -- character_id, character_name, access_token, refresh_token, expires_at, scopes_json
-- `plans` -- request_id, goal, status, created_at, updated_at
-- `plan_steps` -- request_id, step_id, title, kind, status, depends_on_json, notes
-- `sde_meta` -- build_number, loaded_at
+Core tables:
 
-## HTTP routes (Fastify)
+- `telegram_sessions`
+- `agent_threads`
+- `messages`
+- `thread_summaries`
+- `plans`
+- `plan_steps`
+- `esi_cache`
 
-- `GET /auth/eve/start` -- redirect to EVE SSO
-- `GET /auth/eve/callback` -- handle OAuth callback, store tokens
-- `GET /health` -- liveness check
+Auth tables:
+
+- `eve_accounts`
+- `eve_character_links`
+
+SDE tables:
+
+- `sde_meta`
+- `sde_raw_records`
+- `sde_types`
+- `sde_groups`
+- `sde_categories`
+- `sde_market_groups`
+- `sde_meta_groups`
+- `sde_dogma_attributes`
+- `sde_dogma_units`
+- `sde_dogma_effects`
+- `sde_type_dogma`
+- `sde_type_bonus`
+- `sde_type_materials`
+- `sde_certificates`
+- `sde_masteries`
+- `sde_factions`
+- `sde_races`
+- `sde_regions`
+- `sde_constellations`
+- `sde_systems`
+- `sde_stations`
+- `sde_npc_corporations`
+- `sde_stargates`
+- `sde_blueprints`
+
+## HTTP routes
+
+- `GET /auth/eve/start`
+- `GET /auth/eve/callback`
+- `GET /callback`
+- `GET /health`
 
 ## Telegram commands
 
-- `/start` -- greeting
-- `/eve-login` -- returns EVE SSO login link
-- `/whoami` -- shows bound character
-- `/reset` -- clears session/thread
-
-## Definition of done
-
-- [ ] Telegram bot accepts text and replies via agent
-- [ ] EVE SSO login works end-to-end
-- [ ] Public ESI requests work through ocli
-- [ ] Private ESI requests work after auth with scope checks
-- [ ] SDE lookups work for types, groups, regions, blueprints
-- [ ] No secrets leaked in logs or model output
-- [ ] Tests pass (unit + integration)
+- `/start`
+- `/help`
+- `/commands`
+- `/eve_login`
+- `/eve-login`
+- `/whoami`
+- `/characters`
+- `/chars`
+- `/use <id|name>`
+- `/market <type_id>`
+- `/info <target_id>`
+- `/clear`
+- `/reset`
 
 ## What we do NOT build
 
 - Telegram webhooks
-- Multi-user
+- Multi-user support
 - Admin panel
 - Image features
-- Market analytics pipeline
-- Background jobs
-- Caching worker
-- Role/ACL system
 - Separate frontend
+- Background jobs or workers
+- Redis/Postgres infrastructure
+- Direct model access to shell or secrets

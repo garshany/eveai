@@ -4,12 +4,14 @@ CREATE TABLE IF NOT EXISTS telegram_sessions (
   chat_id      INTEGER PRIMARY KEY,
   username     TEXT,
   oauth_state  TEXT,
+  active_character_id INTEGER,
   last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS agent_threads (
   thread_id  TEXT PRIMARY KEY,
   chat_id    INTEGER NOT NULL REFERENCES telegram_sessions(chat_id),
+  character_id INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -22,6 +24,21 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS thread_summaries (
+  thread_id       TEXT PRIMARY KEY REFERENCES agent_threads(thread_id),
+  summary         TEXT NOT NULL,
+  last_message_id INTEGER NOT NULL,
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS thread_artifacts (
+  thread_id      TEXT NOT NULL REFERENCES agent_threads(thread_id) ON DELETE CASCADE,
+  artifact_kind  TEXT NOT NULL,
+  content        TEXT NOT NULL,
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (thread_id, artifact_kind)
+);
+
 CREATE TABLE IF NOT EXISTS eve_accounts (
   character_id    INTEGER PRIMARY KEY,
   character_name  TEXT NOT NULL,
@@ -31,6 +48,14 @@ CREATE TABLE IF NOT EXISTS eve_accounts (
   scopes_json     TEXT NOT NULL DEFAULT '[]'
 );
 
+CREATE TABLE IF NOT EXISTS eve_character_links (
+  chat_id      INTEGER NOT NULL REFERENCES telegram_sessions(chat_id),
+  character_id INTEGER NOT NULL REFERENCES eve_accounts(character_id),
+  linked_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (chat_id, character_id)
+);
+CREATE INDEX IF NOT EXISTS idx_eve_character_links_chat ON eve_character_links(chat_id);
+
 CREATE TABLE IF NOT EXISTS plans (
   request_id TEXT PRIMARY KEY,
   goal       TEXT NOT NULL,
@@ -38,6 +63,16 @@ CREATE TABLE IF NOT EXISTS plans (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS esi_cache (
+  cache_key     TEXT PRIMARY KEY,
+  response_text TEXT NOT NULL,
+  etag          TEXT,
+  last_modified TEXT,
+  expires_at    TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_esi_cache_expires ON esi_cache(expires_at);
 
 CREATE TABLE IF NOT EXISTS plan_steps (
   request_id      TEXT NOT NULL REFERENCES plans(request_id),
@@ -54,6 +89,15 @@ CREATE TABLE IF NOT EXISTS sde_meta (
   build_number TEXT PRIMARY KEY,
   loaded_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS sde_raw_records (
+  dataset_name TEXT NOT NULL,
+  record_id    TEXT NOT NULL,
+  name         TEXT,
+  data_json    TEXT NOT NULL,
+  PRIMARY KEY (dataset_name, record_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sde_raw_dataset_name ON sde_raw_records(dataset_name, name COLLATE NOCASE);
 
 -- SDE data tables
 
@@ -87,6 +131,13 @@ CREATE TABLE IF NOT EXISTS sde_market_groups (
 );
 CREATE INDEX IF NOT EXISTS idx_sde_market_groups_name ON sde_market_groups(name COLLATE NOCASE);
 
+CREATE TABLE IF NOT EXISTS sde_meta_groups (
+  meta_group_id INTEGER PRIMARY KEY,
+  name          TEXT NOT NULL,
+  data_json     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sde_meta_groups_name ON sde_meta_groups(name COLLATE NOCASE);
+
 CREATE TABLE IF NOT EXISTS sde_dogma_attributes (
   attribute_id INTEGER PRIMARY KEY,
   name         TEXT NOT NULL,
@@ -94,12 +145,64 @@ CREATE TABLE IF NOT EXISTS sde_dogma_attributes (
 );
 CREATE INDEX IF NOT EXISTS idx_sde_dogma_attr_name ON sde_dogma_attributes(name COLLATE NOCASE);
 
+CREATE TABLE IF NOT EXISTS sde_dogma_units (
+  unit_id    INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL,
+  data_json  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sde_dogma_units_name ON sde_dogma_units(name COLLATE NOCASE);
+
 CREATE TABLE IF NOT EXISTS sde_dogma_effects (
   effect_id INTEGER PRIMARY KEY,
   name      TEXT NOT NULL,
   data_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sde_dogma_eff_name ON sde_dogma_effects(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS sde_type_dogma (
+  type_id    INTEGER PRIMARY KEY,
+  data_json  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sde_type_bonus (
+  type_id    INTEGER PRIMARY KEY,
+  data_json  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sde_type_materials (
+  type_id    INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL,
+  data_json  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sde_type_materials_name ON sde_type_materials(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS sde_certificates (
+  certificate_id INTEGER PRIMARY KEY,
+  name           TEXT NOT NULL,
+  data_json      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sde_certificates_name ON sde_certificates(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS sde_masteries (
+  type_id    INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL,
+  data_json  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sde_masteries_name ON sde_masteries(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS sde_factions (
+  faction_id INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL,
+  data_json  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sde_factions_name ON sde_factions(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS sde_races (
+  race_id    INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL,
+  data_json  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sde_races_name ON sde_races(name COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS sde_regions (
   region_id INTEGER PRIMARY KEY,
@@ -131,6 +234,23 @@ CREATE TABLE IF NOT EXISTS sde_stations (
   data_json  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sde_stations_name ON sde_stations(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS sde_npc_corporations (
+  corporation_id INTEGER PRIMARY KEY,
+  name           TEXT NOT NULL,
+  station_id     INTEGER,
+  data_json      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sde_npc_corporations_name ON sde_npc_corporations(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS sde_stargates (
+  stargate_id            INTEGER PRIMARY KEY,
+  system_id              INTEGER,
+  destination_system_id  INTEGER,
+  destination_stargate_id INTEGER,
+  data_json              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sde_stargates_system ON sde_stargates(system_id);
 
 CREATE TABLE IF NOT EXISTS sde_blueprints (
   blueprint_type_id INTEGER PRIMARY KEY,

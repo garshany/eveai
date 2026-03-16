@@ -10,6 +10,7 @@ vi.mock('../../src/config.js', () => ({
     server: { port: 3000, host: '0.0.0.0' },
     db: { path: ':memory:' },
     sde: { dataDir: './data/sde' },
+    security: { allowWebAuth: true },
   },
 }));
 

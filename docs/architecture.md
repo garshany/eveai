@@ -4,84 +4,62 @@
 
 Single-process, single-user EVE Online agent with Telegram as the only input.
 
+```text
+Telegram (long polling) -> grammY bot -> Agent Runtime -> native /v1/responses
+                                                     -> hosted tool_search
+                                                     -> deferred ESI + SDE tools
+                                                     -> SQLite + EVE SSO
 ```
-Telegram (long polling) → grammY bot → Agent Runtime → Tools → ESI/SDE
-                                                        ↕
-                                                     SQLite
-```
 
-## Components
+## Runtime
 
-### 1. Telegram Bot Layer (`src/telegram/`)
-- grammY with long polling
-- Single-user guard via `ALLOWED_TELEGRAM_USER_ID`
-- Commands: /start, /eve_login, /whoami, /reset
-- Text messages routed to agent runtime
+- Native codex-proxy `POST /v1/responses`
+- `gpt-5.4` with `reasoning.effort=medium`
+- Hosted `tool_search` enabled at the provider layer
+- Parallel function calls allowed for read-only tool batches
+- Tool loop persists user, assistant, and tool audit messages in SQLite
+- No separate shortcut router for route, item, or fit requests; those flows should resolve through the same hosted `tool_search` runtime as any other task
 
-### 2. Agent Runtime (`src/agent/`)
-- OpenAI GPT-5.4 with function calling
-- Loop: model → tool calls → execute → replanner on failure → feed back → repeat
-- Max 10 iterations per request, last 20 messages as context
-- 4 tools: safe_exec_ocli, query_sde, get_eve_capabilities, update_plan
+## Model-Facing Tools
 
-### 3. EVE SSO (`src/eve/sso.ts`, `src/web/auth-routes.ts`)
-- OAuth 2.0 authorization code flow (confidential client)
-- CSRF state stored in `telegram_sessions.oauth_state`, validated on callback
-- JWT claims validated: iss, exp, sub format
-- Token storage in SQLite, auto-refresh with 60s buffer
-- 55 scopes requested covering all 10 profiles
+Always-on:
 
-### 4. ESI CLI Layer (`src/eve/ocli.ts`, `src/eve/ocli-setup.ts`)
-- Wraps openapi-to-cli v0.1.8 binary
-- 10 whitelisted profiles covering ~180 of ~195 ESI endpoints
-- Never uses shell (spawn with argv array)
-- Adds User-Agent + X-Compatibility-Date headers
-- Redacts Bearer tokens and secrets from output
-- --api-bearer-token for authenticated profiles
+- `tool_search`
+- `get_eve_capabilities`
+- `web_search`
+- `update_plan`
 
-### 5. SDE Layer (`src/eve/sde.ts`, `src/eve/sde-loader.ts`)
-- Static data in SQLite tables (11 entity types)
-- Downloaded from CCP as JSONL zip (`npm run sde:download`)
-- Loaded via streaming JSONL parser (`npm run sde:load`)
-- Handles post-Sep-2025 localized name format: `{en: "Tritanium", ru: "..."}`
-- by_id, by_name, search lookups with NOCASE indexes
+Deferred:
 
-### 6. HTTP Server (`src/web/`)
-- Fastify, minimal
-- 3 routes: /auth/eve/start, /auth/eve/callback, /health
+- One function tool per ESI `operationId`, generated from the live ESI swagger catalog
+- SDE namespace tools such as `sde_lookup_types`, `sde_lookup_universe`, `sde_lookup_dogma`, `sde_lookup_dataset`
 
-## 10 ESI Profiles
+## ESI Layer
 
-| Profile | Auth | Endpoints | Coverage |
-|---------|------|-----------|----------|
-| eve-public | No | ~55 | universe, status, routes, dogma, alliances, wars, FW, public contracts/industry |
-| eve-character | Yes | ~29 | info, skills, location, clones, contacts, fittings, killmails, notifications, bookmarks, search |
-| eve-wallet | Yes | 3 | balance, journal, transactions |
-| eve-assets | Yes | 3 | list, locations, names |
-| eve-market | Yes | 9 | regional orders/history, character orders, structure market |
-| eve-industry | Yes | 7 | jobs, blueprints, mining, PI, public facilities |
-| eve-contracts | Yes | 6 | character contracts, bids/items, public contracts |
-| eve-mail | Yes | 9 | inbox CRUD, labels, mailing lists |
-| eve-corp | Yes | ~40 | full corp read-only: members, roles, structures, wallets, assets, industry, blueprints |
-| eve-ui | Yes | 5 | autopilot waypoints, open in-game windows |
+- No `ocli`, no shell execution, no profile indirection
+- Native fetch-based ESI client with:
+  - `X-Compatibility-Date`
+  - auth injection from local SSO storage
+  - GET caching in `esi_cache`
+  - `X-Pages` aggregation up to configured limits
+- Operation catalog loaded from `https://esi.evetech.net/latest/swagger.json` and cached locally
 
-**Total: ~180 of ~195 ESI endpoints covered**
+## SSO
 
-## Data Flow
+- OAuth 2.0 authorization code flow
+- CSRF state in `telegram_sessions.oauth_state`
+- SQLite token storage with automatic refresh
+- Scope-aware access control via `get_eve_capabilities`
 
-1. User sends text in Telegram
-2. Bot stores message, gets/creates thread
-3. Agent runtime loads last 20 messages as conversation history
-4. GPT-5.4 decides which tools to call
-5. Tool results fed back to model; failures trigger replanner
-6. Final text response sanitized (tokens redacted, 4096 char limit)
-7. Response sent via Telegram and stored in messages table
+## SDE
 
-## Security
+- Local SQLite index loaded from CCP JSON Lines exports
+- Typed entity tables plus raw dataset access
+- Used both by backend features and by deferred model tools
 
-- No shell access from model (spawn with argv, never shell=true)
-- Token refresh hidden from model
-- Bearer tokens redacted in all output (ocli + finalizer)
-- Single-user enforcement at bot middleware level
-- CSRF state parameter for OAuth flow
-- JWT issuer/expiration validation
+## Feature Modules
+
+- Pricing uses live regional orders through ESI operation tools
+- Route planning uses route, kills, and UI waypoint operations directly
+- Telegram `/market` and `/info` commands call UI endpoints via native ESI operations
+- User profile refresh reads character, location, skills, wallet, corp, and alliance data without CLI wrappers

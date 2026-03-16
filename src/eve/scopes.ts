@@ -1,6 +1,7 @@
 /**
- * All EVE SSO scopes requested by our profiles.
- * Every scope here maps to at least one profile in profiles.ts.
+ * EVE SSO scopes requested by the agent.
+ * Runtime access is enforced per generated ESI operation through
+ * get_eve_capabilities and the native ESI client.
  *
  * Full scope reference: https://developers.eveonline.com/docs/services/sso/
  */
@@ -21,17 +22,18 @@ export const ALL_REQUESTED_SCOPES = [
   'esi-characters.read_fatigue.v1',
   'esi-characters.read_notifications.v1',
   'esi-characters.read_agents_research.v1',
-  'esi-bookmarks.read_character_bookmarks.v1',
   'esi-fittings.read_fittings.v1',
   'esi-fittings.write_fittings.v1',
   'esi-killmails.read_killmails.v1',
   'esi-characters.read_corporation_roles.v1',
+  'esi-search.search_structures.v1',
   // eve-wallet
   'esi-wallet.read_character_wallet.v1',
   // eve-assets
   'esi-assets.read_assets.v1',
   // eve-market (character orders)
   'esi-markets.read_character_orders.v1',
+  'esi-markets.structure_markets.v1',
   // eve-industry
   'esi-industry.read_character_jobs.v1',
   'esi-characters.read_blueprints.v1',
@@ -41,6 +43,8 @@ export const ALL_REQUESTED_SCOPES = [
   'esi-contracts.read_character_contracts.v1',
   // eve-mail
   'esi-mail.read_mail.v1',
+  'esi-mail.organize_mail.v1',
+  'esi-mail.send_mail.v1',
   // eve-corp
   'esi-corporations.read_corporation_membership.v1',
   'esi-corporations.read_structures.v1',
@@ -48,15 +52,17 @@ export const ALL_REQUESTED_SCOPES = [
   'esi-corporations.read_blueprints.v1',
   'esi-corporations.read_contacts.v1',
   'esi-corporations.read_container_logs.v1',
-  'esi-corporations.read_contracts.v1',
+  'esi-contracts.read_corporation_contracts.v1',
   'esi-corporations.read_divisions.v1',
   'esi-corporations.read_facilities.v1',
   'esi-corporations.read_medals.v1',
   'esi-corporations.read_standings.v1',
   'esi-corporations.read_titles.v1',
+  'esi-planets.read_customs_offices.v1',
   'esi-wallet.read_corporation_wallets.v1',
   'esi-assets.read_corporation_assets.v1',
   'esi-industry.read_corporation_jobs.v1',
+  'esi-industry.read_corporation_mining.v1',
   'esi-markets.read_corporation_orders.v1',
   'esi-killmails.read_corporation_killmails.v1',
   'esi-corporations.read_fw_stats.v1',

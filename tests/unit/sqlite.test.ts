@@ -27,7 +27,10 @@ describe('SQLite schema', () => {
     expect(names).toContain('eve_accounts');
     expect(names).toContain('plans');
     expect(names).toContain('plan_steps');
+    expect(names).toContain('esi_cache');
     expect(names).toContain('sde_meta');
+    expect(names).toContain('thread_summaries');
+    expect(names).toContain('thread_artifacts');
   });
 
   it('creates SDE tables', () => {
@@ -41,6 +44,7 @@ describe('SQLite schema', () => {
     expect(names).toContain('sde_regions');
     expect(names).toContain('sde_systems');
     expect(names).toContain('sde_blueprints');
+    expect(names).toContain('sde_raw_records');
   });
 
   it('inserts and reads telegram_sessions', () => {

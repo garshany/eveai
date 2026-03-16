@@ -11,6 +11,7 @@
 
 ## OpenAI / Codex
 - GPT-5.4 guide: https://developers.openai.com/api/docs/guides/latest-model/
+- Tool search: https://developers.openai.com/api/docs/guides/tools-tool-search/
 - Codex code generation: https://developers.openai.com/api/docs/guides/code-generation/
 - Function calling: https://developers.openai.com/api/docs/guides/function-calling/
 - Codex best practices: https://developers.openai.com/codex/learn/best-practices/
@@ -19,7 +20,6 @@
 
 ## Libraries
 - grammY: https://github.com/grammyjs/grammY
-- openapi-to-cli: https://github.com/EvilFreelancer/openapi-to-cli
 - kin-openapi: https://github.com/getkin/kin-openapi
 - better-sqlite3: https://github.com/WiseLibs/better-sqlite3
 

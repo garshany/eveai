@@ -10,6 +10,7 @@ vi.mock('../../src/config.js', () => ({
     server: { port: 3000, host: '0.0.0.0' },
     db: { path: ':memory:' },
     sde: { dataDir: './data/sde' },
+    security: { allowWebAuth: true },
   },
 }));
 
@@ -29,58 +30,58 @@ afterEach(() => {
 });
 
 describe('get_eve_capabilities', () => {
-  it('returns unauthenticated with only public profiles', () => {
-    const caps = getEveCapabilities(db, 'check wallet');
+  it('returns unauthenticated with only public namespaces', async () => {
+    const caps = await getEveCapabilities(db, 'check wallet');
     expect(caps.authenticated).toBe(false);
     expect(caps.characterId).toBeNull();
-    expect(caps.allowedProfiles).toContain('eve-public');
-    expect(caps.allowedProfiles).not.toContain('eve-character');
-    expect(caps.allowedProfiles).not.toContain('eve-wallet');
+    expect(caps.allowedNamespaces).toContain('esi_markets_orders');
+    expect(caps.allowedNamespaces).not.toContain('esi_characters_wallet');
   });
 
-  it('returns all 10 profiles when ALL scopes granted', () => {
+  it('returns authenticated namespaces when all requested scopes granted', async () => {
     db.prepare(`
       INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json)
       VALUES (?, ?, ?, ?, datetime('now', '+1200 seconds'), ?)
     `).run(123, 'Pilot', 'tok', 'ref', JSON.stringify(ALL_REQUESTED_SCOPES));
 
-    const caps = getEveCapabilities(db, 'check all');
+    const caps = await getEveCapabilities(db, 'check all');
     expect(caps.authenticated).toBe(true);
     expect(caps.characterName).toBe('Pilot');
-    expect(caps.allowedProfiles).toHaveLength(10);
-    expect(caps.allowedProfiles).toContain('eve-public');
-    expect(caps.allowedProfiles).toContain('eve-character');
-    expect(caps.allowedProfiles).toContain('eve-wallet');
-    expect(caps.allowedProfiles).toContain('eve-assets');
-    expect(caps.allowedProfiles).toContain('eve-market');
-    expect(caps.allowedProfiles).toContain('eve-industry');
-    expect(caps.allowedProfiles).toContain('eve-contracts');
-    expect(caps.allowedProfiles).toContain('eve-mail');
-    expect(caps.allowedProfiles).toContain('eve-corp');
-    expect(caps.allowedProfiles).toContain('eve-ui');
-    expect(Object.keys(caps.missingProfiles)).toHaveLength(0);
+    expect(caps.allowedNamespaces).toContain('esi_characters_wallet');
+    expect(caps.allowedNamespaces.some((entry) => entry.startsWith('esi_ui_'))).toBe(true);
+    expect(Object.values(caps.deniedNamespaces).every((missing) => Array.isArray(missing))).toBe(true);
+    expect(caps.accessibleOperations).toBeGreaterThan(50);
   });
 
-  it('reports missing profiles with partial scopes', () => {
+  it('reports denied namespaces with partial scopes', async () => {
     db.prepare(`
       INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json)
       VALUES (?, ?, ?, ?, datetime('now', '+1200 seconds'), ?)
     `).run(123, 'Pilot', 'tok', 'ref', JSON.stringify([
       'esi-wallet.read_character_wallet.v1',
       'esi-mail.read_mail.v1',
+      'esi-mail.organize_mail.v1',
+      'esi-mail.send_mail.v1',
     ]));
 
-    const caps = getEveCapabilities(db, 'check');
+    const caps = await getEveCapabilities(db, 'check');
     expect(caps.authenticated).toBe(true);
-    expect(caps.allowedProfiles).toContain('eve-public');
-    expect(caps.allowedProfiles).toContain('eve-wallet');
-    expect(caps.allowedProfiles).toContain('eve-mail');
-    expect(caps.allowedProfiles).not.toContain('eve-character');
-    expect(caps.allowedProfiles).not.toContain('eve-industry');
-    expect(caps.allowedProfiles).not.toContain('eve-corp');
-    // Verify missing scopes are reported
-    expect(caps.missingProfiles['eve-character']).toBeDefined();
-    expect(caps.missingProfiles['eve-corp']).toBeDefined();
-    expect(caps.missingProfiles['eve-character'].length).toBeGreaterThan(0);
+    expect(caps.allowedNamespaces).toContain('esi_characters_wallet');
+    expect(caps.allowedNamespaces.some((entry) => entry.includes('mail'))).toBe(true);
+    expect(Object.keys(caps.deniedNamespaces).length).toBeGreaterThan(0);
+    expect(Object.values(caps.deniedNamespaces).some((missing) => missing.length > 0)).toBe(true);
+  });
+
+  it('allows market namespaces when market scopes are granted', async () => {
+    db.prepare(`
+      INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json)
+      VALUES (?, ?, ?, ?, datetime('now', '+1200 seconds'), ?)
+    `).run(123, 'Pilot', 'tok', 'ref', JSON.stringify([
+      'esi-markets.read_character_orders.v1',
+    ]));
+
+    const caps = await getEveCapabilities(db, 'market');
+    expect(caps.allowedNamespaces.some((entry) => entry.startsWith('esi_markets_'))).toBe(true);
+    expect(caps.accessibleOperations).toBeGreaterThan(0);
   });
 });

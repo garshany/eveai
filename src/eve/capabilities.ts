@@ -1,64 +1,71 @@
 import type { Db } from '../db/sqlite.js';
+import { loadEsiCatalog } from './esi-catalog.js';
 import { getLinkedCharacter } from './sso.js';
-import { PROFILES } from './profiles.js';
 
 export interface Capabilities {
   authenticated: boolean;
   characterId: number | null;
   characterName: string | null;
   grantedScopes: string[];
-  allowedProfiles: string[];
-  missingProfiles: Record<string, string[]>;
+  allowedNamespaces: string[];
+  deniedNamespaces: Record<string, string[]>;
+  accessibleOperations: number;
 }
 
-/**
- * Tool handler for get_eve_capabilities.
- * Returns current character binding, scopes, and which profiles are available.
- *
- * Uses the requiredScopes from each profile definition to determine access.
- */
-export function getEveCapabilities(db: Db, _intent: string): Capabilities {
-  const char = getLinkedCharacter(db);
+export async function getEveCapabilities(db: Db, _intent: string, chatId?: number): Promise<Capabilities> {
+  const linked = getLinkedCharacter(db, chatId);
+  const catalog = await loadEsiCatalog();
 
-  if (!char) {
-    // Unauthenticated: only profiles that don't require auth
-    const publicProfiles = PROFILES.filter((p) => !p.requiresAuth).map((p) => p.name);
-    return {
-      authenticated: false,
-      characterId: null,
-      characterName: null,
-      grantedScopes: [],
-      allowedProfiles: publicProfiles,
-      missingProfiles: {},
-    };
-  }
+  const grantedScopes = linked?.scopes ?? [];
+  const grantedScopeSet = new Set(grantedScopes);
+  const allowedNamespaces = new Set<string>();
+  const deniedNamespaces = new Map<string, Set<string>>();
+  let accessibleOperations = 0;
 
-  const granted = new Set(char.scopes);
-  const allowed: string[] = [];
-  const missing: Record<string, string[]> = {};
-
-  for (const profile of PROFILES) {
-    if (profile.requiredScopes.length === 0) {
-      // Public profile -- always allowed
-      allowed.push(profile.name);
+  for (const operation of catalog.values()) {
+    if (!operation.requiresAuth) {
+      allowedNamespaces.add(operation.namespace);
+      accessibleOperations += 1;
       continue;
     }
-
-    // Check if at least the first (main) scope is granted for partial access
-    const missingScopes = profile.requiredScopes.filter((s) => !granted.has(s));
-    if (missingScopes.length === 0) {
-      allowed.push(profile.name);
-    } else {
-      missing[profile.name] = missingScopes;
+    if (!linked) {
+      const bucket = deniedNamespaces.get(operation.namespace) ?? new Set<string>();
+      for (const scope of operation.requiredScopes) bucket.add(scope);
+      deniedNamespaces.set(operation.namespace, bucket);
+      continue;
     }
+    const missing = operation.requiredScopes.filter((scope) => !grantedScopeSet.has(scope));
+    if (missing.length === 0) {
+      allowedNamespaces.add(operation.namespace);
+      accessibleOperations += 1;
+      continue;
+    }
+    const bucket = deniedNamespaces.get(operation.namespace) ?? new Set<string>();
+    for (const scope of missing) bucket.add(scope);
+    deniedNamespaces.set(operation.namespace, bucket);
   }
 
   return {
-    authenticated: true,
-    characterId: char.characterId,
-    characterName: char.characterName,
-    grantedScopes: char.scopes,
-    allowedProfiles: allowed,
-    missingProfiles: missing,
+    authenticated: Boolean(linked),
+    characterId: linked?.characterId ?? null,
+    characterName: linked?.characterName ?? null,
+    grantedScopes,
+    allowedNamespaces: [...allowedNamespaces].sort(),
+    deniedNamespaces: Object.fromEntries(
+      [...deniedNamespaces.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, value]) => [key, [...value].sort()]),
+    ),
+    accessibleOperations,
   };
+}
+
+export async function canAccessOperation(db: Db, operationName: string, chatId?: number): Promise<boolean> {
+  const catalog = await loadEsiCatalog();
+  const operation = catalog.get(operationName);
+  if (!operation) return false;
+  if (!operation.requiresAuth) return true;
+  const linked = getLinkedCharacter(db, chatId);
+  if (!linked) return false;
+  return operation.requiredScopes.every((scope) => linked.scopes.includes(scope));
 }
