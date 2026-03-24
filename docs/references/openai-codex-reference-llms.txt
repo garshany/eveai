@@ -1,0 +1,14 @@
+OpenAI and Codex references used by this repo:
+
+- Responses API and tool loop behavior
+- Hosted tool_search guidance
+- Function calling and structured tool execution
+- AGENTS.md guidance for repo-local navigation
+- Skills guidance for local Codex skills
+
+Primary URLs:
+- https://developers.openai.com/api/docs/guides/latest-model/
+- https://developers.openai.com/api/docs/guides/tools-tool-search/
+- https://developers.openai.com/api/docs/guides/function-calling/
+- https://developers.openai.com/codex/guides/agents-md/
+- https://developers.openai.com/codex/skills/
