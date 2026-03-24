@@ -2,7 +2,7 @@
 
 ## Overview
 
-Single-process, single-user EVE Online agent with Telegram as the only input.
+Single-process, multi-user EVE Online agent with Telegram as the primary input.
 
 ```text
 Telegram (long polling) -> grammY bot -> Agent Runtime -> native /v1/responses

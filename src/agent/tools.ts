@@ -30,23 +30,68 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   {
     type: 'function',
     name: 'web_search',
-    description: 'Searches backend-supported EVE and general web sources. Use only for external background info, never to choose ESI operations or SDE tools.',
+    description: 'Search the web and EVE University Wiki for game mechanics, ships, modules, fits, tactics, wormholes, exploration, PvP, and any EVE or general topic. IMPORTANT: always query in English (e.g. "wormhole" not "вармхол", "black hole effect" not "чёрные дыры"). Returns articles with URLs — always include source URLs in your final response.',
     strict: true,
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string' },
-        source: { type: 'string', enum: ['eve_uni', 'esi_docs', 'general', 'openai', 'all'] },
-        limit: { type: 'integer' },
+        query: { type: 'string', description: 'Search query in English for best results' },
       },
-      required: ['query', 'source', 'limit'],
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function',
+    name: 'update_plan',
+    description: 'Create or replace the current request plan for the active task. Use when the work benefits from explicit step tracking or you need to record progress.',
+    strict: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        steps: {
+          type: 'array',
+          description: 'Ordered plan steps to store for the current request.',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Stable step identifier.' },
+              title: { type: 'string', description: 'Short step title.' },
+              status: { type: 'string', enum: ['pending', 'running', 'done', 'blocked', 'failed'] },
+              depends_on: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'IDs of prerequisite steps.',
+              },
+              notes: { type: 'string', description: 'Optional detail for the step.' },
+            },
+            required: ['id', 'title', 'status', 'depends_on', 'notes'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['steps'],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function',
+    name: 'get_eve_capabilities',
+    description: 'Inspect the currently available ESI namespaces, granted scopes, and accessible operations for the active Telegram user/chat. Use this before private ESI access when the current capability set is not already known.',
+    strict: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        intent: { type: 'string', description: 'Short description of what you are trying to do with ESI.' },
+      },
+      required: ['intent'],
       additionalProperties: false,
     },
   },
   {
     type: 'function',
     name: 'plan_route',
-    description: 'Plan a route between two EVE systems. Returns up to 3 variants (secure/shortest/insecure) with jump count, security, recent kill stats, and hotspots. Automatically sets autopilot. Accepts system names or IDs.',
+    description: 'Plan a route between two EVE systems. Returns up to 3 variants (secure/shortest/insecure) with jump count, security, recent kill stats, and hotspots. When requested, sets exact autopilot waypoints for the preferred route. Accepts system names or IDs.',
     strict: true,
     parameters: {
       type: 'object',
@@ -63,7 +108,7 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   {
     type: 'function',
     name: SDE_SQL_TOOL_NAME,
-    description: `Run a read-only SQL query against the local EVE Static Data Export (SDE) SQLite database. Use for all static data: item/ship/module lookups, system/region info, route system names, blueprint materials, etc. Prefer this over ESI for any static data.\n\n${SDE_SCHEMA}`,
+    description: `Run a read-only SQL query against the local EVE Static Data Export (SDE) SQLite database. Use for all static data: item/ship/module lookups, system/region info, route system names, blueprint materials, etc. Prefer this over ESI for any static data.\n\nIMPORTANT: Batch multiple lookups in ONE query using WHERE name IN (...) or WHERE type_id IN (...). Do NOT make separate queries for each item.\n\n${SDE_SCHEMA}`,
     strict: true,
     parameters: {
       type: 'object',
@@ -87,11 +132,30 @@ Value: iskValue/#/ (min ISK threshold)
 Examples: kills/systemID/30002768/pastSeconds/3600/, losses/characterID/268946627/, kills/shipTypeID/17715/solo/pastSeconds/86400/
 Rules: need killID/ OR at least 2 modifiers. Max 1000 results. Use CCP IDs.`;
 
+const ZKILL_RESPONSE_FIELDS = [
+  'killmail_id',
+  'time',
+  'system',
+  'system_sec',
+  'victim_name',
+  'victim_corp',
+  'victim_ship',
+  'attacker_name',
+  'attacker_corp',
+  'attacker_ship',
+  'attacker_weapon',
+  'attackers_count',
+  'value_m',
+  'solo',
+  'npc',
+  'url',
+] as const;
+
 const DEFERRED_ZKILL_TOOLS: NativeFunctionTool[] = [
   {
     type: 'function',
     name: ZKILL_TOOL_NAME,
-    description: `Query zKillboard public kill feed. Top results are enriched with ESI killmail detail (victim, attacker, ship, value, time). Use for PvP activity, kill history, fit research.\n\n${ZKILL_API_REF}`,
+    description: `Query zKillboard public kill feed. Top results are enriched with ESI killmail detail (victim, attacker, ship, value, time). Use for PvP activity, kill history, fit research. Response fields: ${ZKILL_RESPONSE_FIELDS.join(', ')}. Use fields to request only the subset you need.\n\n${ZKILL_API_REF}`,
     strict: true,
     defer_loading: true,
     parameters: {
@@ -99,17 +163,41 @@ const DEFERRED_ZKILL_TOOLS: NativeFunctionTool[] = [
       properties: {
         path: { type: 'string', description: 'zKill API path segments (e.g. "kills/systemID/30002768/pastSeconds/3600/")' },
         detail_limit: { type: 'integer', description: 'How many killmails to enrich with ESI details (0-10, default 3)' },
+        fields: {
+          type: ['array', 'null'],
+          items: { type: 'string', enum: [...ZKILL_RESPONSE_FIELDS] },
+          description: `Optional response fields to return per killmail. Allowed: ${ZKILL_RESPONSE_FIELDS.join(', ')}. Null returns all fields.`,
+        },
       },
-      required: ['path', 'detail_limit'],
+      required: ['path', 'detail_limit', 'fields'],
       additionalProperties: false,
     },
   },
 ];
 
+const BATCH_MARKET_TOOL_NAME = 'batch_market_prices';
+
+const BATCH_MARKET_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: BATCH_MARKET_TOOL_NAME,
+  description: 'Get best prices for MULTIPLE items at once. Returns min sell price, max buy price, and available volume per item. Use for fits, shopping lists, cost estimation — any time you need prices for 2+ items. Much more efficient than calling get_markets_region_id_orders per item.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      region_id: { type: 'integer', description: '10000002=The Forge (Jita), 10000043=Domain (Amarr), 10000032=Sinq Laison (Dodixie)' },
+      type_ids: { type: 'array', items: { type: 'integer' }, description: 'Array of type_ids to look up. Resolve via sde_sql first.' },
+    },
+    required: ['region_id', 'type_ids'],
+    additionalProperties: false,
+  },
+};
+
 export async function buildNativeAgentTools(): Promise<NativeTool[]> {
   return [
     { type: 'tool_search' },
     ...ALWAYS_ON_FUNCTION_TOOLS,
+    BATCH_MARKET_TOOL,
     buildZkillNamespace(),
     ...(await listEsiNamespaces()),
   ];
@@ -117,6 +205,10 @@ export async function buildNativeAgentTools(): Promise<NativeTool[]> {
 
 export function getAlwaysOnFunctionToolNames(): string[] {
   return ALWAYS_ON_FUNCTION_TOOLS.map((tool) => tool.name);
+}
+
+export function isBatchMarketTool(name: string): boolean {
+  return name === BATCH_MARKET_TOOL_NAME;
 }
 
 export function isSdeSqlTool(name: string): boolean {
@@ -132,18 +224,395 @@ export function isDeferredLookupToolName(name: string): boolean {
 }
 
 const MAX_SDE_ROWS = 50;
+const SDE_OBJECT_CACHE = new WeakMap<Db, Set<string>>();
+const SDE_WRITE_KEYWORDS = new Set(['ALTER', 'ATTACH', 'CREATE', 'DELETE', 'DETACH', 'DROP', 'INSERT', 'PRAGMA', 'REINDEX', 'REPLACE', 'UPDATE', 'VACUUM']);
+const SDE_ALIAS_STOP_KEYWORDS = new Set([
+  'CROSS',
+  'EXCEPT',
+  'FULL',
+  'GROUP',
+  'HAVING',
+  'INDEXED',
+  'INNER',
+  'INTERSECT',
+  'JOIN',
+  'LEFT',
+  'LIMIT',
+  'NATURAL',
+  'ON',
+  'ORDER',
+  'RIGHT',
+  'UNION',
+  'USING',
+  'WHERE',
+  'WINDOW',
+]);
+const SDE_CTE_HINT_KEYWORDS = new Set(['MATERIALIZED', 'NOT']);
+const SDE_IGNORED_PLAN_REFERENCES = new Set(['constant']);
+
+type SqlToken = {
+  value: string;
+  upper: string;
+};
+
+type QueryPlanRow = {
+  detail: string;
+};
+
+function tokenizeSql(sql: string): SqlToken[] {
+  const tokens: SqlToken[] = [];
+  let index = 0;
+
+  while (index < sql.length) {
+    const char = sql[index];
+
+    if (/\s/u.test(char)) {
+      index += 1;
+      continue;
+    }
+
+    if (char === '-' && sql[index + 1] === '-') {
+      index += 2;
+      while (index < sql.length && sql[index] !== '\n') {
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === '/' && sql[index + 1] === '*') {
+      index += 2;
+      while (index < sql.length && !(sql[index] === '*' && sql[index + 1] === '/')) {
+        index += 1;
+      }
+      index = Math.min(index + 2, sql.length);
+      continue;
+    }
+
+    if (char === '\'') {
+      index += 1;
+      while (index < sql.length) {
+        if (sql[index] === '\'' && sql[index + 1] === '\'') {
+          index += 2;
+          continue;
+        }
+        if (sql[index] === '\'') {
+          index += 1;
+          break;
+        }
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === '`' || char === '[') {
+      const closing = char === '[' ? ']' : char;
+      let value = '';
+      index += 1;
+      while (index < sql.length) {
+        const current = sql[index];
+        if (current === closing) {
+          if (closing !== ']' && sql[index + 1] === closing) {
+            value += closing;
+            index += 2;
+            continue;
+          }
+          index += 1;
+          break;
+        }
+        value += current;
+        index += 1;
+      }
+      tokens.push({ value, upper: value.toUpperCase() });
+      continue;
+    }
+
+    if (/[A-Za-z_]/u.test(char)) {
+      let value = char;
+      index += 1;
+      while (index < sql.length && /[A-Za-z0-9_$]/u.test(sql[index])) {
+        value += sql[index];
+        index += 1;
+      }
+      tokens.push({ value, upper: value.toUpperCase() });
+      continue;
+    }
+
+    if (/[0-9]/u.test(char)) {
+      let value = char;
+      index += 1;
+      while (index < sql.length && /[0-9.]/u.test(sql[index])) {
+        value += sql[index];
+        index += 1;
+      }
+      tokens.push({ value, upper: value.toUpperCase() });
+      continue;
+    }
+
+    tokens.push({ value: char, upper: char.toUpperCase() });
+    index += 1;
+  }
+
+  return tokens;
+}
+
+function isSqlIdentifierToken(token: SqlToken | undefined): token is SqlToken {
+  return token !== undefined && /^[A-Za-z_][A-Za-z0-9_$]*$/u.test(token.value);
+}
+
+function normalizeSqlIdentifier(value: string): string {
+  return value.toLowerCase();
+}
+
+function normalizeObjectReference(value: string): string | null {
+  const parts = value
+    .split('.')
+    .map((part) => normalizeSqlIdentifier(part))
+    .filter((part) => part.length > 0);
+
+  if (parts.length === 0 || parts.length > 2) {
+    return null;
+  }
+
+  return parts.join('.');
+}
+
+function skipParenthesizedTokens(tokens: SqlToken[], startIndex: number): number {
+  let depth = 0;
+  let index = startIndex;
+
+  while (index < tokens.length) {
+    if (tokens[index].value === '(') {
+      depth += 1;
+    } else if (tokens[index].value === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        return index + 1;
+      }
+    }
+    index += 1;
+  }
+
+  return index;
+}
+
+function extractCteNames(tokens: SqlToken[]): Set<string> {
+  const cteNames = new Set<string>();
+  let index = 0;
+
+  if (tokens[index]?.upper !== 'WITH') {
+    return cteNames;
+  }
+
+  index += 1;
+  if (tokens[index]?.upper === 'RECURSIVE') {
+    index += 1;
+  }
+
+  while (index < tokens.length) {
+    const nameToken = tokens[index];
+    if (!isSqlIdentifierToken(nameToken)) {
+      return cteNames;
+    }
+
+    cteNames.add(normalizeSqlIdentifier(nameToken.value));
+    index += 1;
+
+    if (tokens[index]?.value === '(') {
+      index = skipParenthesizedTokens(tokens, index);
+    }
+
+    if (tokens[index]?.upper !== 'AS') {
+      return cteNames;
+    }
+    index += 1;
+
+    while (SDE_CTE_HINT_KEYWORDS.has(tokens[index]?.upper ?? '')) {
+      index += 1;
+    }
+
+    if (tokens[index]?.value !== '(') {
+      return cteNames;
+    }
+    index = skipParenthesizedTokens(tokens, index);
+
+    if (tokens[index]?.value === ',') {
+      index += 1;
+      continue;
+    }
+
+    return cteNames;
+  }
+
+  return cteNames;
+}
+
+function extractTableAliases(tokens: SqlToken[]): Map<string, string> {
+  const aliases = new Map<string, string>();
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.upper !== 'FROM' && token.upper !== 'JOIN') {
+      continue;
+    }
+
+    let cursor = index + 1;
+    if (tokens[cursor]?.value === '(') {
+      continue;
+    }
+
+    const nameParts: string[] = [];
+    while (isSqlIdentifierToken(tokens[cursor])) {
+      nameParts.push(tokens[cursor].value);
+      if (tokens[cursor + 1]?.value !== '.') {
+        cursor += 1;
+        break;
+      }
+      cursor += 2;
+    }
+
+    if (nameParts.length === 0) {
+      continue;
+    }
+
+    const normalizedObject = normalizeObjectReference(nameParts.join('.'));
+    if (normalizedObject === null) {
+      continue;
+    }
+
+    aliases.set(normalizedObject, normalizedObject);
+
+    if (tokens[cursor]?.upper === 'AS') {
+      cursor += 1;
+    }
+
+    if (isSqlIdentifierToken(tokens[cursor]) && !SDE_ALIAS_STOP_KEYWORDS.has(tokens[cursor].upper)) {
+      aliases.set(normalizeSqlIdentifier(tokens[cursor].value), normalizedObject);
+    }
+  }
+
+  return aliases;
+}
+
+function extractPlanReferences(detail: string): string[] {
+  const references = new Set<string>();
+  const patterns = [
+    /\b(?:SCAN|SEARCH)\s+(?:TABLE\s+)?([^\s]+)/giu,
+    /\bON TABLE\s+([^\s]+)/giu,
+  ];
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(detail)) !== null) {
+      references.add(match[1]);
+    }
+  }
+
+  return [...references];
+}
+
+function getAllowedSdeObjects(db: Db): Set<string> {
+  const cached = SDE_OBJECT_CACHE.get(db);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const rows = db
+    .prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type IN ('table', 'view')
+        AND name GLOB 'sde_*'
+    `)
+    .all() as { name: string }[];
+
+  const allowed = new Set(rows.map((row) => row.name.toLowerCase()));
+  SDE_OBJECT_CACHE.set(db, allowed);
+  return allowed;
+}
+
+function validateSdeReference(reference: string, allowedObjects: Set<string>): { ok: true; objectName: string } | { ok: false; error: string } {
+  const normalized = normalizeObjectReference(reference);
+  if (normalized === null) {
+    return { ok: false, error: `Unsupported query source "${reference}"` };
+  }
+
+  const parts = normalized.split('.');
+  const schemaName = parts.length === 2 ? parts[0] : null;
+  const objectName = parts[parts.length - 1];
+
+  if (schemaName !== null && schemaName !== 'main') {
+    return { ok: false, error: `Only main SDE tables are allowed (got "${reference}")` };
+  }
+
+  if (!allowedObjects.has(objectName)) {
+    return { ok: false, error: `Only SDE tables are allowed (got "${reference}")` };
+  }
+
+  return { ok: true, objectName };
+}
+
+function validateSdeSqlSources(db: Db, sql: string): string | null {
+  const tokens = tokenizeSql(sql);
+  const firstToken = tokens[0]?.upper;
+
+  if (firstToken !== 'SELECT' && firstToken !== 'WITH') {
+    return 'Only SELECT queries are allowed';
+  }
+
+  for (const token of tokens) {
+    if (SDE_WRITE_KEYWORDS.has(token.upper)) {
+      return 'Write operations are not allowed';
+    }
+  }
+
+  const allowedObjects = getAllowedSdeObjects(db);
+  const aliasMap = extractTableAliases(tokens);
+  const cteNames = extractCteNames(tokens);
+
+  let planRows: QueryPlanRow[];
+  try {
+    planRows = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as QueryPlanRow[];
+  } catch (err) {
+    return `SQL error: ${(err as Error).message}`;
+  }
+
+  const referencedObjects = new Set<string>();
+
+  for (const row of planRows) {
+    for (const rawReference of extractPlanReferences(row.detail)) {
+      const normalizedReference = normalizeObjectReference(rawReference);
+      const resolvedReference = aliasMap.get(normalizedReference ?? '') ?? normalizedReference;
+
+      if (resolvedReference === null) {
+        return `Query references an unsupported source: ${rawReference}`;
+      }
+
+      const baseName = resolvedReference.split('.').at(-1);
+      if (baseName !== undefined && (cteNames.has(baseName) || SDE_IGNORED_PLAN_REFERENCES.has(baseName))) {
+        continue;
+      }
+
+      const validation = validateSdeReference(resolvedReference, allowedObjects);
+      if (!validation.ok) {
+        return validation.error;
+      }
+
+      referencedObjects.add(validation.objectName);
+    }
+  }
+
+  if (referencedObjects.size === 0) {
+    return 'Query must read from at least one SDE table';
+  }
+
+  return null;
+}
 
 export function executeSdeSql(db: Db, sql: string): { ok: boolean; rows: unknown[]; count: number; error: string | null } {
   const trimmed = sql.trim();
-
-  // Only allow SELECT
-  if (!/^SELECT\b/i.test(trimmed)) {
-    return { ok: false, rows: [], count: 0, error: 'Only SELECT queries are allowed' };
-  }
-
-  // Block writes
-  if (/\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|DETACH|PRAGMA)\b/i.test(trimmed)) {
-    return { ok: false, rows: [], count: 0, error: 'Write operations are not allowed' };
+  const validationError = validateSdeSqlSources(db, trimmed);
+  if (validationError !== null) {
+    return { ok: false, rows: [], count: 0, error: validationError };
   }
 
   try {
@@ -165,7 +634,10 @@ export { planRoute } from '../eve/route-planner.js';
 export type { PlanRouteArgs } from '../eve/route-planner.js';
 
 export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'ui' | null> {
-  if (getAlwaysOnFunctionToolNames().includes(name) || isZkillToolName(name)) {
+  if (name === 'update_plan') {
+    return 'write';
+  }
+  if (getAlwaysOnFunctionToolNames().includes(name) || isZkillToolName(name) || isBatchMarketTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();

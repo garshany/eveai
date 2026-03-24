@@ -1,0 +1,221 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Space Grotesk", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+  --color-void: #05070e;
+}
+
+:root {
+  color-scheme: dark;
+  --font-display-stack: "Space Grotesk", "Segoe UI", sans-serif;
+  --font-mono-stack: "IBM Plex Mono", "SFMono-Regular", monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background:
+    radial-gradient(circle at top, rgba(81, 203, 255, 0.06), transparent 30%),
+    linear-gradient(180deg, #05070e 0%, #070b15 32%, #05070e 100%);
+  color: rgba(255, 255, 255, 0.94);
+  font-family: var(--font-display-stack);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+#root {
+  isolation: isolate;
+}
+
+.eyebrow {
+  font-family: var(--font-mono-stack);
+  font-size: 0.72rem;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: rgba(212, 246, 255, 0.55);
+}
+
+.starfield {
+  background-image:
+    radial-gradient(circle at 12% 18%, rgba(255,255,255,0.55) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 28% 42%, rgba(255,255,255,0.36) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 74% 26%, rgba(255,255,255,0.38) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 88% 62%, rgba(255,255,255,0.48) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 56% 72%, rgba(255,255,255,0.28) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 42% 84%, rgba(255,255,255,0.32) 0 1px, transparent 1.5px);
+  animation: drift 28s linear infinite;
+}
+
+.orbital {
+  animation: orbit 22s linear infinite;
+}
+
+.orbital-delay {
+  animation-duration: 28s;
+  animation-direction: reverse;
+}
+
+.signal-beam {
+  animation: scan 4.8s ease-in-out infinite;
+}
+
+.reveal-panel,
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(28px);
+  transition:
+    opacity 700ms ease,
+    transform 700ms ease;
+}
+
+.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.telegram-widget-shell iframe {
+  max-width: 100%;
+}
+
+.hero-grid {
+  background-image:
+    linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
+  background-size: 96px 96px;
+  mask-image: linear-gradient(180deg, rgba(0,0,0,0.72), transparent 88%);
+}
+
+.hero-ship {
+  filter:
+    drop-shadow(0 80px 90px rgba(0, 0, 0, 0.7))
+    drop-shadow(0 0 38px rgba(108, 222, 255, 0.18));
+  animation: shipFloat 9s ease-in-out infinite;
+}
+
+.graph-lines line {
+  stroke: rgba(122, 209, 226, 0.22);
+  stroke-width: 1.35;
+}
+
+.graph-title {
+  font-family: var(--font-display-stack);
+  font-size: 23px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  fill: rgba(255, 255, 255, 0.95);
+}
+
+.graph-title-lg {
+  font-size: 30px;
+}
+
+.graph-subtitle {
+  font-family: var(--font-mono-stack);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  fill: rgba(206, 229, 236, 0.72);
+}
+
+.graph-dot {
+  animation: graphPulse 4.8s ease-in-out infinite;
+}
+
+.graph-dot-b {
+  animation-delay: 1.1s;
+}
+
+.graph-dot-c {
+  animation-delay: 2.2s;
+}
+
+@keyframes orbit {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes scan {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0) scaleY(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(14px) scaleY(1.08);
+  }
+}
+
+@keyframes drift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(-1.5%, 1.2%, 0);
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes shipFloat {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(-7deg);
+  }
+  50% {
+    transform: translate3d(0, -16px, 0) rotate(-4deg);
+  }
+}
+
+@keyframes graphPulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    opacity: 1;
+    transform: translate3d(0, -5px, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .starfield,
+  .orbital,
+  .orbital-delay,
+  .signal-beam,
+  .hero-ship,
+  .reveal-panel,
+  [data-reveal] {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+}

@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { buildNativeAgentTools } from '../../src/agent/tools.js';
 
 describe('agent tools', () => {
   it('preloads deferred tool catalogs as hosted namespaces', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    const { buildNativeAgentTools } = await import('../../src/agent/tools.js');
+
     const tools = await buildNativeAgentTools();
     const functionNames = tools
       .filter((tool): tool is Extract<(typeof tools)[number], { type: 'function' }> => tool.type === 'function')
@@ -10,33 +18,61 @@ describe('agent tools', () => {
     const namespaces = tools.filter((tool): tool is Extract<(typeof tools)[number], { type: 'namespace' }> => tool.type === 'namespace');
     const namespaceNames = namespaces.map((tool) => tool.name);
 
+    expect(functionNames).toContain('web_search');
+    expect(functionNames).toContain('update_plan');
     expect(functionNames).toContain('get_eve_capabilities');
+    expect(functionNames).toContain('plan_route');
+    expect(functionNames).toContain('sde_sql');
+    // get_markets_region_id_orders is now in ESI namespace (eve_public_market_orders), not top-level
+    expect(functionNames).not.toContain('get_markets_region_id_orders');
     expect(functionNames).not.toContain('sde_lookup_types');
     expect(functionNames).not.toContain('zkill_system_recent_kills');
     expect(functionNames).not.toContain('get_characters_character_id_assets');
     expect(functionNames).not.toContain('get_universe_systems_system_id');
-    expect(namespaceNames).toContain('eve_sde');
     expect(namespaceNames).toContain('eve_zkill');
     expect(namespaceNames).toContain('eve_character_assets');
-    expect(namespaceNames).toContain('eve_universe_geography');
+    expect(namespaceNames).toContain('eve_public_market_orders');
     expect(namespaces.every((tool) => tool.tools.length <= 9)).toBe(true);
     expect(
       namespaces.some((tool) =>
-        tool.name === 'eve_sde'
-        && tool.tools.some((entry) => entry.name === 'sde_lookup_types'),
-      ),
-    ).toBe(true);
-    expect(
-      namespaces.some((tool) =>
         tool.name === 'eve_zkill'
-        && tool.tools.some((entry) => entry.name === 'zkill_system_recent_kills'),
+        && tool.tools.some((entry) => entry.name === 'zkill'),
       ),
     ).toBe(true);
-    expect(
-      namespaces.some((tool) =>
-        tool.name === 'eve_character_assets'
-        && tool.tools.some((entry) => entry.name === 'get_characters_character_id_assets'),
-      ),
-    ).toBe(true);
+
+    // get_markets_region_id_orders lives inside eve_public_market_orders namespace
+    const marketNamespace = namespaces.find((tool) => tool.name === 'eve_public_market_orders');
+    expect(marketNamespace).toBeDefined();
+    const marketOrdersTool = marketNamespace?.tools.find((tool) => tool.name === 'get_markets_region_id_orders');
+    expect(marketOrdersTool).toBeDefined();
+    expect(marketOrdersTool?.defer_loading).toBe(true);
+
+    const capabilitiesTool = tools.find((tool): tool is Extract<(typeof tools)[number], { type: 'function'; name: 'get_eve_capabilities' }> =>
+      tool.type === 'function' && tool.name === 'get_eve_capabilities');
+    expect(capabilitiesTool).toBeDefined();
+    expect(capabilitiesTool?.parameters).toEqual({
+      type: 'object',
+      properties: {
+        intent: {
+          type: 'string',
+          description: 'Short description of what you are trying to do with ESI.',
+        },
+      },
+      required: ['intent'],
+      additionalProperties: false,
+    });
+
+    const assetsNamespace = namespaces.find((tool) => tool.name === 'eve_character_assets');
+    const assetsTool = assetsNamespace?.tools.find((tool) => tool.name === 'get_characters_character_id_assets');
+    expect(assetsTool).toBeDefined();
+    expect(assetsTool?.description).toContain('Response fields: is_blueprint_copy, is_singleton, item_id, location_flag, location_id, location_type, quantity, type_id.');
+    expect((assetsTool?.parameters as { properties: Record<string, unknown> }).properties.fields).toEqual({
+      type: ['array', 'null'],
+      items: {
+        type: 'string',
+        enum: ['is_blueprint_copy', 'is_singleton', 'item_id', 'location_flag', 'location_id', 'location_type', 'quantity', 'type_id'],
+      },
+      description: 'Optional top-level response fields to return. Allowed fields: is_blueprint_copy, is_singleton, item_id, location_flag, location_id, location_type, quantity, type_id. Null uses the operation default behavior.',
+    });
   });
 });

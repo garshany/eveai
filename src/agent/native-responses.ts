@@ -6,9 +6,9 @@ export type NativeInputItem =
 
 export type NativeInputMessage = {
   type: 'message';
-  role: 'user';
+  role: 'user' | 'assistant';
   content: Array<{
-    type: 'input_text';
+    type: 'input_text' | 'output_text';
     text: string;
   }>;
 };
@@ -46,6 +46,14 @@ export type NativeResponseOutputItem = {
   [key: string]: unknown;
 };
 
+export type NativeUsage = {
+  input: number;
+  output: number;
+  total: number;
+  cached: number;
+  reasoning: number;
+};
+
 export type NativeResponseResult = {
   id: string | null;
   output: NativeResponseOutputItem[];
@@ -53,6 +61,7 @@ export type NativeResponseResult = {
   error: { message: string } | null;
   toolSearchPaths: string[];
   rawEvents: NativeSseEvent[];
+  usage: NativeUsage | null;
 };
 
 type NativeSseEvent = {
@@ -67,6 +76,8 @@ type NativeResponseEnvelope = {
   output_text?: string;
 };
 
+const RESPONSES_TIMEOUT_MS = 90_000;
+
 export async function createNativeResponse(input: {
   instructions: string;
   items: NativeInputItem[];
@@ -74,9 +85,11 @@ export async function createNativeResponse(input: {
   model?: string;
   previousResponseId?: string | null;
   parallelToolCalls?: boolean;
+  truncation?: string;
+  contextManagement?: Array<{ type: string; compact_threshold: number }>;
 }): Promise<NativeResponseResult> {
   const baseUrl = normalizeBaseUrl(config.openai.baseUrl);
-  const bodyPayload = {
+  const bodyPayload: Record<string, unknown> = {
       model: input.model ?? config.openai.model,
       instructions: input.instructions,
       input: input.items,
@@ -91,18 +104,37 @@ export async function createNativeResponse(input: {
       stream: true,
       include: [],
     };
+  if (input.truncation) {
+    bodyPayload.truncation = input.truncation;
+  }
+  if (input.contextManagement) {
+    bodyPayload.context_management = input.contextManagement;
+  }
   const bodyJson = JSON.stringify(bodyPayload);
   console.log('[api] POST %s/responses — payload %d chars, %d tools, %d input items, prevId=%s',
     baseUrl, bodyJson.length, input.tools.length, input.items.length,
     input.previousResponseId ?? 'none');
-  const response = await fetch(`${baseUrl}/responses`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${config.openai.apiKey}`,
-    },
-    body: bodyJson,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RESPONSES_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}/responses`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${config.openai.apiKey}`,
+      },
+      body: bodyJson,
+    });
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+      throw new Error(`Responses API timed out after ${Math.round(RESPONSES_TIMEOUT_MS / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 
   const rawText = await response.text();
   if (!response.ok) {
@@ -114,7 +146,10 @@ export async function createNativeResponse(input: {
   const completedPayload = findCompletedPayload(events);
   const doneItems = collectDoneItems(events);
   const output = completedPayload?.output ?? doneItems;
-  const outputText = completedPayload?.output_text ?? extractOutputText(output);
+  const outputTextFromItems = extractOutputText(output);
+  const outputTextFromStream = extractStreamedOutputText(events);
+  const outputText = completedPayload?.output_text
+    ?? (outputTextFromStream || outputTextFromItems);
   const errorMessage = completedPayload?.error?.message
     ?? findStreamError(events)
     ?? null;
@@ -147,6 +182,13 @@ export async function createNativeResponse(input: {
     error: errorMessage ? { message: errorMessage } : null,
     toolSearchPaths,
     rawEvents: events,
+    usage: usage ? {
+      input: Number(usage.input_tokens ?? 0),
+      output: Number(usage.output_tokens ?? 0),
+      total: Number(usage.total_tokens ?? 0),
+      cached: Number((usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens ?? 0),
+      reasoning: Number((usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens ?? 0),
+    } : null,
   };
 }
 
@@ -155,6 +197,14 @@ export function toNativeMessage(text: string): NativeInputMessage {
     type: 'message',
     role: 'user',
     content: [{ type: 'input_text', text }],
+  };
+}
+
+export function toNativeAssistantMessage(text: string): NativeInputMessage {
+  return {
+    type: 'message',
+    role: 'assistant',
+    content: [{ type: 'output_text', text }],
   };
 }
 
@@ -188,32 +238,110 @@ function normalizeBaseUrl(baseUrl: string): string {
 }
 
 function parseSse(raw: string): NativeSseEvent[] {
-  const chunks = raw
-    .split(/\n\n+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
   const events: NativeSseEvent[] = [];
-  for (const chunk of chunks) {
-    const lines = chunk.split('\n');
-    const event = lines.find((line) => line.startsWith('event: '))?.slice(7) ?? 'message';
-    const dataLine = lines.filter((line) => line.startsWith('data: ')).map((line) => line.slice(6)).join('\n');
-    if (!dataLine || dataLine === '[DONE]') continue;
-    let data: unknown = dataLine;
+  let currentEvent = 'message';
+  let dataLines: string[] = [];
+
+  const flush = () => {
+    if (dataLines.length === 0) {
+      currentEvent = 'message';
+      return;
+    }
+    const dataText = dataLines.join('\n');
+    dataLines = [];
+    if (!dataText || dataText === '[DONE]') {
+      currentEvent = 'message';
+      return;
+    }
+    let data: unknown = dataText;
     try {
-      data = JSON.parse(dataLine);
+      data = JSON.parse(dataText);
     } catch {
-      data = dataLine;
+      data = dataText;
+    }
+    let event = currentEvent;
+    if (event === 'message' && data && typeof data === 'object') {
+      const dataType = (data as { type?: unknown }).type;
+      if (typeof dataType === 'string' && dataType.trim()) {
+        event = dataType.trim();
+      }
     }
     events.push({ event, data });
+    currentEvent = 'message';
+  };
+
+  const lines = raw.split(/\r?\n/);
+  for (const line of lines) {
+    if (line === '') {
+      flush();
+      continue;
+    }
+    if (line.startsWith(':')) {
+      continue;
+    }
+    if (line.startsWith('event:')) {
+      currentEvent = line.slice(6).trim() || 'message';
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).replace(/^\s/, ''));
+      continue;
+    }
+    if (line.startsWith('id:') || line.startsWith('retry:')) {
+      continue;
+    }
+    dataLines.push(line);
   }
+  flush();
   return events;
+}
+
+function isOutputTextDelta(event: string): boolean {
+  return event === 'response.output_text.delta' || event === 'response.text.delta';
+}
+
+function isOutputTextDone(event: string): boolean {
+  return event === 'response.output_text.done' || event === 'response.text.done';
+}
+
+function extractStreamedOutputText(events: NativeSseEvent[]): string {
+  const chunks: string[] = [];
+  let doneText = '';
+  let sawDelta = false;
+  for (const event of events) {
+    if (!isOutputTextDelta(event.event) && !isOutputTextDone(event.event)) continue;
+    const data = event.data as Record<string, unknown> | null;
+    const delta = typeof data?.delta === 'string' ? data.delta : null;
+    const text = typeof data?.text === 'string' ? data.text : null;
+    const outputText = typeof data?.output_text === 'string' ? data.output_text : null;
+    const nestedText = typeof (data?.output_text as { text?: unknown } | undefined)?.text === 'string'
+      ? (data?.output_text as { text?: string }).text
+      : null;
+    if (isOutputTextDelta(event.event)) {
+      const token = delta ?? text ?? outputText ?? nestedText;
+      if (typeof token === 'string' && token) {
+        sawDelta = true;
+        chunks.push(token);
+      }
+      continue;
+    }
+    if (isOutputTextDone(event.event)) {
+      const finalText = text ?? outputText ?? nestedText ?? delta;
+      if (typeof finalText === 'string' && finalText) {
+        doneText = finalText;
+      }
+    }
+  }
+  if (sawDelta) return chunks.join('').trim();
+  return doneText.trim();
 }
 
 function collectDoneItems(events: NativeSseEvent[]): NativeResponseOutputItem[] {
   const output: NativeResponseOutputItem[] = [];
   for (const event of events) {
     if (event.event !== 'response.output_item.done') continue;
-    const item = (event.data as { item?: NativeResponseOutputItem } | null)?.item;
+    const data = event.data as { item?: NativeResponseOutputItem; output_item?: NativeResponseOutputItem } | null;
+    const item = data?.item ?? data?.output_item ?? null;
     if (item && typeof item === 'object' && typeof item.type === 'string') {
       output.push(item);
     }
@@ -224,7 +352,7 @@ function collectDoneItems(events: NativeSseEvent[]): NativeResponseOutputItem[] 
 function findCompletedPayload(events: NativeSseEvent[]): NativeResponseEnvelope | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (event.event !== 'response.completed') continue;
+    if (event.event !== 'response.completed' && event.event !== 'response.done') continue;
     const data = event.data as { response?: NativeResponseEnvelope } | NativeResponseEnvelope | null;
     if (!data || typeof data !== 'object') continue;
     if ('response' in data && data.response && typeof data.response === 'object') {
@@ -238,10 +366,15 @@ function findCompletedPayload(events: NativeSseEvent[]): NativeResponseEnvelope 
 function findStreamError(events: NativeSseEvent[]): string | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (event.event !== 'response.error') continue;
-    const data = event.data as { error?: { message?: string } } | null;
-    const message = data?.error?.message;
-    if (typeof message === 'string' && message) return message;
+    if (event.event === 'error' || event.event === 'response.error' || event.event === 'response.failed') {
+      const data = event.data as Record<string, unknown> | null;
+      console.log('[api] stream error event=%s data=%s', event.event, JSON.stringify(data)?.slice(0, 500));
+      const message = (data?.error as Record<string, unknown> | undefined)?.message
+        ?? (data as Record<string, unknown> | undefined)?.message
+        ?? (data?.error as Record<string, unknown> | undefined)?.code;
+      if (typeof message === 'string' && message) return message;
+      return `API error: ${event.event} ${JSON.stringify(data)?.slice(0, 200)}`;
+    }
   }
   return null;
 }
@@ -268,19 +401,32 @@ export function extractToolSearchPaths(items: NativeResponseOutputItem[]): strin
   for (const item of items) {
     if (item.type !== 'tool_search_output') continue;
     const directPaths = Array.isArray(item.paths) ? item.paths : [];
-    const toolEntries = Array.isArray(item.tools) ? item.tools : [];
-    const nestedPaths = Array.isArray((item.output as { paths?: unknown[] } | undefined)?.paths)
-      ? ((item.output as { paths?: unknown[] }).paths ?? [])
+    const output = item.output as Record<string, unknown> | undefined;
+    const toolEntries = [
+      ...(Array.isArray(item.tools) ? item.tools : []),
+      ...(Array.isArray(output?.tools) ? (output?.tools as unknown[]) : []),
+    ];
+    const nestedPaths = Array.isArray((output as { paths?: unknown[] } | undefined)?.paths)
+      ? ((output as { paths?: unknown[] }).paths ?? [])
       : [];
     for (const path of [...directPaths, ...nestedPaths]) {
       if (typeof path === 'string' && path.trim()) paths.add(path.trim());
     }
+    if (output) collectToolSearchNames(output, paths);
     for (const tool of toolEntries) {
       collectToolSearchNames(tool, paths);
     }
   }
   return [...paths];
 }
+
+export const __test__ = {
+  parseSse,
+  extractStreamedOutputText,
+  collectDoneItems,
+  findCompletedPayload,
+  RESPONSES_TIMEOUT_MS,
+};
 
 function collectToolSearchNames(value: unknown, paths: Set<string>): void {
   if (!value || typeof value !== 'object') return;

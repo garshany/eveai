@@ -35,8 +35,12 @@ function optionalFloat(name: string, fallback: number): number {
 }
 
 export const config = {
+  auth: {
+    secretKey: optional('AUTH_SECRET_KEY', ''),
+  },
   telegram: {
     botToken: required('TELEGRAM_BOT_TOKEN'),
+    botUsername: optional('TELEGRAM_BOT_USERNAME', ''),
     allowedUserId: optionalInt('ALLOWED_TELEGRAM_USER_ID', 0),
   },
   openai: {
@@ -45,6 +49,8 @@ export const config = {
     baseUrl: optional('OPENAI_BASE_URL', ''),
     apiMode: optional('OPENAI_API_MODE', 'native_responses'),
     reasoningEffort: optional('OPENAI_REASONING_EFFORT', 'medium'),
+    store: optional('OPENAI_STORE', 'true') === 'true',
+    compactThreshold: optionalInt('OPENAI_COMPACT_THRESHOLD', 0),
   },
   eve: {
     clientId: required('EVE_CLIENT_ID'),
@@ -61,10 +67,12 @@ export const config = {
   },
   server: {
     port: optionalInt('PORT', 3000),
-    host: optional('HOST', '0.0.0.0'),
+    host: optional('HOST', '127.0.0.1'),
   },
-  security: {
-    allowWebAuth: optional('ALLOW_WEB_AUTH', 'false') === 'true',
+  web: {
+    baseUrl: optional('WEB_BASE_URL', 'http://localhost:3000'),
+    sessionTtlHours: optionalInt('WEB_SESSION_TTL_HOURS', 720),
+    handoffTtlSeconds: optionalInt('TG_HANDOFF_TTL_SECONDS', 300),
   },
   db: {
     path: optional('DB_PATH', './data/eve-agent.db'),
@@ -73,16 +81,15 @@ export const config = {
     dataDir: optional('SDE_DATA_DIR', './data/sde'),
   },
   userProfile: {
-    path: optional('USER_PROFILE_PATH', './data/USER.md'),
+    path: optional('USER_PROFILE_PATH', './data/USER_{chat_id}_{character_id}.md'),
     refreshSeconds: optionalInt('USER_PROFILE_REFRESH_SECONDS', 300),
   },
   market: {
     defaultRegionId: requiredInt('DEFAULT_MARKET_REGION_ID'),
     defaultRegionName: required('DEFAULT_MARKET_REGION_NAME'),
   },
-  webSearch: {
-    timeoutMs: optionalInt('WEB_SEARCH_TIMEOUT_MS', 8000),
-    maxResults: optionalInt('WEB_SEARCH_MAX_RESULTS', 5),
+  tavily: {
+    apiKey: optional('TAVILY_API_KEY', ''),
   },
   zkill: {
     baseUrl: optional('ZKILL_BASE_URL', 'https://zkillboard.com/api/'),
@@ -92,7 +99,7 @@ export const config = {
     userAgent: optional('ZKILL_USER_AGENT', 'eve-agent/0.1.0 (contact: local-dev)'),
   },
   compact: {
-    messageThreshold: optionalInt('COMPACT_MESSAGE_THRESHOLD', 50),
+    messageThreshold: optionalInt('COMPACT_MESSAGE_THRESHOLD', 20),
     tokenRatio: optionalFloat('COMPACT_TOKEN_RATIO', 0.6),
     tokenBudget: optionalInt('COMPACT_TOKEN_BUDGET', 8000),
     keepLast: optionalInt('COMPACT_KEEP_LAST', 10),

@@ -5,6 +5,13 @@ import { SCHEMA_SQL } from '../../src/db/schema.js';
 let db: Database.Database;
 
 beforeEach(() => {
+  process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+  process.env.TELEGRAM_BOT_TOKEN = 'test';
+  process.env.OPENAI_API_KEY = 'test';
+  process.env.EVE_CLIENT_ID = 'test';
+  process.env.EVE_CLIENT_SECRET = 'test';
+  process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+  process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);

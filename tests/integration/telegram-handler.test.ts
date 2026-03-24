@@ -4,17 +4,16 @@ import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 vi.mock('../../src/config.js', () => ({
   config: {
-    telegram: { botToken: 'test', allowedUserId: 0 },
+    telegram: { botToken: 'test', allowedUserId: 42 },
     openai: { apiKey: 'test', model: 'test', baseUrl: '', apiMode: 'auto', reasoningEffort: '' },
     eve: { clientId: 'test', clientSecret: 'test', callbackUrl: 'http://localhost:3000/auth/eve/callback' },
-    server: { port: 3000, host: '0.0.0.0' },
+    server: { port: 3000, host: '127.0.0.1' },
     db: { path: ':memory:' },
     sde: { dataDir: './data/sde' },
     security: { allowWebAuth: true },
     esi: { maxPages: 5, backoffMaxSeconds: 10 },
     userProfile: { path: './data/USER_{character_id}.md', refreshSeconds: 300 },
     market: { defaultRegionId: 10000002, defaultRegionName: 'The Forge' },
-    webSearch: { timeoutMs: 8000, maxResults: 5 },
     compact: { messageThreshold: 50, tokenRatio: 0.6, tokenBudget: 8000, keepLast: 10, maxInputChars: 20000 },
   },
 }));

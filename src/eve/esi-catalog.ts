@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import { config } from '../config.js';
 import type { NativeFunctionTool, NativeNamespaceTool } from '../agent/native-responses.js';
 
@@ -14,6 +14,7 @@ export type EsiOperationMeta = {
   paginationType: 'none' | 'x-pages';
   hiddenPageParam: boolean;
   toolPolicy: 'read' | 'write' | 'ui';
+  responseFields: string[] | null;
   parameters: EsiParameterMeta[];
   bodyParameter: EsiBodyParameterMeta | null;
   tool: NativeFunctionTool;
@@ -52,6 +53,7 @@ type SwaggerOperation = {
   tags?: string[];
   parameters?: Array<SwaggerParameter | { $ref: string }>;
   security?: Array<Record<string, string[]>>;
+  responses?: Record<string, SwaggerResponse>;
 };
 
 type SwaggerParameter = {
@@ -64,6 +66,16 @@ type SwaggerParameter = {
   items?: SwaggerParameter;
   collectionFormat?: string;
   schema?: Record<string, unknown>;
+};
+
+type SwaggerResponse = {
+  schema?: SwaggerSchema;
+};
+
+type SwaggerSchema = {
+  type?: string;
+  items?: SwaggerSchema;
+  properties?: Record<string, SwaggerSchema>;
 };
 
 // Operations that return massive unfiltered arrays — excluded from agent tools.
@@ -152,9 +164,11 @@ async function loadEsiCatalogInternal(): Promise<Map<string, EsiOperationMeta>> 
       const hiddenPageParam = parameters.some((parameter) => parameter.name?.toLowerCase() === 'page');
       const exposedParams = parameters.filter((parameter) => !parameter.name || !HIDDEN_PARAMS.has(parameter.name.toLowerCase()));
       const bodyParameter = exposedParams.find((parameter) => parameter.in === 'body') ?? null;
-      const toolParameters = buildToolParameters(exposedParams, bodyParameter);
       const requiredScopes = extractRequiredScopes(operation.security);
       const namespace = buildNamespace(path);
+      const responseFields = extractResponseFieldNames(operation);
+      const toolParameters = buildToolParameters(exposedParams, bodyParameter, responseFields);
+      const description = buildDescription(method, path, operation, requiredScopes, responseFields);
       const toolPolicy = namespace.includes('ui')
         ? 'ui'
         : method === 'GET'
@@ -165,12 +179,13 @@ async function loadEsiCatalogInternal(): Promise<Map<string, EsiOperationMeta>> 
         method,
         path,
         namespace,
-        description: buildDescription(method, path, operation, requiredScopes),
+        description,
         requiresAuth: requiredScopes.length > 0,
         requiredScopes,
         paginationType: method === 'GET' && hiddenPageParam ? 'x-pages' : 'none',
         hiddenPageParam,
         toolPolicy,
+        responseFields,
         parameters: exposedParams
           .filter((parameter) => parameter.in === 'path' || parameter.in === 'query' || parameter.in === 'header')
           .flatMap((parameter) => {
@@ -191,7 +206,7 @@ async function loadEsiCatalogInternal(): Promise<Map<string, EsiOperationMeta>> 
         tool: {
           type: 'function',
           name: operation.operationId,
-          description: buildDescription(method, path, operation, requiredScopes),
+          description,
           strict: true,
           defer_loading: true,
           parameters: toolParameters,
@@ -205,6 +220,13 @@ async function loadEsiCatalogInternal(): Promise<Map<string, EsiOperationMeta>> 
 
 async function loadSwaggerSpec(): Promise<SwaggerSpec> {
   const cachePath = config.esi?.catalogCachePath ?? './data/cache/esi-swagger.json';
+  if (isTestEnvironment()) {
+    if (!existsSync(cachePath)) {
+      throw new Error(`ESI swagger cache is missing: ${cachePath}`);
+    }
+    return JSON.parse(readFileSync(cachePath, 'utf-8')) as SwaggerSpec;
+  }
+
   try {
     const res = await fetch(config.esi?.specUrl ?? 'https://esi.evetech.net/latest/swagger.json', {
       headers: { 'User-Agent': 'eve-agent/0.1.0' },
@@ -222,6 +244,10 @@ async function loadSwaggerSpec(): Promise<SwaggerSpec> {
     throw new Error(`ESI swagger cache is missing: ${cachePath}`);
   }
   return JSON.parse(readFileSync(cachePath, 'utf-8')) as SwaggerSpec;
+}
+
+function isTestEnvironment(): boolean {
+  return process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
 }
 
 function writeCache(path: string, data: string): void {
@@ -244,6 +270,7 @@ function resolveParameter(
 function buildToolParameters(
   parameters: SwaggerParameter[],
   bodyParameter: SwaggerParameter | null,
+  responseFields: string[] | null,
 ): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
@@ -259,6 +286,14 @@ function buildToolParameters(
     };
     required.push(bodyParameter.name);
   }
+  properties.fields = {
+    type: ['array', 'null'],
+    items: responseFields && responseFields.length > 0
+      ? { type: 'string', enum: responseFields }
+      : { type: 'string' },
+    description: buildFieldsParameterDescription(responseFields),
+  };
+  required.push('fields');
 
   return {
     type: 'object',
@@ -266,6 +301,21 @@ function buildToolParameters(
     required,
     additionalProperties: false,
   };
+}
+
+function extractResponseFieldNames(operation: SwaggerOperation): string[] | null {
+  const responseSchema = operation.responses?.['200']?.schema
+    ?? operation.responses?.['201']?.schema
+    ?? null;
+  if (!responseSchema) return null;
+
+  const objectSchema = responseSchema.type === 'array'
+    ? responseSchema.items ?? null
+    : responseSchema;
+  if (!objectSchema?.properties) return null;
+
+  const fields = Object.keys(objectSchema.properties);
+  return fields.length > 0 ? fields.sort((left, right) => left.localeCompare(right)) : null;
 }
 
 function buildScalarSchema(parameter: SwaggerParameter, required: boolean): Record<string, unknown> {
@@ -375,7 +425,7 @@ const UNIVERSE_CONSOLIDATED: Record<string, { name: string; description: string 
 
 function planSpecialHostedNamespace(
   key: string,
-  operation: EsiOperationMeta,
+  _operation: EsiOperationMeta,
 ): { name: string; description: string } | null {
   const universeGroup = UNIVERSE_CONSOLIDATED[key];
   if (universeGroup) return universeGroup;
@@ -451,7 +501,7 @@ function planSpecialHostedNamespace(
   return null;
 }
 
-function describeGenericNamespace(key: string, operation: EsiOperationMeta): string {
+function describeGenericNamespace(key: string, _operation: EsiOperationMeta): string {
   const parts = key.replace(/^esi_/, '').split('_').filter(Boolean);
   if (parts.length === 0) {
     return 'Live EVE ESI tools.';
@@ -833,12 +883,23 @@ function buildDescription(
   path: string,
   operation: SwaggerOperation,
   requiredScopes: string[],
+  responseFields: string[] | null,
 ): string {
   const summary = (operation.summary ?? operation.description ?? '').trim();
   const scopeText = requiredScopes.length > 0
     ? ` Requires ${requiredScopes.join(', ')}.`
     : ' Public endpoint.';
-  return `${method} ${path}.${summary ? ` ${summary}.` : ''}${scopeText}`;
+  const fieldsText = responseFields && responseFields.length > 0
+    ? ` Response fields: ${responseFields.join(', ')}. Use fields to request only the subset you need.`
+    : ' Response field projection is unsupported for this endpoint.';
+  return `${method} ${path}.${summary ? ` ${summary}.` : ''}${scopeText}${fieldsText}`;
+}
+
+function buildFieldsParameterDescription(responseFields: string[] | null): string {
+  if (!responseFields || responseFields.length === 0) {
+    return 'Field projection is unsupported for this endpoint. Pass null.';
+  }
+  return `Optional top-level response fields to return. Allowed fields: ${responseFields.join(', ')}. Null uses the operation default behavior.`;
 }
 
 function extractRequiredScopes(security: Array<Record<string, string[]>> | undefined): string[] {

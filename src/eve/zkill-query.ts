@@ -1,6 +1,7 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { callEsiOperation } from './esi-client.js';
+import type { UserContext } from '../auth/user-resolver.js';
 
 type ZkillFeedItem = {
   killmail_id: number;
@@ -49,7 +50,7 @@ export async function executeZkillQuery(
   db: Db,
   path: string,
   detailLimit: number,
-  chatId?: number | null,
+  _ctx?: UserContext | number | null,
 ): Promise<ZkillQueryResult> {
   const cleanPath = path.replace(/^\/+/, '').replace(/\/*$/, '/');
   const clampedDetail = Math.min(Math.max(detailLimit, 0), MAX_DETAIL);
@@ -230,8 +231,4 @@ function asRec(value: unknown): Record<string, unknown> {
 function numField(obj: Record<string, unknown>, key: string): number | null {
   const v = obj[key];
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
-}
-
-function strField(obj: Record<string, unknown>, key: string): string | null {
-  return typeof obj[key] === 'string' && (obj[key] as string).trim() ? obj[key] as string : null;
 }

@@ -2,6 +2,7 @@ import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { callEsiOperation } from './esi-client.js';
 import { getLinkedCharacter } from './sso.js';
+import type { UserContext } from '../auth/user-resolver.js';
 import { enrichKillmailDetail, type KillmailDeps } from './killmail.js';
 import { buildTypeLinkMeta } from './eve-links.js';
 
@@ -45,21 +46,21 @@ export async function executeZkillTool(
   db: Db,
   name: ZkillToolName,
   args: Record<string, unknown>,
-  chatId?: number | null,
+  ctx?: UserContext | number | null,
 ): Promise<Record<string, unknown>> {
   if (name === 'zkill_system_recent_kills') {
-    return await getSystemRecentKills(db, args, chatId ?? null);
+    return await getSystemRecentKills(db, args, ctx ?? null);
   }
   if (name === 'zkill_entity_recent_activity') {
-    return await getEntityRecentActivity(db, args, chatId ?? null);
+    return await getEntityRecentActivity(db, args, ctx ?? null);
   }
-  return await getShipLossFits(db, args, chatId ?? null);
+  return await getShipLossFits(db, args, ctx ?? null);
 }
 
 async function getSystemRecentKills(
   db: Db,
   args: Record<string, unknown>,
-  chatId: number | null,
+  ctx: UserContext | number | null,
 ): Promise<Record<string, unknown>> {
   const systemId = normalizeInteger(args.system_id);
   if (systemId === null) {
@@ -76,7 +77,7 @@ async function getSystemRecentKills(
   ], filter);
 
   const selected = mergeFeedSections(feeds, limit);
-  const detailed = await enrichFeedItems(db, selected.items.slice(0, detailLimit), chatId);
+  const detailed = await enrichFeedItems(db, selected.items.slice(0, detailLimit), ctx);
   const compacted = detailed.map(compactDetailedKillmail);
 
   return {
@@ -103,7 +104,7 @@ async function getSystemRecentKills(
 async function getEntityRecentActivity(
   db: Db,
   args: Record<string, unknown>,
-  chatId: number | null,
+  ctx: UserContext | number | null,
 ): Promise<Record<string, unknown>> {
   const entityKind = normalizeFeedFilter(args.entity_kind, ['character', 'corporation', 'alliance']);
   const entityId = normalizeInteger(args.entity_id);
@@ -122,7 +123,7 @@ async function getEntityRecentActivity(
   ], activity);
 
   const selected = mergeFeedSections(feeds, limit);
-  const detailed = await enrichFeedItems(db, selected.items.slice(0, detailLimit), chatId);
+  const detailed = await enrichFeedItems(db, selected.items.slice(0, detailLimit), ctx);
   const compacted = detailed.map(compactDetailedKillmail);
 
   return {
@@ -149,7 +150,7 @@ async function getEntityRecentActivity(
 async function getShipLossFits(
   db: Db,
   args: Record<string, unknown>,
-  chatId: number | null,
+  ctx: UserContext | number | null,
 ): Promise<Record<string, unknown>> {
   const shipTypeId = normalizeInteger(args.ship_type_id);
   if (shipTypeId === null) {
@@ -173,12 +174,12 @@ async function getShipLossFits(
   );
 
   const lossSelected = lossesFeed.items.slice(0, limit);
-  const detailedLosses = await enrichFeedItems(db, lossSelected.slice(0, detailLimit), chatId);
+  const detailedLosses = await enrichFeedItems(db, lossSelected.slice(0, detailLimit), ctx);
   const matchingVictims = detailedLosses.filter((killmail) =>
     readNumber(asRecord(killmail.victim), 'ship_type_id') === shipTypeId
   );
   const killSelected = killsFeed.ok ? killsFeed.items.slice(0, limit) : [];
-  const detailedKills = await enrichFeedItems(db, killSelected.slice(0, detailLimit), chatId);
+  const detailedKills = await enrichFeedItems(db, killSelected.slice(0, detailLimit), ctx);
   const matchingAttackers = detailedKills.filter((killmail) => killmailHasShipTypeAttacker(killmail, shipTypeId));
   const sampleShipName = readFieldString(asRecord(asRecord(matchingVictims[0]?.victim).ship), 'name');
     const shipLinks = sampleShipName ? buildTypeLinkMeta(shipTypeId, sampleShipName) : null;
@@ -262,11 +263,12 @@ async function fetchZkillFeed(
 async function enrichFeedItems(
   db: Db,
   items: ZkillFeedItem[],
-  chatId: number | null,
+  ctx: UserContext | number | null,
 ): Promise<Array<Record<string, unknown>>> {
   if (items.length === 0) return [];
   const deps = buildKillmailDeps(db);
-  const linkedCharacterId = getLinkedCharacter(db, chatId ?? undefined)?.characterId ?? null;
+  const normalizedCtx: UserContext = !ctx ? { userId: 0 } : typeof ctx === 'number' ? { userId: 0, chatId: ctx } : ctx;
+  const linkedCharacterId = getLinkedCharacter(db, normalizedCtx)?.characterId ?? null;
 
   return await mapWithConcurrency(items, 4, async (item) => {
     const hash = item.zkb?.hash;

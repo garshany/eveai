@@ -2,6 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 
+process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+process.env.TELEGRAM_BOT_TOKEN = 'test';
+process.env.OPENAI_API_KEY = 'test';
+process.env.EVE_CLIENT_ID = 'test';
+process.env.EVE_CLIENT_SECRET = 'test';
+process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+
 const callEsiOperationMock = vi.fn();
 const getLinkedCharacterMock = vi.fn();
 
@@ -204,7 +212,7 @@ describe('zKillboard tools', () => {
     expect((result.summary as { killmail_count: number }).killmail_count).toBe(2);
     expect(((result.summary as { top_systems: Array<{ name: string }> }).top_systems)[0]?.name).toBe('Jita');
     expect((result.killmails as Array<Record<string, unknown>>)).toHaveLength(2);
-    expect((((result.killmails as Array<Record<string, any>>)[0]).victim.ship.name)).toBe('Gila');
+    expect((((result.killmails as Array<Record<string, any>>)[0]).victim.ship)).toBe('Gila');
   });
 
   it('builds observed fit meta from ship loss killmails', async () => {

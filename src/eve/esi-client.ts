@@ -2,6 +2,8 @@ import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { getAccessToken, getLinkedCharacter } from './sso.js';
 import { loadEsiCatalog, type EsiOperationMeta } from './esi-catalog.js';
+import { hasFreshCapabilitySnapshot } from './capabilities.js';
+import type { UserContext } from '../auth/user-resolver.js';
 
 export type EsiCallResult<T = unknown> =
   | {
@@ -27,15 +29,16 @@ export async function callEsiOperation<T = unknown>(
   db: Db,
   operationName: string,
   args: Record<string, unknown>,
-  chatId?: number | null,
+  ctx?: UserContext | number | null,
 ): Promise<EsiCallResult<T>> {
+  const userCtx = normalizeCtx(ctx);
   const catalog = await loadEsiCatalog();
   const operation = catalog.get(operationName);
   if (!operation) {
     return { ok: false, status: 404, error: `Unknown ESI operation: ${operationName}` };
   }
 
-  const access = await resolveAccess(db, operation, chatId ?? undefined);
+  const access = await resolveAccess(db, operation, userCtx);
   if (!access.ok) {
     return { ok: false, status: access.status, error: access.error };
   }
@@ -66,34 +69,48 @@ export async function callEsiOperation<T = unknown>(
 export async function canCallEsiOperation(
   db: Db,
   operationName: string,
-  chatId?: number | null,
+  ctx?: UserContext | number | null,
 ): Promise<boolean> {
+  const userCtx = normalizeCtx(ctx);
   const catalog = await loadEsiCatalog();
   const operation = catalog.get(operationName);
   if (!operation) return false;
-  const access = await resolveAccess(db, operation, chatId ?? undefined);
+  const access = await resolveAccess(db, operation, userCtx);
   return access.ok;
+}
+
+function normalizeCtx(ctx?: UserContext | number | null): UserContext {
+  if (!ctx) return { userId: 0 };
+  if (typeof ctx === 'number') return { userId: 0, chatId: ctx };
+  return ctx;
 }
 
 async function resolveAccess(
   db: Db,
   operation: EsiOperationMeta,
-  chatId?: number,
+  ctx: UserContext,
 ): Promise<{ ok: true; token: string | null; characterId: number | null } | { ok: false; status: number; error: string }> {
   if (!operation.requiresAuth) {
-    return { ok: true, token: null, characterId: getLinkedCharacter(db, chatId)?.characterId ?? null };
+    return { ok: true, token: null, characterId: getLinkedCharacter(db, ctx)?.characterId ?? null };
   }
 
-  const linked = getLinkedCharacter(db, chatId);
+  const linked = getLinkedCharacter(db, ctx);
   if (!linked) {
     return { ok: false, status: 401, error: 'No linked EVE character.' };
+  }
+  if (!hasFreshCapabilitySnapshot(ctx, linked.characterId)) {
+    return {
+      ok: false,
+      status: 428,
+      error: 'Private ESI access requires a fresh get_eve_capabilities check first.',
+    };
   }
   const missing = operation.requiredScopes.filter((scope) => !linked.scopes.includes(scope));
   if (missing.length > 0) {
     return { ok: false, status: 403, error: `Missing scopes: ${missing.join(', ')}` };
   }
 
-  const token = await getAccessToken(db, chatId);
+  const token = await getAccessToken(db, ctx);
   if (!token) {
     return { ok: false, status: 401, error: 'No valid EVE access token.' };
   }
@@ -181,7 +198,7 @@ async function fetchEsi<T>(
 ): Promise<EsiCallResult<T>> {
   const headers = new Headers({
     Accept: 'application/json',
-    'User-Agent': 'eve-agent/0.1.0',
+    'User-Agent': 'eve-agent/0.2.0 (Telegram bot, github.com/user/eveai)',
     'X-Compatibility-Date': config.esi.compatibilityDate,
   });
   if (token) headers.set('Authorization', `Bearer ${token}`);

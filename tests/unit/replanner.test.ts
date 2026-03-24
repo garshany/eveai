@@ -7,7 +7,7 @@ vi.mock('../../src/config.js', () => ({
     telegram: { botToken: 'test', allowedUserId: 1 },
     openai: { apiKey: 'test', model: 'test' },
     eve: { clientId: 'test', clientSecret: 'test', callbackUrl: 'http://localhost:3000/auth/eve/callback' },
-    server: { port: 3000, host: '0.0.0.0' },
+    server: { port: 3000, host: '127.0.0.1' },
     db: { path: ':memory:' },
     sde: { dataDir: './data/sde' },
     security: { allowWebAuth: true },

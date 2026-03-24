@@ -1,5 +1,7 @@
 import type { Db } from '../db/sqlite.js';
+import { config } from '../config.js';
 import { buildDeveloperPrompt } from './prompts.js';
+import { getEveCapabilities } from '../eve/capabilities.js';
 import {
   buildNativeAgentTools,
   executeSdeSql,
@@ -7,40 +9,265 @@ import {
   getToolPolicy,
   isSdeSqlTool,
   isZkillToolName,
+  isBatchMarketTool,
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
+import { updatePlan } from './planner.js';
 import {
   buildFunctionCallOutputs,
   createNativeResponse,
   extractFunctionCalls,
   toNativeMessage,
+  toNativeAssistantMessage,
   type NativeInputItem,
 } from './native-responses.js';
 import { callEsiOperation } from '../eve/esi-client.js';
-import { readUserProfile } from '../eve/user-profile.js';
-import { webSearch, type WebSearchRequest } from './web-search.js';
+import { loadEsiCatalog } from '../eve/esi-catalog.js';
+import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
 import { getThreadSummary } from './compact.js';
 import { executeZkillQuery } from '../eve/zkill-query.js';
 import { getLinkedCharacter } from '../eve/sso.js';
+import type { UserContext } from '../auth/user-resolver.js';
 
-const MAX_HISTORY_MESSAGES = 8;
-const MAX_HISTORY_CHARS = 3500;
-const MAX_TOOL_ITERATIONS = 32;
+const MAX_TOOL_ITERATIONS = 16;
+const MAX_WEB_SEARCHES_PER_TURN = 2;
+const MAX_ZKILL_CALLS_PER_TURN = 4;
+const MAX_CONSECUTIVE_SAME_TOOL = 3;
+const MAX_CONTEXT_MESSAGES = 10;
+const MAX_CONTEXT_CHARS = 15000;
+
+/**
+ * Default whitelist of fields to keep per ESI operation.
+ * If an operation is listed here, only these fields survive.
+ * Unlisted operations pass through unfiltered.
+ */
+export const ESI_FIELD_WHITELIST: Record<string, string[]> = {
+  // Market
+  get_markets_region_id_orders: ['price', 'volume_remain', 'is_buy_order', 'location_id', 'system_id'],
+  get_markets_structures_structure_id: ['price', 'volume_remain', 'is_buy_order', 'location_id'],
+
+  // Character
+  get_characters_character_id_assets: ['type_id', 'location_id', 'quantity', 'item_id', 'is_singleton'],
+  get_characters_character_id_orders: ['type_id', 'price', 'volume_remain', 'is_buy_order', 'location_id', 'region_id', 'volume_total'],
+  get_characters_character_id_orders_history: ['type_id', 'price', 'volume_remain', 'is_buy_order', 'location_id', 'region_id', 'state'],
+  get_characters_character_id_blueprints: ['type_id', 'quantity', 'material_efficiency', 'time_efficiency', 'runs', 'location_id', 'item_id'],
+  get_characters_character_id_industry_jobs: ['activity_id', 'blueprint_type_id', 'product_type_id', 'status', 'start_date', 'end_date', 'runs', 'output_location_id'],
+  get_characters_character_id_wallet_journal: ['date', 'ref_type', 'amount', 'balance', 'description', 'first_party_id', 'second_party_id'],
+  get_characters_character_id_wallet_transactions: ['date', 'type_id', 'quantity', 'unit_price', 'is_buy', 'location_id', 'client_id'],
+  get_characters_character_id_contracts: ['contract_id', 'type', 'status', 'price', 'date_issued', 'date_expired', 'issuer_id', 'start_location_id', 'end_location_id', 'title', 'volume'],
+  get_characters_character_id_skillqueue: ['skill_id', 'finished_level', 'finish_date', 'queue_position'],
+
+  // Corporation
+  get_corporations_corporation_id_assets: ['type_id', 'location_id', 'quantity', 'item_id', 'is_singleton'],
+  get_corporations_corporation_id_orders: ['type_id', 'price', 'volume_remain', 'is_buy_order', 'location_id', 'region_id'],
+  get_corporations_corporation_id_orders_history: ['type_id', 'price', 'volume_remain', 'is_buy_order', 'location_id', 'region_id', 'state'],
+  get_corporations_corporation_id_blueprints: ['type_id', 'quantity', 'material_efficiency', 'time_efficiency', 'runs', 'location_id'],
+  get_corporations_corporation_id_industry_jobs: ['activity_id', 'blueprint_type_id', 'product_type_id', 'status', 'start_date', 'end_date', 'runs'],
+  get_corporations_corporation_id_contracts: ['contract_id', 'type', 'status', 'price', 'date_issued', 'date_expired', 'issuer_id', 'start_location_id', 'end_location_id', 'title', 'volume'],
+  get_corporations_corporation_id_wallets_division_journal: ['date', 'ref_type', 'amount', 'balance', 'description', 'first_party_id', 'second_party_id'],
+  get_corporations_corporation_id_wallets_division_transactions: ['date', 'type_id', 'quantity', 'unit_price', 'is_buy', 'location_id', 'client_id'],
+  get_corporations_corporation_id_structures: ['structure_id', 'name', 'system_id', 'type_id', 'state', 'fuel_expires', 'services'],
+  get_corporations_corporation_id_containers_logs: ['action', 'character_id', 'container_type_id', 'location_id', 'logged_at', 'quantity', 'type_id'],
+
+  // Public contracts
+  get_contracts_public_region_id: ['contract_id', 'type', 'price', 'date_expired', 'date_issued', 'start_location_id', 'end_location_id', 'title', 'volume'],
+};
+
+/**
+ * Filter ESI response data to only keep relevant fields.
+ * - If `requestedFields` is provided (from tool args.fields), use those.
+ * - Otherwise fall back to ESI_FIELD_WHITELIST default for the operation.
+ * - If neither exists, return data as-is.
+ */
+export function filterEsiFields(
+  operationName: string,
+  data: unknown,
+  requestedFields?: string[] | null,
+): unknown {
+  const fields = requestedFields ?? ESI_FIELD_WHITELIST[operationName] ?? null;
+  if (!fields) return data;
+
+  const fieldSet = new Set(fields);
+
+  if (Array.isArray(data)) {
+    return data.map((item) => pickFields(item, fieldSet));
+  }
+
+  return pickFields(data, fieldSet);
+}
+
+export async function validateEsiFields(
+  operationName: string,
+  rawFields: unknown,
+): Promise<{ ok: true; fields: string[] | null } | { ok: false; error: string }> {
+  if (rawFields === undefined || rawFields === null) {
+    return { ok: true, fields: null };
+  }
+  if (!Array.isArray(rawFields)) {
+    return { ok: false, error: 'Invalid fields: expected an array of field names or null.' };
+  }
+  if (rawFields.some((field) => typeof field !== 'string')) {
+    return { ok: false, error: 'Invalid fields: every entry must be a string.' };
+  }
+
+  const fields = [...new Set(rawFields as string[])];
+  if (fields.length === 0) {
+    return { ok: false, error: 'Invalid fields: expected at least one field name.' };
+  }
+
+  const catalog = await loadEsiCatalog();
+  const operation = catalog.get(operationName);
+  const allowedFields = operation?.responseFields ?? null;
+  if (!allowedFields || allowedFields.length === 0) {
+    return { ok: false, error: `Operation ${operationName} does not support field projection.` };
+  }
+
+  const allowedFieldSet = new Set(allowedFields);
+  const invalidFields = fields.filter((field) => !allowedFieldSet.has(field));
+  if (invalidFields.length > 0) {
+    return {
+      ok: false,
+      error: `Invalid fields for ${operationName}: ${invalidFields.join(', ')}. Allowed fields: ${allowedFields.join(', ')}`,
+    };
+  }
+
+  return { ok: true, fields };
+}
+
+function pickFields(item: unknown, fields: Set<string>): unknown {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+  const record = item as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  for (const key of fields) {
+    if (key in record) {
+      result[key] = record[key];
+    }
+  }
+  return result;
+}
+
+/**
+ * Auto-strip response fields whose value is constant across all rows
+ * AND matches a request parameter value. These are pure waste —
+ * the caller already knows the value from the request args.
+ */
+async function executeBatchMarketPrices(
+  db: Db,
+  args: Record<string, unknown>,
+  ctx: UserContext,
+): Promise<unknown> {
+  const regionId = Number(args.region_id ?? 10000002);
+  const typeIds = Array.isArray(args.type_ids)
+    ? args.type_ids.filter((v): v is number => typeof v === 'number')
+    : [];
+
+  if (typeIds.length === 0) {
+    return { ok: false, error: 'type_ids must be a non-empty array of integers' };
+  }
+  if (typeIds.length > 30) {
+    return { ok: false, error: 'Maximum 30 type_ids per batch' };
+  }
+
+  console.log('[batch_market] region=%d types=%d ids=%j', regionId, typeIds.length, typeIds);
+
+  type OrderData = { price: number; volume_remain: number; is_buy_order: boolean };
+
+  const results = await Promise.all(
+    typeIds.map(async (typeId) => {
+      const esiResult = await callEsiOperation<OrderData[]>(
+        db,
+        'get_markets_region_id_orders',
+        { region_id: regionId, order_type: 'all', type_id: typeId },
+        ctx,
+      );
+      if (!esiResult.ok || !Array.isArray(esiResult.data)) {
+        return { type_id: typeId, error: !esiResult.ok ? esiResult.error : 'failed' };
+      }
+      const orders = esiResult.data;
+      const sell = orders.filter((o) => !o.is_buy_order);
+      const buy = orders.filter((o) => o.is_buy_order);
+      const minSell = sell.length > 0 ? Math.min(...sell.map((o) => o.price)) : null;
+      const maxBuy = buy.length > 0 ? Math.max(...buy.map((o) => o.price)) : null;
+      const sellVolume = sell.reduce((s, o) => s + o.volume_remain, 0);
+      const buyVolume = buy.reduce((s, o) => s + o.volume_remain, 0);
+      return {
+        type_id: typeId,
+        sell: minSell != null ? { min_price: minSell, volume: sellVolume, orders: sell.length } : null,
+        buy: maxBuy != null ? { max_price: maxBuy, volume: buyVolume, orders: buy.length } : null,
+      };
+    }),
+  );
+
+  const totalChars = JSON.stringify(results).length;
+  console.log('[batch_market] done items=%d result=%d chars', results.length, totalChars);
+
+  return { ok: true, prices: results };
+}
+
+function stripRedundantFields(data: unknown, requestArgs: Record<string, unknown>): unknown {
+  if (!Array.isArray(data) || data.length === 0) return data;
+  const first = data[0];
+  if (!first || typeof first !== 'object') return data;
+
+  // Find fields present in response that match a request arg value
+  const redundant: string[] = [];
+  for (const [key, argVal] of Object.entries(requestArgs)) {
+    if (argVal == null || typeof argVal === 'object') continue;
+    const responseKey = key.replace(/_id$/, '') === key ? key : key; // exact match
+    if (!(responseKey in (first as Record<string, unknown>))) continue;
+    // Check if value is constant across all rows and matches arg
+    const allMatch = data.every((row) => {
+      if (!row || typeof row !== 'object') return false;
+      return (row as Record<string, unknown>)[responseKey] === argVal;
+    });
+    if (allMatch) redundant.push(responseKey);
+  }
+
+  if (redundant.length === 0) return data;
+  console.log('[esi]   auto-stripped redundant fields=%j (values known from request args)', redundant);
+
+  const dropSet = new Set(redundant);
+  return data.map((row) => {
+    if (!row || typeof row !== 'object') return row;
+    const record = row as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(record)) {
+      if (!dropSet.has(k)) result[k] = v;
+    }
+    return result;
+  });
+}
 
 export async function handleAgentMessage(
   db: Db,
   threadId: string,
-  chatId: number,
+  ctx: UserContext,
   userText: string,
 ): Promise<string> {
-  ensureThreadExists(db, threadId, chatId);
-  const summary = getThreadSummary(db, threadId);
-  const userProfile = readUserProfile(db, chatId);
-  const linked = getLinkedCharacter(db, chatId);
+  ensureThreadOwnership(db, threadId, ctx);
 
-  // Fetch live location + ship at request time so it's in the prompt
-  const liveContext = linked ? await fetchLiveContext(db, linked.characterId, chatId) : null;
+  const linked = getLinkedCharacter(db, ctx);
+  let userProfile = readUserProfile(db, ctx);
+
+  // Guard: if character is linked but profile file is missing, try to refresh it
+  if (linked && !userProfile) {
+    const PROFILE_GUARD_TIMEOUT_MS = 10_000;
+    try {
+      const result = await Promise.race([
+        refreshUserProfile(db, ctx),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), PROFILE_GUARD_TIMEOUT_MS)),
+      ]);
+      if (result && result.ok) {
+        userProfile = readUserProfile(db, ctx);
+      }
+    } catch {
+      // proceed without profile
+    }
+  }
+
+  const liveContext = linked ? await fetchLiveContext(db, linked.characterId, ctx) : null;
+  const summary = getThreadSummary(db, threadId);
 
   const developerPrompt = buildDeveloperPrompt(
     {
@@ -54,17 +281,18 @@ export async function handleAgentMessage(
     liveContext,
   );
 
-  return await runNativeAgentLoop(db, threadId, chatId, userText, developerPrompt);
+  return await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt);
 }
 
-async function fetchLiveContext(db: Db, characterId: number, chatId: number): Promise<string | null> {
+async function fetchLiveContext(db: Db, characterId: number, ctx: UserContext): Promise<string | null> {
   try {
+    await getEveCapabilities(db, 'executor_live_context', ctx);
     const [locationResult, shipResult] = await Promise.all([
       callEsiOperation<{ solar_system_id: number; station_id?: number; structure_id?: number }>(
-        db, 'get_characters_character_id_location', { character_id: characterId }, chatId,
+        db, 'get_characters_character_id_location', { character_id: characterId }, ctx,
       ),
       callEsiOperation<{ ship_type_id: number; ship_item_id: number; ship_name: string }>(
-        db, 'get_characters_character_id_ship', { character_id: characterId }, chatId,
+        db, 'get_characters_character_id_ship', { character_id: characterId }, ctx,
       ),
     ]);
 
@@ -96,19 +324,35 @@ async function fetchLiveContext(db: Db, characterId: number, chatId: number): Pr
 async function runNativeAgentLoop(
   db: Db,
   threadId: string,
-  chatId: number,
+  ctx: UserContext,
   goal: string,
   developerPrompt: string,
 ): Promise<string> {
-  const historyRows = db.prepare(
-    "SELECT content FROM messages WHERE thread_id = ? AND role = 'user' ORDER BY created_at ASC"
-  ).all(threadId) as Array<{ content: string }>;
+  const chatId = ctx.chatId ?? ctx.userId;
   const requestId = createRequestId();
   const tools = await buildNativeAgentTools();
+  const webSearchState = createWebSearchState();
 
-  let pendingItems: NativeInputItem[] = selectRecentHistory(historyRows)
-    .map((row) => toNativeMessage(row.content));
+  // Always build context from DB — no cross-request previous_response_id
+  // Current user message is already in DB (inserted by handler), so no need to add goal separately
+  const historyItems = buildSmartContext(db, threadId);
+  let pendingItems: NativeInputItem[] = historyItems;
   let previousResponseId: string | null = null;
+  console.log('[executor] context: %d history items', historyItems.length);
+
+  // Build context management for native compaction
+  const contextManagement = config.openai.compactThreshold > 0
+    ? [{ type: 'compaction', compact_threshold: config.openai.compactThreshold }]
+    : undefined;
+  let emptyResponseRetries = 0;
+  let lastToolName: string | null = null;
+  let consecutiveSameToolCount = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCachedTokens = 0;
+  let totalReasoningTokens = 0;
+
+  console.log('[executor] === NEW REQUEST chat=%d thread=%s goal="%s" ===', chatId, threadId.slice(0, 12), goal.slice(0, 80));
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
     const response = await createNativeResponse({
@@ -117,11 +361,26 @@ async function runNativeAgentLoop(
       previousResponseId,
       tools,
       parallelToolCalls: true,
+      truncation: 'auto',
+      contextManagement,
     });
 
+    // Track token usage
+    if (response.usage) {
+      totalInputTokens += response.usage.input;
+      totalOutputTokens += response.usage.output;
+      totalCachedTokens += response.usage.cached;
+      totalReasoningTokens += response.usage.reasoning;
+      console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d reasoning=%d',
+        iteration, response.usage.input, response.usage.output, response.usage.cached, response.usage.reasoning);
+    }
+
     if (response.error) {
-      const message = response.error.message;
+      console.error('[executor] model error:', response.error.message);
+      const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
       storeAssistantMessage(db, threadId, message);
+      console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
+        totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
       return message;
     }
 
@@ -130,12 +389,40 @@ async function runNativeAgentLoop(
     }
 
     const toolCalls = extractFunctionCalls(response.output);
+
+    // Anti-loop: detect consecutive same-tool calls
+    if (toolCalls.length === 1) {
+      const currentTool = toolCalls[0].name;
+      if (currentTool === lastToolName) {
+        consecutiveSameToolCount += 1;
+      } else {
+        consecutiveSameToolCount = 1;
+        lastToolName = currentTool;
+      }
+    } else if (toolCalls.length > 1) {
+      consecutiveSameToolCount = 0;
+      lastToolName = null;
+    }
+
     if (toolCalls.length === 0) {
       if (response.outputText.trim()) {
         storeAssistantMessage(db, threadId, response.outputText);
+        console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
+          iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, response.outputText.length);
         return response.outputText;
       }
       if (response.toolSearchPaths.length > 0 && response.id) {
+        previousResponseId = response.id;
+        pendingItems = [];
+        continue;
+      }
+      const outputTypes = response.output.map((item) => String(item.type ?? 'unknown'));
+      const eventTypes = [...new Set(response.rawEvents.map((evt) => evt.event))];
+      console.log('[executor] empty response details id=%s outputTypes=%j events=%j',
+        response.id ?? 'none', outputTypes, eventTypes);
+      if (response.id && emptyResponseRetries < 2) {
+        emptyResponseRetries += 1;
+        console.log('[executor] empty response, retrying (%d/2) prevId=%s', emptyResponseRetries, response.id);
         previousResponseId = response.id;
         pendingItems = [];
         continue;
@@ -144,14 +431,15 @@ async function runNativeAgentLoop(
       storeAssistantMessage(db, threadId, fallback);
       return fallback;
     }
+    emptyResponseRetries = 0;
 
     const policies = await Promise.all(toolCalls.map((toolCall) => getToolPolicy(toolCall.name)));
     const argsList = toolCalls.map((toolCall) => safeParseArguments(toolCall.argumentsText));
     const results = policies.every((policy) => policy === 'read')
       ? await Promise.all(toolCalls.map((toolCall, index) =>
-          executeToolCall(db, requestId, goal, chatId, toolCall.name, argsList[index] ?? {}),
+          executeToolCall(db, requestId, goal, ctx, toolCall.name, argsList[index] ?? {}, webSearchState),
         ))
-      : await executeToolCallsSequentially(db, requestId, goal, chatId, toolCalls, argsList);
+      : await executeToolCallsSequentially(db, requestId, goal, ctx, toolCalls, argsList, webSearchState);
 
     const outputs: Array<{ callId: string; output: string }> = [];
     for (let index = 0; index < toolCalls.length; index += 1) {
@@ -167,9 +455,13 @@ async function runNativeAgentLoop(
           result: compactToolResult(result),
         }),
       );
+      const rawOutput = JSON.stringify(result);
+      const truncatedOutput = truncateToolOutput(rawOutput);
+      console.log('[tool] %s args=%s raw=%d chars sent=%d chars',
+        toolCall.name, JSON.stringify(args).slice(0, 120), rawOutput.length, truncatedOutput.length);
       outputs.push({
         callId: toolCall.callId,
-        output: truncateToolOutput(JSON.stringify(result)),
+        output: truncatedOutput,
       });
     }
 
@@ -181,10 +473,23 @@ async function runNativeAgentLoop(
 
     previousResponseId = response.id;
     pendingItems = buildFunctionCallOutputs(outputs);
+
+    // Anti-loop: if same tool called N+ times in a row, inject a nudge
+    if (consecutiveSameToolCount >= MAX_CONSECUTIVE_SAME_TOOL) {
+      console.log('[executor] anti-loop: %s called %d times consecutively, injecting nudge', lastToolName, consecutiveSameToolCount);
+      pendingItems.push({
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: '[system] Ты вызывал один и тот же tool несколько раз подряд. Переходи к следующему шагу: используй собранные данные для ответа или вызови другой tool (get_markets_region_id_orders, plan_route, и т.д.).' }],
+      } as NativeInputItem);
+      consecutiveSameToolCount = 0;
+    }
   }
 
   const timeout = 'Остановился после слишком большого числа tool iterations.';
   storeAssistantMessage(db, threadId, timeout);
+  console.log('[executor] === DONE (timeout) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
+    MAX_TOOL_ITERATIONS, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
   return timeout;
 }
 
@@ -192,13 +497,16 @@ async function executeToolCallsSequentially(
   db: Db,
   requestId: string,
   goal: string,
-  chatId: number,
+  ctx: UserContext,
   toolCalls: Array<{ callId: string; name: string; argumentsText: string }>,
   argsList: Array<Record<string, unknown>>,
+  webSearchState: WebSearchState,
 ): Promise<unknown[]> {
   const results: unknown[] = [];
   for (let index = 0; index < toolCalls.length; index += 1) {
-    results.push(await executeToolCall(db, requestId, goal, chatId, toolCalls[index].name, argsList[index] ?? {}));
+    results.push(await executeToolCall(
+      db, requestId, goal, ctx, toolCalls[index].name, argsList[index] ?? {}, webSearchState,
+    ));
   }
   return results;
 }
@@ -207,21 +515,44 @@ async function executeToolCall(
   db: Db,
   requestId: string,
   goal: string,
-  chatId: number,
+  ctx: UserContext,
   name: string,
   args: Record<string, unknown>,
+  webSearchState: WebSearchState,
 ): Promise<unknown> {
   if (name === 'web_search') {
-    const req: WebSearchRequest = {
-      query: String(args.query ?? ''),
-      source: normalizeWebSource(args.source),
-      limit: normalizeLimit(args.limit, 5, 1, 10),
-    };
-    return await webSearch(req);
+    const query = String(args.query ?? '');
+    const guard = registerWebSearch(webSearchState, query);
+    if (!guard.allowed) {
+      console.log('[web_search] blocked reason=%s query=%s', guard.reason, query);
+      return {
+        ok: false,
+        results: [],
+        error: guard.reason,
+        blocked: true,
+      };
+    }
+    console.log('[web_search] query=%s', query);
+    const result = await executeWebSearch(query);
+    console.log('[web_search] ok=%s results=%d', result.ok, result.results.length);
+    return result;
+  }
+
+  if (name === 'get_eve_capabilities') {
+    return await getEveCapabilities(db, String(args.intent ?? goal), ctx);
+  }
+
+  if (name === 'update_plan') {
+    const steps = normalizePlanSteps(args.steps);
+    return updatePlan(db, requestId, goal, steps);
   }
 
   if (isSdeSqlTool(name)) {
     return executeSdeSql(db, String(args.sql ?? ''));
+  }
+
+  if (isBatchMarketTool(name)) {
+    return await executeBatchMarketPrices(db, args, ctx);
   }
 
   if (name === 'plan_route') {
@@ -232,26 +563,259 @@ async function executeToolCall(
       avoid: Array.isArray(args.avoid) ? args.avoid.filter((v): v is number => typeof v === 'number') : [],
       prefer: args.prefer === 'shortest' || args.prefer === 'insecure' ? args.prefer : 'secure',
     };
-    const routeResult = await planRoute(db, routeArgs, chatId);
-    const totalRecentKills = routeResult.routes.reduce((s, r) =>
-      s + r.hotspots.reduce((hs, h) => hs + (h.recent_kills?.length ?? 0), 0), 0);
-    console.log('[plan_route] origin=%s dest=%s routes=%d autopilot=%s recent_kills=%d error=%s',
+    const routeResult = await planRoute(db, routeArgs, ctx);
+    console.log('[plan_route] origin=%s dest=%s routes=%d autopilot=%s error=%s',
       routeResult.origin?.name ?? '?', routeResult.destination?.name ?? '?',
-      routeResult.routes.length, routeResult.autopilot_set, totalRecentKills, routeResult.error ?? 'none');
+      routeResult.routes.length, routeResult.autopilot_set, routeResult.error ?? 'none');
     for (const r of routeResult.routes) {
-      console.log('[plan_route]   %s: %d jumps, danger=%d, hotspots=%d, ship_kills=%d, pod_kills=%d',
-        r.flag, r.jumps, r.danger_score, r.hotspots.length, r.total_ship_kills, r.total_pod_kills);
+      console.log('[plan_route]   %s: %d jumps, kills_1h=%d, danger_systems=%d, safe=%d, value=%dM',
+        r.flag, r.jumps, r.total_kills_1h, r.danger_systems.length, r.safe_count, r.total_value_m);
     }
-    return routeResult;
+    if (!routeResult.ok) {
+      return { ok: false, error: routeResult.error };
+    }
+    return {
+      ok: true,
+      origin: routeResult.origin,
+      destination: routeResult.destination,
+      autopilot_set: routeResult.autopilot_set,
+      autopilot_mode: routeResult.autopilot_mode,
+      formatted_summary: routeResult.formatted_summary,
+      routes: routeResult.routes.map((route) => ({
+        flag: route.flag,
+        jumps: route.jumps,
+        min_sec: route.min_sec,
+        safe_count: route.safe_count,
+        total_kills_1h: route.total_kills_1h,
+        total_value_m: route.total_value_m,
+        systems: route.systems,
+        danger_systems: route.danger_systems.map((danger) => ({
+          name: danger.name,
+          sec: danger.sec,
+          kills_1h: danger.kills_1h,
+          pvp: danger.pvp,
+          npc: danger.npc,
+          total_value_m: danger.total_value_m,
+        })),
+      })),
+    };
   }
 
   if (isZkillToolName(name)) {
+    webSearchState.zkillCallCount += 1;
+    if (webSearchState.zkillCallCount > MAX_ZKILL_CALLS_PER_TURN) {
+      console.log('[zkill] blocked: limit %d reached (call #%d)', MAX_ZKILL_CALLS_PER_TURN, webSearchState.zkillCallCount);
+      return { ok: false, error: `Лимит zkill (${MAX_ZKILL_CALLS_PER_TURN}) на один ответ исчерпан. Анализируй уже собранные данные.`, blocked: true };
+    }
     const path = String(args.path ?? '');
     const detailLimit = typeof args.detail_limit === 'number' ? args.detail_limit : 3;
-    return await executeZkillQuery(db, path, detailLimit, chatId);
+    const result = await executeZkillQuery(db, path, detailLimit, ctx);
+    const zkillFields = Array.isArray(args.fields) ? args.fields as string[] : null;
+    if (zkillFields && zkillFields.length > 0 && result.detailed.length > 0) {
+      const fieldSet = new Set(zkillFields);
+      result.detailed = result.detailed.map((kill) => {
+        const filtered: Record<string, unknown> = {};
+        for (const key of fieldSet) {
+          if (key in kill) filtered[key] = (kill as Record<string, unknown>)[key];
+        }
+        return filtered;
+      }) as typeof result.detailed;
+      console.log('[zkill] field projection: %d/%d fields kept', zkillFields.length, 16);
+    }
+    return result;
   }
 
-  return await callEsiOperation(db, name, args, chatId);
+  const fieldValidation = await validateEsiFields(name, args.fields);
+  if (!fieldValidation.ok) {
+    return { ok: false, status: 400, error: fieldValidation.error };
+  }
+
+  const requestedFields = fieldValidation.fields;
+  const esiArgs = Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'fields'));
+
+  const esiResult = await callEsiOperation(db, name, esiArgs, ctx);
+
+  // Filter noisy fields from ESI responses
+  if (esiResult.ok && esiResult.data != null) {
+    const rawData = esiResult.data;
+    esiResult.data = filterEsiFields(name, esiResult.data, requestedFields);
+
+    // Auto-strip fields whose value is constant and already known from request args
+    esiResult.data = stripRedundantFields(esiResult.data, esiArgs);
+
+    // Log field filtering details
+    const whitelistFields = ESI_FIELD_WHITELIST[name] ?? null;
+    const rawSample = Array.isArray(rawData) ? rawData[0] : rawData;
+    const finalSample = Array.isArray(esiResult.data) ? (esiResult.data as unknown[])[0] : esiResult.data;
+    const rawKeys = rawSample && typeof rawSample === 'object' ? Object.keys(rawSample as Record<string, unknown>) : [];
+    const keptKeys = finalSample && typeof finalSample === 'object' ? Object.keys(finalSample as Record<string, unknown>) : [];
+    const droppedKeys = rawKeys.filter((k) => !keptKeys.includes(k));
+    const rowCount = Array.isArray(rawData) ? rawData.length : 1;
+    const rawChars = JSON.stringify(rawData).length;
+    const finalChars = JSON.stringify(esiResult.data).length;
+    const savedPct = rawChars > 0 ? Math.round((1 - finalChars / rawChars) * 100) : 0;
+    console.log('[esi] %s rows=%d status=%s cached=%s', name, rowCount, esiResult.status, esiResult.cached ?? false);
+    console.log('[esi]   fields_requested=%j whitelist=%j', requestedFields, whitelistFields);
+    console.log('[esi]   raw_fields=%j', rawKeys);
+    console.log('[esi]   final=%j dropped=%j', keptKeys, droppedKeys);
+    console.log('[esi]   raw=%d chars final=%d chars saved=%d%%', rawChars, finalChars, savedPct);
+  } else {
+    console.log('[esi] %s status=%s ok=%s error=%s',
+      name, esiResult.status ?? '?', esiResult.ok, !esiResult.ok ? esiResult.error : 'none');
+  }
+
+  return esiResult;
+}
+
+const WEB_SEARCH_TIMEOUT_MS = 8000;
+
+export type WebSearchState = {
+  normalizedQueries: string[];
+  zkillCallCount: number;
+};
+
+export function createWebSearchState(): WebSearchState {
+  return { normalizedQueries: [], zkillCallCount: 0 };
+}
+
+export function registerWebSearch(
+  state: WebSearchState,
+  query: string,
+): { allowed: boolean; reason: string | null } {
+  const normalized = normalizeWebSearchQuery(query);
+  const prior = state.normalizedQueries;
+
+  if (prior.includes(normalized)) {
+    return {
+      allowed: false,
+      reason: 'Повторный web_search с тем же запросом запрещён. Используй уже найденные источники и сформируй ответ.',
+    };
+  }
+
+  const hasSimilarPrior = prior.some((entry) => areSimilarWebSearchQueries(entry, normalized));
+  if (prior.length >= MAX_WEB_SEARCHES_PER_TURN || (prior.length >= 2 && hasSimilarPrior)) {
+    return {
+      allowed: false,
+      reason: 'Достигнут лимит web_search на один ответ. После 1-2 поисков нужно ответить по найденным данным или явно указать, чего не хватило.',
+    };
+  }
+
+  state.normalizedQueries.push(normalized);
+  return { allowed: true, reason: null };
+}
+
+export function normalizeWebSearchQuery(query: string): string {
+  return query
+    .toLowerCase()
+    .replace(/site:[^\s]+/g, ' ')
+    .replace(/["'`()[\],.:;!?/+_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function areSimilarWebSearchQueries(left: string, right: string): boolean {
+  const leftTokens = new Set(left.split(' ').filter(Boolean));
+  const rightTokens = new Set(right.split(' ').filter(Boolean));
+  if (leftTokens.size === 0 || rightTokens.size === 0) return left === right;
+
+  let overlap = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) overlap += 1;
+  }
+  const similarity = overlap / Math.min(leftTokens.size, rightTokens.size);
+  return similarity >= 0.6;
+}
+
+async function executeWebSearch(query: string): Promise<{ ok: boolean; results: Array<{ title: string; url: string; snippet: string; source: string }>; error: string | null }> {
+  if (!query.trim()) return { ok: false, results: [], error: 'Empty query' };
+
+  const results: Array<{ title: string; url: string; snippet: string; source: string }> = [];
+  const errors: string[] = [];
+
+  const tavilyKey = config.tavily?.apiKey;
+  const searches = [
+    ...(tavilyKey ? [fetchTavily(query, tavilyKey)] : []),
+    fetchEveUni(query),
+  ];
+
+  const settled = await Promise.allSettled(searches);
+  for (const s of settled) {
+    if (s.status === 'fulfilled') results.push(...s.value);
+    else errors.push(String(s.reason));
+  }
+
+  // Dedupe by URL
+  const seen = new Set<string>();
+  const deduped = results.filter((r) => {
+    const key = r.url.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 8);
+
+  return { ok: deduped.length > 0, results: deduped, error: errors.length > 0 ? errors.join('; ') : null };
+}
+
+async function fetchTavily(query: string, apiKey: string): Promise<Array<{ title: string; url: string; snippet: string; source: string }>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WEB_SEARCH_TIMEOUT_MS);
+  try {
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query,
+        topic: 'general',
+        search_depth: 'basic',
+        max_results: 5,
+        include_answer: false,
+        include_raw_content: false,
+        include_images: false,
+      }),
+    });
+    if (!res.ok) return [];
+    const data = await res.json() as { results?: Array<{ title?: string; url?: string; content?: string }> };
+    return (data?.results ?? [])
+      .filter((r) => r.title && r.url)
+      .map((r) => ({
+        title: r.title!,
+        url: r.url!,
+        snippet: (r.content ?? '').slice(0, 300),
+        source: 'Tavily',
+      }));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchEveUni(query: string): Promise<Array<{ title: string; url: string; snippet: string; source: string }>> {
+  const url = new URL('https://wiki.eveuniversity.org/api.php');
+  url.searchParams.set('action', 'query');
+  url.searchParams.set('list', 'search');
+  url.searchParams.set('format', 'json');
+  url.searchParams.set('utf8', '1');
+  url.searchParams.set('srlimit', '5');
+  url.searchParams.set('srsearch', query);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WEB_SEARCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url.toString(), { signal: controller.signal, headers: { 'User-Agent': 'eve-agent/0.1' } });
+    if (!res.ok) return [];
+    const data = await res.json() as { query?: { search?: Array<{ title?: string; snippet?: string }> } };
+    return (data?.query?.search ?? [])
+      .filter((i) => i.title)
+      .map((i) => ({
+        title: i.title!,
+        url: `https://wiki.eveuniversity.org/${encodeURIComponent(i.title!.replace(/ /g, '_'))}`,
+        snippet: (i.snippet ?? '').replace(/<[^>]*>/g, '').slice(0, 300),
+        source: 'EVE University Wiki',
+      }));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function safeParseArguments(raw: string): Record<string, unknown> {
@@ -266,33 +830,65 @@ function safeParseArguments(raw: string): Record<string, unknown> {
   return {};
 }
 
-function normalizeWebSource(value: unknown): WebSearchRequest['source'] {
-  return value === 'eve_uni' || value === 'esi_docs' || value === 'general' || value === 'openai'
-    ? value
-    : 'all';
+function normalizePlanSteps(rawSteps: unknown): Array<{
+  id: string;
+  title: string;
+  status: 'pending' | 'running' | 'done' | 'blocked' | 'failed';
+  depends_on: string[];
+  notes: string;
+}> {
+  if (!Array.isArray(rawSteps)) return [];
+
+  return rawSteps.flatMap((step, index) => {
+    if (!step || typeof step !== 'object') return [];
+    const record = step as Record<string, unknown>;
+    const id = typeof record.id === 'string' && record.id.trim() ? record.id.trim() : `step-${index + 1}`;
+    const title = typeof record.title === 'string' && record.title.trim() ? record.title.trim() : `Step ${index + 1}`;
+    const status = normalizePlanStepStatus(record.status);
+    const depends_on = Array.isArray(record.depends_on)
+      ? record.depends_on.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [];
+    const notes = typeof record.notes === 'string' ? record.notes : '';
+    return [{ id, title, status, depends_on, notes }];
+  });
 }
 
-function normalizeLimit(value: unknown, fallback: number, min: number, max: number): number {
-  const parsed = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(Math.max(parsed, min), max);
+function normalizePlanStepStatus(value: unknown): 'pending' | 'running' | 'done' | 'blocked' | 'failed' {
+  if (
+    value === 'pending'
+    || value === 'running'
+    || value === 'done'
+    || value === 'blocked'
+    || value === 'failed'
+  ) {
+    return value;
+  }
+  return 'pending';
 }
 
-function selectRecentHistory(rows: Array<{ content: string }>): Array<{ content: string }> {
-  const recent = rows.slice(-MAX_HISTORY_MESSAGES);
-  const selected: Array<{ content: string }> = [];
+function buildSmartContext(db: Db, threadId: string): NativeInputItem[] {
+  const rows = db.prepare(
+    "SELECT id, role, content FROM messages WHERE thread_id = ? AND role IN ('user','assistant') ORDER BY id DESC LIMIT ?",
+  ).all(threadId, MAX_CONTEXT_MESSAGES) as Array<{ id: number; role: string; content: string }>;
+
+  rows.reverse(); // chronological order
+
+  // Trim to char budget (drop oldest first)
+  const selected: Array<{ role: string; content: string }> = [];
   let totalChars = 0;
-
-  for (let index = recent.length - 1; index >= 0; index -= 1) {
-    const row = recent[index];
-    if (selected.length > 0 && totalChars + row.content.length > MAX_HISTORY_CHARS) {
-      break;
-    }
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i];
+    if (selected.length > 0 && totalChars + row.content.length > MAX_CONTEXT_CHARS) break;
     selected.push(row);
     totalChars += row.content.length;
   }
+  selected.reverse();
 
-  return selected.reverse();
+  return selected.map((row) =>
+    row.role === 'assistant'
+      ? toNativeAssistantMessage(row.content)
+      : toNativeMessage(row.content),
+  );
 }
 
 function compactToolResult(value: unknown): unknown {
@@ -324,36 +920,162 @@ function compactToolResult(value: unknown): unknown {
 }
 
 const MAX_TOOL_OUTPUT_CHARS = 12000;
+const SMART_AGGREGATE_THRESHOLD = 20;
 
+/**
+ * Smart truncation: for large arrays, compute numeric aggregates (min/max/sum)
+ * per field, then attach a top-N sample. Works for any ESI array response.
+ */
 function truncateToolOutput(json: string): string {
   if (json.length <= MAX_TOOL_OUTPUT_CHARS) return json;
   try {
     const parsed = JSON.parse(json) as unknown;
+
+    // Find the array to aggregate — either top-level or inside .data
+    let targetArray: unknown[] | null = null;
+    let wrapperObj: Record<string, unknown> | null = null;
+
     if (Array.isArray(parsed)) {
-      const truncated = parsed.slice(0, 50);
-      const result = JSON.stringify({ items: truncated, truncated: true, total: parsed.length });
+      targetArray = parsed;
+    } else if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const obj = parsed as Record<string, unknown>;
+      if (Array.isArray(obj.data)) {
+        targetArray = obj.data;
+        wrapperObj = obj;
+      }
+    }
+
+    if (targetArray && targetArray.length >= SMART_AGGREGATE_THRESHOLD) {
+      const aggregated = smartAggregate(targetArray);
+      if (wrapperObj) {
+        wrapperObj.data = aggregated;
+        const result = JSON.stringify(wrapperObj);
+        if (result.length <= MAX_TOOL_OUTPUT_CHARS) return result;
+        aggregated.top = aggregated.top.slice(0, 5);
+        wrapperObj.data = aggregated;
+        return JSON.stringify(wrapperObj).slice(0, MAX_TOOL_OUTPUT_CHARS);
+      }
+      const result = JSON.stringify(aggregated);
       if (result.length <= MAX_TOOL_OUTPUT_CHARS) return result;
-      const smaller = parsed.slice(0, 20);
-      return JSON.stringify({ items: smaller, truncated: true, total: parsed.length });
+      aggregated.top = aggregated.top.slice(0, 5);
+      const smaller = JSON.stringify(aggregated);
+      if (smaller.length <= MAX_TOOL_OUTPUT_CHARS) return smaller;
+    }
+
+    // Fallback: simple slice
+    if (targetArray) {
+      const sliced = targetArray.slice(0, 50);
+      const payload = wrapperObj
+        ? { ...wrapperObj, data: { items: sliced, truncated: true, total: targetArray.length } }
+        : { items: sliced, truncated: true, total: targetArray.length };
+      const result = JSON.stringify(payload);
+      if (result.length <= MAX_TOOL_OUTPUT_CHARS) return result;
+      const smaller = targetArray.slice(0, 20);
+      const smallPayload = wrapperObj
+        ? { ...wrapperObj, data: { items: smaller, truncated: true, total: targetArray.length } }
+        : { items: smaller, truncated: true, total: targetArray.length };
+      return JSON.stringify(smallPayload);
     }
   } catch {
     // fall through
   }
-  return json.slice(0, MAX_TOOL_OUTPUT_CHARS) + '...(truncated)';
+  return JSON.stringify({
+    truncated: true,
+    total_chars: json.length,
+    notice: 'Tool output exceeded the size budget and was reduced.',
+  });
+}
+
+function smartAggregate(rows: unknown[]): {
+  count: number;
+  aggregates: Record<string, { min: number; max: number; sum: number }>;
+  top: unknown[];
+} {
+  const first = rows[0];
+  if (!first || typeof first !== 'object' || Array.isArray(first)) {
+    return { count: rows.length, aggregates: {}, top: rows.slice(0, 10) };
+  }
+
+  // Detect numeric fields and compute min/max/sum
+  const numericFields = new Map<string, { min: number; max: number; sum: number }>();
+  const keys = Object.keys(first as Record<string, unknown>);
+
+  for (const key of keys) {
+    const val = (first as Record<string, unknown>)[key];
+    if (typeof val === 'number') {
+      numericFields.set(key, { min: Infinity, max: -Infinity, sum: 0 });
+    }
+  }
+
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const record = row as Record<string, unknown>;
+    for (const [key, agg] of numericFields) {
+      const val = record[key];
+      if (typeof val === 'number') {
+        if (val < agg.min) agg.min = val;
+        if (val > agg.max) agg.max = val;
+        agg.sum += val;
+      }
+    }
+  }
+
+  const aggregates: Record<string, { min: number; max: number; sum: number }> = {};
+  for (const [key, agg] of numericFields) {
+    aggregates[key] = agg;
+  }
+
+  // Sort by first numeric field (usually price) to get best top-N
+  const sortKey = keys.find((k) => numericFields.has(k));
+  const sorted = sortKey
+    ? [...rows].sort((a, b) => {
+        const av = (a as Record<string, unknown>)[sortKey];
+        const bv = (b as Record<string, unknown>)[sortKey];
+        return (typeof av === 'number' ? av : 0) - (typeof bv === 'number' ? bv : 0);
+      })
+    : rows;
+
+  return {
+    count: rows.length,
+    aggregates,
+    top: sorted.slice(0, 10),
+  };
 }
 
 function storeAssistantMessage(db: Db, threadId: string, content: string): void {
   db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'assistant', content);
 }
 
-function ensureThreadExists(db: Db, threadId: string, chatId: number): void {
-  db.prepare(
-    `INSERT INTO telegram_sessions (chat_id, last_seen_at)
-     VALUES (?, datetime('now'))
-     ON CONFLICT(chat_id) DO UPDATE SET last_seen_at = datetime('now')`
-  ).run(chatId);
-  db.prepare(
-    `INSERT OR IGNORE INTO agent_threads (thread_id, chat_id)
-     VALUES (?, ?)`
-  ).run(threadId, chatId);
+function ensureThreadOwnership(db: Db, threadId: string, ctx: UserContext): void {
+  if (ctx.chatId !== undefined) {
+    db.prepare(
+      `INSERT INTO telegram_sessions (chat_id, last_seen_at)
+       VALUES (?, datetime('now'))
+       ON CONFLICT(chat_id) DO UPDATE SET last_seen_at = datetime('now')`,
+    ).run(ctx.chatId);
+  }
+
+  const existing = db.prepare(
+    'SELECT chat_id, user_id FROM agent_threads WHERE thread_id = ?',
+  ).get(threadId) as { chat_id: number; user_id: number | null } | undefined;
+
+  if (!existing) {
+    db.prepare(
+      'INSERT INTO agent_threads (thread_id, chat_id, user_id) VALUES (?, ?, ?)',
+    ).run(threadId, ctx.chatId ?? 0, ctx.userId);
+    return;
+  }
+
+  // Check ownership: user_id match OR chat_id match
+  if (ctx.userId && existing.user_id && existing.user_id !== ctx.userId) {
+    throw new Error(`Thread ${threadId} does not belong to user ${ctx.userId}`);
+  }
+  if (ctx.chatId !== undefined && existing.chat_id !== 0 && existing.chat_id !== ctx.chatId) {
+    throw new Error(`Thread ${threadId} does not belong to chat ${ctx.chatId}`);
+  }
+
+  // Backfill user_id if missing
+  if (ctx.userId && !existing.user_id) {
+    db.prepare('UPDATE agent_threads SET user_id = ? WHERE thread_id = ?').run(ctx.userId, threadId);
+  }
 }

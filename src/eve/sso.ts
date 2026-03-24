@@ -1,5 +1,8 @@
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
+import type { UserContext } from '../auth/user-resolver.js';
+import { getUserTelegramChatId } from '../auth/user-resolver.js';
+import { decryptStoredSecret, encryptStoredSecret } from '../auth/secret-storage.js';
 
 interface TokenResponse {
   access_token: string;
@@ -14,19 +17,26 @@ interface EveAccount {
   refresh_token: string;
   expires_at: string;
   scopes_json: string;
+  user_id?: number | null;
 }
+
+const refreshInFlight = new Map<number, Promise<{ token: string; characterId: number } | null>>();
 
 /**
  * Get a valid access token for the linked character.
  * Automatically refreshes if expired.
  */
-export async function getAccessToken(db: Db, chatId?: number): Promise<{ token: string; characterId: number } | null> {
-  const linked = getLinkedCharacter(db, chatId);
+export async function getAccessToken(db: Db, ctx: UserContext): Promise<{ token: string; characterId: number } | null> {
+  const linked = getLinkedCharacter(db, ctx);
   if (!linked) return null;
 
   const account = db.prepare('SELECT * FROM eve_accounts WHERE character_id = ?').get(linked.characterId) as
     EveAccount | undefined;
   if (!account) return null;
+  if (ctx.userId && account.user_id && account.user_id !== ctx.userId) return null;
+
+  const accessToken = decryptStoredSecret(account.access_token, 'eve_access_token');
+  const refreshToken = decryptStoredSecret(account.refresh_token, 'eve_refresh_token');
 
   // Check if token is still valid (with 60s buffer)
   const expiresAt = new Date(account.expires_at + 'Z');
@@ -34,10 +44,202 @@ export async function getAccessToken(db: Db, chatId?: number): Promise<{ token: 
   const bufferMs = 60_000;
 
   if (expiresAt.getTime() - now.getTime() > bufferMs) {
-    return { token: account.access_token, characterId: account.character_id };
+    return { token: accessToken, characterId: account.character_id };
   }
 
   // Refresh the token
+  const existingRefresh = refreshInFlight.get(account.character_id);
+  if (existingRefresh) {
+    return await existingRefresh;
+  }
+
+  const refreshPromise = refreshAccessToken(db, account, refreshToken);
+  refreshInFlight.set(account.character_id, refreshPromise);
+  try {
+    return await refreshPromise;
+  } finally {
+    refreshInFlight.delete(account.character_id);
+  }
+}
+
+/**
+ * Get the currently linked character info and scopes.
+ */
+export function getLinkedCharacter(
+  db: Db,
+  ctx: UserContext,
+): { characterId: number; characterName: string; scopes: string[] } | null {
+  const characterId = resolveActiveCharacterId(db, ctx);
+  if (!characterId) return null;
+
+  const account = db.prepare('SELECT character_id, character_name, scopes_json, user_id FROM eve_accounts WHERE character_id = ?')
+    .get(characterId) as Pick<EveAccount, 'character_id' | 'character_name' | 'scopes_json' | 'user_id'> | undefined;
+  if (!account) return null;
+  if (ctx.userId && account.user_id && account.user_id !== ctx.userId) return null;
+
+  return {
+    characterId: account.character_id,
+    characterName: account.character_name,
+    scopes: JSON.parse(account.scopes_json) as string[],
+  };
+}
+
+export function listLinkedCharacters(
+  db: Db,
+  ctx: UserContext,
+): Array<{ characterId: number; characterName: string; isActive: boolean }> {
+  const activeId = resolveActiveCharacterId(db, ctx);
+
+  // Prefer user_id path
+  if (ctx.userId) {
+    const rows = db.prepare(`
+      SELECT DISTINCT l.character_id as character_id, a.character_name as character_name
+      FROM eve_character_links l
+      JOIN eve_accounts a ON a.character_id = l.character_id
+      WHERE l.user_id = ?
+      ORDER BY a.character_name COLLATE NOCASE
+    `).all(ctx.userId) as Array<{ character_id: number; character_name: string }>;
+    if (rows.length > 0) {
+      return rows.map((row) => ({
+        characterId: row.character_id,
+        characterName: row.character_name,
+        isActive: row.character_id === activeId,
+      }));
+    }
+  }
+
+  // Fallback: chat_id path
+  if (ctx.chatId !== undefined) {
+    const rows = db.prepare(`
+      SELECT l.character_id as character_id, a.character_name as character_name
+      FROM eve_character_links l
+      JOIN eve_accounts a ON a.character_id = l.character_id
+      WHERE l.chat_id = ?
+      ORDER BY a.character_name COLLATE NOCASE
+    `).all(ctx.chatId) as Array<{ character_id: number; character_name: string }>;
+    return rows.map((row) => ({
+      characterId: row.character_id,
+      characterName: row.character_name,
+      isActive: row.character_id === activeId,
+    }));
+  }
+
+  return [];
+}
+
+export function linkCharacterToChat(db: Db, ctx: UserContext, characterId: number): void {
+  const chatId = ctx.chatId ?? getUserTelegramChatId(db, ctx.userId);
+
+  if (chatId) {
+    db.prepare(
+      'INSERT OR IGNORE INTO eve_character_links (chat_id, character_id, user_id) VALUES (?, ?, ?)',
+    ).run(chatId, characterId, ctx.userId);
+    db.prepare('UPDATE telegram_sessions SET active_character_id = ? WHERE chat_id = ?')
+      .run(characterId, chatId);
+  }
+
+  if (ctx.userId) {
+    db.prepare("UPDATE users SET active_character_id = ?, updated_at = datetime('now') WHERE user_id = ?")
+      .run(characterId, ctx.userId);
+    // Also set user_id on eve_accounts
+    db.prepare('UPDATE eve_accounts SET user_id = ? WHERE character_id = ? AND user_id IS NULL')
+      .run(ctx.userId, characterId);
+  }
+}
+
+export function setActiveCharacter(db: Db, ctx: UserContext, characterId: number): boolean {
+  // Check link exists
+  let linkExists = false;
+  if (ctx.userId) {
+    linkExists = !!db.prepare(
+      'SELECT 1 FROM eve_character_links WHERE user_id = ? AND character_id = ?',
+    ).get(ctx.userId, characterId);
+  }
+  if (!linkExists && ctx.chatId !== undefined) {
+    linkExists = !!db.prepare(
+      'SELECT 1 FROM eve_character_links WHERE chat_id = ? AND character_id = ?',
+    ).get(ctx.chatId, characterId);
+  }
+  if (!linkExists) return false;
+
+  if (ctx.chatId !== undefined) {
+    db.prepare('UPDATE telegram_sessions SET active_character_id = ? WHERE chat_id = ?')
+      .run(characterId, ctx.chatId);
+  }
+  if (ctx.userId) {
+    db.prepare("UPDATE users SET active_character_id = ?, updated_at = datetime('now') WHERE user_id = ?")
+      .run(characterId, ctx.userId);
+  }
+  return true;
+}
+
+export function unlinkCharacter(db: Db, ctx: UserContext, characterId: number): boolean {
+  let deleted = false;
+  if (ctx.userId) {
+    const result = db.prepare('DELETE FROM eve_character_links WHERE user_id = ? AND character_id = ?')
+      .run(ctx.userId, characterId);
+    if (result.changes > 0) deleted = true;
+  }
+  if (!deleted && ctx.chatId !== undefined) {
+    const result = db.prepare('DELETE FROM eve_character_links WHERE chat_id = ? AND character_id = ?')
+      .run(ctx.chatId, characterId);
+    if (result.changes > 0) deleted = true;
+  }
+  if (!deleted) return false;
+
+  // If this was the active character, clear it
+  const active = resolveActiveCharacterId(db, ctx);
+  if (active === characterId) {
+    if (ctx.chatId !== undefined) {
+      db.prepare('UPDATE telegram_sessions SET active_character_id = NULL WHERE chat_id = ?').run(ctx.chatId);
+    }
+    if (ctx.userId) {
+      db.prepare("UPDATE users SET active_character_id = NULL, updated_at = datetime('now') WHERE user_id = ?").run(ctx.userId);
+    }
+  }
+  return true;
+}
+
+function resolveActiveCharacterId(db: Db, ctx: UserContext): number | null {
+  // 1. Try users table (new path)
+  if (ctx.userId) {
+    const userRow = db.prepare('SELECT active_character_id FROM users WHERE user_id = ?')
+      .get(ctx.userId) as { active_character_id: number | null } | undefined;
+    if (userRow?.active_character_id) return userRow.active_character_id;
+  }
+
+  // 2. Fallback: telegram_sessions (backward compat)
+  if (ctx.chatId !== undefined) {
+    const row = db.prepare('SELECT active_character_id FROM telegram_sessions WHERE chat_id = ?')
+      .get(ctx.chatId) as { active_character_id: number | null } | undefined;
+    if (row?.active_character_id) return row.active_character_id;
+
+    const linked = db.prepare(
+      'SELECT character_id FROM eve_character_links WHERE chat_id = ? ORDER BY linked_at DESC LIMIT 1',
+    ).get(ctx.chatId) as { character_id: number } | undefined;
+    if (linked?.character_id) {
+      db.prepare('UPDATE telegram_sessions SET active_character_id = ? WHERE chat_id = ?')
+        .run(linked.character_id, ctx.chatId);
+      return linked.character_id;
+    }
+  }
+
+  // 3. Fallback: most recently linked character for this user
+  if (ctx.userId) {
+    const linked = db.prepare(
+      'SELECT character_id FROM eve_character_links WHERE user_id = ? ORDER BY linked_at DESC LIMIT 1',
+    ).get(ctx.userId) as { character_id: number } | undefined;
+    return linked?.character_id ?? null;
+  }
+
+  return null;
+}
+
+async function refreshAccessToken(
+  db: Db,
+  account: EveAccount,
+  refreshToken: string,
+): Promise<{ token: string; characterId: number } | null> {
   const res = await fetch('https://login.eveonline.com/v2/oauth/token', {
     method: 'POST',
     headers: {
@@ -46,7 +248,7 @@ export async function getAccessToken(db: Db, chatId?: number): Promise<{ token: 
     },
     body: new URLSearchParams({
       grant_type: 'refresh_token',
-      refresh_token: account.refresh_token,
+      refresh_token: refreshToken,
     }),
   });
 
@@ -63,85 +265,12 @@ export async function getAccessToken(db: Db, chatId?: number): Promise<{ token: 
       refresh_token = ?,
       expires_at = datetime('now', '+' || ? || ' seconds')
     WHERE character_id = ?
-  `).run(tokens.access_token, tokens.refresh_token, tokens.expires_in, account.character_id);
+  `).run(
+    encryptStoredSecret(tokens.access_token, 'eve_access_token'),
+    encryptStoredSecret(tokens.refresh_token, 'eve_refresh_token'),
+    tokens.expires_in,
+    account.character_id,
+  );
 
   return { token: tokens.access_token, characterId: account.character_id };
-}
-
-/**
- * Get the currently linked character info and scopes.
- */
-export function getLinkedCharacter(
-  db: Db,
-  chatId?: number,
-): { characterId: number; characterName: string; scopes: string[] } | null {
-  const characterId = resolveActiveCharacterId(db, chatId);
-  if (!characterId) return null;
-
-  const account = db.prepare('SELECT character_id, character_name, scopes_json FROM eve_accounts WHERE character_id = ?')
-    .get(characterId) as Pick<EveAccount, 'character_id' | 'character_name' | 'scopes_json'> | undefined;
-  if (!account) return null;
-
-  return {
-    characterId: account.character_id,
-    characterName: account.character_name,
-    scopes: JSON.parse(account.scopes_json) as string[],
-  };
-}
-
-export function listLinkedCharacters(
-  db: Db,
-  chatId: number,
-): Array<{ characterId: number; characterName: string; isActive: boolean }> {
-  const activeId = resolveActiveCharacterId(db, chatId);
-  const rows = db.prepare(`
-    SELECT l.character_id as character_id, a.character_name as character_name
-    FROM eve_character_links l
-    JOIN eve_accounts a ON a.character_id = l.character_id
-    WHERE l.chat_id = ?
-    ORDER BY a.character_name COLLATE NOCASE
-  `).all(chatId) as Array<{ character_id: number; character_name: string }>;
-  return rows.map((row) => ({
-    characterId: row.character_id,
-    characterName: row.character_name,
-    isActive: row.character_id === activeId,
-  }));
-}
-
-export function linkCharacterToChat(db: Db, chatId: number, characterId: number): void {
-  db.prepare(
-    'INSERT OR IGNORE INTO eve_character_links (chat_id, character_id) VALUES (?, ?)'
-  ).run(chatId, characterId);
-  db.prepare('UPDATE telegram_sessions SET active_character_id = ? WHERE chat_id = ?').run(characterId, chatId);
-}
-
-export function setActiveCharacter(db: Db, chatId: number, characterId: number): boolean {
-  const link = db.prepare(
-    'SELECT 1 FROM eve_character_links WHERE chat_id = ? AND character_id = ?'
-  ).get(chatId, characterId);
-  if (!link) return false;
-  db.prepare('UPDATE telegram_sessions SET active_character_id = ? WHERE chat_id = ?').run(characterId, chatId);
-  return true;
-}
-
-function resolveActiveCharacterId(db: Db, chatId?: number): number | null {
-  if (chatId !== undefined) {
-    const row = db.prepare('SELECT active_character_id FROM telegram_sessions WHERE chat_id = ?')
-      .get(chatId) as { active_character_id: number | null } | undefined;
-    if (row?.active_character_id) return row.active_character_id;
-
-    const linked = db.prepare(
-      'SELECT character_id FROM eve_character_links WHERE chat_id = ? ORDER BY linked_at DESC LIMIT 1'
-    ).get(chatId) as { character_id: number } | undefined;
-    if (linked?.character_id) {
-      db.prepare('UPDATE telegram_sessions SET active_character_id = ? WHERE chat_id = ?')
-        .run(linked.character_id, chatId);
-      return linked.character_id;
-    }
-  }
-
-  const fallback = db.prepare('SELECT character_id FROM eve_accounts ORDER BY character_id LIMIT 1').get() as
-    | { character_id: number }
-    | undefined;
-  return fallback?.character_id ?? null;
 }

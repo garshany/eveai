@@ -3,50 +3,64 @@ import { buildDeveloperPrompt } from '../../src/agent/prompts.js';
 
 describe('buildDeveloperPrompt', () => {
   it('keeps the main prompt compact and focused', () => {
-    const prompt = buildDeveloperPrompt();
+    const prompt = buildDeveloperPrompt({
+      authenticated: false,
+      characterId: null,
+      characterName: null,
+      grantedScopes: [],
+    });
 
     expect(prompt).toContain('Всегда отвечай по-русски');
     expect(prompt).toContain('Не раскрывай внутреннюю кухню');
-    expect(prompt).toContain('Иди самым коротким корректным путём');
-    expect(prompt).toContain('Для простого запроса не запускай широкое исследование');
-    expect(prompt).toContain('По умолчанию отвечай компактно');
-    expect(prompt).toContain('не отвечай teaser-версией');
+    expect(prompt).toContain('1-2 фразы');
+    expect(prompt).toContain('не teaser');
     expect(prompt).toContain('Не выдавай предположение');
-    expect(prompt).toContain('Не придумывай точные даты');
-    expect(prompt).toContain('Для живых игровых данных используй ESI');
-    expect(prompt).toContain('Для статических данных и идентификаторов используй SDE');
-    expect(prompt).toContain('Для внешних справок и механик вне ESI/SDE используй web search');
+    expect(prompt).toContain('ТОЛЬКО ESI');
+    expect(prompt).toContain('ТОЛЬКО sde_sql');
+    expect(prompt).toContain('web_search');
     expect(prompt).toContain('tool_search');
-    expect(prompt).toContain('get_eve_capabilities');
-    expect(prompt).toContain('update_plan');
-    expect(prompt).toContain('Предпочитай самый узкий endpoint-tool');
-    expect(prompt).toContain('Не спрашивай у пользователя character_id');
-    expect(prompt).toContain('Формат финального ответа');
-    expect(prompt).toContain('1-2 коротких фразах без обязательного отчёта');
-    expect(prompt).toContain('Не записывай plan повторно без необходимости');
-    expect(prompt).toContain('Не вызывай get_eve_capabilities повторно');
-    expect(prompt).toContain('Не повторяй один и тот же tool call');
-    expect(prompt).toContain('пиши как полезный пилот-ассистент');
-    expect(prompt).toContain('Не говори "кто кого убил"');
-    expect(prompt).not.toContain('fit-блок');
-    expect(prompt.length).toBeLessThan(7000);
+    expect(prompt).toContain('Backend управляет auth, tokens, pagination, retries, rate limits');
+    expect(prompt).toContain('Не спрашивай character_id');
+    expect(prompt).toContain('Не повторяй один и тот же вызов');
+    expect(prompt).toContain('ВНИМАТЕЛЬНО изучай `enum` в schema каждого tool');
+    expect(prompt).toContain('ДУМАЙ → ПЛАНИРУЙ → ВЫЗЫВАЙ');
+    expect(prompt).toContain('batch_market_prices');
+    expect(prompt).toContain('post_universe_names');
+    expect(prompt).toContain('обычно достаточно 1 вызова');
+    expect(prompt).toContain('Не делай 3 и более `web_search`');
+    expect(prompt).toContain('Персонаж не привязан');
+    expect(prompt).toContain('EFT');
+    expect(prompt).toContain('ломают импорт');
+    expect(prompt.length).toBeLessThan(10500);
   });
 
   it('appends profile and summary when provided', () => {
-    const prompt = buildDeveloperPrompt('summary text', 'profile text');
+    const prompt = buildDeveloperPrompt(
+      {
+        authenticated: false,
+        characterId: null,
+        characterName: null,
+        grantedScopes: [],
+      },
+      'summary text',
+      'profile text',
+    );
 
     expect(prompt).toContain('USER.md (профиль пользователя):\nprofile text');
     expect(prompt).toContain('Долгая память (сводка):\nsummary text');
   });
 
-  it('describes hosted tool_search workflow instead of shortcut-specific routing', () => {
-    const prompt = buildDeveloperPrompt();
+  it('includes character context when authenticated', () => {
+    const prompt = buildDeveloperPrompt({
+      authenticated: true,
+      characterId: 12345,
+      characterName: 'TestPilot',
+      grantedScopes: ['esi-skills.read_skills.v1'],
+    });
 
-    expect(prompt).toContain('используй tool_search');
-    expect(prompt).toContain('загрузи самый узкий подходящий инструмент или namespace');
-    expect(prompt).toContain('После failed tool call не угадывай результат');
-    expect(prompt).toContain('Не используй web_search для резолва EVE system/type/region IDs');
-    expect(prompt).not.toContain('не собирай fit заново');
-    expect(prompt).not.toContain('System Prompt');
+    expect(prompt).toContain('TestPilot');
+    expect(prompt).toContain('character_id=12345');
+    expect(prompt).toContain('esi-skills.read_skills.v1');
+    expect(prompt).not.toContain('Персонаж не привязан');
   });
 });

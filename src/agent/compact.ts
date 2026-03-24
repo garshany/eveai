@@ -13,6 +13,8 @@ export type SummarizerFn = (input: {
   messages: MessageRow[];
 }) => Promise<string>;
 
+const MAX_SUMMARY_CHARS = 2000;
+
 const SUMMARY_DEVELOPER_PROMPT = `Ты сжимаешь историю диалога в краткую структурированную память.
 
 Формат:
@@ -75,14 +77,23 @@ export async function compactThreadIfNeeded(
 
   if (!summaryText) return false;
 
+  // Cap summary length to prevent unbounded growth
+  const cappedSummary = summaryText.length > MAX_SUMMARY_CHARS
+    ? summaryText.slice(0, MAX_SUMMARY_CHARS)
+    : summaryText;
+
   const tx = db.transaction(() => {
     db.prepare(
       `INSERT INTO thread_summaries (thread_id, summary, last_message_id, updated_at)
        VALUES (?, ?, ?, datetime('now'))
        ON CONFLICT(thread_id) DO UPDATE SET summary = excluded.summary, last_message_id = excluded.last_message_id, updated_at = excluded.updated_at`
-    ).run(threadId, summaryText, lastSummarizedId);
+    ).run(threadId, cappedSummary, lastSummarizedId);
 
+    // Delete compacted user+assistant messages
     db.prepare('DELETE FROM messages WHERE thread_id = ? AND id <= ?').run(threadId, lastSummarizedId);
+
+    // Clean up tool messages outside the keep window
+    db.prepare("DELETE FROM messages WHERE thread_id = ? AND role = 'tool' AND id < ?").run(threadId, recentKeepMinId);
   });
   tx();
   return true;

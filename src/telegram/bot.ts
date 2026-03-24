@@ -35,7 +35,7 @@ export function createBot(db: Db): Bot<Context> {
     await next();
   });
 
-  // Optional single-user guard. `0` means "allow any private Telegram user".
+  // Optional allowlist. `0` means "allow any private Telegram user".
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;
     if (!isTelegramUserAllowed(userId, config.telegram.allowedUserId)) {

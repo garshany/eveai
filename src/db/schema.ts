@@ -1,5 +1,49 @@
 /** SQL statements for creating all tables. Run in order. */
 export const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS users (
+  user_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  display_name TEXT NOT NULL,
+  active_character_id INTEGER,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS telegram_accounts (
+  telegram_user_id INTEGER PRIMARY KEY,
+  user_id          INTEGER NOT NULL REFERENCES users(user_id),
+  username         TEXT NOT NULL DEFAULT '',
+  first_name       TEXT NOT NULL DEFAULT '',
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_accounts_user ON telegram_accounts(user_id);
+
+CREATE TABLE IF NOT EXISTS web_sessions (
+  session_id TEXT PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(user_id),
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS auth_requests (
+  state        TEXT PRIMARY KEY,
+  type         TEXT NOT NULL CHECK (type IN ('eve_sso', 'tg_handoff')),
+  user_id      INTEGER NOT NULL REFERENCES users(user_id),
+  chat_id      INTEGER,
+  redirect_url TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at   TEXT NOT NULL,
+  used_at      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS telegram_login_attempts (
+  nonce         TEXT PRIMARY KEY,
+  redirect_path TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at    TEXT NOT NULL,
+  used_at       TEXT
+);
+
 CREATE TABLE IF NOT EXISTS telegram_sessions (
   chat_id      INTEGER PRIMARY KEY,
   username     TEXT,
@@ -12,6 +56,8 @@ CREATE TABLE IF NOT EXISTS agent_threads (
   thread_id  TEXT PRIMARY KEY,
   chat_id    INTEGER NOT NULL REFERENCES telegram_sessions(chat_id),
   character_id INTEGER,
+  user_id    INTEGER,
+  last_response_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -45,16 +91,21 @@ CREATE TABLE IF NOT EXISTS eve_accounts (
   access_token    TEXT NOT NULL,
   refresh_token   TEXT NOT NULL,
   expires_at      TEXT NOT NULL,
-  scopes_json     TEXT NOT NULL DEFAULT '[]'
+  scopes_json     TEXT NOT NULL DEFAULT '[]',
+  user_id         INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS eve_character_links (
   chat_id      INTEGER NOT NULL REFERENCES telegram_sessions(chat_id),
   character_id INTEGER NOT NULL REFERENCES eve_accounts(character_id),
+  user_id      INTEGER,
   linked_at    TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (chat_id, character_id)
 );
 CREATE INDEX IF NOT EXISTS idx_eve_character_links_chat ON eve_character_links(chat_id);
+CREATE INDEX IF NOT EXISTS idx_eve_character_links_user ON eve_character_links(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_agent_threads_user ON agent_threads(user_id);
 
 CREATE TABLE IF NOT EXISTS plans (
   request_id TEXT PRIMARY KEY,

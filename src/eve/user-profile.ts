@@ -1,17 +1,18 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, parse } from 'node:path';
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
-import { callEsiOperation, type EsiCallResult } from './esi-client.js';
+import { callEsiOperation } from './esi-client.js';
 import { getEveCapabilities } from './capabilities.js';
 import { getLinkedCharacter } from './sso.js';
+import type { UserContext } from '../auth/user-resolver.js';
 
 type JsonResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
-export function readUserProfile(db: Db, chatId?: number): string | null {
-  const characterId = getLinkedCharacter(db, chatId)?.characterId ?? null;
+export function readUserProfile(db: Db, ctx: UserContext): string | null {
+  const characterId = getLinkedCharacter(db, ctx)?.characterId ?? null;
   if (!characterId) return null;
-  const path = resolveUserProfilePath(characterId);
+  const path = resolveUserProfilePath(ctx, characterId);
   if (existsSync(path)) {
     const content = readFileSync(path, 'utf-8').trim();
     if (content.length > 0) return content;
@@ -19,8 +20,8 @@ export function readUserProfile(db: Db, chatId?: number): string | null {
   return null;
 }
 
-export async function refreshUserProfile(db: Db, chatId?: number): Promise<JsonResult<{ path: string }>> {
-  const capabilities = await getEveCapabilities(db, 'user_profile', chatId);
+export async function refreshUserProfile(db: Db, ctx: UserContext): Promise<JsonResult<{ path: string }>> {
+  const capabilities = await getEveCapabilities(db, 'user_profile', ctx);
   if (!capabilities.authenticated || !capabilities.characterId || !capabilities.characterName) {
     return { ok: false, error: 'No authenticated character available.' };
   }
@@ -28,36 +29,66 @@ export async function refreshUserProfile(db: Db, chatId?: number): Promise<JsonR
   const characterId = capabilities.characterId;
   const characterName = capabilities.characterName;
 
-  const baseInfo = await runEsiJson<Record<string, unknown>>(db, chatId, 'get_characters_character_id', {
+  const baseInfo = await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id', {
     character_id: characterId,
   });
 
   const online = capabilities.allowedNamespaces.includes('esi_characters_online')
-    ? await runEsiJson<Record<string, unknown>>(db, chatId, 'get_characters_character_id_online', {
+    ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_online', {
       character_id: characterId,
     })
     : null;
 
   const location = capabilities.allowedNamespaces.includes('esi_characters_location')
-    ? await runEsiJson<Record<string, unknown>>(db, chatId, 'get_characters_character_id_location', {
+    ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_location', {
       character_id: characterId,
     })
     : null;
 
   const ship = capabilities.allowedNamespaces.includes('esi_characters_ship')
-    ? await runEsiJson<Record<string, unknown>>(db, chatId, 'get_characters_character_id_ship', {
+    ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_ship', {
       character_id: characterId,
     })
     : null;
 
   const skills = capabilities.allowedNamespaces.includes('esi_characters_skills')
-    ? await runEsiJson<Record<string, unknown>>(db, chatId, 'get_characters_character_id_skills', {
+    ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_skills', {
       character_id: characterId,
     })
     : null;
 
   const wallet = capabilities.allowedNamespaces.includes('esi_characters_wallet')
-    ? await runEsiJson<number>(db, chatId, 'get_characters_character_id_wallet', {
+    ? await runEsiJson<number>(db, ctx, 'get_characters_character_id_wallet', {
+      character_id: characterId,
+    })
+    : null;
+
+  const attributes = capabilities.allowedNamespaces.includes('esi_characters_skills')
+    ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_attributes', {
+      character_id: characterId,
+    })
+    : null;
+
+  const skillQueue = capabilities.allowedNamespaces.includes('esi_characters_skillqueue')
+    ? await runEsiJson<Array<Record<string, unknown>>>(db, ctx, 'get_characters_character_id_skillqueue', {
+      character_id: characterId,
+    })
+    : null;
+
+  const implants = capabilities.allowedNamespaces.includes('esi_clones_implants')
+    ? await runEsiJson<number[]>(db, ctx, 'get_characters_character_id_implants', {
+      character_id: characterId,
+    })
+    : null;
+
+  const clones = capabilities.allowedNamespaces.includes('esi_clones_clones')
+    ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_clones', {
+      character_id: characterId,
+    })
+    : null;
+
+  const fittings = capabilities.allowedNamespaces.includes('esi_fittings')
+    ? await runEsiJson<Array<Record<string, unknown>>>(db, ctx, 'get_characters_character_id_fittings', {
       character_id: characterId,
     })
     : null;
@@ -67,19 +98,19 @@ export async function refreshUserProfile(db: Db, chatId?: number): Promise<JsonR
   const factionId = extractNumber(baseInfo, 'faction_id');
 
   const corporation = corporationId
-    ? await runEsiJson<Record<string, unknown>>(db, chatId, 'get_corporations_corporation_id', {
+    ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_corporations_corporation_id', {
       corporation_id: corporationId,
     })
     : null;
 
   const alliance = allianceId
-    ? await runEsiJson<Record<string, unknown>>(db, chatId, 'get_alliances_alliance_id', {
+    ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_alliances_alliance_id', {
       alliance_id: allianceId,
     })
     : null;
 
   const factionName = factionId
-    ? await resolveFactionName(db, chatId, factionId)
+    ? await resolveFactionName(db, ctx, factionId)
     : null;
 
   const systemId = extractNumber(location, 'solar_system_id');
@@ -118,13 +149,27 @@ export async function refreshUserProfile(db: Db, chatId?: number): Promise<JsonR
     skills: {
       totalSp: extractNumber(skills, 'total_sp'),
       unallocatedSp: extractNumber(skills, 'unallocated_sp'),
+      trained: extractTrainedSkills(db, skills),
     },
+    attributes: {
+      intelligence: extractNumber(attributes, 'intelligence'),
+      memory: extractNumber(attributes, 'memory'),
+      perception: extractNumber(attributes, 'perception'),
+      willpower: extractNumber(attributes, 'willpower'),
+      charisma: extractNumber(attributes, 'charisma'),
+      bonusRemaps: extractNumber(attributes, 'bonus_remaps'),
+      lastRemapDate: extractString(attributes, 'last_remap_date'),
+    },
+    skillQueue: extractSkillQueue(db, skillQueue),
+    implants: extractImplants(db, implants),
+    clones: extractClones(db, clones),
+    fittings: extractFittings(db, fittings),
     wallet: {
       balance: wallet && wallet.ok ? wallet.data : null,
     },
   });
 
-  const path = resolveUserProfilePath(characterId);
+  const path = resolveUserProfilePath(ctx, characterId);
   const dir = dirname(path);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
@@ -133,22 +178,28 @@ export async function refreshUserProfile(db: Db, chatId?: number): Promise<JsonR
   return { ok: true, data: { path } };
 }
 
-function resolveUserProfilePath(characterId: number): string {
+function resolveUserProfilePath(ctx: UserContext, characterId: number): string {
   const base = config.userProfile.path;
-  if (base.includes('{character_id}')) {
-    return base.replace('{character_id}', String(characterId));
+  const chatId = ctx.chatId;
+  if (base.includes('{chat_id}') || base.includes('{character_id}')) {
+    return base
+      .replace('{chat_id}', chatId !== undefined ? String(chatId) : String(ctx.userId))
+      .replace('{character_id}', String(characterId));
   }
-  const dir = dirname(base);
-  return join(dir, `USER_${characterId}.md`);
+
+  const identifier = chatId !== undefined ? chatId : ctx.userId;
+  const pathInfo = parse(base);
+  const stem = pathInfo.ext ? pathInfo.name : pathInfo.base || 'USER';
+  return join(pathInfo.dir || dirname(base), `${stem}_${identifier}_${characterId}.md`);
 }
 
 async function runEsiJson<T>(
   db: Db,
-  chatId: number | undefined,
+  ctx: UserContext,
   operationName: string,
   args: Record<string, unknown>,
 ): Promise<JsonResult<T>> {
-  const result = await callEsiOperation<T>(db, operationName, args, chatId);
+  const result = await callEsiOperation<T>(db, operationName, args, ctx);
 
   if (!result.ok) {
     return { ok: false, error: result.error ?? 'Unknown ESI error' };
@@ -178,6 +229,104 @@ function extractBoolean(source: JsonResult<Record<string, unknown>> | null, key:
   return null;
 }
 
+function extractTrainedSkills(
+  db: Db,
+  skills: JsonResult<Record<string, unknown>> | null,
+): Array<{ name: string; level: number }> {
+  if (!skills || !skills.ok) return [];
+  const raw = skills.data['skills'];
+  if (!Array.isArray(raw)) return [];
+  const result: Array<{ name: string; level: number }> = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const rec = entry as Record<string, unknown>;
+    const skillId = Number(rec['skill_id']);
+    const level = Number(rec['active_skill_level'] ?? rec['trained_skill_level']);
+    if (!Number.isFinite(skillId) || !Number.isFinite(level) || level <= 0) continue;
+    const name = lookupSdeName(db, 'sde_types', 'type_id', skillId) ?? `skill_id:${skillId}`;
+    result.push({ name, level });
+  }
+  result.sort((a, b) => a.name.localeCompare(b.name));
+  return result;
+}
+
+function extractSkillQueue(
+  db: Db,
+  queue: JsonResult<Array<Record<string, unknown>>> | null,
+): Array<{ name: string; finishedLevel: number; finishDate: string | null }> {
+  if (!queue || !queue.ok || !Array.isArray(queue.data)) return [];
+  return queue.data
+    .filter((e) => e && typeof e === 'object')
+    .sort((a, b) => Number(a['queue_position'] ?? 0) - Number(b['queue_position'] ?? 0))
+    .slice(0, 15)
+    .map((e) => {
+      const skillId = Number(e['skill_id']);
+      const name = lookupSdeName(db, 'sde_types', 'type_id', skillId) ?? `skill_id:${skillId}`;
+      return {
+        name,
+        finishedLevel: Number(e['finished_level'] ?? 0),
+        finishDate: typeof e['finish_date'] === 'string' ? e['finish_date'] : null,
+      };
+    });
+}
+
+function extractImplants(
+  db: Db,
+  implants: JsonResult<number[]> | null,
+): Array<{ name: string; typeId: number }> {
+  if (!implants || !implants.ok || !Array.isArray(implants.data)) return [];
+  return implants.data
+    .filter((id) => typeof id === 'number' && Number.isFinite(id))
+    .map((typeId) => ({
+      name: lookupSdeName(db, 'sde_types', 'type_id', typeId) ?? `type_id:${typeId}`,
+      typeId,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function extractClones(
+  db: Db,
+  clones: JsonResult<Record<string, unknown>> | null,
+): Array<{ location: string; implants: string[] }> {
+  if (!clones || !clones.ok) return [];
+  const jumpClones = clones.data['jump_clones'];
+  if (!Array.isArray(jumpClones)) return [];
+  return jumpClones
+    .filter((c) => c && typeof c === 'object')
+    .slice(0, 10)
+    .map((c) => {
+      const rec = c as Record<string, unknown>;
+      const locId = Number(rec['location_id'] ?? 0);
+      const locType = String(rec['location_type'] ?? '');
+      const cloneName = typeof rec['name'] === 'string' && rec['name'] ? rec['name'] : null;
+      const location = cloneName ?? (locType === 'station'
+        ? (lookupSdeName(db, 'sde_stations', 'station_id', locId) ?? `station:${locId}`)
+        : `structure:${locId}`);
+      const implantIds = Array.isArray(rec['implants']) ? rec['implants'] as number[] : [];
+      const implantNames = implantIds
+        .filter((id) => typeof id === 'number')
+        .map((id) => lookupSdeName(db, 'sde_types', 'type_id', id) ?? `type_id:${id}`);
+      return { location, implants: implantNames };
+    });
+}
+
+function extractFittings(
+  db: Db,
+  fittings: JsonResult<Array<Record<string, unknown>>> | null,
+): Array<{ name: string; shipType: string }> {
+  if (!fittings || !fittings.ok || !Array.isArray(fittings.data)) return [];
+  return fittings.data
+    .filter((f) => f && typeof f === 'object')
+    .slice(0, 30)
+    .map((f) => {
+      const name = typeof f['name'] === 'string' ? f['name'] : '?';
+      const shipTypeId = Number(f['ship_type_id'] ?? 0);
+      const shipType = lookupSdeName(db, 'sde_types', 'type_id', shipTypeId) ?? `type_id:${shipTypeId}`;
+      return { name, shipType };
+    })
+    .sort((a, b) => a.shipType.localeCompare(b.shipType));
+}
+
 function lookupSdeName(
   db: Db,
   table: string,
@@ -193,8 +342,8 @@ function lookupSdeName(
   }
 }
 
-async function resolveFactionName(db: Db, chatId: number | undefined, factionId: number): Promise<string | null> {
-  const result = await runEsiJson<Record<string, unknown>[]>(db, chatId, 'get_universe_factions', {});
+async function resolveFactionName(db: Db, ctx: UserContext, factionId: number): Promise<string | null> {
+  const result = await runEsiJson<Record<string, unknown>[]>(db, ctx, 'get_universe_factions', {});
   if (!result.ok) return null;
   for (const entry of result.data) {
     if (Number(entry['faction_id']) === factionId && typeof entry['name'] === 'string') {
@@ -234,7 +383,21 @@ type UserProfileData = {
   skills: {
     totalSp: number | null;
     unallocatedSp: number | null;
+    trained: Array<{ name: string; level: number }>;
   };
+  attributes: {
+    intelligence: number | null;
+    memory: number | null;
+    perception: number | null;
+    willpower: number | null;
+    charisma: number | null;
+    bonusRemaps: number | null;
+    lastRemapDate: string | null;
+  };
+  skillQueue: Array<{ name: string; finishedLevel: number; finishDate: string | null }>;
+  implants: Array<{ name: string; typeId: number }>;
+  clones: Array<{ location: string; implants: string[] }>;
+  fittings: Array<{ name: string; shipType: string }>;
   wallet: {
     balance: number | null;
   };
@@ -268,6 +431,59 @@ function buildUserMarkdown(profile: UserProfileData): string {
   lines.push('## Skills');
   addLine(lines, 'Total SP', formatNumber(profile.skills.totalSp));
   addLine(lines, 'Unallocated SP', formatNumber(profile.skills.unallocatedSp));
+  if (profile.skills.trained.length > 0) {
+    lines.push('');
+    lines.push('### Trained Skills');
+    for (const s of profile.skills.trained) {
+      lines.push(`- ${s.name}: ${s.level}`);
+    }
+  }
+
+  if (profile.attributes.intelligence) {
+    lines.push('');
+    lines.push('## Attributes');
+    addLine(lines, 'Intelligence', String(profile.attributes.intelligence));
+    addLine(lines, 'Memory', String(profile.attributes.memory));
+    addLine(lines, 'Perception', String(profile.attributes.perception));
+    addLine(lines, 'Willpower', String(profile.attributes.willpower));
+    addLine(lines, 'Charisma', String(profile.attributes.charisma));
+    addLine(lines, 'Bonus remaps', profile.attributes.bonusRemaps ? String(profile.attributes.bonusRemaps) : null);
+    addLine(lines, 'Last remap', profile.attributes.lastRemapDate);
+  }
+
+  if (profile.skillQueue.length > 0) {
+    lines.push('');
+    lines.push('## Skill Queue');
+    for (const s of profile.skillQueue) {
+      const eta = s.finishDate ? ` (ETA: ${s.finishDate})` : '';
+      lines.push(`- ${s.name} → ${s.finishedLevel}${eta}`);
+    }
+  }
+
+  if (profile.implants.length > 0) {
+    lines.push('');
+    lines.push('## Active Implants');
+    for (const imp of profile.implants) {
+      lines.push(`- ${imp.name}`);
+    }
+  }
+
+  if (profile.clones.length > 0) {
+    lines.push('');
+    lines.push('## Jump Clones');
+    for (const clone of profile.clones) {
+      const impList = clone.implants.length > 0 ? ` [${clone.implants.join(', ')}]` : ' [empty]';
+      lines.push(`- ${clone.location}${impList}`);
+    }
+  }
+
+  if (profile.fittings.length > 0) {
+    lines.push('');
+    lines.push('## Saved Fittings');
+    for (const fit of profile.fittings) {
+      lines.push(`- ${fit.shipType}: ${fit.name}`);
+    }
+  }
 
   lines.push('');
   lines.push('## Wallet');

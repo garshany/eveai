@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { extractToolSearchPaths, toNativeMessage } from '../../src/agent/native-responses.js';
 
 describe('toNativeMessage', () => {
-  it('serializes messages as user input_text', () => {
+  it('serializes messages as user input_text', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    const { toNativeMessage } = await import('../../src/agent/native-responses.js');
+
     expect(toNativeMessage('hello')).toEqual({
       type: 'message',
       role: 'user',
@@ -12,7 +20,16 @@ describe('toNativeMessage', () => {
 });
 
 describe('extractToolSearchPaths', () => {
-  it('collects namespace names and nested tool names from tool_search_output', () => {
+  it('collects namespace names and nested tool names from tool_search_output', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    const { extractToolSearchPaths } = await import('../../src/agent/native-responses.js');
+
     expect(extractToolSearchPaths([
       {
         type: 'tool_search_output',
@@ -30,5 +47,66 @@ describe('extractToolSearchPaths', () => {
       'eve_character_wallet',
       'get_characters_character_id_wallet',
     ]);
+  });
+});
+
+describe('parseSse + streamed outputs', () => {
+  it('parses SSE stream, extracts deltas, done items, and terminal payload', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    const { __test__ } = await import('../../src/agent/native-responses.js');
+
+    const raw = [
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"Hi "}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"there"}',
+      '',
+      'event: response.output_text.done',
+      'data: {"type":"response.output_text.done","text":"Hi there"}',
+      '',
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","item":{"type":"tool_search_output","paths":["get_markets_region_id_orders"]}}',
+      '',
+      'event: response.done',
+      'data: {"response":{"id":"resp_x","output_text":"Hi there","output":[{"type":"message","content":[{"type":"output_text","text":"Hi there"}]}]}}',
+      '',
+    ].join('\n');
+
+    const events = __test__.parseSse(raw);
+    expect(__test__.extractStreamedOutputText(events)).toBe('Hi there');
+    expect(__test__.collectDoneItems(events)).toEqual([
+      { type: 'tool_search_output', paths: ['get_markets_region_id_orders'] },
+    ]);
+    expect(__test__.findCompletedPayload(events)?.id).toBe('resp_x');
+  });
+
+  it('uses data.type when event is omitted and handles CRLF', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    const { __test__ } = await import('../../src/agent/native-responses.js');
+
+    const raw = [
+      'data: {"type":"response.output_text.delta","delta":"Yo"}',
+      '',
+      'event: response.output_text.done',
+      'data: {"type":"response.output_text.done","text":"Yo"}',
+      '',
+    ].join('\r\n');
+
+    const events = __test__.parseSse(raw);
+    expect(events[0]?.event).toBe('response.output_text.delta');
+    expect(__test__.extractStreamedOutputText(events)).toBe('Yo');
   });
 });
