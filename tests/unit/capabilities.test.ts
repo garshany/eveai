@@ -6,14 +6,22 @@ vi.mock('../../src/config.js', () => ({
   config: {
     telegram: { botToken: 'test', allowedUserId: 1 },
     openai: { apiKey: 'test', model: 'test' },
-    eve: { clientId: 'test', clientSecret: 'test', callbackUrl: 'http://localhost:3000/auth/eve/callback' },
+    eve: {
+      clientId: 'test',
+      clientSecret: 'test',
+      callbackUrl: 'http://localhost:3000/auth/eve/callback',
+      requestTimeoutMs: 5000,
+    },
     esi: {
       baseUrl: 'https://esi.evetech.net/latest/',
       specUrl: 'https://esi.evetech.net/latest/swagger.json',
       catalogCachePath: './data/cache/esi-swagger.json',
       compatibilityDate: '2026-03-15',
+      userAgent: 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)',
       maxPages: 5,
       backoffMaxSeconds: 10,
+      requestTimeoutMs: 5000,
+      retryMaxAttempts: 2,
     },
     server: { port: 3000, host: '127.0.0.1' },
     db: { path: ':memory:' },

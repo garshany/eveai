@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { config } from '../config.js';
 import type { NativeFunctionTool, NativeNamespaceTool } from '../agent/native-responses.js';
+import { fetchWithTimeout } from './http.js';
 
 export type EsiOperationMeta = {
   name: string;
@@ -228,9 +229,13 @@ async function loadSwaggerSpec(): Promise<SwaggerSpec> {
   }
 
   try {
-    const res = await fetch(config.esi?.specUrl ?? 'https://esi.evetech.net/latest/swagger.json', {
-      headers: { 'User-Agent': 'eve-agent/0.1.0' },
-    });
+    const res = await fetchWithTimeout(config.esi?.specUrl ?? 'https://esi.evetech.net/latest/swagger.json', {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': config.esi.userAgent,
+        'X-Compatibility-Date': config.esi.compatibilityDate,
+      },
+    }, config.esi.requestTimeoutMs);
     if (res.ok) {
       const json = await res.json() as SwaggerSpec;
       writeCache(cachePath, JSON.stringify(json));

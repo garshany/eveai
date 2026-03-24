@@ -54,6 +54,11 @@ Important local defaults:
 
 - `OPENAI_BASE_URL=http://localhost:8088/v1`
 - `WEB_BASE_URL=http://localhost:8000` or your chosen local port
+- `ESI_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)`
+- `ZKILL_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)`
+- `SSO_REQUEST_TIMEOUT_MS=8000`
+- `ESI_REQUEST_TIMEOUT_MS=8000`
+- `ESI_RETRY_MAX_ATTEMPTS=3`
 
 ## Local Run
 
@@ -110,6 +115,27 @@ This verifies:
 - SQLite
 - built client manifest
 - local `codex-proxy` health when `OPENAI_BASE_URL` points to a local proxy
+
+## Production Notes
+
+Current production URL:
+
+- `https://144.31.223.134:4443`
+- `https://144.31.223.134:4443/health`
+
+Important:
+
+- `443` is occupied by another service on the server, so this app uses `:4443`
+- production `WEB_BASE_URL` must match `https://144.31.223.134:4443`
+- production `EVE_CALLBACK_URL` must match `https://144.31.223.134:4443/auth/eve/callback`
+
+## ESI Notes
+
+- ESI requests send both `User-Agent` and `X-Compatibility-Date`
+- GET responses respect `Expires` and revalidate with `ETag` / `If-None-Match`
+- `429`, `420`, and transient `5xx` responses use bounded retry and backoff
+- large `X-Pages` responses fail fast when they exceed `ESI_MAX_PAGES`; the runtime does not silently truncate them
+- CCP's legacy `/latest/swagger.json` still works as a compatibility input here, but it is no longer the authoritative source for new routes; keep an eye on current ESI docs and API Explorer for additions
 
 ## Main Commands
 

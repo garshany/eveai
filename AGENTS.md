@@ -78,6 +78,10 @@ Deferred:
 
 ## Local runbook
 
+Deployment и production SSH/runbook описаны отдельно:
+
+- [docs/deployment.md](./docs/deployment.md)
+
 - `codex proxy 2` for this project lives in `/home/antipedik/codex_proxy_v2`
 - The binary name is `codex-openai-proxy`
 - CLI flags:

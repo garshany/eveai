@@ -2,11 +2,24 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 
+const { jwtVerifyMock, createRemoteJwkSetMock } = vi.hoisted(() => ({
+  jwtVerifyMock: vi.fn(),
+  createRemoteJwkSetMock: vi.fn(() => ({})),
+}));
+
 vi.mock('../../src/config.js', () => ({
   config: {
     telegram: { botToken: 'test', allowedUserId: 1 },
     openai: { apiKey: 'test', model: 'test' },
-    eve: { clientId: 'test-client', clientSecret: 'test-secret', callbackUrl: 'http://localhost:3000/auth/eve/callback' },
+    eve: {
+      clientId: 'test-client',
+      clientSecret: 'test-secret',
+      callbackUrl: 'http://localhost:3000/auth/eve/callback',
+      requestTimeoutMs: 5000,
+    },
+    esi: {
+      userAgent: 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)',
+    },
     server: { port: 3000, host: '127.0.0.1' },
     db: { path: ':memory:' },
     sde: { dataDir: './data/sde' },
@@ -14,17 +27,30 @@ vi.mock('../../src/config.js', () => ({
   },
 }));
 
+vi.mock('jose', () => ({
+  createRemoteJWKSet: createRemoteJwkSetMock,
+  jwtVerify: jwtVerifyMock,
+}));
+
 import { getLinkedCharacter, getAccessToken } from '../../src/eve/sso.js';
+import { resetEveSsoMetadataCacheForTests } from '../../src/eve/sso-auth.js';
 
 let db: Database.Database;
+let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);
+  fetchMock = vi.fn();
+  vi.stubGlobal('fetch', fetchMock);
+  jwtVerifyMock.mockReset();
+  createRemoteJwkSetMock.mockClear();
+  resetEveSsoMetadataCacheForTests();
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   db.close();
 });
 
@@ -99,7 +125,8 @@ describe('getAccessToken', () => {
     `).run(12345, 'Pilot', 'expired-token', 'ref-token', '[]');
     db.prepare('INSERT INTO eve_character_links (chat_id, character_id) VALUES (?, ?)').run(1, 12345);
 
-    // This will try to refresh via fetch to login.eveonline.com and fail in test env
+    fetchMock.mockRejectedValue(new Error('network down'));
+
     const result = await getAccessToken(db, { userId: 0, chatId: 1 });
     expect(result).toBeNull();
   });
@@ -114,5 +141,67 @@ describe('getAccessToken', () => {
 
     const result = await getAccessToken(db, { userId: 1 });
     expect(result).toBeNull();
+  });
+
+  it('refreshes expired tokens via discovered SSO metadata and validates the new JWT', async () => {
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, ?)").run(1, 'pilot');
+    db.prepare(`
+      INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json)
+      VALUES (?, ?, ?, ?, datetime('now', '-100 seconds'), ?)
+    `).run(12345, 'Pilot', 'expired-token', 'ref-token', '[]');
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id) VALUES (?, ?)').run(1, 12345);
+
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          authorization_endpoint: 'https://login.eveonline.com/v2/oauth/authorize',
+          token_endpoint: 'https://login.eveonline.com/v2/oauth/token',
+          jwks_uri: 'https://login.eveonline.com/oauth/jwks',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          access_token: 'fresh-access-token',
+          refresh_token: 'fresh-refresh-token',
+          expires_in: 1200,
+        }),
+      });
+    jwtVerifyMock.mockResolvedValue({
+      payload: {
+        sub: 'CHARACTER:EVE:12345',
+        name: 'Pilot',
+        aud: ['test-client', 'EVE Online'],
+      },
+    });
+
+    const result = await getAccessToken(db, { userId: 0, chatId: 1 });
+
+    expect(result).toEqual({ token: 'fresh-access-token', characterId: 12345 });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'https://login.eveonline.com/.well-known/oauth-authorization-server',
+      expect.objectContaining({
+        headers: expect.anything(),
+        signal: expect.anything(),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://login.eveonline.com/v2/oauth/token',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.anything(),
+        signal: expect.anything(),
+      }),
+    );
+    expect(jwtVerifyMock).toHaveBeenCalledWith(
+      'fresh-access-token',
+      expect.anything(),
+      expect.objectContaining({
+        issuer: expect.arrayContaining(['https://login.eveonline.com/']),
+      }),
+    );
   });
 });

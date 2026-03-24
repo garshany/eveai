@@ -56,14 +56,18 @@ export const config = {
     clientId: required('EVE_CLIENT_ID'),
     clientSecret: required('EVE_CLIENT_SECRET'),
     callbackUrl: optional('EVE_CALLBACK_URL', 'http://localhost:3000/auth/eve/callback'),
+    requestTimeoutMs: optionalInt('SSO_REQUEST_TIMEOUT_MS', 8000),
   },
   esi: {
     baseUrl: optional('ESI_BASE_URL', 'https://esi.evetech.net/latest/'),
     specUrl: optional('ESI_SPEC_URL', 'https://esi.evetech.net/latest/swagger.json'),
     catalogCachePath: optional('ESI_CATALOG_CACHE_PATH', './data/cache/esi-swagger.json'),
     compatibilityDate: optional('ESI_COMPATIBILITY_DATE', '2026-03-15'),
+    userAgent: optional('ESI_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)'),
     maxPages: optionalInt('ESI_MAX_PAGES', 5),
     backoffMaxSeconds: optionalInt('ESI_BACKOFF_MAX_SECONDS', 10),
+    requestTimeoutMs: optionalInt('ESI_REQUEST_TIMEOUT_MS', 8000),
+    retryMaxAttempts: optionalInt('ESI_RETRY_MAX_ATTEMPTS', 3),
   },
   server: {
     port: optionalInt('PORT', 3000),
@@ -96,7 +100,7 @@ export const config = {
     timeoutMs: optionalInt('ZKILL_TIMEOUT_MS', 8000),
     cacheTtlSeconds: optionalInt('ZKILL_CACHE_TTL_SECONDS', 300),
     maxPastSeconds: optionalInt('ZKILL_MAX_PAST_SECONDS', 604800),
-    userAgent: optional('ZKILL_USER_AGENT', 'eve-agent/0.1.0 (contact: local-dev)'),
+    userAgent: optional('ZKILL_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)'),
   },
   compact: {
     messageThreshold: optionalInt('COMPACT_MESSAGE_THRESHOLD', 20),

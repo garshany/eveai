@@ -14,7 +14,15 @@ vi.mock('../../src/config.js', () => ({
   config: {
     telegram: { botToken: 'test', allowedUserId: 1 },
     openai: { apiKey: 'test', model: 'test' },
-    eve: { clientId: 'test-client', clientSecret: 'test-secret', callbackUrl: 'http://localhost:3000/auth/eve/callback' },
+    eve: {
+      clientId: 'test-client',
+      clientSecret: 'test-secret',
+      callbackUrl: 'http://localhost:3000/auth/eve/callback',
+      requestTimeoutMs: 5000,
+    },
+    esi: {
+      userAgent: 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)',
+    },
     server: { port: 3000, host: '127.0.0.1' },
     db: { path: ':memory:' },
     sde: { dataDir: './data/sde' },
@@ -38,6 +46,7 @@ import { createWebSession } from '../../src/auth/session.js';
 import { createAuthRequestToken } from '../../src/auth/auth-request.js';
 import { createTelegramLoginNonce } from '../../src/auth/telegram-login.js';
 import { getAccessToken } from '../../src/eve/sso.js';
+import { resetEveSsoMetadataCacheForTests } from '../../src/eve/sso-auth.js';
 
 let db: Database.Database;
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -52,6 +61,7 @@ beforeEach(() => {
   jwtVerifyMock.mockReset();
   createRemoteJwkSetMock.mockClear();
   refreshUserProfileMock.mockClear();
+  resetEveSsoMetadataCacheForTests();
 });
 
 afterEach(() => {
@@ -237,6 +247,14 @@ describe('auth routes', () => {
 
     const access = await getAccessToken(db, { userId: 1 });
     expect(access).toEqual({ token: 'access-secret', characterId: 95465499 });
+    expect(fetchMock.mock.calls.some((call) => call[0] === 'https://login.eveonline.com/.well-known/oauth-authorization-server')).toBe(true);
+    expect(jwtVerifyMock).toHaveBeenCalledWith(
+      'access-secret',
+      expect.anything(),
+      expect.objectContaining({
+        issuer: expect.arrayContaining(['https://login.eveonline.com/']),
+      }),
+    );
 
     await app.close();
   });

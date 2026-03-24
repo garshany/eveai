@@ -3,6 +3,8 @@ import type { Db } from '../db/sqlite.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { getUserTelegramChatId } from '../auth/user-resolver.js';
 import { decryptStoredSecret, encryptStoredSecret } from '../auth/secret-storage.js';
+import { getEveSsoMetadata, verifyEveAccessToken } from './sso-auth.js';
+import { fetchWithTimeout } from './http.js';
 
 interface TokenResponse {
   access_token: string;
@@ -240,17 +242,26 @@ async function refreshAccessToken(
   account: EveAccount,
   refreshToken: string,
 ): Promise<{ token: string; characterId: number } | null> {
-  const res = await fetch('https://login.eveonline.com/v2/oauth/token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Authorization: `Basic ${Buffer.from(`${config.eve.clientId}:${config.eve.clientSecret}`).toString('base64')}`,
-    },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-    }),
-  });
+  let res: Response;
+  try {
+    const metadata = await getEveSsoMetadata();
+    res = await fetchWithTimeout(metadata.token_endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+        'User-Agent': config.esi.userAgent,
+        Authorization: `Basic ${Buffer.from(`${config.eve.clientId}:${config.eve.clientSecret}`).toString('base64')}`,
+      },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+      }),
+    }, config.eve.requestTimeoutMs);
+  } catch (error) {
+    console.error('[sso] Token refresh request failed:', (error as Error).message);
+    return null;
+  }
 
   if (!res.ok) {
     console.error('[sso] Token refresh failed:', await res.text());
@@ -258,6 +269,7 @@ async function refreshAccessToken(
   }
 
   const tokens = (await res.json()) as TokenResponse;
+  await verifyEveAccessToken(tokens.access_token);
 
   db.prepare(`
     UPDATE eve_accounts SET

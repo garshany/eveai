@@ -4,6 +4,7 @@ import { getAccessToken, getLinkedCharacter } from './sso.js';
 import { loadEsiCatalog, type EsiOperationMeta } from './esi-catalog.js';
 import { hasFreshCapabilitySnapshot } from './capabilities.js';
 import type { UserContext } from '../auth/user-resolver.js';
+import { fetchWithTimeout, parseHeaderInt, parseRetryAfterMs, sleep } from './http.js';
 
 export type EsiCallResult<T = unknown> =
   | {
@@ -23,6 +24,8 @@ export type EsiCallResult<T = unknown> =
 type EsiCacheRow = {
   response_text: string;
   expires_at: string;
+  etag: string | null;
+  last_modified: string | null;
 };
 
 export async function callEsiOperation<T = unknown>(
@@ -49,18 +52,15 @@ export async function callEsiOperation<T = unknown>(
   }
 
   const cacheKey = buildCacheKey(operation, prepared.url.toString(), access.characterId);
+  const cacheRow = operation.method === 'GET' ? readCacheRow(db, cacheKey) : null;
   if (operation.method === 'GET') {
-    const cached = readCachedResponse<T>(db, cacheKey);
+    const cached = readFreshCachedResponse<T>(cacheRow);
     if (cached) return cached;
   }
 
-  const fetchResult = await fetchEsi<T>(prepared.url, operation, prepared.body, access.token);
+  const fetchResult = await fetchEsi<T>(db, cacheKey, cacheRow, prepared.url, operation, prepared.body, access.token);
   if (!fetchResult.ok) {
     return fetchResult;
-  }
-
-  if (operation.method === 'GET') {
-    writeCachedResponse(db, cacheKey, JSON.stringify(fetchResult.data), fetchResult.headers.expires ?? null);
   }
 
   return fetchResult;
@@ -191,6 +191,9 @@ function serializeParamValue(value: unknown, collectionFormat: string | null): s
 }
 
 async function fetchEsi<T>(
+  db: Db,
+  cacheKey: string,
+  cacheRow: EsiCacheRow | null,
   url: URL,
   operation: EsiOperationMeta,
   body: string | null,
@@ -198,7 +201,7 @@ async function fetchEsi<T>(
 ): Promise<EsiCallResult<T>> {
   const headers = new Headers({
     Accept: 'application/json',
-    'User-Agent': 'eve-agent/0.2.0 (Telegram bot, github.com/user/eveai)',
+    'User-Agent': config.esi.userAgent,
     'X-Compatibility-Date': config.esi.compatibilityDate,
   });
   if (token) headers.set('Authorization', `Bearer ${token}`);
@@ -207,55 +210,155 @@ async function fetchEsi<T>(
   const pageData: unknown[] = [];
   let page = 1;
   let lastHeaders: Record<string, string> = {};
+  let firstPageSnapshot: { etag: string | null; lastModified: string | null } | null = null;
 
   while (true) {
     const pageUrl = new URL(url.toString());
     if (operation.paginationType === 'x-pages' && operation.hiddenPageParam) {
       pageUrl.searchParams.set('page', String(page));
     }
+    if (cacheRow?.etag && operation.method === 'GET' && operation.paginationType === 'none') {
+      headers.set('If-None-Match', cacheRow.etag);
+    }
+    if (!cacheRow?.etag && cacheRow?.last_modified && operation.method === 'GET' && operation.paginationType === 'none') {
+      headers.set('If-Modified-Since', cacheRow.last_modified);
+    }
 
-    const response = await fetch(pageUrl, {
-      method: operation.method,
-      headers,
-      body,
-    });
-    const responseHeaders = headersToRecord(response.headers);
-    lastHeaders = responseHeaders;
+    const response = await fetchEsiWithRetry(pageUrl, operation, headers, body);
     if (!response.ok) {
+      return response.result;
+    }
+    const { value } = response;
+    const responseHeaders = headersToRecord(value.headers);
+    lastHeaders = responseHeaders;
+    if (value.status === 304) {
+      const cached = revalidateCachedResponse<T>(db, cacheKey, cacheRow, responseHeaders);
+      if (cached) return cached;
       return {
         ok: false,
-        status: response.status,
-        error: await parseError(response),
+        status: 502,
+        error: 'ESI returned 304 but no cached payload was available.',
         headers: responseHeaders,
       };
     }
 
-    const payload = response.status === 204
+    const payload = value.status === 204
       ? null
-      : await response.json().catch(async () => await response.text());
+      : await value.json().catch(async () => await value.text());
     if (operation.paginationType !== 'x-pages' || !operation.hiddenPageParam || !Array.isArray(payload)) {
+      if (operation.method === 'GET') {
+        writeCachedResponse(db, cacheKey, JSON.stringify(payload), responseHeaders);
+      }
       return {
         ok: true,
-        status: response.status,
+        status: value.status,
         data: payload as T,
         cached: false,
         headers: responseHeaders,
       };
     }
 
+    const pageSnapshot = {
+      etag: value.headers.get('etag'),
+      lastModified: value.headers.get('last-modified'),
+    };
+    if (!firstPageSnapshot) {
+      firstPageSnapshot = pageSnapshot;
+    } else if (!matchesSnapshot(firstPageSnapshot, pageSnapshot)) {
+      return {
+        ok: false,
+        status: 409,
+        error: 'ESI paginated response changed during collection; retry later.',
+        headers: responseHeaders,
+      };
+    }
+
     pageData.push(...payload);
-    const totalPages = Number(response.headers.get('x-pages') ?? '1');
-    if (!Number.isFinite(totalPages) || page >= Math.min(totalPages, config.esi.maxPages)) {
+    const totalPages = Number(value.headers.get('x-pages') ?? '1');
+    if (Number.isFinite(totalPages) && totalPages > config.esi.maxPages) {
+      return {
+        ok: false,
+        status: 422,
+        error: `ESI pagination requires ${totalPages} pages, exceeds configured ESI_MAX_PAGES=${config.esi.maxPages}.`,
+        headers: responseHeaders,
+      };
+    }
+    if (!Number.isFinite(totalPages) || page >= totalPages) {
+      writeCachedResponse(db, cacheKey, JSON.stringify(pageData), lastHeaders);
       return {
         ok: true,
-        status: response.status,
+        status: value.status,
         data: pageData as T,
         cached: false,
         headers: lastHeaders,
       };
     }
+    await throttleIfNeeded(value.headers);
     page += 1;
   }
+}
+
+async function fetchEsiWithRetry(
+  url: URL,
+  operation: EsiOperationMeta,
+  headers: Headers,
+  body: string | null,
+): Promise<{ ok: true; value: Response } | { ok: false; result: EsiCallResult<never> }> {
+  const maxAttempts = Math.max(1, config.esi.retryMaxAttempts);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(url, {
+        method: operation.method,
+        headers,
+        body,
+      }, config.esi.requestTimeoutMs);
+    } catch (error) {
+      if (attempt < maxAttempts) {
+        await sleep(computeBackoffMs(new Headers(), attempt));
+        continue;
+      }
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          status: 504,
+          error: `ESI request failed: ${(error as Error).message}`,
+        },
+      };
+    }
+
+    if (response.ok || response.status === 304) {
+      return { ok: true, value: response };
+    }
+
+    const shouldRetry = response.status === 420 || response.status === 429 || response.status >= 500;
+    if (shouldRetry && attempt < maxAttempts) {
+      await sleep(computeBackoffMs(response.headers, attempt));
+      continue;
+    }
+
+    const responseHeaders = headersToRecord(response.headers);
+    return {
+      ok: false,
+      result: {
+        ok: false,
+        status: response.status,
+        error: await parseError(response),
+        headers: responseHeaders,
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    result: {
+      ok: false,
+      status: 504,
+      error: 'ESI request exhausted all retry attempts.',
+    },
+  };
 }
 
 async function parseError(response: Response): Promise<string> {
@@ -272,11 +375,15 @@ function buildCacheKey(operation: EsiOperationMeta, url: string, characterId: nu
   return `${operation.name}:${characterId ?? 0}:${url}`;
 }
 
-function readCachedResponse<T>(db: Db, cacheKey: string): EsiCallResult<T> | null {
+function readCacheRow(db: Db, cacheKey: string): EsiCacheRow | null {
   const row = db.prepare(
-    'SELECT response_text, expires_at FROM esi_cache WHERE cache_key = ? AND expires_at > datetime(\'now\')'
+    'SELECT response_text, expires_at, etag, last_modified FROM esi_cache WHERE cache_key = ?'
   ).get(cacheKey) as EsiCacheRow | undefined;
-  if (!row) return null;
+  return row ?? null;
+}
+
+function readFreshCachedResponse<T>(row: EsiCacheRow | null): EsiCallResult<T> | null {
+  if (!row || !isCacheFresh(row.expires_at)) return null;
   try {
     return {
       ok: true,
@@ -290,20 +397,93 @@ function readCachedResponse<T>(db: Db, cacheKey: string): EsiCallResult<T> | nul
   }
 }
 
-function writeCachedResponse(db: Db, cacheKey: string, responseText: string, expiresHeader: string | null): void {
-  const expiresAt = normalizeExpires(expiresHeader);
+function revalidateCachedResponse<T>(
+  db: Db,
+  cacheKey: string,
+  row: EsiCacheRow | null,
+  headers: Record<string, string>,
+): EsiCallResult<T> | null {
+  if (!row) return null;
+  const cached = readFreshCachedResponse<T>({
+    ...row,
+    expires_at: normalizeExpires(headers.expires ?? row.expires_at),
+  });
+  if (!cached) return null;
+  writeCachedResponse(db, cacheKey, row.response_text, {
+    expires: headers.expires ?? row.expires_at,
+    etag: headers.etag ?? row.etag,
+    'last-modified': headers['last-modified'] ?? row.last_modified,
+  });
+  return {
+    ...cached,
+    headers: {
+      ...cached.headers,
+      ...headers,
+    },
+  };
+}
+
+function writeCachedResponse(db: Db, cacheKey: string, responseText: string, headers: Record<string, string>): void {
+  const expiresAt = normalizeExpires(headers.expires ?? null);
   db.prepare(`
-    INSERT INTO esi_cache (cache_key, response_text, expires_at, created_at)
-    VALUES (?, ?, ?, datetime('now'))
+    INSERT INTO esi_cache (cache_key, response_text, etag, last_modified, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(cache_key) DO UPDATE SET
       response_text = excluded.response_text,
+      etag = excluded.etag,
+      last_modified = excluded.last_modified,
       expires_at = excluded.expires_at,
       created_at = excluded.created_at
-  `).run(cacheKey, responseText, expiresAt);
+  `).run(cacheKey, responseText, headers.etag ?? null, headers['last-modified'] ?? null, expiresAt);
+}
+
+function isCacheFresh(expiresAt: string): boolean {
+  return Date.parse(expiresAt.replace(' ', 'T') + 'Z') > Date.now();
+}
+
+function matchesSnapshot(
+  previous: { etag: string | null; lastModified: string | null },
+  current: { etag: string | null; lastModified: string | null },
+): boolean {
+  if (previous.etag && current.etag) {
+    return previous.etag === current.etag;
+  }
+  if (previous.lastModified && current.lastModified) {
+    return previous.lastModified === current.lastModified;
+  }
+  return true;
+}
+
+function computeBackoffMs(headers: Headers, attempt: number): number {
+  const maxMs = Math.max(1000, config.esi.backoffMaxSeconds * 1000);
+  const retryAfterMs = parseRetryAfterMs(headers.get('retry-after'), 0);
+  const ratelimitResetMs = headerSecondsToMs(headers, 'x-ratelimit-reset');
+  const errorLimitResetMs = headerSecondsToMs(headers, 'x-esi-error-limit-reset');
+  const exponentialMs = Math.min(maxMs, 1000 * (2 ** (attempt - 1)));
+  const baseMs = Math.max(exponentialMs, retryAfterMs, ratelimitResetMs, errorLimitResetMs);
+  const jitterMs = Math.min(250, baseMs / 4);
+  return Math.min(maxMs, Math.round(baseMs + Math.random() * jitterMs));
+}
+
+async function throttleIfNeeded(headers: Headers): Promise<void> {
+  const remaining = parseHeaderInt(headers, 'x-ratelimit-remaining');
+  const errorRemain = parseHeaderInt(headers, 'x-esi-error-limit-remain');
+  if ((remaining !== null && remaining <= 1) || (errorRemain !== null && errorRemain <= 1)) {
+    await sleep(computeBackoffMs(headers, 1));
+  }
+}
+
+function headerSecondsToMs(headers: Headers, name: string): number {
+  const seconds = parseHeaderInt(headers, name);
+  if (seconds === null || seconds < 0) return 0;
+  return seconds * 1000;
 }
 
 function normalizeExpires(expiresHeader: string | null): string {
   if (expiresHeader) {
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(expiresHeader)) {
+      return expiresHeader;
+    }
     const date = new Date(expiresHeader);
     if (!Number.isNaN(date.getTime())) {
       return date.toISOString().replace('T', ' ').slice(0, 19);

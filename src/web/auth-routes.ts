@@ -2,9 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
 import { ALL_REQUESTED_SCOPES } from '../eve/scopes.js';
-import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { refreshUserProfile } from '../eve/user-profile.js';
 import { linkCharacterToChat } from '../eve/sso.js';
+import { getEveSsoMetadata, verifyEveAccessToken } from '../eve/sso-auth.js';
 import { getOrCreateUser, type UserContext } from '../auth/user-resolver.js';
 import { consumeTelegramLoginNonce, parseTelegramLoginQuery, verifyTelegramLogin } from '../auth/telegram-login.js';
 import {
@@ -24,6 +24,7 @@ import {
 } from '../auth/auth-request.js';
 import { encryptStoredSecret } from '../auth/secret-storage.js';
 import { isTelegramUserAllowed } from '../telegram/access.js';
+import { fetchWithTimeout } from '../eve/http.js';
 
 interface CallbackQuery {
   code?: string;
@@ -38,17 +39,6 @@ interface TokenResponse {
   expires_in: number;
   token_type: string;
 }
-
-interface JwtPayload {
-  sub: string;
-  name: string;
-  scp?: string | string[];
-  iss?: string;
-  exp?: number;
-  aud?: string | string[];
-}
-
-const JWKS = createRemoteJWKSet(new URL('https://login.eveonline.com/oauth/jwks'));
 
 export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
   // GET /auth/telegram/callback -- Telegram Login Widget verification
@@ -91,7 +81,8 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     });
 
     const scopes = ALL_REQUESTED_SCOPES.join(' ');
-    const url = new URL('https://login.eveonline.com/v2/oauth/authorize');
+    const metadata = await getEveSsoMetadata();
+    const url = new URL(metadata.authorization_endpoint);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('redirect_uri', config.eve.callbackUrl);
     url.searchParams.set('client_id', config.eve.clientId);
@@ -151,10 +142,13 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
 
     try {
       // Exchange code for tokens
-      const tokenRes = await fetch('https://login.eveonline.com/v2/oauth/token', {
+      const metadata = await getEveSsoMetadata();
+      const tokenRes = await fetchWithTimeout(metadata.token_endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+          'User-Agent': config.esi.userAgent,
           Authorization: `Basic ${Buffer.from(`${config.eve.clientId}:${config.eve.clientSecret}`).toString('base64')}`,
         },
         body: new URLSearchParams({
@@ -162,7 +156,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
           code,
           redirect_uri: config.eve.callbackUrl,
         }),
-      });
+      }, config.eve.requestTimeoutMs);
 
       if (!tokenRes.ok) {
         const errBody = await tokenRes.text();
@@ -171,7 +165,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       }
 
       const tokens = (await tokenRes.json()) as TokenResponse;
-      const payload = await verifyAccessToken(tokens.access_token);
+      const payload = await verifyEveAccessToken(tokens.access_token);
       const characterId = extractCharacterId(payload.sub);
       const scopes = Array.isArray(payload.scp) ? payload.scp : payload.scp ? [payload.scp] : [];
 
@@ -303,29 +297,6 @@ function extractSessionCookie(req: { headers: Record<string, string | string[] |
     }
   }
   return null;
-}
-
-async function verifyAccessToken(token: string): Promise<JwtPayload> {
-  const { payload } = await jwtVerify(token, JWKS, {
-    issuer: ['login.eveonline.com', 'https://login.eveonline.com'],
-  });
-
-  const data = payload as unknown as JwtPayload;
-  const aud = Array.isArray(data.aud) ? data.aud : data.aud ? [data.aud] : [];
-
-  if (!aud.includes(config.eve.clientId) || !aud.includes('EVE Online')) {
-    throw new Error(`Invalid JWT audience: ${aud.join(', ') || 'missing'}`);
-  }
-
-  if (!data.sub || !data.sub.startsWith('CHARACTER:EVE:')) {
-    throw new Error(`Invalid JWT subject: ${data.sub}`);
-  }
-
-  if (!data.name) {
-    throw new Error('JWT missing character name');
-  }
-
-  return data;
 }
 
 function extractCharacterId(sub: string): number {
