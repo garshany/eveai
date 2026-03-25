@@ -106,10 +106,6 @@ select {
   -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, rgba(0,0,0,0.5), transparent 70%);
 }
 
-.hero-ship {
-  filter: drop-shadow(0 40px 60px rgba(0, 0, 0, 0.6)) drop-shadow(0 0 30px rgba(56, 189, 248, 0.12));
-  animation: shipFloat 12s ease-in-out infinite;
-}
 
 /* Reveal on scroll */
 .reveal-panel,
@@ -154,15 +150,6 @@ select {
   }
 }
 
-@keyframes shipFloat {
-  0%,
-  100% {
-    transform: translate3d(0, 0, 0);
-  }
-  50% {
-    transform: translate3d(0, -10px, 0);
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   html {
@@ -172,7 +159,6 @@ select {
   .nebula,
   .starfield,
   .starfield-deep,
-  .hero-ship,
   .reveal-panel,
   [data-reveal] {
     animation: none !important;

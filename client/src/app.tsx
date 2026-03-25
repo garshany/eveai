@@ -257,8 +257,6 @@ const utilityTools = [
   { name: 'update_plan', desc: 'Трекинг плана действий' },
 ];
 
-const heroShipImage = 'https://images.evetech.net/types/33468/render?size=1024';
-
 export function App({ root }: RootProps) {
   const config = useMemo<AppConfig>(() => readConfig(root), [root]);
 
@@ -322,66 +320,52 @@ function LandingPage({ config }: { config: AppConfig }) {
       <main>
         {/* Hero */}
         <section className="relative z-10 mx-auto max-w-6xl px-6 pb-20 pt-12 sm:pt-20">
-          <div className="grid items-center gap-12 lg:grid-cols-[1fr_1fr]">
+          <div className="mb-6 inline-flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.2em] text-white/50 backdrop-blur-sm">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+            online
+          </div>
+
+          <h1 className="font-display text-5xl uppercase leading-[0.95] tracking-[0.08em] text-white sm:text-7xl">
+            AI агент
+            <br />
+            <span className="text-cyan-300/80">EVE Online</span>
+          </h1>
+
+          <p className="mt-6 max-w-lg text-base leading-7 text-white/55">
+            184 ESI операции, локальная база данных игры,
+            zKillboard, маршруты и фиты — в одном Telegram-боте.
+          </p>
+
+          <div className="mt-8 flex flex-wrap gap-3">
+            <a
+              href="/auth/eve/start"
+              className="inline-flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-5 py-3 font-mono text-xs uppercase tracking-[0.2em] text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-400/20"
+            >
+              Подключить EVE SSO
+            </a>
+            {config.botLink ? (
+              <a
+                href={config.botLink}
+                className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-5 py-3 font-mono text-xs uppercase tracking-[0.2em] text-white/60 transition hover:border-white/20 hover:text-white"
+              >
+                @{config.botUsername}
+              </a>
+            ) : null}
+          </div>
+
+          {/* Key metrics */}
+          <div className="mt-10 grid grid-cols-3 gap-6 sm:max-w-md">
             <div>
-              <div className="mb-6 inline-flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.2em] text-white/50 backdrop-blur-sm">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
-                online
-              </div>
-
-              <h1 className="font-display text-5xl uppercase leading-[0.95] tracking-[0.08em] text-white sm:text-7xl">
-                AI агент
-                <br />
-                <span className="text-cyan-300/80">EVE Online</span>
-              </h1>
-
-              <p className="mt-6 max-w-md text-base leading-7 text-white/55">
-                179 ESI операций, локальная база данных игры,
-                zKillboard, маршруты и фиты — в одном Telegram-боте.
-              </p>
-
-              <div className="mt-8 flex flex-wrap gap-3">
-                <a
-                  href="/auth/eve/start"
-                  className="inline-flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-5 py-3 font-mono text-xs uppercase tracking-[0.2em] text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-400/20"
-                >
-                  Подключить EVE SSO
-                </a>
-                {config.botLink ? (
-                  <a
-                    href={config.botLink}
-                    className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-5 py-3 font-mono text-xs uppercase tracking-[0.2em] text-white/60 transition hover:border-white/20 hover:text-white"
-                  >
-                    @{config.botUsername}
-                  </a>
-                ) : null}
-              </div>
-
-              {/* Key metrics */}
-              <div className="mt-10 grid grid-cols-3 gap-6">
-                <div>
-                  <div className="font-display text-3xl tracking-wide text-white">179</div>
-                  <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">ESI operations</div>
-                </div>
-                <div>
-                  <div className="font-display text-3xl tracking-wide text-white">7</div>
-                  <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">utility tools</div>
-                </div>
-                <div>
-                  <div className="font-display text-3xl tracking-wide text-white">30</div>
-                  <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">API categories</div>
-                </div>
-              </div>
+              <div className="font-display text-3xl tracking-wide text-white">184</div>
+              <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">ESI operations</div>
             </div>
-
-            {/* Ship render */}
-            <div className="relative hidden lg:block">
-              <div className="absolute -inset-12 bg-[radial-gradient(circle_at_center,rgba(56,189,248,0.08),transparent_70%)]" />
-              <img
-                src={heroShipImage}
-                alt="EVE Online ship"
-                className="hero-ship relative h-auto w-full max-w-lg opacity-90"
-              />
+            <div>
+              <div className="font-display text-3xl tracking-wide text-white">7</div>
+              <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">utility tools</div>
+            </div>
+            <div>
+              <div className="font-display text-3xl tracking-wide text-white">30</div>
+              <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">API categories</div>
             </div>
           </div>
         </section>
@@ -392,10 +376,10 @@ function LandingPage({ config }: { config: AppConfig }) {
             <div className="mb-10" data-reveal>
               <div className="eyebrow">ESI API Coverage</div>
               <h2 className="mt-3 font-display text-3xl uppercase tracking-[0.1em] text-white sm:text-4xl">
-                179 из 195 операций ESI
+                184 из 195 операций ESI
               </h2>
               <p className="mt-3 max-w-xl text-sm leading-7 text-white/45">
-                16 эндпоинтов исключены — возвращают массивные нефильтруемые массивы. Статические данные покрыты через локальный SDE.
+                11 эндпоинтов исключены — покрыты через локальный SDE (типы, системы, регионы, фракции).
               </p>
             </div>
 
