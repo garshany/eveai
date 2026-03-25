@@ -33,6 +33,17 @@ interface CommandSample {
   tools: string[];
 }
 
+interface OperatingLane {
+  label: string;
+  title: string;
+  text: string;
+}
+
+interface TacticalNote {
+  value: string;
+  label: string;
+}
+
 const commandSamples: CommandSample[] = [
   {
     prompt: 'Я лечу из Jita в Tama на Vexor. Оцени маршрут и риск.',
@@ -257,6 +268,30 @@ const utilityTools = [
   { name: 'update_plan', desc: 'Трекинг плана действий' },
 ];
 
+const operatingLanes: OperatingLane[] = [
+  {
+    label: '01',
+    title: 'Пилот',
+    text: 'Навыки, очередь, импланты, клоны, текущий корабль и живая локация персонажа.',
+  },
+  {
+    label: '02',
+    title: 'Пространство',
+    text: 'Маршруты, choke points, региональная география, справка по SDE и реальные системы New Eden.',
+  },
+  {
+    label: '03',
+    title: 'Риск',
+    text: 'zKillboard, PvP-активность, контекст по корпусу и быстрые рекомендации до выхода в warp.',
+  },
+];
+
+const tacticalNotes: TacticalNote[] = [
+  { value: '184', label: 'ESI операций под агентом' },
+  { value: '30', label: 'категорий API в рабочем покрытии' },
+  { value: '7', label: 'локальных утилит поверх ESI' },
+];
+
 export function App({ root }: RootProps) {
   const config = useMemo<AppConfig>(() => readConfig(root), [root]);
 
@@ -290,189 +325,271 @@ export function App({ root }: RootProps) {
 function LandingPage({ config }: { config: AppConfig }) {
   return (
     <div className="min-h-screen text-white">
-      {/* Background — EVE nebula + star map */}
       <div className="pointer-events-none fixed inset-0">
         <div className="absolute inset-0 bg-void" />
         <div className="nebula absolute inset-0" />
         <div className="starfield absolute inset-0" />
         <div className="starfield-deep absolute inset-0" />
         <div className="star-map-grid absolute inset-0" />
+        <div className="hero-haze absolute inset-0" />
+        <div className="hero-ring hero-ring-a absolute right-[-12rem] top-[5rem] h-[32rem] w-[32rem] rounded-full" />
+        <div className="hero-ring hero-ring-b absolute right-[10%] top-[12rem] h-[18rem] w-[18rem] rounded-full" />
+        <div className="hero-sun absolute right-[8%] top-[10rem] h-[26rem] w-[26rem] rounded-full" />
       </div>
 
-      {/* Header */}
-      <header className="relative z-10 mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
+      <header className="relative z-10 px-6 py-6">
+        <div className="mx-auto flex w-full max-w-6xl items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-cyan-400/30 bg-cyan-400/10">
-            <span className="text-sm font-bold text-cyan-300">E</span>
+          <div className="flex h-9 w-9 items-center justify-center rounded-full border border-cyan-300/30 bg-cyan-300/10 shadow-[0_0_40px_rgba(34,211,238,0.14)]">
+            <span className="text-sm font-bold text-cyan-200">E</span>
           </div>
           <div>
-            <div className="font-display text-sm uppercase tracking-[0.3em] text-white/90">EVE Agent</div>
+            <div className="font-display text-sm uppercase tracking-[0.34em] text-white/92">EVE Agent</div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.24em] text-white/35">Telegram-first operations</div>
           </div>
         </div>
-        <nav className="hidden items-center gap-8 font-mono text-[11px] uppercase tracking-[0.2em] text-white/45 md:flex">
-          <a href="#api" className="transition hover:text-white">API</a>
-          <a href="#tools" className="transition hover:text-white">Tools</a>
-          <a href="#examples" className="transition hover:text-white">Examples</a>
+        <nav className="hidden items-center gap-8 font-mono text-[11px] uppercase tracking-[0.24em] text-white/45 md:flex">
+          <a href="#lanes" className="transition hover:text-white">Modes</a>
+          <a href="#examples" className="transition hover:text-white">Scenarios</a>
+          <a href="#coverage" className="transition hover:text-white">Coverage</a>
           <a href="#access" className="transition hover:text-white">Access</a>
         </nav>
+        </div>
       </header>
 
       <main>
-        {/* Hero */}
-        <section className="relative z-10 mx-auto max-w-6xl px-6 pb-20 pt-12 sm:pt-20">
-          <div className="mb-6 inline-flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.04] px-3.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.2em] text-white/50 backdrop-blur-sm">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
-            online
-          </div>
+        <section className="relative z-10 min-h-[calc(100svh-74px)] overflow-hidden px-6 pb-20 pt-8">
+          <div className="hero-gridline absolute inset-x-0 bottom-0 h-px" />
+          <div className="mx-auto grid min-h-[calc(100svh-120px)] max-w-6xl items-end gap-10 lg:grid-cols-[minmax(0,32rem)_1fr]">
+            <div className="max-w-xl pb-8 sm:pb-12">
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-4 py-2 font-mono text-[11px] uppercase tracking-[0.28em] text-white/55 backdrop-blur-md">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.9)]" />
+                live pilot operations
+              </div>
 
-          <h1 className="font-display text-5xl uppercase leading-[0.95] tracking-[0.08em] text-white sm:text-7xl">
-            AI агент
-            <br />
-            <span className="text-cyan-300/80">EVE Online</span>
-          </h1>
-
-          <p className="mt-6 max-w-lg text-base leading-7 text-white/55">
-            184 ESI операции, локальная база данных игры,
-            zKillboard, маршруты и фиты — в одном Telegram-боте.
-          </p>
-
-          <div className="mt-8 flex flex-wrap gap-3">
-            <a
-              href="/auth/eve/start"
-              className="inline-flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-5 py-3 font-mono text-xs uppercase tracking-[0.2em] text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-400/20"
-            >
-              Подключить EVE SSO
-            </a>
-            {config.botLink ? (
-              <a
-                href={config.botLink}
-                className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-5 py-3 font-mono text-xs uppercase tracking-[0.2em] text-white/60 transition hover:border-white/20 hover:text-white"
-              >
-                @{config.botUsername}
-              </a>
-            ) : null}
-          </div>
-
-          {/* Key metrics */}
-          <div className="mt-10 grid grid-cols-3 gap-6 sm:max-w-md">
-            <div>
-              <div className="font-display text-3xl tracking-wide text-white">184</div>
-              <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">ESI operations</div>
-            </div>
-            <div>
-              <div className="font-display text-3xl tracking-wide text-white">7</div>
-              <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">utility tools</div>
-            </div>
-            <div>
-              <div className="font-display text-3xl tracking-wide text-white">30</div>
-              <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">API categories</div>
-            </div>
-          </div>
-        </section>
-
-        {/* API Coverage */}
-        <section id="api" className="relative z-10 border-y border-white/[0.06] bg-white/[0.015] py-20">
-          <div className="mx-auto max-w-6xl px-6">
-            <div className="mb-10" data-reveal>
-              <div className="eyebrow">ESI API Coverage</div>
-              <h2 className="mt-3 font-display text-3xl uppercase tracking-[0.1em] text-white sm:text-4xl">
-                184 из 195 операций ESI
-              </h2>
-              <p className="mt-3 max-w-xl text-sm leading-7 text-white/45">
-                11 эндпоинтов исключены — покрыты через локальный SDE (типы, системы, регионы, фракции).
-              </p>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3" data-reveal>
-              {apiCategories.map((cat) => (
-                <ApiCategoryCard key={cat.name} category={cat} />
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* Utility Tools */}
-        <section id="tools" className="relative z-10 py-20">
-          <div className="mx-auto max-w-6xl px-6">
-            <div className="mb-10" data-reveal>
-              <div className="eyebrow">Non-ESI Tools</div>
-              <h2 className="mt-3 font-display text-3xl uppercase tracking-[0.1em] text-white sm:text-4xl">
-                7 утилитных инструментов
-              </h2>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" data-reveal>
-              {utilityTools.map((tool) => (
-                <div key={tool.name} className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
-                  <code className="text-sm text-cyan-300/80">{tool.name}</code>
-                  <p className="mt-2 text-sm leading-6 text-white/45">{tool.desc}</p>
+              <div className="mt-7">
+                <div className="font-display text-[clamp(1.15rem,2vw,1.5rem)] uppercase tracking-[0.62em] text-cyan-200/72">
+                  EVE Agent
                 </div>
-              ))}
+                <h1 className="mt-5 font-display text-[clamp(3.8rem,9vw,8.4rem)] uppercase leading-[0.86] tracking-[0.08em] text-white">
+                  New Eden
+                  <br />
+                  in command
+                </h1>
+              </div>
+
+              <p className="mt-7 max-w-md text-base leading-7 text-white/62 sm:text-lg sm:leading-8">
+                Telegram остаётся главным интерфейсом. Веб даёт вход, привязку персонажей и ясное ощущение,
+                что агент реально работает по вселенной EVE, а не по декоративному лендингу.
+              </p>
+
+              <div className="mt-8 flex flex-wrap gap-3">
+                <a
+                  href="/auth/eve/start"
+                  className="inline-flex items-center rounded-full border border-cyan-300/38 bg-cyan-300/12 px-6 py-3.5 font-mono text-xs uppercase tracking-[0.26em] text-cyan-50 transition hover:border-cyan-200 hover:bg-cyan-300/18"
+                >
+                  Подключить EVE SSO
+                </a>
+                {config.botLink ? (
+                  <a
+                    href={config.botLink}
+                    className="inline-flex items-center rounded-full border border-white/12 bg-white/[0.03] px-6 py-3.5 font-mono text-xs uppercase tracking-[0.26em] text-white/70 transition hover:border-white/26 hover:text-white"
+                  >
+                    Открыть @{config.botUsername}
+                  </a>
+                ) : null}
+              </div>
+
+              <div className="mt-12 grid gap-6 border-t border-white/10 pt-7 sm:grid-cols-3">
+                {tacticalNotes.map((note) => (
+                  <div key={note.label}>
+                    <div className="font-display text-3xl uppercase tracking-[0.08em] text-white">{note.value}</div>
+                    <div className="mt-1 max-w-[11rem] font-mono text-[10px] uppercase tracking-[0.22em] text-white/36">
+                      {note.label}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="relative hidden h-full min-h-[34rem] lg:block">
+              <div className="hero-panel absolute bottom-[10%] right-0 w-[34rem] max-w-full overflow-hidden rounded-[2rem] border border-white/10 bg-black/28 p-6 backdrop-blur-xl">
+                <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                  <div>
+                    <div className="font-mono text-[10px] uppercase tracking-[0.26em] text-cyan-200/62">Tactical overlay</div>
+                    <div className="mt-2 font-display text-2xl uppercase tracking-[0.12em] text-white">Jita → Tama</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-white/34">threat index</div>
+                    <div className="mt-2 font-display text-3xl text-amber-300">72%</div>
+                  </div>
+                </div>
+
+                <div className="mt-6 grid gap-6 sm:grid-cols-[1.2fr_0.8fr]">
+                  <div className="space-y-5">
+                    <div className="tactical-map">
+                      <span className="tactical-node node-a" />
+                      <span className="tactical-node node-b" />
+                      <span className="tactical-node node-c" />
+                      <span className="tactical-node node-d" />
+                      <span className="tactical-route" />
+                    </div>
+                    <p className="max-w-sm text-sm leading-7 text-white/56">
+                      Агент соединяет маршрут, текущую активность в системе и состояние персонажа в одном ответе,
+                      без ручного переключения между сайтами и окном бота.
+                    </p>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="border-b border-white/8 pb-4">
+                      <div className="font-mono text-[10px] uppercase tracking-[0.24em] text-white/34">recommended</div>
+                      <div className="mt-2 font-display text-lg uppercase tracking-[0.12em] text-white">manual warp only</div>
+                    </div>
+                    <div className="border-b border-white/8 pb-4">
+                      <div className="font-mono text-[10px] uppercase tracking-[0.24em] text-white/34">tools used</div>
+                      <div className="mt-2 text-sm leading-6 text-white/58">plan_route, zkill, location, market context</div>
+                    </div>
+                    <div>
+                      <div className="font-mono text-[10px] uppercase tracking-[0.24em] text-white/34">pilot note</div>
+                      <div className="mt-2 text-sm leading-6 text-white/58">Если цель просто дожить до дока, ждать тихое окно выгоднее, чем форсить проход.</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </section>
 
-        {/* Examples */}
-        <section id="examples" className="relative z-10 border-y border-white/[0.06] bg-white/[0.015] py-20">
+        <section id="lanes" className="relative z-10 py-24">
           <div className="mx-auto max-w-6xl px-6">
-            <div className="mb-10" data-reveal>
-              <div className="eyebrow">Examples</div>
-              <h2 className="mt-3 font-display text-3xl uppercase tracking-[0.1em] text-white sm:text-4xl">
-                Что агент отвечает
+            <div className="grid gap-12 lg:grid-cols-[0.95fr_1.05fr]">
+              <div data-reveal>
+                <div className="eyebrow">Operating Modes</div>
+                <h2 className="mt-4 font-display text-3xl uppercase tracking-[0.12em] text-white sm:text-5xl">
+                  Не второй клиент.
+                  <br />
+                  Операционный слой поверх игры.
+                </h2>
+                <p className="mt-5 max-w-md text-sm leading-7 text-white/48 sm:text-base">
+                  Веб не конкурирует с Telegram. Он подтверждает возможности агента и аккуратно ведёт к привязке
+                  персонажа, а сама работа остаётся в чате.
+                </p>
+              </div>
+
+              <div className="space-y-8" data-reveal>
+                {operatingLanes.map((lane) => (
+                  <div key={lane.label} className="grid gap-4 border-t border-white/10 pt-5 sm:grid-cols-[4rem_1fr]">
+                    <div className="font-mono text-xs uppercase tracking-[0.32em] text-cyan-200/42">{lane.label}</div>
+                    <div>
+                      <h3 className="font-display text-2xl uppercase tracking-[0.12em] text-white">{lane.title}</h3>
+                      <p className="mt-2 max-w-xl text-sm leading-7 text-white/52 sm:text-base">{lane.text}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="examples" className="relative z-10 border-y border-white/[0.06] bg-black/20 py-24 backdrop-blur-[2px]">
+          <div className="mx-auto grid max-w-6xl gap-14 px-6 lg:grid-cols-[0.86fr_1.14fr]">
+            <div className="lg:sticky lg:top-16 lg:self-start" data-reveal>
+              <div className="eyebrow">Scenarios</div>
+              <h2 className="mt-4 font-display text-3xl uppercase tracking-[0.12em] text-white sm:text-5xl">
+                Ответы ощущаются
+                <br />
+                как полётный бриф.
               </h2>
+              <p className="mt-5 max-w-sm text-sm leading-7 text-white/48 sm:text-base">
+                Вместо сухого списка эндпоинтов агент даёт решение: куда лететь, что нести, где не тормозить и
+                какие данные реально важны прямо сейчас.
+              </p>
             </div>
 
             <div className="space-y-6" data-reveal>
               {commandSamples.map((sample) => (
-                <div
-                  key={sample.title}
-                  className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-6"
-                >
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span className="font-display text-lg uppercase tracking-[0.1em] text-white">{sample.title}</span>
-                    <div className="flex flex-wrap gap-1.5">
+                <article key={sample.title} className="border-t border-white/10 pt-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="font-display text-2xl uppercase tracking-[0.12em] text-white">{sample.title}</h3>
+                    <div className="flex flex-wrap gap-2">
                       {sample.tools.map((tool) => (
-                        <code key={tool} className="rounded border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-[11px] text-cyan-300/60">
+                        <code key={tool} className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.16em] text-cyan-200/60">
                           {tool}
                         </code>
                       ))}
                     </div>
                   </div>
-                  <div className="mt-4 border-l-2 border-cyan-400/20 pl-4">
-                    <p className="font-mono text-sm leading-7 text-white/70">{sample.prompt}</p>
-                  </div>
-                  <p className="mt-3 text-sm leading-7 text-white/45">{sample.response}</p>
-                </div>
+                  <p className="mt-4 max-w-xl font-mono text-sm leading-7 text-white/70">{sample.prompt}</p>
+                  <p className="mt-4 max-w-2xl text-sm leading-7 text-white/48 sm:text-base">{sample.response}</p>
+                </article>
               ))}
             </div>
           </div>
         </section>
 
-        {/* Access */}
-        <section id="access" className="relative z-10 py-20">
+        <section id="coverage" className="relative z-10 py-24">
           <div className="mx-auto max-w-6xl px-6">
-            <div className="grid gap-12 lg:grid-cols-[1fr_1fr]">
+            <div className="grid gap-12 lg:grid-cols-[0.8fr_1.2fr]">
+              <div data-reveal>
+                <div className="eyebrow">Coverage</div>
+                <h2 className="mt-4 font-display text-3xl uppercase tracking-[0.12em] text-white sm:text-5xl">
+                  Широкое покрытие,
+                  <br />
+                  но без витрины ради витрины.
+                </h2>
+                <p className="mt-5 max-w-sm text-sm leading-7 text-white/48 sm:text-base">
+                  Статические знания уходят в локальный SDE. Живые данные идут из ESI. Риск и поведение маршрута
+                  дополняются утилитами, а не фальшивой маркетинговой графикой.
+                </p>
+
+                <div className="mt-10 border-t border-white/10 pt-6">
+                  <div className="font-mono text-[10px] uppercase tracking-[0.26em] text-white/34">Utility tools</div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {utilityTools.map((tool) => (
+                      <div key={tool.name} className="rounded-full border border-white/10 px-3 py-1.5 text-[11px] text-white/62">
+                        <span className="font-mono text-cyan-200/72">{tool.name}</span>
+                        <span className="ml-2 text-white/34">/</span>
+                        <span className="ml-2">{tool.desc}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2" data-reveal>
+                {apiCategories.map((cat) => (
+                  <ApiCategoryCard key={cat.name} category={cat} />
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="access" className="relative z-10 py-24">
+          <div className="mx-auto max-w-6xl px-6">
+            <div className="cta-shell grid gap-12 overflow-hidden rounded-[2rem] border border-white/10 px-6 py-8 sm:px-8 sm:py-10 lg:grid-cols-[1fr_0.9fr]">
               <div data-reveal>
                 <div className="eyebrow">Access</div>
-                <h2 className="mt-3 font-display text-3xl uppercase tracking-[0.1em] text-white sm:text-4xl">
+                <h2 className="mt-4 font-display text-3xl uppercase tracking-[0.12em] text-white sm:text-5xl">
                   Telegram + EVE SSO
                 </h2>
-                <p className="mt-4 text-sm leading-7 text-white/45">
-                  Telegram — основной интерфейс и авторизация. EVE SSO — доступ к приватным данным персонажа. Данные изолированы по каждому пользователю.
+                <p className="mt-5 max-w-xl text-sm leading-7 text-white/52 sm:text-base">
+                  Подключение начинается в боте. Веб аккуратно доводит до авторизации CCP и управления персонажами,
+                  не превращаясь в второй клиент поверх EVE.
                 </p>
 
                 <div className="mt-8 flex flex-wrap gap-3">
                   {config.botLink ? (
                     <a
                       href={config.botLink}
-                      className="inline-flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-5 py-3 font-mono text-xs uppercase tracking-[0.2em] text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-400/20"
+                      className="inline-flex items-center rounded-full border border-cyan-300/38 bg-cyan-300/12 px-6 py-3.5 font-mono text-xs uppercase tracking-[0.26em] text-cyan-50 transition hover:border-cyan-200 hover:bg-cyan-300/18"
                     >
                       Открыть @{config.botUsername}
                     </a>
                   ) : null}
                   <a
                     href="/auth/eve/start"
-                    className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-5 py-3 font-mono text-xs uppercase tracking-[0.2em] text-white/60 transition hover:border-white/20 hover:text-white"
+                    className="inline-flex items-center rounded-full border border-white/12 bg-white/[0.03] px-6 py-3.5 font-mono text-xs uppercase tracking-[0.26em] text-white/70 transition hover:border-white/24 hover:text-white"
                   >
                     Подключить EVE SSO
                   </a>
@@ -488,7 +605,6 @@ function LandingPage({ config }: { config: AppConfig }) {
             </div>
           </div>
         </section>
-
       </main>
 
       <footer className="relative z-10 border-t border-white/[0.06] px-6 py-6">
@@ -503,11 +619,11 @@ function LandingPage({ config }: { config: AppConfig }) {
 
 function AccessStep({ num, title, desc }: { num: string; title: string; desc: string }) {
   return (
-    <div className="flex gap-4 rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
-      <span className="font-mono text-xs text-white/20">{num}</span>
+    <div className="grid gap-3 border-t border-white/10 pt-4 sm:grid-cols-[3rem_1fr]">
+      <span className="font-mono text-xs uppercase tracking-[0.26em] text-cyan-200/42">{num}</span>
       <div>
-        <div className="font-display text-base uppercase tracking-[0.1em] text-white">{title}</div>
-        <p className="mt-1 text-sm leading-6 text-white/40">{desc}</p>
+        <div className="font-display text-base uppercase tracking-[0.12em] text-white">{title}</div>
+        <p className="mt-1 text-sm leading-6 text-white/46">{desc}</p>
       </div>
     </div>
   );
@@ -520,15 +636,15 @@ function ApiCategoryCard({ category }: { category: ApiCategory }) {
     <div
       className={`group cursor-pointer rounded-lg border transition-all duration-200 ${
         isOpen
-          ? 'border-cyan-400/20 bg-cyan-400/[0.04]'
-          : 'border-white/[0.06] bg-white/[0.02] hover:border-white/12 hover:bg-white/[0.04]'
+          ? 'border-cyan-400/20 bg-cyan-400/[0.05]'
+          : 'border-white/[0.08] bg-white/[0.02] hover:border-white/14 hover:bg-white/[0.04]'
       }`}
       onClick={() => setIsOpen(!isOpen)}
     >
-      <div className="flex items-center justify-between px-4 py-3">
-        <span className="font-mono text-xs uppercase tracking-[0.15em] text-white/55">{category.name}</span>
+      <div className="flex items-center justify-between px-4 py-3.5">
+        <span className="font-mono text-xs uppercase tracking-[0.18em] text-white/60">{category.name}</span>
         <div className="flex items-center gap-2">
-          <span className="font-mono text-sm text-cyan-300/70">{category.count}</span>
+          <span className="font-mono text-sm text-cyan-200/72">{category.count}</span>
           <span className={`text-[10px] text-white/25 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}>
             &#9660;
           </span>
@@ -536,10 +652,10 @@ function ApiCategoryCard({ category }: { category: ApiCategory }) {
       </div>
       {isOpen && (
         <div className="border-t border-white/[0.06] px-4 py-3">
-          <p className="text-[13px] leading-6 text-white/50">{category.desc}</p>
+          <p className="text-[13px] leading-6 text-white/52">{category.desc}</p>
           <div className="mt-3 flex flex-wrap gap-1">
             {category.ops.map((op) => (
-              <code key={op} className="rounded border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 text-[10px] text-cyan-300/50">
+              <code key={op} className="rounded border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 text-[10px] text-cyan-200/56">
                 {op}
               </code>
             ))}

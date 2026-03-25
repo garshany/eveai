@@ -19,7 +19,7 @@ The browser surface is intentionally small:
 - The landing page is marketing plus auth entry, not a full application shell.
 - The dashboard is account management, not a second primary interface.
 - Telegram remains the main interaction surface for the agent.
-- Preserve the existing visual language unless product direction changes intentionally.
+- The landing page may use a stronger EVE-specific visual direction when product positioning changes intentionally, but it should still read as support infrastructure for Telegram-first usage rather than a separate web product.
 
 ## Security and Delivery
 
