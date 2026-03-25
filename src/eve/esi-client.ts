@@ -445,9 +445,6 @@ function matchesSnapshot(
   previous: { etag: string | null; lastModified: string | null },
   current: { etag: string | null; lastModified: string | null },
 ): boolean {
-  if (previous.etag && current.etag) {
-    return previous.etag === current.etag;
-  }
   if (previous.lastModified && current.lastModified) {
     return previous.lastModified === current.lastModified;
   }

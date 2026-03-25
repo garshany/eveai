@@ -137,4 +137,77 @@ describe('esi client', () => {
     expect(result.error).toContain('ESI_MAX_PAGES');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('accepts X-Pages collections when pages have different ETags but the same Last-Modified snapshot', async () => {
+    const expires = new Date(Date.now() + 60_000).toUTCString();
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ order_id: 1 }]), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Pages': '2',
+          ETag: '"page-1"',
+          'Last-Modified': 'Wed, 25 Mar 2026 00:00:00 GMT',
+          Expires: expires,
+        },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ order_id: 2 }]), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Pages': '2',
+          ETag: '"page-2"',
+          'Last-Modified': 'Wed, 25 Mar 2026 00:00:00 GMT',
+          Expires: expires,
+        },
+      }));
+
+    const result = await callEsiOperation<Array<{ order_id: number }>>(db, 'get_markets_region_id_orders', {
+      region_id: 10000002,
+      order_type: 'all',
+      fields: null,
+    }, { userId: 0 });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('Expected paginated ESI call to succeed');
+    expect(result.data).toEqual([{ order_id: 1 }, { order_id: 2 }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed when the paginated Last-Modified snapshot changes mid-collection', async () => {
+    const expires = new Date(Date.now() + 60_000).toUTCString();
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ order_id: 1 }]), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Pages': '2',
+          ETag: '"page-1"',
+          'Last-Modified': 'Wed, 25 Mar 2026 00:00:00 GMT',
+          Expires: expires,
+        },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ order_id: 2 }]), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Pages': '2',
+          ETag: '"page-2"',
+          'Last-Modified': 'Wed, 25 Mar 2026 00:01:00 GMT',
+          Expires: expires,
+        },
+      }));
+
+    const result = await callEsiOperation(db, 'get_markets_region_id_orders', {
+      region_id: 10000002,
+      order_type: 'all',
+      fields: null,
+    }, { userId: 0 });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('Expected paginated ESI call to fail on snapshot drift');
+    expect(result.status).toBe(409);
+    expect(result.error).toContain('changed during collection');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });

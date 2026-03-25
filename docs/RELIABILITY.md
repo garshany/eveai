@@ -24,6 +24,11 @@
 - `npm run typecheck`
 - `npm run lint`
 
+## ESI Notes
+
+- `X-Pages` pagination treats `Last-Modified` as the page-set snapshot signal and fails closed if later pages disagree
+- page-local `ETag` differences do not by themselves invalidate a paginated collection
+
 ## Known Reliability Risks
 
 - no separate background worker means long-running synchronous work can still contend with the main process

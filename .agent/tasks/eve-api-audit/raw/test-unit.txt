@@ -1,0 +1,9 @@
+Command: npm run test -- tests/unit/esi-client.test.ts tests/unit/sso.test.ts tests/unit/auth-routes.test.ts tests/unit/capabilities.test.ts
+Exit code: 0
+
+Output summary:
+- `tests/unit/sso.test.ts`: 9 tests passed.
+- `tests/unit/capabilities.test.ts`: 6 tests passed.
+- `tests/unit/esi-client.test.ts`: 5 tests passed.
+- `tests/unit/auth-routes.test.ts`: 10 tests passed.
+- Total: 4 test files, 30 tests passed.

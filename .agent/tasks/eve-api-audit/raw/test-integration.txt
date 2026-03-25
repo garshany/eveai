@@ -1,0 +1,6 @@
+Command: npm run test -- tests/integration/auth-callback.test.ts
+Exit code: 0
+
+Output summary:
+- `tests/integration/auth-callback.test.ts`: 2 tests passed.
+- The auth callback seam passed with no failures.
