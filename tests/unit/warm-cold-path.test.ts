@@ -87,6 +87,61 @@ describe('warm/cold path DB operations', () => {
     expect(rows[1]).toEqual({ role: 'assistant', content: 'Привет! Чем помочь?' });
     expect(rows[2]).toEqual({ role: 'user', content: 'Где я?' });
   });
+
+  it('uses previous_response_id for fresh warm continuations', async () => {
+    db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(1);
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id, last_response_id) VALUES (?, ?, ?)")
+      .run('t1', 1, 'resp_abc123');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'assistant', 'Привет! Чем помочь?');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'Покажи кошелек');
+
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const continuation = __test__.planConversationContinuation(db as never, 't1');
+
+    expect(continuation.mode).toBe('warm');
+    expect(continuation.previousResponseId).toBe('resp_abc123');
+    expect(continuation.items).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Покажи кошелек' }],
+      },
+    ]);
+  });
+
+  it('falls back to cold history when previous_response_id is stale', async () => {
+    db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(1);
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id, last_response_id) VALUES (?, ?, ?)")
+      .run('t1', 1, 'resp_old');
+    db.prepare("INSERT INTO messages (thread_id, role, content, created_at) VALUES (?, ?, ?, datetime('now', '-2 hours'))")
+      .run('t1', 'user', 'Старое сообщение');
+    db.prepare("INSERT INTO messages (thread_id, role, content, created_at) VALUES (?, ?, ?, datetime('now', '-2 hours'))")
+      .run('t1', 'assistant', 'Старый ответ');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'Новый вопрос');
+
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const continuation = __test__.planConversationContinuation(db as never, 't1');
+
+    expect(continuation.mode).toBe('cold');
+    expect(continuation.previousResponseId).toBeNull();
+    expect(continuation.items).toEqual([
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Старое сообщение' }],
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Старый ответ' }],
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Новый вопрос' }],
+      },
+    ]);
+  });
 });
 
 describe('native-responses payload', () => {

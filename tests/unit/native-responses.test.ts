@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('toNativeMessage', () => {
   it('serializes messages as user input_text', async () => {
@@ -108,5 +112,41 @@ describe('parseSse + streamed outputs', () => {
     const events = __test__.parseSse(raw);
     expect(events[0]?.event).toBe('response.output_text.delta');
     expect(__test__.extractStreamedOutputText(events)).toBe('Yo');
+  });
+});
+
+describe('createNativeResponse request body', () => {
+  it('forwards previous_response_id and context_management to the proxy', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"resp_x","output_text":"ok","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+
+    const result = await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+      previousResponseId: 'resp_prev',
+      contextManagement: [{ type: 'compaction', compact_threshold: 1234 }],
+    });
+
+    expect(result.id).toBe('resp_x');
+    expect(body?.previous_response_id).toBe('resp_prev');
+    expect(body?.context_management).toEqual([{ type: 'compaction', compact_threshold: 1234 }]);
   });
 });
