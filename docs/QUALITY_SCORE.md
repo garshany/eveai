@@ -17,3 +17,9 @@ Scoring uses `1` to `5`, where `5` means strong structure plus regression covera
 - add mechanical checks for docs coverage and stale references
 - tighten product-spec coverage for Telegram and web flows
 - reduce duplication between legacy chat-based identity paths and current user-based identity paths
+
+## Knowledge-System Notes
+
+- `AGENTS.md` is intentionally a short router, not the full manual
+- `docs/index.md` and `docs/repo-map.md` are the navigation layer for deeper repo knowledge
+- documentation drift is still a tracked quality gap until mechanical checks exist

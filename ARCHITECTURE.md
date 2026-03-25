@@ -18,6 +18,16 @@ Browser
 
 The app is a single-process Node.js service. There is no job queue, no event bus, and no separate background worker tier.
 
+## How To Read This Repo
+
+Start with the smallest stable entrypoint that matches the question:
+
+- [`AGENTS.md`](./AGENTS.md) for routing, invariants, and the next document to open
+- [`docs/index.md`](./docs/index.md) for the docs catalog
+- [`docs/repo-map.md`](./docs/repo-map.md) for the fast file-and-domain map
+
+The repo knowledge model is progressive disclosure: short map first, then indexed docs, then domain files.
+
 ## Runtime Boundaries
 
 ### Telegram Boundary
@@ -89,7 +99,7 @@ The app is a single-process Node.js service. There is no job queue, no event bus
 1. User sends a message in a private chat.
 2. grammY middleware validates access and session context.
 3. The handler resolves user/chat identity and active character.
-4. The agent runtime loads thread history from SQLite.
+4. The agent runtime chooses a warm or cold context path: it reuses a fresh `last_response_id` as `previous_response_id` for warm turns, or rebuilds context from SQLite history for cold starts.
 5. The model runs through hosted `tool_search` and deferred tools.
 6. Tool calls and final messages are written back to SQLite.
 
@@ -116,6 +126,8 @@ The app is a single-process Node.js service. There is no job queue, no event bus
 
 ## Knowledge Map
 
+- Docs catalog: [docs/index.md](./docs/index.md)
+- File-and-domain map: [docs/repo-map.md](./docs/repo-map.md)
 - Product and UX intent: [docs/PRODUCT_SENSE.md](./docs/PRODUCT_SENSE.md)
 - Design constraints: [docs/DESIGN.md](./docs/DESIGN.md)
 - Frontend behavior: [docs/FRONTEND.md](./docs/FRONTEND.md)

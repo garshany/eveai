@@ -18,6 +18,7 @@ Repository knowledge lives in versioned docs under `docs/`. Read only the next d
 
 ## Start Here
 
+- [docs/index.md](./docs/index.md)
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [docs/DESIGN.md](./docs/DESIGN.md)
 - [docs/PRODUCT_SENSE.md](./docs/PRODUCT_SENSE.md)
@@ -29,6 +30,7 @@ Repository knowledge lives in versioned docs under `docs/`. Read only the next d
 
 ## Deep Links
 
+- [docs/repo-map.md](./docs/repo-map.md)
 - [docs/design-docs/index.md](./docs/design-docs/index.md)
 - [docs/product-specs/index.md](./docs/product-specs/index.md)
 - [docs/generated/db-schema.md](./docs/generated/db-schema.md)
@@ -39,20 +41,19 @@ Repository knowledge lives in versioned docs under `docs/`. Read only the next d
 
 ## Repo Map
 
-- `src/app.ts` boots DB, HTTP server, and Telegram bot.
-- `src/config.ts` is the runtime config boundary.
-- `src/agent/` contains the model runtime, prompts, planning, execution, and finalization.
-- `src/auth/` contains Telegram login, handoff, session, and user resolution.
-- `src/db/` contains SQLite schema, migrations, and DB helpers.
-- `src/eve/` contains ESI, SSO, SDE, route planning, zKill, and user profile logic.
-- `src/telegram/` contains grammY bot setup and command handlers.
-- `src/web/` contains Fastify routes, middleware, security headers, health, and frontend shell.
-- `client/src/` contains the Vite/React landing page and dashboard.
-- `tests/unit/` covers module rules and regressions.
-- `tests/integration/` covers auth, DB, and Telegram flow seams.
-- `deploy/systemd/` contains service units.
-- `skills/` contains local Codex skills for ESI, planning, and SDE workflows.
-- `data/` contains local runtime DBs, cached swagger, SDE inputs, and generated user snapshots.
+- Runtime entrypoints:
+  - `src/app.ts` boots DB, HTTP server, and Telegram bot.
+  - `src/config.ts` is the runtime config boundary.
+- Domain folders:
+  - `src/agent/`, `src/auth/`, `src/db/`, `src/eve/`, `src/telegram/`, `src/web/`
+- Product surface:
+  - `client/src/` contains the Vite/React landing page and dashboard.
+- Verification and ops:
+  - `tests/unit/`, `tests/integration/`, `deploy/systemd/`
+- Repo-local knowledge:
+  - `docs/` is the system of record.
+  - `docs/repo-map.md` is the fast file-and-domain map.
+  - `skills/` contains local Codex skills for ESI, planning, and SDE workflows.
 
 ## Working Rules
 
