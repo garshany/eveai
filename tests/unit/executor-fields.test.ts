@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { filterEsiFields, ESI_FIELD_WHITELIST, validateEsiFields } from '../../src/agent/executor.js';
+import { BULK_FILTER_OPERATIONS } from '../../src/eve/esi-catalog.js';
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => {
@@ -152,6 +153,11 @@ describe('filterEsiFields', () => {
       'get_corporations_corporation_id_structures',
       'get_corporations_corporation_id_containers_logs',
       'get_contracts_public_region_id',
+      'get_universe_system_kills',
+      'get_universe_system_jumps',
+      'get_markets_prices',
+      'get_industry_systems',
+      'get_sovereignty_map',
     ];
     for (const ep of expectedEndpoints) {
       expect(ESI_FIELD_WHITELIST[ep], `missing whitelist for ${ep}`).toBeDefined();
@@ -207,6 +213,93 @@ describe('filterEsiFields', () => {
     const catalog = await loadEsiCatalog();
     for (const operationName of Object.keys(ESI_FIELD_WHITELIST)) {
       expect(catalog.has(operationName), `unknown catalog op ${operationName}`).toBe(true);
+    }
+  });
+
+  it('applies default whitelist for bulk system_kills endpoint', () => {
+    const rows = [
+      { system_id: 30002768, ship_kills: 5, npc_kills: 120, pod_kills: 2, extra_field: 'noise' },
+      { system_id: 30000142, ship_kills: 0, npc_kills: 10, pod_kills: 0, extra_field: 'noise' },
+    ];
+    const result = filterEsiFields('get_universe_system_kills', rows);
+    expect(result).toEqual([
+      { system_id: 30002768, ship_kills: 5, npc_kills: 120, pod_kills: 2 },
+      { system_id: 30000142, ship_kills: 0, npc_kills: 10, pod_kills: 0 },
+    ]);
+  });
+
+  it('applies default whitelist for bulk markets_prices endpoint', () => {
+    const rows = [
+      { type_id: 34, adjusted_price: 5.5, average_price: 6.0, extra: true },
+      { type_id: 35, adjusted_price: 10.0, average_price: 11.0, extra: true },
+    ];
+    const result = filterEsiFields('get_markets_prices', rows);
+    expect(result).toEqual([
+      { type_id: 34, adjusted_price: 5.5, average_price: 6.0 },
+      { type_id: 35, adjusted_price: 10.0, average_price: 11.0 },
+    ]);
+  });
+
+  it('applies explicit fields to bulk endpoint', () => {
+    const rows = [
+      { system_id: 30002768, ship_kills: 5, npc_kills: 120, pod_kills: 2 },
+    ];
+    const result = filterEsiFields('get_universe_system_kills', rows, ['system_id', 'ship_kills']);
+    expect(result).toEqual([
+      { system_id: 30002768, ship_kills: 5 },
+    ]);
+  });
+});
+
+describe('BULK_FILTER_OPERATIONS', () => {
+  it('defines all 5 bulk endpoints', () => {
+    expect(Object.keys(BULK_FILTER_OPERATIONS)).toEqual([
+      'get_universe_system_kills',
+      'get_universe_system_jumps',
+      'get_markets_prices',
+      'get_industry_systems',
+      'get_sovereignty_map',
+    ]);
+  });
+
+  it('each bulk op has a valid filterKey', () => {
+    for (const [opName, spec] of Object.entries(BULK_FILTER_OPERATIONS)) {
+      expect(spec.filterKey, `${opName} missing filterKey`).toBeTruthy();
+      expect(typeof spec.filterKey).toBe('string');
+    }
+  });
+
+  it('each bulk op has a whitelist in ESI_FIELD_WHITELIST', () => {
+    for (const opName of Object.keys(BULK_FILTER_OPERATIONS)) {
+      expect(ESI_FIELD_WHITELIST[opName], `${opName} missing whitelist`).toBeDefined();
+    }
+  });
+
+  it('filterKey is present in the whitelist fields', () => {
+    for (const [opName, spec] of Object.entries(BULK_FILTER_OPERATIONS)) {
+      expect(
+        ESI_FIELD_WHITELIST[opName].includes(spec.filterKey),
+        `${opName}: filterKey "${spec.filterKey}" not in whitelist`,
+      ).toBe(true);
+    }
+  });
+
+  it('bulk ops exist in ESI catalog', async () => {
+    const { loadEsiCatalog } = await import('../../src/eve/esi-catalog.js');
+    const catalog = await loadEsiCatalog();
+    for (const opName of Object.keys(BULK_FILTER_OPERATIONS)) {
+      expect(catalog.has(opName), `${opName} not found in ESI catalog`).toBe(true);
+    }
+  });
+
+  it('bulk op tools include filter_ids parameter', async () => {
+    const { loadEsiCatalog } = await import('../../src/eve/esi-catalog.js');
+    const catalog = await loadEsiCatalog();
+    for (const opName of Object.keys(BULK_FILTER_OPERATIONS)) {
+      const meta = catalog.get(opName)!;
+      const params = meta.tool.parameters as { properties: Record<string, unknown>; required: string[] };
+      expect(params.properties.filter_ids, `${opName} tool missing filter_ids param`).toBeDefined();
+      expect(params.required, `${opName} tool should require filter_ids`).toContain('filter_ids');
     }
   });
 });

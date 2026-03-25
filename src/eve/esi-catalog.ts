@@ -79,14 +79,8 @@ type SwaggerSchema = {
   properties?: Record<string, SwaggerSchema>;
 };
 
-// Operations that return massive unfiltered arrays — excluded from agent tools.
-// Static equivalents live in SDE; kill stats have a filtered wrapper (system_kill_stats).
+// Operations excluded from agent tools — static equivalents live in SDE.
 const EXCLUDED_OPERATIONS = new Set([
-  'get_universe_system_kills',   // ~8000 entries, use system_kill_stats instead
-  'get_universe_system_jumps',   // ~8000 entries, no filter
-  'get_markets_prices',          // ~13000 entries, no filter
-  'get_industry_systems',        // ~8000 entries, no filter
-  'get_sovereignty_map',         // ~8000 entries, no filter
   'get_universe_systems',        // ~8500 IDs, available in SDE
   'get_universe_types',          // ~51000 IDs, available in SDE
   'get_universe_categories',     // available in SDE
@@ -99,6 +93,19 @@ const EXCLUDED_OPERATIONS = new Set([
   'get_universe_graphics',       // available in SDE
   'get_universe_races',          // available in SDE
 ]);
+
+/**
+ * Bulk operations that return massive arrays without server-side filtering.
+ * The executor fetches all rows, then filters client-side by the given key.
+ * Model must supply `filter_ids` (array of IDs) to select specific rows.
+ */
+export const BULK_FILTER_OPERATIONS: Record<string, { filterKey: string; description: string }> = {
+  get_universe_system_kills:  { filterKey: 'system_id',       description: 'Filter by system_id (array of integers). Returns NPC/ship/pod kills per system in the last hour.' },
+  get_universe_system_jumps:  { filterKey: 'system_id',       description: 'Filter by system_id (array of integers). Returns jump count per system in the last hour.' },
+  get_markets_prices:         { filterKey: 'type_id',         description: 'Filter by type_id (array of integers). Returns adjusted_price and average_price per item.' },
+  get_industry_systems:       { filterKey: 'solar_system_id', description: 'Filter by solar_system_id (array of integers). Returns manufacturing/research cost indices.' },
+  get_sovereignty_map:        { filterKey: 'system_id',       description: 'Filter by system_id (array of integers). Returns sovereignty holder (alliance/corp/faction).' },
+};
 
 const HIDDEN_PARAMS = new Set([
   'datasource',
@@ -168,8 +175,9 @@ async function loadEsiCatalogInternal(): Promise<Map<string, EsiOperationMeta>> 
       const requiredScopes = extractRequiredScopes(operation.security);
       const namespace = buildNamespace(path);
       const responseFields = extractResponseFieldNames(operation);
-      const toolParameters = buildToolParameters(exposedParams, bodyParameter, responseFields);
-      const description = buildDescription(method, path, operation, requiredScopes, responseFields);
+      const bulkSpec = BULK_FILTER_OPERATIONS[operation.operationId] ?? null;
+      const toolParameters = buildToolParameters(exposedParams, bodyParameter, responseFields, bulkSpec);
+      const description = buildDescription(method, path, operation, requiredScopes, responseFields, bulkSpec);
       const toolPolicy = namespace.includes('ui')
         ? 'ui'
         : method === 'GET'
@@ -276,6 +284,7 @@ function buildToolParameters(
   parameters: SwaggerParameter[],
   bodyParameter: SwaggerParameter | null,
   responseFields: string[] | null,
+  bulkSpec: { filterKey: string; description: string } | null = null,
 ): Record<string, unknown> {
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
@@ -290,6 +299,14 @@ function buildToolParameters(
       description: `${bodyParameter.description ?? 'Request body'} JSON string`,
     };
     required.push(bodyParameter.name);
+  }
+  if (bulkSpec) {
+    properties.filter_ids = {
+      type: 'array',
+      items: { type: 'integer' },
+      description: `REQUIRED. ${bulkSpec.description}`,
+    };
+    required.push('filter_ids');
   }
   properties.fields = {
     type: ['array', 'null'],
@@ -889,6 +906,7 @@ function buildDescription(
   operation: SwaggerOperation,
   requiredScopes: string[],
   responseFields: string[] | null,
+  bulkSpec: { filterKey: string; description: string } | null = null,
 ): string {
   const summary = (operation.summary ?? operation.description ?? '').trim();
   const scopeText = requiredScopes.length > 0
@@ -897,7 +915,10 @@ function buildDescription(
   const fieldsText = responseFields && responseFields.length > 0
     ? ` Response fields: ${responseFields.join(', ')}. Use fields to request only the subset you need.`
     : ' Response field projection is unsupported for this endpoint.';
-  return `${method} ${path}.${summary ? ` ${summary}.` : ''}${scopeText}${fieldsText}`;
+  const bulkText = bulkSpec
+    ? ` BULK endpoint: returns all rows from ESI, filtered server-side by filter_ids on key "${bulkSpec.filterKey}". Always supply filter_ids.`
+    : '';
+  return `${method} ${path}.${summary ? ` ${summary}.` : ''}${scopeText}${fieldsText}${bulkText}`;
 }
 
 function buildFieldsParameterDescription(responseFields: string[] | null): string {

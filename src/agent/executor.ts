@@ -13,6 +13,7 @@ import {
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
 import { updatePlan } from './planner.js';
+import { BULK_FILTER_OPERATIONS } from '../eve/esi-catalog.js';
 import {
   buildFunctionCallOutputs,
   createNativeResponse,
@@ -36,6 +37,7 @@ const MAX_ZKILL_CALLS_PER_TURN = 4;
 const MAX_CONSECUTIVE_SAME_TOOL = 3;
 const MAX_CONTEXT_MESSAGES = 10;
 const MAX_CONTEXT_CHARS = 15000;
+const PREVIOUS_RESPONSE_MAX_AGE_MS = 55 * 60 * 1000;
 
 /**
  * Default whitelist of fields to keep per ESI operation.
@@ -72,6 +74,13 @@ export const ESI_FIELD_WHITELIST: Record<string, string[]> = {
 
   // Public contracts
   get_contracts_public_region_id: ['contract_id', 'type', 'price', 'date_expired', 'date_issued', 'start_location_id', 'end_location_id', 'title', 'volume'],
+
+  // Bulk endpoints (server-side row filtering via filter_ids)
+  get_universe_system_kills: ['system_id', 'ship_kills', 'npc_kills', 'pod_kills'],
+  get_universe_system_jumps: ['system_id', 'ship_jumps'],
+  get_markets_prices: ['type_id', 'adjusted_price', 'average_price'],
+  get_industry_systems: ['solar_system_id', 'cost_indices'],
+  get_sovereignty_map: ['system_id', 'alliance_id', 'corporation_id', 'faction_id'],
 };
 
 /**
@@ -333,12 +342,15 @@ async function runNativeAgentLoop(
   const tools = await buildNativeAgentTools();
   const webSearchState = createWebSearchState();
 
-  // Always build context from DB — no cross-request previous_response_id
-  // Current user message is already in DB (inserted by handler), so no need to add goal separately
-  const historyItems = buildSmartContext(db, threadId);
-  let pendingItems: NativeInputItem[] = historyItems;
-  let previousResponseId: string | null = null;
-  console.log('[executor] context: %d history items', historyItems.length);
+  const continuation = planConversationContinuation(db, threadId);
+  let pendingItems: NativeInputItem[] = continuation.items;
+  let previousResponseId: string | null = continuation.previousResponseId;
+  console.log(
+    '[executor] context: mode=%s items=%d prevId=%s',
+    continuation.mode,
+    continuation.items.length,
+    continuation.previousResponseId ?? 'none',
+  );
 
   // Build context management for native compaction
   const contextManagement = config.openai.compactThreshold > 0
@@ -379,6 +391,7 @@ async function runNativeAgentLoop(
       console.error('[executor] model error:', response.error.message);
       const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
       storeAssistantMessage(db, threadId, message);
+      saveLastResponseId(db, threadId, null);
       console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
         totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
       return message;
@@ -407,6 +420,7 @@ async function runNativeAgentLoop(
     if (toolCalls.length === 0) {
       if (response.outputText.trim()) {
         storeAssistantMessage(db, threadId, response.outputText);
+        saveLastResponseId(db, threadId, response.id);
         console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
           iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, response.outputText.length);
         return response.outputText;
@@ -429,6 +443,7 @@ async function runNativeAgentLoop(
       }
       const fallback = 'Не удалось завершить ответ: модель не вернула ни текст, ни tool calls.';
       storeAssistantMessage(db, threadId, fallback);
+      saveLastResponseId(db, threadId, null);
       return fallback;
     }
     emptyResponseRetries = 0;
@@ -468,6 +483,7 @@ async function runNativeAgentLoop(
     if (!response.id) {
       const message = 'Не удалось продолжить tool loop: proxy не вернул response id.';
       storeAssistantMessage(db, threadId, message);
+      saveLastResponseId(db, threadId, null);
       return message;
     }
 
@@ -488,6 +504,7 @@ async function runNativeAgentLoop(
 
   const timeout = 'Остановился после слишком большого числа tool iterations.';
   storeAssistantMessage(db, threadId, timeout);
+  saveLastResponseId(db, threadId, null);
   console.log('[executor] === DONE (timeout) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
     MAX_TOOL_ITERATIONS, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
   return timeout;
@@ -631,9 +648,31 @@ async function executeToolCall(
   }
 
   const requestedFields = fieldValidation.fields;
-  const esiArgs = Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'fields'));
+  const esiArgs = Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'fields' && key !== 'filter_ids'));
+
+  // Bulk endpoint: validate filter_ids
+  const bulkSpec = BULK_FILTER_OPERATIONS[name] ?? null;
+  const filterIds = Array.isArray(args.filter_ids) ? args.filter_ids as number[] : null;
+  if (bulkSpec && (!filterIds || filterIds.length === 0)) {
+    return { ok: false, status: 400, error: `${name} is a bulk endpoint. You must supply filter_ids (array of ${bulkSpec.filterKey} values) to filter results.` };
+  }
+  if (bulkSpec && filterIds && filterIds.length > 100) {
+    return { ok: false, status: 400, error: `filter_ids too large (${filterIds.length}). Maximum 100 IDs per request.` };
+  }
 
   const esiResult = await callEsiOperation(db, name, esiArgs, ctx);
+
+  // Bulk endpoint: filter rows by filter_ids
+  if (esiResult.ok && esiResult.data != null && bulkSpec && filterIds) {
+    const idSet = new Set(filterIds);
+    if (Array.isArray(esiResult.data)) {
+      const before = esiResult.data.length;
+      esiResult.data = (esiResult.data as Record<string, unknown>[]).filter(
+        (row) => idSet.has(Number(row[bulkSpec.filterKey])),
+      );
+      console.log('[esi] %s bulk filter: %d/%d rows matched by %s in %j', name, (esiResult.data as unknown[]).length, before, bulkSpec.filterKey, filterIds);
+    }
+  }
 
   // Filter noisy fields from ESI responses
   if (esiResult.ok && esiResult.data != null) {
@@ -890,6 +929,64 @@ function buildSmartContext(db: Db, threadId: string): NativeInputItem[] {
       : toNativeMessage(row.content),
   );
 }
+
+type ConversationContinuation = {
+  mode: 'warm' | 'cold';
+  items: NativeInputItem[];
+  previousResponseId: string | null;
+};
+
+function planConversationContinuation(db: Db, threadId: string): ConversationContinuation {
+  const row = db.prepare(
+    `SELECT
+       t.last_response_id AS last_response_id,
+       (SELECT content FROM messages WHERE thread_id = t.thread_id AND role = 'user' ORDER BY id DESC LIMIT 1) AS latest_user_content,
+       (SELECT created_at FROM messages WHERE thread_id = t.thread_id AND role = 'assistant' ORDER BY id DESC LIMIT 1) AS latest_assistant_at
+     FROM agent_threads t
+     WHERE t.thread_id = ?`
+  ).get(threadId) as {
+    last_response_id: string | null;
+    latest_user_content: string | null;
+    latest_assistant_at: string | null;
+  } | undefined;
+
+  if (
+    row?.last_response_id
+    && row.latest_user_content
+    && isRecentSqliteTimestamp(row.latest_assistant_at, PREVIOUS_RESPONSE_MAX_AGE_MS)
+  ) {
+    return {
+      mode: 'warm',
+      items: [toNativeMessage(row.latest_user_content)],
+      previousResponseId: row.last_response_id,
+    };
+  }
+
+  return {
+    mode: 'cold',
+    items: buildSmartContext(db, threadId),
+    previousResponseId: null,
+  };
+}
+
+function saveLastResponseId(db: Db, threadId: string, responseId: string | null): void {
+  db.prepare(
+    "UPDATE agent_threads SET last_response_id = ?, updated_at = datetime('now') WHERE thread_id = ?"
+  ).run(responseId, threadId);
+}
+
+function isRecentSqliteTimestamp(value: string | null, maxAgeMs: number): boolean {
+  if (!value) return false;
+  const millis = Date.parse(value.replace(' ', 'T') + 'Z');
+  if (!Number.isFinite(millis)) return false;
+  return (Date.now() - millis) <= maxAgeMs;
+}
+
+export const __test__ = {
+  buildSmartContext,
+  planConversationContinuation,
+  isRecentSqliteTimestamp,
+};
 
 function compactToolResult(value: unknown): unknown {
   if (Array.isArray(value)) {
