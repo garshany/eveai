@@ -57,37 +57,194 @@ const commandSamples: CommandSample[] = [
   },
 ];
 
-const apiCategories = [
-  { name: 'Corporation', count: 22 },
-  { name: 'Universe', count: 14 },
-  { name: 'Character', count: 14 },
-  { name: 'Fleets', count: 14 },
-  { name: 'Market', count: 11 },
-  { name: 'Contacts', count: 9 },
-  { name: 'Contracts', count: 9 },
-  { name: 'Mail', count: 9 },
-  { name: 'Faction Warfare', count: 8 },
-  { name: 'Industry', count: 8 },
-  { name: 'Assets', count: 6 },
-  { name: 'Wallet', count: 6 },
-  { name: 'Dogma', count: 5 },
-  { name: 'UI', count: 5 },
-  { name: 'Alliance', count: 4 },
-  { name: 'Calendar', count: 4 },
-  { name: 'PI', count: 4 },
-  { name: 'Sovereignty', count: 3 },
-  { name: 'Skills', count: 3 },
-  { name: 'Killmails', count: 3 },
-  { name: 'Location', count: 3 },
-  { name: 'Wars', count: 3 },
-  { name: 'Fittings', count: 3 },
-  { name: 'Clones', count: 2 },
-  { name: 'Loyalty', count: 2 },
-  { name: 'Incursions', count: 1 },
-  { name: 'Insurance', count: 1 },
-  { name: 'Routes', count: 1 },
-  { name: 'Search', count: 1 },
-  { name: 'Status', count: 1 },
+interface ApiCategory {
+  name: string;
+  count: number;
+  desc: string;
+  ops: string[];
+}
+
+const apiCategories: ApiCategory[] = [
+  {
+    name: 'Corporation',
+    count: 22,
+    desc: 'Полное управление корпорацией: активы, производство, финансы, участники, роли, структуры и цитадели.',
+    ops: ['assets', 'blueprints', 'industry_jobs', 'wallet', 'members', 'member_tracking', 'roles', 'titles', 'medals', 'structures', 'starbases', 'customs_offices', 'facilities', 'contacts', 'standings', 'contracts', 'killmails', 'mining_extractions', 'mining_observers'],
+  },
+  {
+    name: 'Universe',
+    count: 14,
+    desc: 'Данные о вселенной: звёзды, планеты, луны, станции, звёздные врата, системы, регионы и созвездия.',
+    ops: ['systems', 'constellations', 'regions', 'stargates', 'stations', 'structures', 'stars', 'planets', 'moons', 'asteroid_belts', 'types', 'groups', 'categories', 'ids_names'],
+  },
+  {
+    name: 'Character',
+    count: 14,
+    desc: 'Профиль персонажа: история, афилиации, портрет, корпоративная принадлежность и CSPA-настройки.',
+    ops: ['public_info', 'portrait', 'affiliation', 'corporation_history', 'medals', 'titles', 'standings', 'agents_research', 'fatigue', 'notifications', 'cspa_charge'],
+  },
+  {
+    name: 'Fleets',
+    count: 14,
+    desc: 'Управление флотом: участники, крылья и сквады, приглашения, перемещения по структуре.',
+    ops: ['fleet_info', 'members', 'wings', 'squads', 'create_wing', 'create_squad', 'invite', 'kick', 'move_member', 'rename_squad', 'delete_wing'],
+  },
+  {
+    name: 'Market',
+    count: 11,
+    desc: 'Рыночные данные: ордера по регионам и структурам, история цен, ценовые индексы, типы на рынке.',
+    ops: ['region_orders', 'region_history', 'structure_orders', 'prices', 'type_ids', 'groups'],
+  },
+  {
+    name: 'Contacts',
+    count: 9,
+    desc: 'Контакты и лейблы для персонажей, корпораций и альянсов.',
+    ops: ['character_contacts', 'character_labels', 'corporation_contacts', 'corporation_labels', 'alliance_contacts', 'alliance_labels'],
+  },
+  {
+    name: 'Contracts',
+    count: 9,
+    desc: 'Контракты персонажа, корпорации и публичные: ставки, предметы, детали.',
+    ops: ['character_contracts', 'character_contract_bids', 'character_contract_items', 'corporation_contracts', 'public_contracts', 'public_bids', 'public_items'],
+  },
+  {
+    name: 'Mail',
+    count: 9,
+    desc: 'Внутриигровая почта: чтение, отправка, лейблы, списки рассылки.',
+    ops: ['mail_headers', 'mail_body', 'send_mail', 'mail_labels', 'update_labels', 'delete_mail', 'mailing_lists'],
+  },
+  {
+    name: 'Faction Warfare',
+    count: 8,
+    desc: 'Фракционные войны: статистика, занятые системы, лидерборды, состояние войн.',
+    ops: ['character_stats', 'corporation_stats', 'systems', 'leaderboards', 'wars', 'faction_stats'],
+  },
+  {
+    name: 'Industry',
+    count: 8,
+    desc: 'Производство и исследования: задания, чертежи, индексы систем, публичные объекты.',
+    ops: ['character_jobs', 'character_mining', 'corporation_jobs', 'corporation_mining', 'industry_systems', 'industry_facilities'],
+  },
+  {
+    name: 'Assets',
+    count: 6,
+    desc: 'Инвентарь персонажа и корпорации: список, названия, расположение предметов.',
+    ops: ['character_assets', 'character_asset_names', 'character_asset_locations', 'corporation_assets', 'corporation_asset_names', 'corporation_asset_locations'],
+  },
+  {
+    name: 'Wallet',
+    count: 6,
+    desc: 'Финансы: баланс, журнал транзакций, детали операций — для персонажа и корпорации.',
+    ops: ['balance', 'journal', 'transactions', 'corporation_wallets', 'corporation_journal', 'corporation_transactions'],
+  },
+  {
+    name: 'Dogma',
+    count: 5,
+    desc: 'Система атрибутов и эффектов: характеристики модулей, кораблей и динамические предметы.',
+    ops: ['attributes', 'attribute_info', 'effects', 'effect_info', 'dynamic_items'],
+  },
+  {
+    name: 'UI',
+    count: 5,
+    desc: 'Управление интерфейсом клиента: автопилот, маркет, информация, контракты.',
+    ops: ['autopilot_waypoint', 'open_market_details', 'open_information', 'open_contract', 'open_newmail'],
+  },
+  {
+    name: 'Alliance',
+    count: 4,
+    desc: 'Информация об альянсах: профиль, иконки, список корпораций-членов.',
+    ops: ['alliance_info', 'alliance_icons', 'alliance_corporations'],
+  },
+  {
+    name: 'Calendar',
+    count: 4,
+    desc: 'Календарь событий: список, детали, ответы на приглашения.',
+    ops: ['calendar_events', 'event_details', 'event_attendees', 'respond_to_event'],
+  },
+  {
+    name: 'PI',
+    count: 4,
+    desc: 'Планетарное взаимодействие: колонии, схемы производства, таможенные посты.',
+    ops: ['colonies', 'colony_layout', 'customs_offices', 'schematic_info'],
+  },
+  {
+    name: 'Sovereignty',
+    count: 3,
+    desc: 'Суверенитет: карта влияния, структуры и активные кампании.',
+    ops: ['sovereignty_map', 'sovereignty_structures', 'sovereignty_campaigns'],
+  },
+  {
+    name: 'Skills',
+    count: 3,
+    desc: 'Навыки персонажа: текущие, очередь обучения, атрибуты и импланты.',
+    ops: ['skills', 'skillqueue', 'attributes'],
+  },
+  {
+    name: 'Killmails',
+    count: 3,
+    desc: 'Киллы: индекс убийств персонажа, детали киллмейла с фитом и участниками.',
+    ops: ['character_killmails', 'corporation_killmails', 'killmail_details'],
+  },
+  {
+    name: 'Location',
+    count: 3,
+    desc: 'Текущее положение: система, корабль, онлайн-статус персонажа.',
+    ops: ['location', 'ship_type', 'online_status'],
+  },
+  {
+    name: 'Wars',
+    count: 3,
+    desc: 'Военные декларации: список войн, детали, киллмейлы участников.',
+    ops: ['war_list', 'war_details', 'war_killmails'],
+  },
+  {
+    name: 'Fittings',
+    count: 3,
+    desc: 'Корабельные фиты: сохранённые сборки персонажа, создание и удаление.',
+    ops: ['character_fittings', 'create_fitting', 'delete_fitting'],
+  },
+  {
+    name: 'Clones',
+    count: 2,
+    desc: 'Клоны и импланты: активные клоны, расположение, установленные импланты.',
+    ops: ['clones', 'implants'],
+  },
+  {
+    name: 'Loyalty',
+    count: 2,
+    desc: 'Лоялти-поинты: очки верности у NPC-корпораций и доступные офферы.',
+    ops: ['loyalty_points', 'loyalty_offers'],
+  },
+  {
+    name: 'Incursions',
+    count: 1,
+    desc: 'Вторжения Sansha: активные инкурсии, системы и состояние.',
+    ops: ['active_incursions'],
+  },
+  {
+    name: 'Insurance',
+    count: 1,
+    desc: 'Страхование кораблей: стоимость и уровни выплат для всех типов.',
+    ops: ['insurance_prices'],
+  },
+  {
+    name: 'Routes',
+    count: 1,
+    desc: 'Маршрутизация: построение маршрута между системами через ESI.',
+    ops: ['route'],
+  },
+  {
+    name: 'Search',
+    count: 1,
+    desc: 'Поиск по вселенной: персонажи, корпорации, системы, станции, типы.',
+    ops: ['search'],
+  },
+  {
+    name: 'Status',
+    count: 1,
+    desc: 'Состояние кластера Tranquility: онлайн, количество игроков, версия.',
+    ops: ['server_status'],
+  },
 ];
 
 const utilityTools = [
@@ -135,12 +292,13 @@ export function App({ root }: RootProps) {
 function LandingPage({ config }: { config: AppConfig }) {
   return (
     <div className="min-h-screen text-white">
-      {/* Background layers */}
+      {/* Background — EVE nebula + star map */}
       <div className="pointer-events-none fixed inset-0">
         <div className="absolute inset-0 bg-void" />
+        <div className="nebula absolute inset-0" />
         <div className="starfield absolute inset-0" />
-        <div className="absolute inset-x-0 top-0 h-[60rem] bg-[radial-gradient(ellipse_80%_50%_at_50%_-10%,rgba(56,189,248,0.12),transparent_60%)]" />
-        <div className="absolute inset-x-0 top-0 h-[40rem] bg-[radial-gradient(ellipse_60%_40%_at_80%_0%,rgba(251,146,60,0.08),transparent_50%)]" />
+        <div className="starfield-deep absolute inset-0" />
+        <div className="star-map-grid absolute inset-0" />
       </div>
 
       {/* Header */}
@@ -241,15 +399,9 @@ function LandingPage({ config }: { config: AppConfig }) {
               </p>
             </div>
 
-            <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3" data-reveal>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3" data-reveal>
               {apiCategories.map((cat) => (
-                <div
-                  key={cat.name}
-                  className="flex items-center justify-between rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-2.5 transition hover:border-white/12 hover:bg-white/[0.04]"
-                >
-                  <span className="font-mono text-xs uppercase tracking-[0.15em] text-white/55">{cat.name}</span>
-                  <span className="font-mono text-sm text-cyan-300/70">{cat.count}</span>
-                </div>
+                <ApiCategoryCard key={cat.name} category={cat} />
               ))}
             </div>
           </div>
@@ -353,17 +505,6 @@ function LandingPage({ config }: { config: AppConfig }) {
           </div>
         </section>
 
-        {/* Architecture */}
-        <section className="relative z-10 border-t border-white/[0.06] py-16">
-          <div className="mx-auto max-w-6xl px-6">
-            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4" data-reveal>
-              <ArchCard title="Single process" desc="Node.js, без воркеров и очередей" />
-              <ArchCard title="SQLite" desc="Локальная БД + SDE" />
-              <ArchCard title="grammY" desc="Long polling, без вебхуков" />
-              <ArchCard title="Fastify" desc="Auth, dashboard, health" />
-            </div>
-          </div>
-        </section>
       </main>
 
       <footer className="relative z-10 border-t border-white/[0.06] px-6 py-6">
@@ -388,11 +529,39 @@ function AccessStep({ num, title, desc }: { num: string; title: string; desc: st
   );
 }
 
-function ArchCard({ title, desc }: { title: string; desc: string }) {
+function ApiCategoryCard({ category }: { category: ApiCategory }) {
+  const [isOpen, setIsOpen] = useState(false);
+
   return (
-    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
-      <div className="font-mono text-xs uppercase tracking-[0.15em] text-cyan-300/60">{title}</div>
-      <p className="mt-2 text-sm text-white/40">{desc}</p>
+    <div
+      className={`group cursor-pointer rounded-lg border transition-all duration-200 ${
+        isOpen
+          ? 'border-cyan-400/20 bg-cyan-400/[0.04]'
+          : 'border-white/[0.06] bg-white/[0.02] hover:border-white/12 hover:bg-white/[0.04]'
+      }`}
+      onClick={() => setIsOpen(!isOpen)}
+    >
+      <div className="flex items-center justify-between px-4 py-3">
+        <span className="font-mono text-xs uppercase tracking-[0.15em] text-white/55">{category.name}</span>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-sm text-cyan-300/70">{category.count}</span>
+          <span className={`text-[10px] text-white/25 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}>
+            &#9660;
+          </span>
+        </div>
+      </div>
+      {isOpen && (
+        <div className="border-t border-white/[0.06] px-4 py-3">
+          <p className="text-[13px] leading-6 text-white/50">{category.desc}</p>
+          <div className="mt-3 flex flex-wrap gap-1">
+            {category.ops.map((op) => (
+              <code key={op} className="rounded border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 text-[10px] text-cyan-300/50">
+                {op}
+              </code>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
