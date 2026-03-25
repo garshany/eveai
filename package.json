@@ -1,7 +1,7 @@
 {
   "name": "eve-agent",
-  "version": "0.1.0",
-  "description": "Single-user EVE Online agent with Telegram bot, native ESI tools, hosted tool_search, and local SDE",
+  "version": "1.0.0",
+  "description": "Multi-user EVE Online agent with Telegram, EVE SSO, native ESI tools, and local SDE",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"

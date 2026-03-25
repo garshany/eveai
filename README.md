@@ -1,78 +1,96 @@
 # EVE Agent
 
-Single-process multi-user EVE Online agent with Telegram as the main interface, native ESI access, local SDE, SQLite persistence, and an OpenAI-compatible runtime over `codex-proxy` `responses`.
+EVE Agent is a multi-user EVE Online assistant built around Telegram, EVE SSO, native ESI access, and a local SQLite-backed knowledge/runtime layer.
+
+It is designed for one thing: let players ask normal questions in Telegram and get useful answers backed by live EVE data, local static data, and strict access boundaries for private character information.
+
+## What It Does
+
+- Runs a Telegram bot as the primary interface
+- Links EVE characters through official EVE SSO
+- Uses live ESI for character, market, route, and other online data
+- Uses local SDE data in SQLite for static game knowledge
+- Keeps private ESI access scoped to the active Telegram user and chat
+- Exposes a small web surface for login, auth callback, dashboard support, and health
+
+## Why This Repo Exists
+
+Most EVE tools expose APIs, tables, IDs, and forms. This project instead treats natural-language interaction as the main UX:
+
+- Telegram is the product surface
+- web is support infrastructure, not a separate app
+- the model can ask for capabilities and data
+- the backend owns tokens, retries, caching, pagination, and secret handling
+
+That split is the core design rule of the repo.
+
+## Architecture At A Glance
+
+```text
+Telegram private chat
+  -> grammY bot
+  -> agent runtime
+  -> OpenAI-compatible /v1/responses backend
+  -> ESI + SDE tools
+  -> SQLite state
+
+Browser
+  -> Fastify
+  -> Telegram web auth + EVE callback + dashboard + health
+  -> same SQLite state
+```
+
+Hard constraints:
+
+- single-process Node.js app
+- no Redis, Postgres, workers, or queues
+- Telegram uses grammY long polling only
+- Fastify is limited to auth, dashboard support, and health
+- model-facing code never gets raw secrets, refresh flow details, or pagination internals
+
+## Main Features
+
+- Multi-user Telegram assistant with persistent chat state
+- EVE SSO linking and multi-character management
+- Scope-aware private ESI access through `get_eve_capabilities`
+- Native ESI transport with cache revalidation, bounded retries, and guarded pagination
+- Local SDE-backed lookups for static game data
+- Web login flow and lightweight dashboard support
+- Health endpoint and smoke checks for runtime verification
 
 ## Stack
 
-- Node.js + TypeScript
-- grammY long polling for Telegram
-- Fastify for auth callback, web auth, dashboard, and health
-- better-sqlite3 for all persistence
-- Native ESI client generated from the live swagger catalog
-- Local SDE index in SQLite
-- EVE SSO via `jose`
-- Native `responses` runtime through `codex-openai-proxy`
-
-## Features
-
-- Telegram bot with isolated per-user/per-chat state
-- EVE SSO linking and multi-character management
-- Scope-aware private ESI access via `get_eve_capabilities`
-- Local web dashboard for login and character switching
-- SQLite-backed message history, plans, summaries, auth state, and caches
-- Route planning, market access, zKill integration, and SDE-backed lookups
-- Readiness `/health` with dependency checks
-- `npm run smoke` for local runtime verification
-
-## Requirements
-
 - Node.js 20+
-- npm
-- A Telegram bot token
-- EVE SSO application credentials
-- Local access to `codex-openai-proxy`
+- TypeScript
+- grammY
+- Fastify
+- better-sqlite3
+- React + Vite
+- `jose` for EVE JWT verification
+- OpenAI-compatible `responses` runtime
 
-## Environment
+## Repository Map
 
-Start from `.env.example`:
+- `src/agent/` model runtime, prompts, planning, execution, compaction
+- `src/auth/` Telegram login, handoff, sessions, user resolution, secret storage
+- `src/db/` SQLite schema, migrations, helpers
+- `src/eve/` ESI, SSO, SDE, market, routes, zKill, user profile logic
+- `src/telegram/` bot setup and command handlers
+- `src/web/` Fastify routes, frontend shell, middleware, health
+- `client/src/` landing page and dashboard UI
+- `tests/unit/` module and regression coverage
+- `tests/integration/` auth and flow seam coverage
+- `docs/` architecture, product, security, reliability, deployment docs
+
+## Local Setup
+
+1. Clone the repo.
+2. Copy env file.
+3. Install dependencies.
+4. Build or run in dev mode.
 
 ```bash
 cp .env.example .env
-```
-
-Required values:
-
-- `TELEGRAM_BOT_TOKEN`
-- `OPENAI_API_KEY`
-- `EVE_CLIENT_ID`
-- `EVE_CLIENT_SECRET`
-- `AUTH_SECRET_KEY` for production
-- `DEFAULT_MARKET_REGION_ID`
-- `DEFAULT_MARKET_REGION_NAME`
-
-Important local defaults:
-
-- `OPENAI_BASE_URL=http://localhost:8088/v1`
-- `WEB_BASE_URL=http://localhost:8000` or your chosen local port
-- `ESI_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)`
-- `ZKILL_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)`
-- `SSO_REQUEST_TIMEOUT_MS=8000`
-- `ESI_REQUEST_TIMEOUT_MS=8000`
-- `ESI_RETRY_MAX_ATTEMPTS=3`
-
-## Local Run
-
-Start the proxy first:
-
-```bash
-cd /home/antipedik/codex_proxy_v2
-cargo run -- --port 8088 --auth-path ~/.codex/auth.json
-```
-
-Then start the app:
-
-```bash
-cd /home/antipedik/eveai
 npm install
 npm run dev
 ```
@@ -84,90 +102,67 @@ npm run build
 npm start
 ```
 
-## Checks
+## Required Environment
 
-Static and test checks:
+Minimum required values:
+
+- `TELEGRAM_BOT_TOKEN`
+- `OPENAI_API_KEY`
+- `EVE_CLIENT_ID`
+- `EVE_CLIENT_SECRET`
+- `DEFAULT_MARKET_REGION_ID`
+- `DEFAULT_MARKET_REGION_NAME`
+
+Important runtime values:
+
+- `AUTH_SECRET_KEY` for production
+- `OPENAI_BASE_URL` for your OpenAI-compatible backend
+- `WEB_BASE_URL`
+- `EVE_CALLBACK_URL`
+- `ESI_USER_AGENT`
+- `ZKILL_USER_AGENT`
+
+## Typical Development Commands
 
 ```bash
+npm run dev
+npm run build
 npm run typecheck
 npm run lint
 npm test
-npm run build
-```
-
-Local smoke check:
-
-```bash
 npm run smoke
 ```
 
-This verifies:
+`npm run smoke` verifies env, proxy health, available models, and app health.
 
-- required env vars
-- local proxy `/health`
-- local proxy `/v1/models`
-- application `/health`
+## EVE Integration Rules
 
-## Health
+- Private ESI access must be gated by `get_eve_capabilities`
+- ESI requests send `User-Agent` and `X-Compatibility-Date`
+- Cached GETs revalidate with `ETag` / `If-None-Match`
+- Retries are bounded for `420`, `429`, and transient `5xx`
+- `X-Pages` collections fail closed instead of silently truncating data
+- JWT validation checks issuer, audience, and `CHARACTER:EVE:<id>` subject format
 
-`GET /health` returns bot state plus dependency checks for:
+## Health And Operations
 
-- SQLite
-- built client manifest
-- local `codex-proxy` health when `OPENAI_BASE_URL` points to a local proxy
+App health:
 
-## Production Notes
+```bash
+curl http://127.0.0.1:8000/health
+```
 
-Current production URL:
+Production runbook:
 
-- `https://144.31.223.134:4443`
-- `https://144.31.223.134:4443/health`
+- [`docs/deployment.md`](./docs/deployment.md)
 
-Important:
+Core reference docs:
 
-- `443` is occupied by another service on the server, so this app uses `:4443`
-- production `WEB_BASE_URL` must match `https://144.31.223.134:4443`
-- production `EVE_CALLBACK_URL` must match `https://144.31.223.134:4443/auth/eve/callback`
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- [`docs/PRODUCT_SENSE.md`](./docs/PRODUCT_SENSE.md)
+- [`docs/RELIABILITY.md`](./docs/RELIABILITY.md)
+- [`docs/SECURITY.md`](./docs/SECURITY.md)
 
-## ESI Notes
+## Status
 
-- ESI requests send both `User-Agent` and `X-Compatibility-Date`
-- GET responses respect `Expires` and revalidate with `ETag` / `If-None-Match`
-- `429`, `420`, and transient `5xx` responses use bounded retry and backoff
-- large `X-Pages` responses fail fast when they exceed `ESI_MAX_PAGES`; the runtime does not silently truncate them
-- CCP's legacy `/latest/swagger.json` still works as a compatibility input here, but it is no longer the authoritative source for new routes; keep an eye on current ESI docs and API Explorer for additions
-
-## Main Commands
-
-Telegram:
-
-- `/start`
-- `/help`
-- `/eve_login`
-- `/whoami`
-- `/characters`
-- `/use <id|name>`
-- `/market <type_id>`
-- `/info <target_id>`
-- `/clear`
-- `/reset`
-- `/web`
-
-## Repo Layout
-
-- `src/agent` agent runtime, prompts, tool loop, compaction
-- `src/auth` web session, Telegram login, auth request, secret storage
-- `src/eve` ESI, SSO, SDE, route planning, zKill, user profile
-- `src/telegram` bot bootstrap and handlers
-- `src/web` Fastify routes, dashboard, middleware, health, security
-- `client/src` web dashboard frontend
-- `tests` unit and integration tests
-- `deploy/systemd` example service units
-
-## Notes
-
-- No Redis
-- No Postgres
-- No Telegram webhooks
-- No shell access from model-facing tools
-- Private ESI is backend-enforced and requires a fresh capability handshake
+`v1.0.0` is the first public release line of the current architecture: Telegram-first, single-process, ESI-backed, SQLite-backed, with explicit auth and transport boundaries.
