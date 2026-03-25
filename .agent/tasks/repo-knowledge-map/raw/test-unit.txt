@@ -1,0 +1,16 @@
+ARCHITECTURE.md:26:- [`docs/index.md`](./docs/index.md) for the docs catalog
+ARCHITECTURE.md:27:- [`docs/repo-map.md`](./docs/repo-map.md) for the fast file-and-domain map
+ARCHITECTURE.md:29:The repo knowledge model is progressive disclosure: short map first, then indexed docs, then domain files.
+ARCHITECTURE.md:129:- Docs catalog: [docs/index.md](./docs/index.md)
+ARCHITECTURE.md:130:- File-and-domain map: [docs/repo-map.md](./docs/repo-map.md)
+AGENTS.md:21:- [docs/index.md](./docs/index.md)
+AGENTS.md:33:- [docs/repo-map.md](./docs/repo-map.md)
+AGENTS.md:34:- [docs/design-docs/index.md](./docs/design-docs/index.md)
+AGENTS.md:54:  - `docs/` is the system of record.
+AGENTS.md:55:  - `docs/repo-map.md` is the fast file-and-domain map.
+docs/DESIGN.md:10:- Treat `docs/` as the system of record for architecture, product intent, plans, reliability, and security.
+docs/DESIGN.md:11:- Prefer progressive disclosure: start with the map, then descend into the exact document needed.
+docs/repo-map.md:98:- `docs/index.md`: docs catalog and reading order
+docs/index.md:6:This directory is the repository knowledge system of record.
+docs/index.md:29:- [design-docs/index.md](./design-docs/index.md): slower-changing architectural beliefs and domain boundaries
+docs/QUALITY_SCORE.md:24:- `docs/index.md` and `docs/repo-map.md` are the navigation layer for deeper repo knowledge

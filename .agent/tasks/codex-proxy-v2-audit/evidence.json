@@ -1,0 +1,93 @@
+{
+  "task_id": "codex-proxy-v2-audit",
+  "overall_status": "PASS",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "text": "The audit proves how this repository talks to the OpenAI-compatible proxy today: which endpoint is called, which request fields are sent for native responses, which local health/model probes are used from the repo root, and whether that transport matches the current documented Responses API shape for conversation continuation and compaction.",
+      "status": "PASS",
+      "proof": [
+        "src/agent/native-responses.ts sends requests to POST {OPENAI_BASE_URL}/responses and forwards previous_response_id and context_management.",
+        "src/smoke.ts probes /health and /v1/models for a local proxy URL, and deploy/systemd/eveai-codex-proxy.service points the local proxy boundary at /home/antipedik/codex_proxy_v2 on port 8088.",
+        "/home/antipedik/codex_proxy_v2/src/main.rs resolves previous_response_id locally and auto-injects context_management when the client omits it.",
+        "OpenAI API changelog documents context management using compaction and the /v1/responses/compact endpoint.",
+        ".agent/tasks/codex-proxy-v2-audit/raw/smoke.txt shows live proxy health and models responses from 127.0.0.1:8088."
+      ],
+      "gaps": [
+        "npm run smoke failed its app_health leg because localhost:8000 was not serving during evidence capture; proxy boundary checks still passed."
+      ]
+    },
+    {
+      "id": "AC2",
+      "text": "The audit proves whether previous_id / previous_response_id is used correctly for history continuation in the current implementation: within a single tool loop, across separate user turns, and at the persistence boundary (agent_threads.last_response_id). If the implementation is inconsistent with the intended model or with current OpenAI documentation, the code and docs are corrected minimally.",
+      "status": "PASS",
+      "proof": [
+        "src/agent/executor.ts now plans warm versus cold continuation before each turn.",
+        "src/agent/executor.ts uses a fresh agent_threads.last_response_id as previous_response_id for warm turns and falls back to SQLite-backed history for stale or missing state.",
+        "src/agent/executor.ts persists the final response id on success and clears it on error, fallback, or timeout.",
+        "tests/unit/warm-cold-path.test.ts covers both the warm and stale cold-start paths.",
+        ".agent/tasks/codex-proxy-v2-audit/raw/test-unit.txt shows the focused unit suite passed."
+      ],
+      "gaps": []
+    },
+    {
+      "id": "AC3",
+      "text": "The audit proves whether compaction is used correctly in both places the code supports it: server-managed Responses API compaction via context_management / compact_threshold, and local SQLite thread summarization via compactThreadIfNeeded. The final state must make the interaction between these mechanisms explicit and internally consistent.",
+      "status": "PASS",
+      "proof": [
+        "src/agent/executor.ts sends context_management when OPENAI_COMPACT_THRESHOLD is configured.",
+        "src/agent/compact.ts still handles local SQLite summarization and pruning for cold-start fallback.",
+        "tests/unit/native-responses.test.ts verifies the request body contains previous_response_id and context_management.",
+        "tests/unit/compact.test.ts verifies summary creation and message pruning.",
+        "/home/antipedik/codex_proxy_v2/src/main.rs exposes POST /v1/responses/compact, while the application currently relies on automatic context_management plus local summary fallback instead of calling it directly."
+      ],
+      "gaps": []
+    },
+    {
+      "id": "AC4",
+      "text": "The repository includes focused regression coverage and evidence for the proxy-v2 path from the repo root, covering request payload construction, continuation behavior, and compaction-related behavior without exposing secrets or depending on undocumented proxy internals.",
+      "status": "PASS",
+      "proof": [
+        ".agent/tasks/codex-proxy-v2-audit/raw/test-unit.txt shows focused unit coverage passed.",
+        ".agent/tasks/codex-proxy-v2-audit/raw/test-integration.txt shows integration coverage passed.",
+        ".agent/tasks/codex-proxy-v2-audit/raw/build.txt and raw/lint.txt show build, lint, and typecheck passed.",
+        ".agent/tasks/codex-proxy-v2-audit/raw/smoke.txt captures live proxy checks from this repository."
+      ],
+      "gaps": []
+    },
+    {
+      "id": "AC5",
+      "text": "The repository documentation and task artifacts state one consistent conclusion about proxy-v2 communication, previous_id history handling, and compaction, so a fresh verifier can judge the current codebase without relying on chat history.",
+      "status": "PASS",
+      "proof": [
+        "ARCHITECTURE.md documents the warm/cold continuation path in the Telegram request flow.",
+        "docs/RELIABILITY.md documents fresh-only previous_response_id continuation and cold fallback behavior.",
+        ".agent/tasks/codex-proxy-v2-audit/spec.md and evidence.md describe the same runtime model."
+      ],
+      "gaps": []
+    }
+  ],
+  "changed_files": [
+    "src/agent/executor.ts",
+    "tests/unit/warm-cold-path.test.ts",
+    "tests/unit/native-responses.test.ts",
+    "ARCHITECTURE.md",
+    "docs/RELIABILITY.md",
+    ".agent/tasks/codex-proxy-v2-audit/spec.md",
+    ".agent/tasks/codex-proxy-v2-audit/evidence.md",
+    ".agent/tasks/codex-proxy-v2-audit/evidence.json"
+  ],
+  "commands_for_fresh_verifier": [
+    "npm run build",
+    "npm run test -- tests/unit/warm-cold-path.test.ts tests/unit/native-responses.test.ts tests/unit/compact.test.ts",
+    "npm run test -- tests/integration/telegram-handler.test.ts",
+    "npm run lint",
+    "npm run typecheck",
+    "curl -sS http://127.0.0.1:8088/health",
+    "curl -sS http://127.0.0.1:8088/v1/models",
+    "npm run smoke"
+  ],
+  "known_gaps": [
+    "npm run smoke failed its app_health leg because localhost:8000 was not serving during evidence capture; proxy boundary checks still passed."
+  ]
+}

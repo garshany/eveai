@@ -1,0 +1,77 @@
+{
+  "task_id": "codex-proxy-v2-audit",
+  "overall_verdict": "PASS",
+  "verified_at": "2026-03-25T18:05:00+00:00",
+  "criteria": [
+    {
+      "id": "AC1",
+      "status": "PASS",
+      "reason": "The current code posts native requests to the local OpenAI-compatible proxy, forwards previous_response_id and context_management when present, and the configured proxy root on port 8088 answered health and models probes during verification. This matches the documented Responses API surface for continuation and compaction.",
+      "checks": [
+        "curl -sS http://127.0.0.1:8088/health",
+        "curl -sS http://127.0.0.1:8088/v1/models",
+        "npm run smoke"
+      ]
+    },
+    {
+      "id": "AC2",
+      "status": "PASS",
+      "reason": "The executor now uses a fresh last_response_id for warm turns, falls back to SQLite-backed cold history when the stored response is stale or absent, and clears broken continuation state on failures. Focused unit coverage proves both warm and cold paths.",
+      "checks": [
+        "npm run test -- tests/unit/warm-cold-path.test.ts tests/unit/native-responses.test.ts tests/unit/compact.test.ts"
+      ]
+    },
+    {
+      "id": "AC3",
+      "status": "PASS",
+      "reason": "Server-managed compaction remains available through context_management and proxy support for /v1/responses/compact, while local SQLite summary compaction remains the cold-start fallback. The two mechanisms are now explicit and internally consistent.",
+      "checks": [
+        "npm run test -- tests/unit/warm-cold-path.test.ts tests/unit/native-responses.test.ts tests/unit/compact.test.ts"
+      ]
+    },
+    {
+      "id": "AC4",
+      "status": "PASS",
+      "reason": "The repository now includes focused unit and integration coverage for proxy-v2 request payloads, warm/cold continuation selection, and compaction-related behavior, and the current build/lint/typecheck/test commands all passed.",
+      "checks": [
+        "npm run build",
+        "npm run test -- tests/unit/warm-cold-path.test.ts tests/unit/native-responses.test.ts tests/unit/compact.test.ts",
+        "npm run test -- tests/integration/telegram-handler.test.ts",
+        "npm run lint",
+        "npm run typecheck"
+      ]
+    },
+    {
+      "id": "AC5",
+      "status": "PASS",
+      "reason": "ARCHITECTURE.md, docs/RELIABILITY.md, spec.md, evidence.md, and the current runtime code all describe the same model: proxy-compatible native responses, fresh-only previous_response_id warm continuation, cold SQLite fallback, and distinct compaction layers.",
+      "checks": [
+        "manual code and doc inspection",
+        "git diff --stat"
+      ]
+    }
+  ],
+  "commands_run": [
+    "npm run build",
+    "npm run test -- tests/unit/warm-cold-path.test.ts tests/unit/native-responses.test.ts tests/unit/compact.test.ts",
+    "npm run test -- tests/integration/telegram-handler.test.ts",
+    "npm run lint",
+    "npm run typecheck",
+    "curl -sS http://127.0.0.1:8088/health",
+    "curl -sS http://127.0.0.1:8088/v1/models",
+    "npm run smoke"
+  ],
+  "artifacts_used": [
+    ".agent/tasks/codex-proxy-v2-audit/spec.md",
+    ".agent/tasks/codex-proxy-v2-audit/evidence.md",
+    ".agent/tasks/codex-proxy-v2-audit/evidence.json",
+    ".agent/tasks/codex-proxy-v2-audit/raw/build.txt",
+    ".agent/tasks/codex-proxy-v2-audit/raw/test-unit.txt",
+    ".agent/tasks/codex-proxy-v2-audit/raw/test-integration.txt",
+    ".agent/tasks/codex-proxy-v2-audit/raw/lint.txt",
+    ".agent/tasks/codex-proxy-v2-audit/raw/smoke.txt"
+  ],
+  "problems": [
+    "Environment note: npm run smoke reported app_health failure because localhost:8000 was not serving during verification; proxy health and proxy models checks still passed and did not block the audited criteria."
+  ]
+}
