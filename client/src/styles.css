@@ -19,9 +19,7 @@ html {
 body {
   margin: 0;
   min-width: 320px;
-  background:
-    radial-gradient(circle at top, rgba(81, 203, 255, 0.06), transparent 30%),
-    linear-gradient(180deg, #05070e 0%, #070b15 32%, #05070e 100%);
+  background: #05070e;
   color: rgba(255, 255, 255, 0.94);
   font-family: var(--font-display-stack);
   -webkit-font-smoothing: antialiased;
@@ -49,40 +47,37 @@ select {
   font-size: 0.72rem;
   letter-spacing: 0.34em;
   text-transform: uppercase;
-  color: rgba(212, 246, 255, 0.55);
+  color: rgba(103, 232, 249, 0.45);
 }
 
+/* Starfield — subtle dots */
 .starfield {
   background-image:
-    radial-gradient(circle at 12% 18%, rgba(255,255,255,0.55) 0 1px, transparent 1.5px),
-    radial-gradient(circle at 28% 42%, rgba(255,255,255,0.36) 0 1px, transparent 1.5px),
-    radial-gradient(circle at 74% 26%, rgba(255,255,255,0.38) 0 1px, transparent 1.5px),
-    radial-gradient(circle at 88% 62%, rgba(255,255,255,0.48) 0 1px, transparent 1.5px),
-    radial-gradient(circle at 56% 72%, rgba(255,255,255,0.28) 0 1px, transparent 1.5px),
-    radial-gradient(circle at 42% 84%, rgba(255,255,255,0.32) 0 1px, transparent 1.5px);
-  animation: drift 28s linear infinite;
+    radial-gradient(circle at 10% 20%, rgba(255,255,255,0.4) 0 0.8px, transparent 1px),
+    radial-gradient(circle at 30% 55%, rgba(255,255,255,0.25) 0 0.8px, transparent 1px),
+    radial-gradient(circle at 72% 18%, rgba(255,255,255,0.3) 0 0.8px, transparent 1px),
+    radial-gradient(circle at 85% 65%, rgba(255,255,255,0.35) 0 0.8px, transparent 1px),
+    radial-gradient(circle at 55% 80%, rgba(255,255,255,0.2) 0 0.8px, transparent 1px),
+    radial-gradient(circle at 40% 35%, rgba(255,255,255,0.22) 0 0.8px, transparent 1px),
+    radial-gradient(circle at 18% 70%, rgba(255,255,255,0.18) 0 0.8px, transparent 1px),
+    radial-gradient(circle at 65% 42%, rgba(255,255,255,0.28) 0 0.8px, transparent 1px);
+  animation: drift 40s linear infinite;
+  opacity: 0.6;
 }
 
-.orbital {
-  animation: orbit 22s linear infinite;
+.hero-ship {
+  filter: drop-shadow(0 40px 60px rgba(0, 0, 0, 0.6)) drop-shadow(0 0 30px rgba(56, 189, 248, 0.12));
+  animation: shipFloat 12s ease-in-out infinite;
 }
 
-.orbital-delay {
-  animation-duration: 28s;
-  animation-direction: reverse;
-}
-
-.signal-beam {
-  animation: scan 4.8s ease-in-out infinite;
-}
-
+/* Reveal on scroll */
 .reveal-panel,
 [data-reveal] {
   opacity: 0;
-  transform: translateY(28px);
+  transform: translateY(20px);
   transition:
-    opacity 700ms ease,
-    transform 700ms ease;
+    opacity 600ms ease,
+    transform 600ms ease;
 }
 
 .is-visible {
@@ -90,89 +85,13 @@ select {
   transform: translateY(0);
 }
 
-.telegram-widget-shell iframe {
-  max-width: 100%;
-}
-
-.hero-grid {
-  background-image:
-    linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
-  background-size: 96px 96px;
-  mask-image: linear-gradient(180deg, rgba(0,0,0,0.72), transparent 88%);
-}
-
-.hero-ship {
-  filter:
-    drop-shadow(0 80px 90px rgba(0, 0, 0, 0.7))
-    drop-shadow(0 0 38px rgba(108, 222, 255, 0.18));
-  animation: shipFloat 9s ease-in-out infinite;
-}
-
-.graph-lines line {
-  stroke: rgba(122, 209, 226, 0.22);
-  stroke-width: 1.35;
-}
-
-.graph-title {
-  font-family: var(--font-display-stack);
-  font-size: 23px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  fill: rgba(255, 255, 255, 0.95);
-}
-
-.graph-title-lg {
-  font-size: 30px;
-}
-
-.graph-subtitle {
-  font-family: var(--font-mono-stack);
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  fill: rgba(206, 229, 236, 0.72);
-}
-
-.graph-dot {
-  animation: graphPulse 4.8s ease-in-out infinite;
-}
-
-.graph-dot-b {
-  animation-delay: 1.1s;
-}
-
-.graph-dot-c {
-  animation-delay: 2.2s;
-}
-
-@keyframes orbit {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes scan {
-  0%,
-  100% {
-    opacity: 0.25;
-    transform: translateY(0) scaleY(0.9);
-  }
-  50% {
-    opacity: 1;
-    transform: translateY(14px) scaleY(1.08);
-  }
-}
 
 @keyframes drift {
   from {
     transform: translate3d(0, 0, 0);
   }
   50% {
-    transform: translate3d(-1.5%, 1.2%, 0);
+    transform: translate3d(-1%, 0.8%, 0);
   }
   to {
     transform: translate3d(0, 0, 0);
@@ -182,22 +101,10 @@ select {
 @keyframes shipFloat {
   0%,
   100% {
-    transform: translate3d(0, 0, 0) rotate(-7deg);
-  }
-  50% {
-    transform: translate3d(0, -16px, 0) rotate(-4deg);
-  }
-}
-
-@keyframes graphPulse {
-  0%,
-  100% {
-    opacity: 0.25;
     transform: translate3d(0, 0, 0);
   }
   50% {
-    opacity: 1;
-    transform: translate3d(0, -5px, 0);
+    transform: translate3d(0, -10px, 0);
   }
 }
 
@@ -207,9 +114,6 @@ select {
   }
 
   .starfield,
-  .orbital,
-  .orbital-delay,
-  .signal-beam,
   .hero-ship,
   .reveal-panel,
   [data-reveal] {

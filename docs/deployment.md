@@ -87,8 +87,8 @@ npm run build
 
 Важные production значения:
 
-- `WEB_BASE_URL=https://144.31.223.134:4443`
-- `EVE_CALLBACK_URL=https://144.31.223.134:4443/auth/eve/callback`
+- `WEB_BASE_URL=https://144-31-223-134.sslip.io:4443`
+- `EVE_CALLBACK_URL=https://144-31-223-134.sslip.io:4443/auth/eve/callback`
 - `OPENAI_BASE_URL=http://127.0.0.1:8080/v1`
 - `ESI_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)`
 - `ZKILL_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)`
@@ -118,26 +118,27 @@ pm2 logs eveai --lines 100
 
 Reverse proxy:
 
-- service: `eveai-caddy.service`
-- config: `/etc/caddy/eveai/Caddyfile`
+- service: `nginx`
+- config: `/etc/nginx/sites-available/eveai`
 
 Проверка:
 
 ```bash
-systemctl status eveai-caddy.service --no-pager
-journalctl -u eveai-caddy.service -n 100 --no-pager
+systemctl status nginx --no-pager
+journalctl -u nginx -n 100 --no-pager
+nginx -t
 ```
 
 ## URLs
 
 HTTP:
 
-- `http://144.31.223.134`
+- `http://144-31-223-134.sslip.io` (redirect → HTTPS)
 
 HTTPS:
 
-- `https://144.31.223.134:4443`
-- `https://144.31.223.134:4443/health`
+- `https://144-31-223-134.sslip.io:4443`
+- `https://144-31-223-134.sslip.io:4443/health`
 
 Важно:
 
@@ -147,17 +148,17 @@ HTTPS:
 
 ## SSL
 
-Сертификат выпускается для IP-адреса через `certbot`.
+Сертификат выпускается для `144-31-223-134.sslip.io` через `certbot`.
 
 Полезные команды:
 
 ```bash
 certbot certificates
 certbot renew --dry-run --no-random-sleep-on-renew
-openssl x509 -in /etc/letsencrypt/live/144.31.223.134/fullchain.pem -noout -issuer -dates -subject
+openssl x509 -in /etc/letsencrypt/live/144-31-223-134.sslip.io/fullchain.pem -noout -issuer -dates -subject
 ```
 
-Deploy hook reload'ит Caddy после renewal.
+Deploy hook reload'ит nginx после renewal (`systemctl reload nginx`).
 
 ## Health Checks
 
@@ -165,14 +166,14 @@ Deploy hook reload'ит Caddy после renewal.
 
 ```bash
 curl http://127.0.0.1:8000/health
-curl -k https://127.0.0.1:4443/health
+curl -sk https://127.0.0.1:4443/health
 ```
 
 Снаружи:
 
 ```bash
-curl -I http://144.31.223.134
-curl -kI https://144.31.223.134:4443/health
+curl -I http://144-31-223-134.sslip.io
+curl -sI https://144-31-223-134.sslip.io:4443/health
 ```
 
 Smoke:
@@ -187,7 +188,7 @@ npm run smoke
 В EVE Developer Portal redirect URI должен совпадать точно:
 
 ```text
-https://144.31.223.134:4443/auth/eve/callback
+https://144-31-223-134.sslip.io:4443/auth/eve/callback
 ```
 
 Если URI отличается, логин через EVE SSO будет отклонён до callback.
