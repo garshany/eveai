@@ -425,7 +425,7 @@ function LandingPage({ config }: { config: AppConfig }) {
                   </div>
                 </div>
 
-                <div className="mt-6 grid gap-6 sm:grid-cols-[1.2fr_0.8fr]">
+                <div className="mt-6 grid gap-6 lg:grid-cols-[1.35fr_0.65fr]">
                   <div className="space-y-5">
                     <div className="tactical-map">
                       <span className="tactical-node node-a" />
@@ -440,7 +440,7 @@ function LandingPage({ config }: { config: AppConfig }) {
                     </p>
                   </div>
 
-                  <div className="space-y-4">
+                  <div className="flex flex-col justify-between gap-4 border-l border-white/8 pl-5 lg:min-h-[12rem]">
                     <div className="border-b border-white/8 pb-4">
                       <div className="font-mono text-[10px] uppercase tracking-[0.24em] text-white/34">recommended</div>
                       <div className="mt-2 font-display text-lg uppercase tracking-[0.12em] text-white">manual warp only</div>
