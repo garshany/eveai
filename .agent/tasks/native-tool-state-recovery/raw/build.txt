@@ -1,0 +1,4 @@
+
+> eve-agent@1.0.0 build:server
+> tsc
+

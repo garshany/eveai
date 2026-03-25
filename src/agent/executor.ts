@@ -38,6 +38,9 @@ const MAX_CONSECUTIVE_SAME_TOOL = 3;
 const MAX_CONTEXT_MESSAGES = 10;
 const MAX_CONTEXT_CHARS = 15000;
 const PREVIOUS_RESPONSE_MAX_AGE_MS = 55 * 60 * 1000;
+const RECOVERY_TOOL_SUMMARY_LIMIT = 6;
+const RECOVERY_TOOL_RESULT_CHARS = 280;
+const TOOL_STATE_MISMATCH_FRAGMENT = 'No tool call found for function call output with call_id';
 
 /**
  * Default whitelist of fields to keep per ESI operation.
@@ -363,19 +366,37 @@ async function runNativeAgentLoop(
   let totalOutputTokens = 0;
   let totalCachedTokens = 0;
   let totalReasoningTokens = 0;
+  let usedToolStateRecovery = false;
 
   console.log('[executor] === NEW REQUEST chat=%d thread=%s goal="%s" ===', chatId, threadId.slice(0, 12), goal.slice(0, 80));
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
-    const response = await createNativeResponse({
-      instructions: developerPrompt,
-      items: pendingItems,
-      previousResponseId,
-      tools,
-      parallelToolCalls: true,
-      truncation: 'auto',
-      contextManagement,
-    });
+    let response;
+    try {
+      response = await createNativeResponse({
+        instructions: developerPrompt,
+        items: pendingItems,
+        previousResponseId,
+        tools,
+        parallelToolCalls: true,
+        truncation: 'auto',
+        contextManagement,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        !usedToolStateRecovery
+        && shouldRecoverFromToolStateMismatch(message, previousResponseId, pendingItems)
+      ) {
+        usedToolStateRecovery = true;
+        previousResponseId = null;
+        pendingItems = buildToolStateRecoveryContext(db, threadId);
+        saveLastResponseId(db, threadId, null);
+        console.warn('[executor] tool state lost, switching to cold recovery context: %s', message);
+        continue;
+      }
+      throw error;
+    }
 
     // Track token usage
     if (response.usage) {
@@ -930,6 +951,70 @@ function buildSmartContext(db: Db, threadId: string): NativeInputItem[] {
   );
 }
 
+function buildToolStateRecoveryContext(db: Db, threadId: string): NativeInputItem[] {
+  const items = buildSmartContext(db, threadId);
+  const toolSummary = buildRecentToolSummaryMessage(db, threadId);
+  if (toolSummary) {
+    items.push(toNativeAssistantMessage(toolSummary));
+  }
+  items.push({
+    type: 'message',
+    role: 'user',
+    content: [{
+      type: 'input_text',
+      text: '[system] Proxy-side tool state was lost after tool execution. Use the recovered tool results above to answer if they are sufficient. If more work is still required, continue from this cold context and avoid repeating the same tool call loop.',
+    }],
+  });
+  return items;
+}
+
+function buildRecentToolSummaryMessage(db: Db, threadId: string): string | null {
+  const rows = db.prepare(
+    "SELECT content FROM messages WHERE thread_id = ? AND role = 'tool' ORDER BY id DESC LIMIT ?",
+  ).all(threadId, RECOVERY_TOOL_SUMMARY_LIMIT) as Array<{ content: string }>;
+  if (rows.length === 0) return null;
+
+  const lines = rows
+    .reverse()
+    .map((row) => formatToolRecoveryLine(row.content))
+    .filter((line): line is string => Boolean(line));
+  if (lines.length === 0) return null;
+
+  return `Recovered tool results from SQLite:\n${lines.join('\n')}`;
+}
+
+function formatToolRecoveryLine(rawContent: string): string | null {
+  try {
+    const parsed = JSON.parse(rawContent) as {
+      tool?: unknown;
+      args?: unknown;
+      result?: unknown;
+    };
+    const tool = typeof parsed.tool === 'string' ? parsed.tool : 'unknown_tool';
+    const args = truncateRecoveryValue(parsed.args);
+    const result = truncateRecoveryValue(parsed.result);
+    return `- ${tool} args=${args} result=${result}`;
+  } catch {
+    return null;
+  }
+}
+
+function truncateRecoveryValue(value: unknown): string {
+  const text = JSON.stringify(value ?? null);
+  if (text.length <= RECOVERY_TOOL_RESULT_CHARS) return text;
+  return `${text.slice(0, RECOVERY_TOOL_RESULT_CHARS)}…`;
+}
+
+function shouldRecoverFromToolStateMismatch(
+  message: string,
+  previousResponseId: string | null,
+  pendingItems: NativeInputItem[],
+): boolean {
+  if (!previousResponseId) return false;
+  if (!message.includes(TOOL_STATE_MISMATCH_FRAGMENT)) return false;
+  return pendingItems.some((item) => item.type === 'function_call_output');
+}
+
 type ConversationContinuation = {
   mode: 'warm' | 'cold';
   items: NativeInputItem[];
@@ -984,6 +1069,9 @@ function isRecentSqliteTimestamp(value: string | null, maxAgeMs: number): boolea
 
 export const __test__ = {
   buildSmartContext,
+  buildToolStateRecoveryContext,
+  buildRecentToolSummaryMessage,
+  shouldRecoverFromToolStateMismatch,
   planConversationContinuation,
   isRecentSqliteTimestamp,
 };

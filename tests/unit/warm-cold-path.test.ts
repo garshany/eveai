@@ -142,6 +142,74 @@ describe('warm/cold path DB operations', () => {
       },
     ]);
   });
+
+  it('builds cold recovery context with recent tool summaries', async () => {
+    db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(1);
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id, last_response_id) VALUES (?, ?, ?)")
+      .run('t1', 1, 'resp_lost');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'assistant', 'Смотрю регион.');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'Сколько лун в моем регионе?');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)")
+      .run('t1', 'tool', JSON.stringify({
+        tool: 'get_universe_regions_region_id',
+        args: { region_id: 10000002 },
+        result: { ok: true, data: { name: 'The Forge', constellations: [20000020] } },
+      }));
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)")
+      .run('t1', 'tool', JSON.stringify({
+        tool: 'sde_sql',
+        args: { sql: 'SELECT COUNT(*) FROM moons;' },
+        result: { rows: [{ moons: 123 }] },
+      }));
+
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const items = __test__.buildToolStateRecoveryContext(db as never, 't1');
+
+    expect(items[0]).toEqual({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'Смотрю регион.' }],
+    });
+    expect(items[1]).toEqual({
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Сколько лун в моем регионе?' }],
+    });
+    expect(items[2]).toMatchObject({
+      type: 'message',
+      role: 'assistant',
+    });
+    expect(JSON.stringify(items[2])).toContain('Recovered tool results from SQLite');
+    expect(JSON.stringify(items[2])).toContain('get_universe_regions_region_id');
+    expect(JSON.stringify(items[2])).toContain('sde_sql');
+    expect(items[3]).toMatchObject({
+      type: 'message',
+      role: 'user',
+    });
+    expect(JSON.stringify(items[3])).toContain('Proxy-side tool state was lost');
+  });
+
+  it('detects recoverable tool-state mismatch only for function_call outputs', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+
+    expect(__test__.shouldRecoverFromToolStateMismatch(
+      'No tool call found for function call output with call_id call_123.',
+      'resp_prev',
+      [{ type: 'function_call_output', call_id: 'call_123', output: '{"ok":true}' }],
+    )).toBe(true);
+
+    expect(__test__.shouldRecoverFromToolStateMismatch(
+      'No tool call found for function call output with call_id call_123.',
+      'resp_prev',
+      [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+    )).toBe(false);
+
+    expect(__test__.shouldRecoverFromToolStateMismatch(
+      'Some other error',
+      'resp_prev',
+      [{ type: 'function_call_output', call_id: 'call_123', output: '{"ok":true}' }],
+    )).toBe(false);
+  });
 });
 
 describe('native-responses payload', () => {

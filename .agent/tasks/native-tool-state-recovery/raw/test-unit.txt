@@ -1,0 +1,18 @@
+
+> eve-agent@1.0.0 test
+> vitest run tests/unit/warm-cold-path.test.ts tests/unit/native-responses.test.ts
+
+
+ RUN  v3.2.4 /home/antipedik/eveai
+
+stdout | tests/unit/native-responses.test.ts > createNativeResponse request body > forwards previous_response_id and context_management to the proxy
+[api] POST http://localhost:8088/v1/responses — payload 371 chars, 0 tools, 1 input items, prevId=resp_prev
+
+ ✓ tests/unit/native-responses.test.ts (5 tests) 22ms
+ ✓ tests/unit/warm-cold-path.test.ts (10 tests) 144ms
+
+ Test Files  2 passed (2)
+      Tests  15 passed (15)
+   Start at  00:36:51
+   Duration  347ms (transform 176ms, setup 0ms, collect 87ms, tests 166ms, environment 0ms, prepare 98ms)
+

@@ -1,0 +1,6 @@
+{
+  "task_id": "native-tool-state-recovery",
+  "status": "PASS",
+  "summary": "Current code recovers from proxy-side function_call_output state loss by clearing warm continuation and retrying from SQLite-backed cold context with recent tool summaries.",
+  "checked_at": "2026-03-26T00:37:00+03:00"
+}
