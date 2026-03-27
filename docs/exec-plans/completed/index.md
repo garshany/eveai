@@ -1,5 +1,3 @@
 # Completed Execution Plans
 
-No completed execution plans are checked in yet.
-
-Move finished plans here with their progress log and final decision record intact.
+- [security-hardening-full.md](./security-hardening-full.md): multi-user auth isolation, Telegram ingress hardening, prompt-safe profile context, fragment-based web handoff, and retained-state cleanup from the threat model.

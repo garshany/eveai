@@ -1,0 +1,37 @@
+
+> eve-agent@1.0.0 test
+> vitest run tests/unit/auth-routes.test.ts tests/unit/telegram-request-guard.test.ts tests/unit/frontend-handoff.test.ts tests/unit/prompts.test.ts tests/unit/sso.test.ts tests/unit/user-profile.test.ts
+
+
+ RUN  v3.2.4 /home/antipedik/eveai
+
+ ✓ tests/unit/prompts.test.ts (3 tests) 3ms
+ ✓ tests/unit/telegram-request-guard.test.ts (4 tests) 2ms
+stderr | tests/unit/sso.test.ts > getAccessToken > returns null when token is expired and refresh fails (no network)
+[sso] Falling back to default SSO metadata: network down
+
+stderr | tests/unit/sso.test.ts > getAccessToken > returns null when token is expired and refresh fails (no network)
+[sso] Token refresh request failed: network down
+
+ ✓ tests/unit/sso.test.ts (10 tests) 22ms
+ ✓ tests/unit/user-profile.test.ts (2 tests) 14ms
+ ✓ tests/unit/frontend-handoff.test.ts (1 test) 66ms
+stderr | tests/unit/auth-routes.test.ts > auth routes > GET /auth/eve/start stores only a protected auth state at rest
+[sso] Falling back to default SSO metadata: Cannot read properties of undefined (reading 'ok')
+
+stderr | tests/unit/auth-routes.test.ts > auth routes > GET /auth/eve/callback encrypts stored tokens and escapes character name
+[sso] Falling back to default SSO metadata: invalid metadata payload
+
+stdout | tests/unit/auth-routes.test.ts > auth routes > GET /auth/eve/callback encrypts stored tokens and escapes character name
+[auth] Character linked: <img src=x onerror=alert(1)> (95465499), 1 scopes, user_id=1
+
+stderr | tests/unit/auth-routes.test.ts > auth routes > GET /auth/eve/callback encrypts stored tokens and escapes character name
+[auth] USER.md refresh skipped: skipped in test
+
+ ✓ tests/unit/auth-routes.test.ts (11 tests) 102ms
+
+ Test Files  6 passed (6)
+      Tests  31 passed (31)
+   Start at  23:24:26
+   Duration  386ms (transform 261ms, setup 0ms, collect 544ms, tests 209ms, environment 1ms, prepare 294ms)
+

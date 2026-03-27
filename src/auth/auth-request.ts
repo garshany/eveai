@@ -67,14 +67,6 @@ export function markAuthRequestUsed(db: Db, type: AuthRequestType, token: string
   `).run(type, protectedToken, legacyToken);
 }
 
-export function protectLegacyOauthState(state: string): string {
-  return protectOpaqueToken(state, 'telegram_oauth_state');
-}
-
-export function legacyOauthStateCandidates(state: string): [string, string] {
-  return opaqueTokenCandidates(state, 'telegram_oauth_state');
-}
-
 export function cleanExpiredAuthRequests(db: Db): void {
   db.prepare(`
     DELETE FROM auth_requests

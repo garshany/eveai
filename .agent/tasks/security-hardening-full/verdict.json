@@ -1,0 +1,73 @@
+{
+  "task_id": "security-hardening-full",
+  "overall_verdict": "PASS",
+  "verified_at": "2026-03-27T23:25:21+03:00",
+  "criteria": [
+    {
+      "id": "AC1",
+      "status": "PASS",
+      "reason": "The live callback path now accepts only auth_requests state, retained telegram_sessions.oauth_state is cleared, and live user-scoped EVE ownership resolves from user_id instead of falling back to chat_id when a real user exists.",
+      "checks": [
+        "npm test",
+        "npm test -- tests/unit/auth-routes.test.ts tests/unit/telegram-request-guard.test.ts tests/unit/frontend-handoff.test.ts tests/unit/prompts.test.ts tests/unit/sso.test.ts tests/unit/user-profile.test.ts"
+      ]
+    },
+    {
+      "id": "AC2",
+      "status": "PASS",
+      "reason": "Telegram ingress now rejects overlapping requests in a chat, enforces a recent-rate window per actor, and fails closed once the global active-request ceiling is reached. The guard is wired into message handling and covered by focused regression tests.",
+      "checks": [
+        "npm test",
+        "npm test -- tests/unit/auth-routes.test.ts tests/unit/telegram-request-guard.test.ts tests/unit/frontend-handoff.test.ts tests/unit/prompts.test.ts tests/unit/sso.test.ts tests/unit/user-profile.test.ts"
+      ]
+    },
+    {
+      "id": "AC3",
+      "status": "PASS",
+      "reason": "Bot-to-web handoff now keeps the bearer token in the URL fragment only, the browser clears it locally, and the server-side session is created through POST /auth/tg-handoff/exchange rather than a query-bearing GET flow.",
+      "checks": [
+        "npm test",
+        "npm test -- tests/unit/auth-routes.test.ts tests/unit/telegram-request-guard.test.ts tests/unit/frontend-handoff.test.ts tests/unit/prompts.test.ts tests/unit/sso.test.ts tests/unit/user-profile.test.ts"
+      ]
+    },
+    {
+      "id": "AC4",
+      "status": "PASS",
+      "reason": "USER.md still contains full gameplay context, but prompt assembly now frames that content as untrusted data and quotes it line by line so the model receives data rather than instructions.",
+      "checks": [
+        "npm test",
+        "npm test -- tests/unit/auth-routes.test.ts tests/unit/telegram-request-guard.test.ts tests/unit/frontend-handoff.test.ts tests/unit/prompts.test.ts tests/unit/sso.test.ts tests/unit/user-profile.test.ts"
+      ]
+    },
+    {
+      "id": "AC5",
+      "status": "PASS",
+      "reason": "Unlinking and ownership reassignment now remove retained profile artifacts, and a fully detached character also loses retained eve_accounts token material. The cleanup path is covered by regression tests and reflected in docs.",
+      "checks": [
+        "npm test",
+        "npm test -- tests/unit/auth-routes.test.ts tests/unit/telegram-request-guard.test.ts tests/unit/frontend-handoff.test.ts tests/unit/prompts.test.ts tests/unit/sso.test.ts tests/unit/user-profile.test.ts"
+      ]
+    }
+  ],
+  "commands_run": [
+    "npm run build",
+    "npm run lint",
+    "npm run typecheck",
+    "npm test",
+    "npm test -- tests/unit/auth-routes.test.ts tests/unit/telegram-request-guard.test.ts tests/unit/frontend-handoff.test.ts tests/unit/prompts.test.ts tests/unit/sso.test.ts tests/unit/user-profile.test.ts"
+  ],
+  "artifacts_used": [
+    ".agent/tasks/security-hardening-full/spec.md",
+    ".agent/tasks/security-hardening-full/evidence.md",
+    ".agent/tasks/security-hardening-full/evidence.json",
+    ".agent/tasks/security-hardening-full/raw/build.txt",
+    ".agent/tasks/security-hardening-full/raw/lint.txt",
+    ".agent/tasks/security-hardening-full/raw/typecheck.txt",
+    ".agent/tasks/security-hardening-full/raw/test-unit.txt",
+    ".agent/tasks/security-hardening-full/raw/test-integration.txt",
+    "docs/SECURITY.md",
+    "docs/RELIABILITY.md",
+    "docs/product-specs/web-dashboard.md"
+  ],
+  "problems": []
+}

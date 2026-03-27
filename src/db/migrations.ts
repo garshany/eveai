@@ -19,6 +19,7 @@ export function runMigrations(db: Db): void {
     createIndexIfMissing(db, 'idx_agent_threads_user', 'agent_threads', 'user_id');
     createIndexIfMissing(db, 'idx_eve_character_links_user', 'eve_character_links', 'user_id');
     backfillUsers(db);
+    clearLegacyOauthStates(db);
   });
 
   migrate();
@@ -105,6 +106,10 @@ function backfillUsers(db: Db): void {
       LIMIT 1
     ) WHERE user_id IS NULL
   `).run();
+}
+
+function clearLegacyOauthStates(db: Db): void {
+  db.prepare('UPDATE telegram_sessions SET oauth_state = NULL WHERE oauth_state IS NOT NULL').run();
 }
 
 async function main(): Promise<void> {

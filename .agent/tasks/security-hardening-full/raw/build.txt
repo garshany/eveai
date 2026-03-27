@@ -1,0 +1,53 @@
+
+> eve-agent@1.0.0 build
+> npm run build:client && npm run build:server
+
+
+> eve-agent@1.0.0 build:client
+> vite build
+
+vite v7.3.1 building client environment for production...
+transforming...
+✓ 31 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/client/assets/space-grotesk-vietnamese-700-normal-DMty7AZE.woff2      4.20 kB
+dist/client/assets/space-grotesk-vietnamese-500-normal-BmEvtly_.woff2      4.32 kB
+dist/client/assets/space-grotesk-vietnamese-700-normal-Duxec5Rn.woff       5.59 kB
+dist/client/assets/ibm-plex-mono-vietnamese-500-normal-C8zxqsMH.woff       5.62 kB
+dist/client/assets/ibm-plex-mono-vietnamese-400-normal-DDuiU_S-.woff       5.62 kB
+dist/client/assets/space-grotesk-vietnamese-500-normal-BTqKIpxg.woff       5.72 kB
+dist/client/assets/ibm-plex-mono-cyrillic-ext-500-normal-BIfNGwUT.woff     5.77 kB
+dist/client/assets/ibm-plex-mono-cyrillic-ext-400-normal-DMdlQ8Kv.woff     5.82 kB
+dist/client/assets/ibm-plex-mono-vietnamese-400-normal-BulugwFq.woff2      5.87 kB
+dist/client/assets/ibm-plex-mono-vietnamese-500-normal-DZ4AoWbu.woff2      6.04 kB
+dist/client/assets/ibm-plex-mono-cyrillic-ext-400-normal-xuaO2J-f.woff2    6.91 kB
+dist/client/assets/ibm-plex-mono-cyrillic-ext-500-normal-BqneJy0T.woff2    6.97 kB
+dist/client/assets/ibm-plex-mono-cyrillic-400-normal-CEL4l2ZJ.woff         7.20 kB
+dist/client/assets/ibm-plex-mono-cyrillic-500-normal-Ael50iVv.woff         7.21 kB
+dist/client/assets/ibm-plex-mono-cyrillic-400-normal-BSMlKf0J.woff2        8.36 kB
+dist/client/assets/ibm-plex-mono-cyrillic-500-normal-Bq9vWWag.woff2        8.46 kB
+dist/client/.vite/manifest.json                                           10.81 kB │ gzip:  1.01 kB
+dist/client/assets/ibm-plex-mono-latin-ext-400-normal-D3D2R8hC.woff       11.77 kB
+dist/client/assets/ibm-plex-mono-latin-ext-500-normal-CZ70TYgx.woff       11.77 kB
+dist/client/assets/space-grotesk-latin-ext-700-normal-BQnZhY3m.woff2      11.99 kB
+dist/client/assets/space-grotesk-latin-ext-500-normal-DUe3BAxM.woff2      12.27 kB
+dist/client/assets/space-grotesk-latin-700-normal-RjhwGPKo.woff2          12.84 kB
+dist/client/assets/ibm-plex-mono-latin-400-normal-CvHOgSBP.woff           13.14 kB
+dist/client/assets/ibm-plex-mono-latin-500-normal-CB9ihrfo.woff           13.16 kB
+dist/client/assets/space-grotesk-latin-500-normal-lFbtlQH6.woff2          13.31 kB
+dist/client/assets/ibm-plex-mono-latin-ext-400-normal-BmRBH3aV.woff2      13.35 kB
+dist/client/assets/ibm-plex-mono-latin-ext-500-normal-CAhNIIs5.woff2      13.43 kB
+dist/client/assets/ibm-plex-mono-latin-400-normal-DMJ8VG8y.woff2          14.71 kB
+dist/client/assets/ibm-plex-mono-latin-500-normal-DSY6xOcd.woff2          14.89 kB
+dist/client/assets/space-grotesk-latin-700-normal-CwsQ-cCU.woff           16.42 kB
+dist/client/assets/space-grotesk-latin-ext-700-normal-HVCqSBdx.woff       16.46 kB
+dist/client/assets/space-grotesk-latin-ext-500-normal-3dgZTiw9.woff       16.79 kB
+dist/client/assets/space-grotesk-latin-500-normal-CNSSEhBt.woff           16.99 kB
+dist/client/assets/main-CxlymUQw.css                                      45.61 kB │ gzip:  8.66 kB
+dist/client/assets/main-B9tB2zdX.js                                      229.36 kB │ gzip: 70.52 kB
+✓ built in 1.08s
+
+> eve-agent@1.0.0 build:server
+> tsc
+

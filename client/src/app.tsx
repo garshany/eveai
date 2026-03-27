@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
-type PageKind = 'landing' | 'dashboard';
+type PageKind = 'landing' | 'dashboard' | 'handoff';
 
 interface RootProps {
   root: HTMLElement;
@@ -317,6 +317,10 @@ export function App({ root }: RootProps) {
 
   if (config.page === 'dashboard') {
     return <DashboardPage />;
+  }
+
+  if (config.page === 'handoff') {
+    return <HandoffPage config={config} />;
   }
 
   return <LandingPage config={config} />;
@@ -897,6 +901,104 @@ function DashboardPage() {
   );
 }
 
+function HandoffPage({ config }: { config: AppConfig }) {
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function exchangeToken() {
+      const token = new URLSearchParams(window.location.hash.slice(1)).get('token');
+      if (!token) {
+        setError('Ссылка входа неполная или устарела. Открой панель заново из Telegram.');
+        return;
+      }
+
+      window.history.replaceState(null, '', window.location.pathname);
+
+      try {
+        const response = await fetch(config.authUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ token }),
+        });
+
+        if (!response.ok) {
+          let message = `Request failed with status ${response.status}`;
+          try {
+            const payload = await response.json() as { error?: string };
+            if (payload.error) {
+              message = payload.error;
+            }
+          } catch {
+            // keep fallback message
+          }
+          throw new Error(message);
+        }
+
+        if (!cancelled) {
+          window.location.replace('/app');
+        }
+      } catch {
+        if (!cancelled) {
+          setError('Ссылка входа недействительна или уже истекла. Вернись в Telegram и открой панель ещё раз.');
+        }
+      }
+    }
+
+    void exchangeToken();
+    return () => {
+      cancelled = true;
+    };
+  }, [config.authUrl]);
+
+  return (
+    <div className="min-h-screen bg-void text-white">
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(84,214,255,0.08),transparent_24%),linear-gradient(180deg,rgba(5,7,14,0.88),rgba(5,7,14,1))]" />
+      </div>
+      <main className="relative z-10 mx-auto flex min-h-screen max-w-3xl items-center px-6 py-16">
+        <div className="w-full rounded-[1.75rem] border border-white/10 bg-white/[0.04] p-8 backdrop-blur-xl">
+          <div className="eyebrow">Telegram Handoff</div>
+          <h1 className="mt-4 font-display text-3xl uppercase tracking-[0.14em] text-white">Завершаю вход</h1>
+          <p className="mt-4 max-w-xl text-sm leading-7 text-white/58 sm:text-base">
+            Создаю веб-сессию из одноразового токена Telegram. После успешного обмена откроется кабинет персонажей.
+          </p>
+
+          {error ? (
+            <div className="mt-6 rounded-xl border border-red-400/25 bg-red-500/10 px-5 py-4 text-sm text-red-100">
+              {error}
+            </div>
+          ) : (
+            <div className="mt-6 rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-5 py-4 text-sm text-cyan-50">
+              Проверяю токен и создаю защищённую сессию...
+            </div>
+          )}
+
+          <div className="mt-8 flex flex-wrap gap-3">
+            {config.botLink ? (
+              <a
+                href={config.botLink}
+                className="inline-flex items-center rounded-full border border-white/12 px-5 py-3 font-mono text-xs uppercase tracking-[0.24em] text-white/70 transition hover:border-white/28 hover:text-white"
+              >
+                Вернуться в @{config.botUsername}
+              </a>
+            ) : null}
+            <a
+              href="/"
+              className="inline-flex items-center rounded-full border border-cyan-300/30 bg-cyan-300/10 px-5 py-3 font-mono text-xs uppercase tracking-[0.24em] text-cyan-50 transition hover:border-cyan-200"
+            >
+              На главную
+            </a>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
+
 
 function DashMetric({ value, label }: { value: string | number; label: string }) {
   return (
@@ -908,7 +1010,11 @@ function DashMetric({ value, label }: { value: string | number; label: string })
 }
 
 function readConfig(root: HTMLElement): AppConfig {
-  const page = root.dataset.page === 'dashboard' ? 'dashboard' : 'landing';
+  const page = root.dataset.page === 'dashboard'
+    ? 'dashboard'
+    : root.dataset.page === 'handoff'
+      ? 'handoff'
+      : 'landing';
 
   return {
     page,

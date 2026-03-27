@@ -19,7 +19,7 @@ vi.mock('../../src/config.js', () => ({
   },
 }));
 
-import { readUserProfile } from '../../src/eve/user-profile.js';
+import { buildUserMarkdown, readUserProfile } from '../../src/eve/user-profile.js';
 
 let db: Database.Database;
 
@@ -51,5 +51,66 @@ describe('readUserProfile', () => {
 
     expect(readUserProfile(db, { userId: 0, chatId: 10 })).toBe('profile for chat 10');
     expect(readUserProfile(db, { userId: 0, chatId: 11 })).toBeNull();
+  });
+
+  it('keeps full gameplay detail in USER.md while sanitizing text fields', () => {
+    const markdown = buildUserMarkdown({
+      updatedAt: '2026-03-27T20:00:00.000Z',
+      character: {
+        name: 'Pilot<script>',
+        id: 7001,
+        birthday: '2020-01-01',
+        securityStatus: 2.5,
+        corporationId: 1001,
+        corporationName: 'Corp<unsafe>',
+        allianceId: 2002,
+        allianceName: 'Alliance',
+        factionId: 3003,
+        factionName: 'Faction',
+      },
+      status: {
+        isOnline: true,
+        lastLogin: '2026-03-27T19:00:00.000Z',
+        lastLogout: '2026-03-27T18:00:00.000Z',
+        systemId: 30000142,
+        systemName: 'Jita',
+        stationId: 60003760,
+        stationName: 'Jita IV',
+        structureId: 1024,
+        shipName: 'My <Ship>',
+        shipTypeId: 587,
+        shipTypeName: 'Rifter',
+      },
+      skills: {
+        totalSp: 1234567,
+        unallocatedSp: 7654,
+        trained: [{ name: 'Mining<script>', level: 5 }],
+      },
+      attributes: {
+        intelligence: 20,
+        memory: 21,
+        perception: 22,
+        willpower: 23,
+        charisma: 24,
+        bonusRemaps: 1,
+        lastRemapDate: '2026-03-01',
+      },
+      skillQueue: [{ name: 'Cybernetics<script>', finishedLevel: 5, finishDate: '2026-03-29T00:00:00.000Z' }],
+      implants: [{ name: 'Ocular Filter<script>', typeId: 1 }],
+      clones: [{ location: 'Jita<script>', implants: ['Halo<script>'] }],
+      fittings: [{ name: 'Travel<script>', shipType: 'Astero<script>' }],
+      wallet: { balance: 999999.12 },
+    });
+
+    expect(markdown).toContain('## Wallet');
+    expect(markdown).toContain('Balance ISK');
+    expect(markdown).toContain('## Saved Fittings');
+    expect(markdown).toContain('## Jump Clones');
+    expect(markdown).toContain('## Active Implants');
+    expect(markdown).toContain('## Attributes');
+    expect(markdown).toContain('## Skill Queue');
+    expect(markdown).toContain('## Skills');
+    expect(markdown).toContain('## Status');
+    expect(markdown).not.toContain('<script>');
   });
 });

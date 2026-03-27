@@ -24,6 +24,7 @@ vi.mock('../../src/config.js', () => ({
     db: { path: ':memory:' },
     sde: { dataDir: './data/sde' },
     web: { baseUrl: 'http://localhost:3000', sessionTtlHours: 720, handoffTtlSeconds: 300 },
+    userProfile: { path: '/tmp/eve-agent-sso-tests/USER_{chat_id}_{character_id}.md', refreshSeconds: 300 },
   },
 }));
 
@@ -32,13 +33,18 @@ vi.mock('jose', () => ({
   jwtVerify: jwtVerifyMock,
 }));
 
-import { getLinkedCharacter, getAccessToken } from '../../src/eve/sso.js';
+import { getLinkedCharacter, getAccessToken, unlinkCharacter } from '../../src/eve/sso.js';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { resetEveSsoMetadataCacheForTests } from '../../src/eve/sso-auth.js';
 
 let db: Database.Database;
 let fetchMock: ReturnType<typeof vi.fn>;
+const profileDir = '/tmp/eve-agent-sso-tests';
 
 beforeEach(() => {
+  rmSync(profileDir, { recursive: true, force: true });
+  mkdirSync(profileDir, { recursive: true });
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);
@@ -52,6 +58,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   db.close();
+  rmSync(profileDir, { recursive: true, force: true });
 });
 
 describe('getLinkedCharacter', () => {
@@ -203,5 +210,28 @@ describe('getAccessToken', () => {
         issuer: expect.arrayContaining(['https://login.eveonline.com/']),
       }),
     );
+  });
+});
+
+describe('unlinkCharacter', () => {
+  it('removes tokens and profile artifact when the last character link is deleted', () => {
+    db.prepare("INSERT INTO users (user_id, display_name, active_character_id, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))")
+      .run(7, 'Pilot', 12345);
+    db.prepare("INSERT INTO telegram_accounts (telegram_user_id, user_id, username, first_name, created_at) VALUES (?, ?, ?, ?, datetime('now'))")
+      .run(77, 7, 'pilot', 'Pilot');
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username, active_character_id) VALUES (?, ?, ?)").run(77, 'pilot', 12345);
+    db.prepare(`
+      INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id)
+      VALUES (?, ?, ?, ?, datetime('now', '+1200 seconds'), ?, ?)
+    `).run(12345, 'Pilot', 'valid-token', 'ref-token', '[]', 7);
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (?, ?, ?)').run(77, 12345, 7);
+
+    const profilePath = join(profileDir, 'USER_77_12345.md');
+    writeFileSync(profilePath, 'profile');
+    db.prepare('UPDATE users SET active_character_id = ? WHERE user_id = ?').run(12345, 7);
+
+    expect(unlinkCharacter(db, { userId: 7, chatId: 77 }, 12345)).toBe(true);
+    expect(db.prepare('SELECT * FROM eve_accounts WHERE character_id = ?').get(12345)).toBeUndefined();
+    expect(existsSync(profilePath)).toBe(false);
   });
 });

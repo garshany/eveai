@@ -12,7 +12,8 @@ import { callEsiOperation } from '../eve/esi-client.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
 import { getOrCreateUser, type UserContext } from '../auth/user-resolver.js';
 import { createHandoffToken } from '../auth/handoff.js';
-import { createAuthRequestToken, protectLegacyOauthState } from '../auth/auth-request.js';
+import { createAuthRequestToken } from '../auth/auth-request.js';
+import { evaluateTelegramRequestAllowance } from './request-guard.js';
 
 const inFlightRequests = new Map<number, {
   token: string;
@@ -69,11 +70,6 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
       chatId: ctx.chat.id,
       ttlSeconds: 600,
     });
-
-    // Also store in telegram_sessions for backward compat
-    db.prepare(
-      'UPDATE telegram_sessions SET oauth_state = ? WHERE chat_id = ?',
-    ).run(protectLegacyOauthState(state), ctx.chat.id);
 
     const scopes = ALL_REQUESTED_SCOPES.join(' ');
     const url = new URL('https://login.eveonline.com/v2/oauth/authorize');
@@ -275,7 +271,7 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     if (!ctx.chat || !userCtx) return;
 
     const token = createHandoffToken(db, userCtx.userId, ctx.chat.id);
-    const url = `${config.web.baseUrl}/auth/tg-handoff?token=${token}`;
+    const url = `${config.web.baseUrl}/auth/tg-handoff#token=${encodeURIComponent(token)}`;
 
     const keyboard = new InlineKeyboard().url('Открыть панель', url);
     await ctx.reply('Открой веб-панель для управления персонажами:', { reply_markup: keyboard });
@@ -316,6 +312,17 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     const MAX_INPUT_LENGTH = 2000;
     if (text.length > MAX_INPUT_LENGTH) {
       await ctx.reply(`Сообщение слишком длинное (${text.length} символов). Максимум: ${MAX_INPUT_LENGTH}.`);
+      return;
+    }
+
+    const allowance = evaluateTelegramRequestAllowance({
+      chatId,
+      userId: userCtx.userId,
+      hasActiveRequest: inFlightRequests.has(chatId),
+      activeRequestCount: inFlightRequests.size,
+    });
+    if (!allowance.ok) {
+      await ctx.reply(allowance.message ?? 'Запрос отклонён.');
       return;
     }
 

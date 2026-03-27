@@ -1,11 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, parse } from 'node:path';
+import { dirname } from 'node:path';
 import type { Db } from '../db/sqlite.js';
-import { config } from '../config.js';
 import { callEsiOperation } from './esi-client.js';
 import { getEveCapabilities } from './capabilities.js';
 import { getLinkedCharacter } from './sso.js';
 import type { UserContext } from '../auth/user-resolver.js';
+import { resolveUserProfilePath } from './user-profile-storage.js';
 
 type JsonResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -176,21 +176,6 @@ export async function refreshUserProfile(db: Db, ctx: UserContext): Promise<Json
   }
   writeFileSync(path, markdown);
   return { ok: true, data: { path } };
-}
-
-function resolveUserProfilePath(ctx: UserContext, characterId: number): string {
-  const base = config.userProfile.path;
-  const chatId = ctx.chatId;
-  if (base.includes('{chat_id}') || base.includes('{character_id}')) {
-    return base
-      .replace('{chat_id}', chatId !== undefined ? String(chatId) : String(ctx.userId))
-      .replace('{character_id}', String(characterId));
-  }
-
-  const identifier = chatId !== undefined ? chatId : ctx.userId;
-  const pathInfo = parse(base);
-  const stem = pathInfo.ext ? pathInfo.name : pathInfo.base || 'USER';
-  return join(pathInfo.dir || dirname(base), `${stem}_${identifier}_${characterId}.md`);
 }
 
 async function runEsiJson<T>(
@@ -403,13 +388,13 @@ type UserProfileData = {
   };
 };
 
-function buildUserMarkdown(profile: UserProfileData): string {
+export function buildUserMarkdown(profile: UserProfileData): string {
   const lines: string[] = [];
   lines.push('# User Profile');
   lines.push(`Updated: ${profile.updatedAt}`);
   lines.push('');
   lines.push('## Character');
-  lines.push(`- Name: ${profile.character.name}`);
+  lines.push(`- Name: ${sanitizeProfileValue(profile.character.name)}`);
   lines.push(`- ID: ${profile.character.id}`);
   addLine(lines, 'Birthday', profile.character.birthday);
   addLine(lines, 'Security status', formatNumber(profile.character.securityStatus));
@@ -435,7 +420,7 @@ function buildUserMarkdown(profile: UserProfileData): string {
     lines.push('');
     lines.push('### Trained Skills');
     for (const s of profile.skills.trained) {
-      lines.push(`- ${s.name}: ${s.level}`);
+      lines.push(`- ${sanitizeProfileValue(s.name)}: ${s.level}`);
     }
   }
 
@@ -456,7 +441,7 @@ function buildUserMarkdown(profile: UserProfileData): string {
     lines.push('## Skill Queue');
     for (const s of profile.skillQueue) {
       const eta = s.finishDate ? ` (ETA: ${s.finishDate})` : '';
-      lines.push(`- ${s.name} → ${s.finishedLevel}${eta}`);
+      lines.push(`- ${sanitizeProfileValue(s.name)} → ${s.finishedLevel}${eta}`);
     }
   }
 
@@ -464,7 +449,7 @@ function buildUserMarkdown(profile: UserProfileData): string {
     lines.push('');
     lines.push('## Active Implants');
     for (const imp of profile.implants) {
-      lines.push(`- ${imp.name}`);
+      lines.push(`- ${sanitizeProfileValue(imp.name)}`);
     }
   }
 
@@ -472,8 +457,11 @@ function buildUserMarkdown(profile: UserProfileData): string {
     lines.push('');
     lines.push('## Jump Clones');
     for (const clone of profile.clones) {
-      const impList = clone.implants.length > 0 ? ` [${clone.implants.join(', ')}]` : ' [empty]';
-      lines.push(`- ${clone.location}${impList}`);
+      const implantNames = clone.implants
+        .map((implant) => sanitizeProfileValue(implant))
+        .filter((implant): implant is string => Boolean(implant));
+      const impList = implantNames.length > 0 ? ` [${implantNames.join(', ')}]` : ' [empty]';
+      lines.push(`- ${sanitizeProfileValue(clone.location) ?? 'unknown'}${impList}`);
     }
   }
 
@@ -481,7 +469,9 @@ function buildUserMarkdown(profile: UserProfileData): string {
     lines.push('');
     lines.push('## Saved Fittings');
     for (const fit of profile.fittings) {
-      lines.push(`- ${fit.shipType}: ${fit.name}`);
+      const shipType = sanitizeProfileValue(fit.shipType) ?? 'unknown';
+      const fitName = sanitizeProfileValue(fit.name) ?? '?';
+      lines.push(`- ${shipType}: ${fitName}`);
     }
   }
 
@@ -504,16 +494,30 @@ function formatNumber(value: number | null): string | null {
 
 function formatNameWithId(name: string | null, id: number | null): string | null {
   if (!name && !id) return null;
-  if (name && id) return `${name} (${id})`;
-  if (name) return name;
+  const safeName = sanitizeProfileValue(name);
+  if (safeName && id) return `${safeName} (${id})`;
+  if (safeName) return safeName;
   return String(id);
 }
 
 function formatShip(shipName: string | null, typeName: string | null, typeId: number | null): string | null {
   if (!shipName && !typeName && !typeId) return null;
   const parts: string[] = [];
-  if (shipName) parts.push(shipName);
-  if (typeName) parts.push(typeName);
+  const safeShipName = sanitizeProfileValue(shipName);
+  const safeTypeName = sanitizeProfileValue(typeName);
+  if (safeShipName) parts.push(safeShipName);
+  if (safeTypeName) parts.push(safeTypeName);
   if (typeId) parts.push(String(typeId));
   return parts.join(' / ');
+}
+
+function sanitizeProfileValue(value: string | null): string | null {
+  if (!value) return null;
+  const normalized = value
+    .replace(/[\r\n\t]+/gu, ' ')
+    .replace(/[`<>]/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (!normalized) return null;
+  return normalized.slice(0, 120);
 }

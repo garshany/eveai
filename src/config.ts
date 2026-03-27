@@ -42,6 +42,9 @@ export const config = {
     botToken: required('TELEGRAM_BOT_TOKEN'),
     botUsername: optional('TELEGRAM_BOT_USERNAME', ''),
     allowedUserId: optionalInt('ALLOWED_TELEGRAM_USER_ID', 0),
+    requestWindowMs: optionalInt('TELEGRAM_REQUEST_WINDOW_MS', 60000),
+    maxRequestsPerWindow: optionalInt('TELEGRAM_MAX_REQUESTS_PER_WINDOW', 6),
+    maxActiveRequestsGlobal: optionalInt('TELEGRAM_MAX_ACTIVE_REQUESTS_GLOBAL', 24),
   },
   openai: {
     apiKey: required('OPENAI_API_KEY'),

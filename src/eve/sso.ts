@@ -3,6 +3,7 @@ import type { Db } from '../db/sqlite.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { getUserTelegramChatId } from '../auth/user-resolver.js';
 import { decryptStoredSecret, encryptStoredSecret } from '../auth/secret-storage.js';
+import { deleteUserProfileArtifact } from './user-profile-storage.js';
 import { getEveSsoMetadata, verifyEveAccessToken } from './sso-auth.js';
 import { fetchWithTimeout } from './http.js';
 
@@ -71,6 +72,7 @@ export function getLinkedCharacter(
   db: Db,
   ctx: UserContext,
 ): { characterId: number; characterName: string; scopes: string[] } | null {
+  backfillLegacyOwnership(db, ctx);
   const characterId = resolveActiveCharacterId(db, ctx);
   if (!characterId) return null;
 
@@ -90,9 +92,9 @@ export function listLinkedCharacters(
   db: Db,
   ctx: UserContext,
 ): Array<{ characterId: number; characterName: string; isActive: boolean }> {
+  backfillLegacyOwnership(db, ctx);
   const activeId = resolveActiveCharacterId(db, ctx);
 
-  // Prefer user_id path
   if (ctx.userId) {
     const rows = db.prepare(`
       SELECT DISTINCT l.character_id as character_id, a.character_name as character_name
@@ -108,9 +110,10 @@ export function listLinkedCharacters(
         isActive: row.character_id === activeId,
       }));
     }
+
+    return [];
   }
 
-  // Fallback: chat_id path
   if (ctx.chatId !== undefined) {
     const rows = db.prepare(`
       SELECT l.character_id as character_id, a.character_name as character_name
@@ -150,14 +153,15 @@ export function linkCharacterToChat(db: Db, ctx: UserContext, characterId: numbe
 }
 
 export function setActiveCharacter(db: Db, ctx: UserContext, characterId: number): boolean {
-  // Check link exists
+  backfillLegacyOwnership(db, ctx);
+
   let linkExists = false;
   if (ctx.userId) {
     linkExists = !!db.prepare(
       'SELECT 1 FROM eve_character_links WHERE user_id = ? AND character_id = ?',
     ).get(ctx.userId, characterId);
   }
-  if (!linkExists && ctx.chatId !== undefined) {
+  if (!ctx.userId && !linkExists && ctx.chatId !== undefined) {
     linkExists = !!db.prepare(
       'SELECT 1 FROM eve_character_links WHERE chat_id = ? AND character_id = ?',
     ).get(ctx.chatId, characterId);
@@ -176,13 +180,15 @@ export function setActiveCharacter(db: Db, ctx: UserContext, characterId: number
 }
 
 export function unlinkCharacter(db: Db, ctx: UserContext, characterId: number): boolean {
+  backfillLegacyOwnership(db, ctx);
+
   let deleted = false;
   if (ctx.userId) {
     const result = db.prepare('DELETE FROM eve_character_links WHERE user_id = ? AND character_id = ?')
       .run(ctx.userId, characterId);
     if (result.changes > 0) deleted = true;
   }
-  if (!deleted && ctx.chatId !== undefined) {
+  if (!ctx.userId && !deleted && ctx.chatId !== undefined) {
     const result = db.prepare('DELETE FROM eve_character_links WHERE chat_id = ? AND character_id = ?')
       .run(ctx.chatId, characterId);
     if (result.changes > 0) deleted = true;
@@ -199,18 +205,39 @@ export function unlinkCharacter(db: Db, ctx: UserContext, characterId: number): 
       db.prepare("UPDATE users SET active_character_id = NULL, updated_at = datetime('now') WHERE user_id = ?").run(ctx.userId);
     }
   }
+
+  deleteUserProfileArtifact(ctx, characterId);
+  cleanupDetachedCharacter(db, characterId);
   return true;
 }
 
 function resolveActiveCharacterId(db: Db, ctx: UserContext): number | null {
-  // 1. Try users table (new path)
   if (ctx.userId) {
     const userRow = db.prepare('SELECT active_character_id FROM users WHERE user_id = ?')
       .get(ctx.userId) as { active_character_id: number | null } | undefined;
-    if (userRow?.active_character_id) return userRow.active_character_id;
+    if (userRow?.active_character_id) {
+      const ownsActiveLink = db.prepare(
+        'SELECT 1 FROM eve_character_links WHERE user_id = ? AND character_id = ?',
+      ).get(ctx.userId, userRow.active_character_id);
+      const ownsActiveAccount = db.prepare(
+        'SELECT 1 FROM eve_accounts WHERE user_id = ? AND character_id = ?',
+      ).get(ctx.userId, userRow.active_character_id);
+      if (ownsActiveLink || ownsActiveAccount) {
+        return userRow.active_character_id;
+      }
+      db.prepare("UPDATE users SET active_character_id = NULL, updated_at = datetime('now') WHERE user_id = ?").run(ctx.userId);
+    }
+    const linked = db.prepare(
+      'SELECT character_id FROM eve_character_links WHERE user_id = ? ORDER BY linked_at DESC LIMIT 1',
+    ).get(ctx.userId) as { character_id: number } | undefined;
+    if (linked?.character_id) {
+      db.prepare("UPDATE users SET active_character_id = ?, updated_at = datetime('now') WHERE user_id = ?")
+        .run(linked.character_id, ctx.userId);
+      return linked.character_id;
+    }
+    return null;
   }
 
-  // 2. Fallback: telegram_sessions (backward compat)
   if (ctx.chatId !== undefined) {
     const row = db.prepare('SELECT active_character_id FROM telegram_sessions WHERE chat_id = ?')
       .get(ctx.chatId) as { active_character_id: number | null } | undefined;
@@ -226,15 +253,39 @@ function resolveActiveCharacterId(db: Db, ctx: UserContext): number | null {
     }
   }
 
-  // 3. Fallback: most recently linked character for this user
-  if (ctx.userId) {
-    const linked = db.prepare(
-      'SELECT character_id FROM eve_character_links WHERE user_id = ? ORDER BY linked_at DESC LIMIT 1',
-    ).get(ctx.userId) as { character_id: number } | undefined;
-    return linked?.character_id ?? null;
+  return null;
+}
+
+function backfillLegacyOwnership(db: Db, ctx: UserContext): void {
+  if (!ctx.userId || ctx.chatId === undefined) {
+    return;
   }
 
-  return null;
+  db.prepare('UPDATE eve_character_links SET user_id = ? WHERE chat_id = ? AND user_id IS NULL')
+    .run(ctx.userId, ctx.chatId);
+  db.prepare('UPDATE agent_threads SET user_id = ? WHERE chat_id = ? AND user_id IS NULL')
+    .run(ctx.userId, ctx.chatId);
+  db.prepare(`
+    UPDATE eve_accounts
+    SET user_id = ?
+    WHERE user_id IS NULL
+      AND character_id IN (
+        SELECT character_id
+        FROM eve_character_links
+        WHERE chat_id = ?
+          AND user_id = ?
+      )
+  `).run(ctx.userId, ctx.chatId, ctx.userId);
+}
+
+function cleanupDetachedCharacter(db: Db, characterId: number): void {
+  const remaining = db.prepare('SELECT COUNT(*) as count FROM eve_character_links WHERE character_id = ?')
+    .get(characterId) as { count: number };
+  if (remaining.count > 0) {
+    return;
+  }
+
+  db.prepare('DELETE FROM eve_accounts WHERE character_id = ?').run(characterId);
 }
 
 async function refreshAccessToken(

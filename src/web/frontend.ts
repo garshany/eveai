@@ -75,10 +75,23 @@ export function registerFrontendRoutes(app: FastifyInstance, db: Db): void {
         }),
       );
   });
+
+  app.get('/auth/tg-handoff', async (_req, reply) => {
+    return reply
+      .header('Cache-Control', 'no-store')
+      .type('text/html; charset=utf-8')
+      .send(
+        await buildFrontendHtml({
+          page: 'handoff',
+          title: 'EVE Agent - Handoff',
+          authUrl: `${config.web.baseUrl}/auth/tg-handoff/exchange`,
+        }),
+      );
+  });
 }
 
 async function buildFrontendHtml(
-  options: { page: 'landing' | 'dashboard'; title: string; authUrl: string },
+  options: { page: 'landing' | 'dashboard' | 'handoff'; title: string; authUrl: string },
 ): Promise<string> {
   const assets = await loadClientAssets();
   const botUsername = config.telegram.botUsername;

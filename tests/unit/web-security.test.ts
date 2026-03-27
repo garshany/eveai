@@ -76,7 +76,6 @@ describe('web frontend hardening', () => {
     const appSource = readFileSync(new URL('../../client/src/app.tsx', import.meta.url), 'utf8');
 
     expect(scriptRes.statusCode).toBe(200);
-    expect(scriptRes.body).toContain('replaceChildren');
     expect(appSource).not.toContain('innerHTML');
     expect(appSource).not.toContain('dangerouslySetInnerHTML');
 

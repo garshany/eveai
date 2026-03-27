@@ -10,6 +10,7 @@
 - ESI retry logic is bounded for `420`, `429`, and transient `5xx`
 - token refresh is deduplicated in-flight per character
 - Telegram request handling dedupes identical in-flight requests per chat/thread
+- Telegram ingress rejects overlapping agent turns in the same chat, rate-limits recent requests per actor, and caps global in-process concurrency
 
 ## Failure Model
 
@@ -19,6 +20,7 @@
 - if a `function_call_output` no longer matches proxy-side tool state, the agent drops warm continuation and retries from local recovery context instead of surfacing the raw call-id mismatch to the user
 - if ESI pagination changes during collection, the request fails instead of silently truncating
 - if required auth state expires, callback flows fail closed
+- if Telegram ingress exceeds the configured recent-rate or global active ceiling, the request is rejected early with a retry-later message instead of consuming more model or ESI capacity
 
 ## Operational Checks
 
@@ -38,3 +40,4 @@
 - no separate background worker means long-running synchronous work can still contend with the main process
 - docs do not yet have mechanical freshness checks
 - production runbook still depends on external operator discipline
+- Telegram abuse controls are intentionally in-memory because the app is single-process; they do not coordinate across multiple app instances

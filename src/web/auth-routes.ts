@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
+import { deleteUserProfileArtifact } from '../eve/user-profile-storage.js';
 import { ALL_REQUESTED_SCOPES } from '../eve/scopes.js';
 import { refreshUserProfile } from '../eve/user-profile.js';
 import { linkCharacterToChat } from '../eve/sso.js';
@@ -19,7 +20,6 @@ import { resolveUserFromWebSession } from '../auth/user-resolver.js';
 import {
   createAuthRequestToken,
   findPendingAuthRequest,
-  legacyOauthStateCandidates,
   markAuthRequestUsed,
 } from '../auth/auth-request.js';
 import { encryptStoredSecret } from '../auth/secret-storage.js';
@@ -65,6 +65,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     const cookie = buildSessionCookie(sessionId, config.web.sessionTtlHours, req.headers);
 
     return reply
+      .header('Cache-Control', 'no-store')
       .header('Set-Cookie', cookie)
       .redirect('/app');
   });
@@ -105,40 +106,15 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       return reply.status(400).send({ error: 'Missing state parameter' });
     }
 
-    // Try auth_requests first (new path)
     const authRequest = findPendingAuthRequest(db, 'eve_sso', state);
-
-    // Fallback: legacy telegram_sessions.oauth_state
-    const [protectedLegacyState, legacyState] = legacyOauthStateCandidates(state);
-    const legacySession = !authRequest
-      ? db.prepare(`
-        SELECT chat_id
-        FROM telegram_sessions
-        WHERE oauth_state IN (?, ?)
-        ORDER BY CASE WHEN oauth_state = ? THEN 0 ELSE 1 END
-        LIMIT 1
-      `).get(protectedLegacyState, legacyState, protectedLegacyState) as { chat_id: number } | undefined
-      : undefined;
-
-    if (!authRequest && !legacySession) {
+    if (!authRequest) {
       return reply.status(403).send({ error: 'Invalid or expired state parameter. Please try again.' });
     }
 
-    // Mark used
-    if (authRequest) {
-      markAuthRequestUsed(db, 'eve_sso', state);
-    }
-    if (legacySession) {
-      db.prepare('UPDATE telegram_sessions SET oauth_state = NULL WHERE oauth_state IN (?, ?)')
-        .run(protectedLegacyState, legacyState);
-    }
+    markAuthRequestUsed(db, 'eve_sso', state);
 
-    const userId = authRequest?.user_id ?? null;
-    const chatId = authRequest?.chat_id ?? legacySession?.chat_id ?? null;
-
-    if (!userId && (!chatId || chatId <= 0)) {
-      return reply.status(403).send({ error: 'State is not bound to any user. Start auth again.' });
-    }
+    const userId = authRequest.user_id;
+    const chatId = authRequest.chat_id ?? null;
 
     try {
       // Exchange code for tokens
@@ -191,22 +167,9 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       );
 
       // Build UserContext for linking
-      const ctx: UserContext = userId
-        ? { userId, chatId: chatId ?? undefined }
-        : { userId: 0, chatId: chatId ?? undefined };
+      const ctx: UserContext = chatId ? { userId, chatId } : { userId };
 
-      // For legacy flow without userId, try to resolve from chatId
-      if (!userId && chatId) {
-        const tgAccount = db.prepare('SELECT user_id FROM telegram_accounts WHERE telegram_user_id = ?')
-          .get(chatId) as { user_id: number } | undefined;
-        if (tgAccount) {
-          ctx.userId = tgAccount.user_id;
-        }
-      }
-
-      if (ctx.userId > 0) {
-        reassignCharacterOwnership(db, ctx.userId, characterId);
-      }
+      reassignCharacterOwnership(db, ctx.userId, characterId);
       linkCharacterToChat(db, ctx, characterId);
 
       void refreshUserProfile(db, ctx)
@@ -238,9 +201,9 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     }
   });
 
-  // GET /auth/tg-handoff -- one-time token from bot -> web session
-  app.get<{ Querystring: { token?: string } }>('/auth/tg-handoff', async (req, reply) => {
-    const { token } = req.query;
+  // POST /auth/tg-handoff/exchange -- one-time token from bot -> web session
+  app.post<{ Body: { token?: string } }>('/auth/tg-handoff/exchange', async (req, reply) => {
+    const token = typeof req.body?.token === 'string' ? req.body.token : '';
     if (!token) {
       return reply.status(400).send({ error: 'Missing token' });
     }
@@ -254,8 +217,9 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     const cookie = buildSessionCookie(sessionId, config.web.sessionTtlHours, req.headers);
 
     return reply
+      .header('Cache-Control', 'no-store')
       .header('Set-Cookie', cookie)
-      .redirect('/app');
+      .send({ ok: true });
   });
 
   // POST /auth/logout
@@ -265,6 +229,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       deleteWebSession(db, sessionId);
     }
     return reply
+      .header('Cache-Control', 'no-store')
       .header('Set-Cookie', buildLogoutCookie(req.headers))
       .send({ ok: true });
   });
@@ -330,6 +295,7 @@ function reassignCharacterOwnership(db: Db, userId: number, characterId: number)
       db.prepare('UPDATE users SET active_character_id = NULL WHERE user_id = ? AND active_character_id = ?')
         .run(link.user_id, characterId);
     }
+    deleteUserProfileArtifact({ userId: link.user_id ?? 0, chatId: link.chat_id }, characterId);
   }
 
   db.prepare('DELETE FROM eve_character_links WHERE character_id = ? AND COALESCE(user_id, 0) != ?')

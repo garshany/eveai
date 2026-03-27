@@ -1,0 +1,109 @@
+{
+  "task_id": "security-hardening-full",
+  "overall_status": "PASS",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "text": "Multi-user authorization for EVE linking, character selection, thread ownership, and callback state is anchored to user_id on live paths. Legacy telegram_sessions.oauth_state is no longer accepted by the EVE callback, and user-scoped code paths no longer fall back to chat_id when a real user_id is available.",
+      "status": "PASS",
+      "proof": [
+        "src/auth/auth-request.ts stores live callback state only in auth_requests.",
+        "src/web/auth-routes.ts rejects missing or stale auth_requests state and no longer reads telegram_sessions.oauth_state on the live callback path.",
+        "src/eve/sso.ts resolves live user-scoped ownership from user_id and only uses chat_id in contexts that truly lack a resolved user.",
+        "src/db/migrations.ts clears retained telegram_sessions.oauth_state values.",
+        "tests/unit/auth-routes.test.ts and tests/unit/sso.test.ts cover the callback and user-owned character behavior."
+      ],
+      "gaps": []
+    },
+    {
+      "id": "AC2",
+      "text": "Telegram request handling has explicit in-process abuse controls for public multi-user use: one active agent request per chat, bounded recent request rate per Telegram user/chat, and a global active-request ceiling with user-facing overload errors plus regression coverage.",
+      "status": "PASS",
+      "proof": [
+        "src/telegram/request-guard.ts implements overlap rejection, recent-rate limiting, and a global active-request ceiling.",
+        "src/telegram/handlers.ts evaluates the guard before agent execution and returns retry-later messages.",
+        "src/config.ts exposes the guard thresholds as runtime config.",
+        "tests/unit/telegram-request-guard.test.ts covers overlap, global overload, rate window exhaustion, and window expiry."
+      ],
+      "gaps": [
+        "The guard is in-memory and therefore scoped to the single-process deployment model."
+      ]
+    },
+    {
+      "id": "AC3",
+      "text": "Telegram-to-web handoff no longer sends the one-time bearer token in a server-observed query string. The browser completes handoff through a fragment-driven flow and a POST exchange endpoint, with updated route coverage and docs.",
+      "status": "PASS",
+      "proof": [
+        "src/telegram/handlers.ts now emits /auth/tg-handoff#token=... links.",
+        "src/web/frontend.ts serves the handoff shell and client/src/app.tsx completes exchange from location.hash via POST /auth/tg-handoff/exchange.",
+        "src/web/auth-routes.ts implements POST /auth/tg-handoff/exchange with Cache-Control: no-store.",
+        "tests/unit/frontend-handoff.test.ts and tests/unit/auth-routes.test.ts cover the new handoff path."
+      ],
+      "gaps": []
+    },
+    {
+      "id": "AC4",
+      "text": "Model-facing profile context is hardened against prompt injection without stripping gameplay detail from USER.md. Generated USER.md keeps full in-game information, while prompt ingestion treats that content as untrusted data with explicit delimiting and prompt-safety handling.",
+      "status": "PASS",
+      "proof": [
+        "src/eve/user-profile.ts still renders rich gameplay data including wallet, fittings, clones, implants, attributes, and skill queue.",
+        "src/agent/prompts.ts wraps USER.md and summary content in explicit untrusted-data blocks and quotes each line.",
+        "tests/unit/user-profile.test.ts verifies the rich sections remain present and dangerous markup is sanitized.",
+        "tests/unit/prompts.test.ts verifies the prompt framing and quoted data lines."
+      ],
+      "gaps": [
+        "Prompt footprint remains large by design because the user requested full USER.md content."
+      ]
+    },
+    {
+      "id": "AC5",
+      "text": "Unlinking a character reduces retained sensitive state. When a character no longer has active links, encrypted token material and generated profile artifacts for that user/chat are removed, with regression coverage and updated security docs.",
+      "status": "PASS",
+      "proof": [
+        "src/eve/user-profile-storage.ts centralizes profile artifact deletion.",
+        "src/eve/sso.ts deletes the profile artifact on unlink and removes eve_accounts token material when a character becomes fully detached.",
+        "src/web/auth-routes.ts deletes stale profile artifacts during ownership reassignment.",
+        "tests/unit/sso.test.ts covers detached-character cleanup."
+      ],
+      "gaps": []
+    }
+  ],
+  "changed_files": [
+    "client/src/app.tsx",
+    "docs/SECURITY.md",
+    "docs/RELIABILITY.md",
+    "docs/product-specs/web-dashboard.md",
+    "docs/exec-plans/active/index.md",
+    "docs/exec-plans/completed/index.md",
+    "docs/exec-plans/completed/security-hardening-full.md",
+    "src/agent/prompts.ts",
+    "src/auth/auth-request.ts",
+    "src/config.ts",
+    "src/db/migrations.ts",
+    "src/eve/sso.ts",
+    "src/eve/user-profile-storage.ts",
+    "src/eve/user-profile.ts",
+    "src/telegram/handlers.ts",
+    "src/telegram/request-guard.ts",
+    "src/web/auth-routes.ts",
+    "src/web/frontend.ts",
+    "tests/unit/auth-routes.test.ts",
+    "tests/unit/frontend-handoff.test.ts",
+    "tests/unit/prompts.test.ts",
+    "tests/unit/sso.test.ts",
+    "tests/unit/telegram-request-guard.test.ts",
+    "tests/unit/user-profile.test.ts"
+  ],
+  "commands_for_fresh_verifier": [
+    "npm run build",
+    "npm run lint",
+    "npm run typecheck",
+    "npm test",
+    "npm test -- tests/unit/auth-routes.test.ts tests/unit/telegram-request-guard.test.ts tests/unit/frontend-handoff.test.ts tests/unit/prompts.test.ts tests/unit/sso.test.ts tests/unit/user-profile.test.ts",
+    "python3 .agents/skills/repo-task-proof-loop/scripts/task_loop.py validate --task-id security-hardening-full"
+  ],
+  "known_gaps": [
+    "Telegram abuse controls are in-memory because the repository explicitly targets a single-process deployment model.",
+    "USER.md remains intentionally rich, so this task hardens prompt trust boundaries rather than reducing prompt footprint."
+  ]
+}

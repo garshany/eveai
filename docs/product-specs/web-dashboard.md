@@ -20,5 +20,12 @@ The web surface supports authentication and character management. It is not the 
 - `GET /auth/eve/start`
 - `GET /auth/eve/callback`
 - `GET /auth/tg-handoff`
+- `POST /auth/tg-handoff/exchange`
 - `POST /auth/logout`
 - `GET /callback`
+
+## Handoff Notes
+
+- the Telegram bot opens `/auth/tg-handoff#token=...`
+- the browser reads the fragment locally, clears it from the address bar, and exchanges it with `POST /auth/tg-handoff/exchange`
+- the handoff token must not be carried in a query string

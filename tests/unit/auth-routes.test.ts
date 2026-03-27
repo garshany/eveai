@@ -163,14 +163,14 @@ describe('auth routes', () => {
     await app.close();
   });
 
-  it('GET /auth/eve/callback rejects states not bound to any user', async () => {
+  it('GET /auth/eve/callback rejects legacy telegram_sessions oauth_state fallback', async () => {
     const app = Fastify();
     registerAuthRoutes(app, db);
     db.prepare("INSERT INTO telegram_sessions (chat_id, username, oauth_state) VALUES (0, 'web', 'state-0')").run();
 
     const res = await app.inject({ method: 'GET', url: '/auth/eve/callback?code=abc&state=state-0' });
     expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body).error).toContain('not bound to any user');
+    expect(JSON.parse(res.body).error).toContain('Invalid or expired state parameter');
     await app.close();
   });
 
@@ -255,6 +255,34 @@ describe('auth routes', () => {
         issuer: expect.arrayContaining(['https://login.eveonline.com/']),
       }),
     );
+
+    await app.close();
+  });
+
+  it('POST /auth/tg-handoff/exchange creates a session without query bearer tokens', async () => {
+    const app = Fastify();
+    registerAuthRoutes(app, db);
+
+    db.prepare("INSERT INTO users (user_id, display_name, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))")
+      .run(1, 'pilot');
+    const token = createAuthRequestToken(db, 'tg_handoff', 1, { chatId: 99, ttlSeconds: 300 });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/tg-handoff/exchange',
+      payload: { token },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ ok: true });
+    expect(res.headers['set-cookie']).toContain('eve_session=');
+
+    const replay = await app.inject({
+      method: 'POST',
+      url: '/auth/tg-handoff/exchange',
+      payload: { token },
+    });
+    expect(replay.statusCode).toBe(403);
 
     await app.close();
   });
