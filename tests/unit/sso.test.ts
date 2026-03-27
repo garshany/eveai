@@ -150,6 +150,17 @@ describe('getAccessToken', () => {
     expect(result).toBeNull();
   });
 
+  it('returns null instead of throwing when stored tokens cannot be decrypted', async () => {
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, ?)").run(1, 'pilot');
+    db.prepare(`
+      INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json)
+      VALUES (?, ?, ?, ?, datetime('now', '+1200 seconds'), ?)
+    `).run(12345, 'Pilot', 'enc:v1:broken', 'enc:v1:broken', '[]');
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id) VALUES (?, ?)').run(1, 12345);
+
+    await expect(getAccessToken(db, { userId: 0, chatId: 1 })).resolves.toBeNull();
+  });
+
   it('refreshes expired tokens via discovered SSO metadata and validates the new JWT', async () => {
     db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, ?)").run(1, 'pilot');
     db.prepare(`

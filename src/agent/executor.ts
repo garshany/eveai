@@ -4,9 +4,11 @@ import { buildDeveloperPrompt } from './prompts.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
 import {
   buildNativeAgentTools,
+  executeMoonCount,
   executeSdeSql,
   planRoute,
   getToolPolicy,
+  isMoonCountTool,
   isSdeSqlTool,
   isZkillToolName,
   isBatchMarketTool,
@@ -449,6 +451,17 @@ async function runNativeAgentLoop(
     }
 
     if (response.error) {
+      if (
+        !usedToolStateRecovery
+        && shouldRecoverFromToolStateMismatch(response.error.message, previousResponseId, pendingItems)
+      ) {
+        usedToolStateRecovery = true;
+        previousResponseId = null;
+        pendingItems = buildToolStateRecoveryContext(db, threadId);
+        saveLastResponseId(db, threadId, null);
+        console.warn('[executor] tool state lost in response payload, switching to cold recovery context: %s', response.error.message);
+        continue;
+      }
       console.error('[executor] model error:', response.error.message);
       const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
       storeAssistantMessage(db, threadId, message);
@@ -627,6 +640,10 @@ async function executeToolCall(
 
   if (isSdeSqlTool(name)) {
     return executeSdeSql(db, String(args.sql ?? ''));
+  }
+
+  if (isMoonCountTool(name)) {
+    return executeMoonCount(db, args);
   }
 
   if (isBatchMarketTool(name)) {

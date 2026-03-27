@@ -22,6 +22,7 @@ describe('agent tools', () => {
     expect(functionNames).toContain('update_plan');
     expect(functionNames).toContain('get_eve_capabilities');
     expect(functionNames).toContain('plan_route');
+    expect(functionNames).toContain('count_moons');
     expect(functionNames).toContain('sde_sql');
     // get_markets_region_id_orders is now in ESI namespace (eve_public_market_orders), not top-level
     expect(functionNames).not.toContain('get_markets_region_id_orders');

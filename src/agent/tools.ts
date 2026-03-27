@@ -20,11 +20,15 @@ sde_npc_corporations (corporation_id INT, name TEXT, station_id INT, data_json T
 sde_type_dogma (type_id INT, data_json TEXT)
 sde_type_bonus (type_id INT, data_json TEXT)
 sde_type_materials (type_id INT, name TEXT, data_json TEXT)
+sde_raw_records (dataset_name TEXT, record_id TEXT, name TEXT, data_json TEXT) — raw SDE datasets like mapPlanets
 
 data_json fields accessed via json_extract():
   sde_systems.data_json: security (float), securityClass (text)
   sde_types.data_json: mass, volume, capacity, basePrice, published (bool), marketGroupID, metaGroupID, portionSize
-  sde_blueprints.data_json: activities.manufacturing.materials[], activities.manufacturing.products[]`;
+  sde_blueprints.data_json: activities.manufacturing.materials[], activities.manufacturing.products[]
+  sde_raw_records.data_json for dataset_name='mapPlanets': solarSystemID, planetIndex, moonIDs[]`;
+
+const MOON_COUNT_TOOL_NAME = 'count_moons';
 
 const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   {
@@ -102,6 +106,21 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
         prefer: { type: ['string', 'null'], enum: ['secure', 'shortest', 'insecure', null], description: 'Which route to prefer for autopilot (default: secure)' },
       },
       required: ['origin', 'destination', 'set_autopilot', 'prefer'],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function',
+    name: MOON_COUNT_TOOL_NAME,
+    description: 'Count moons from the local SDE for a named EVE system or region. Use this for questions like "сколько лун в Jita" or "сколько лун в моем регионе". Static data only: do not use web_search or live ESI for moon counts.',
+    strict: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        target_kind: { type: 'string', enum: ['system', 'region'] },
+        target_name: { type: 'string', description: 'Exact or case-insensitive EVE system or region name.' },
+      },
+      required: ['target_kind', 'target_name'],
       additionalProperties: false,
     },
   },
@@ -209,6 +228,10 @@ export function getAlwaysOnFunctionToolNames(): string[] {
 
 export function isBatchMarketTool(name: string): boolean {
   return name === BATCH_MARKET_TOOL_NAME;
+}
+
+export function isMoonCountTool(name: string): boolean {
+  return name === MOON_COUNT_TOOL_NAME;
 }
 
 export function isSdeSqlTool(name: string): boolean {
@@ -606,6 +629,137 @@ function validateSdeSqlSources(db: Db, sql: string): string | null {
   }
 
   return null;
+}
+
+type MoonCountResult =
+  | {
+      ok: true;
+      target_kind: 'system';
+      target_name: string;
+      system_id: number;
+      constellation_name: string | null;
+      region_name: string | null;
+      planet_count: number;
+      moon_count: number;
+    }
+  | {
+      ok: true;
+      target_kind: 'region';
+      target_name: string;
+      region_id: number;
+      system_count: number;
+      planet_count: number;
+      moon_count: number;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+export function executeMoonCount(db: Db, args: Record<string, unknown>): MoonCountResult {
+  const targetKind = args.target_kind === 'system' || args.target_kind === 'region'
+    ? args.target_kind
+    : null;
+  const targetName = typeof args.target_name === 'string' ? args.target_name.trim() : '';
+
+  if (!targetKind) {
+    return { ok: false, error: 'target_kind must be either "system" or "region".' };
+  }
+
+  if (!targetName) {
+    return { ok: false, error: 'target_name must be a non-empty EVE system or region name.' };
+  }
+
+  if (targetKind === 'system') {
+    const row = db.prepare(`
+      SELECT
+        s.system_id AS system_id,
+        s.name AS system_name,
+        c.name AS constellation_name,
+        r.name AS region_name,
+        COUNT(p.record_id) AS planet_count,
+        COALESCE(SUM(
+          CASE
+            WHEN json_type(p.data_json, '$.moonIDs') = 'array' THEN json_array_length(p.data_json, '$.moonIDs')
+            ELSE 0
+          END
+        ), 0) AS moon_count
+      FROM sde_systems s
+      LEFT JOIN sde_constellations c ON c.constellation_id = s.constellation_id
+      LEFT JOIN sde_regions r ON r.region_id = c.region_id
+      LEFT JOIN sde_raw_records p
+        ON p.dataset_name = 'mapPlanets'
+       AND json_extract(p.data_json, '$.solarSystemID') = s.system_id
+      WHERE s.name = ? COLLATE NOCASE
+      GROUP BY s.system_id, s.name, c.name, r.name
+      LIMIT 1
+    `).get(targetName) as {
+      system_id: number;
+      system_name: string;
+      constellation_name: string | null;
+      region_name: string | null;
+      planet_count: number;
+      moon_count: number;
+    } | undefined;
+
+    if (!row) {
+      return { ok: false, error: `System not found: ${targetName}` };
+    }
+
+    return {
+      ok: true,
+      target_kind: 'system',
+      target_name: row.system_name,
+      system_id: row.system_id,
+      constellation_name: row.constellation_name,
+      region_name: row.region_name,
+      planet_count: Number(row.planet_count ?? 0),
+      moon_count: Number(row.moon_count ?? 0),
+    };
+  }
+
+  const row = db.prepare(`
+    SELECT
+      r.region_id AS region_id,
+      r.name AS region_name,
+      COUNT(DISTINCT s.system_id) AS system_count,
+      COUNT(p.record_id) AS planet_count,
+      COALESCE(SUM(
+        CASE
+          WHEN json_type(p.data_json, '$.moonIDs') = 'array' THEN json_array_length(p.data_json, '$.moonIDs')
+          ELSE 0
+        END
+      ), 0) AS moon_count
+    FROM sde_regions r
+    JOIN sde_constellations c ON c.region_id = r.region_id
+    JOIN sde_systems s ON s.constellation_id = c.constellation_id
+    LEFT JOIN sde_raw_records p
+      ON p.dataset_name = 'mapPlanets'
+     AND json_extract(p.data_json, '$.solarSystemID') = s.system_id
+    WHERE r.name = ? COLLATE NOCASE
+    GROUP BY r.region_id, r.name
+    LIMIT 1
+  `).get(targetName) as {
+    region_id: number;
+    region_name: string;
+    system_count: number;
+    planet_count: number;
+    moon_count: number;
+  } | undefined;
+
+  if (!row) {
+    return { ok: false, error: `Region not found: ${targetName}` };
+  }
+
+  return {
+    ok: true,
+    target_kind: 'region',
+    target_name: row.region_name,
+    region_id: row.region_id,
+    system_count: Number(row.system_count ?? 0),
+    planet_count: Number(row.planet_count ?? 0),
+    moon_count: Number(row.moon_count ?? 0),
+  };
 }
 
 export function executeSdeSql(db: Db, sql: string): { ok: boolean; rows: unknown[]; count: number; error: string | null } {

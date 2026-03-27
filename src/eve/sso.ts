@@ -38,8 +38,22 @@ export async function getAccessToken(db: Db, ctx: UserContext): Promise<{ token:
   if (!account) return null;
   if (ctx.userId && account.user_id && account.user_id !== ctx.userId) return null;
 
-  const accessToken = decryptStoredSecret(account.access_token, 'eve_access_token');
-  const refreshToken = decryptStoredSecret(account.refresh_token, 'eve_refresh_token');
+  let accessToken: string;
+  let refreshToken: string;
+  try {
+    accessToken = decryptStoredSecret(account.access_token, 'eve_access_token');
+    refreshToken = decryptStoredSecret(account.refresh_token, 'eve_refresh_token');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      '[sso] stored token decrypt failed for character=%d user=%s chat=%s: %s',
+      account.character_id,
+      ctx.userId ?? 'none',
+      ctx.chatId ?? 'none',
+      message,
+    );
+    return null;
+  }
 
   // Check if token is still valid (with 60s buffer)
   const expiresAt = new Date(account.expires_at + 'Z');

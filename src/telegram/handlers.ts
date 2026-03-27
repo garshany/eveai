@@ -602,6 +602,16 @@ function normalizeAgentRuntimeError(err: unknown): string {
   const combined = collectErrorText(err).toLowerCase();
 
   if (
+    combined.includes('unsupported state or unable to authenticate data')
+    || combined.includes('no valid eve access token')
+    || combined.includes('no eve character linked')
+    || combined.includes('missing scopes')
+    || combined.includes('decryptstoredsecret')
+  ) {
+    return 'Связка с EVE устарела или повреждена. Перепривяжи персонажа через /eve_login.';
+  }
+
+  if (
     combined.includes('apiconnectionerror')
     || combined.includes('fetch failed')
     || combined.includes('econnrefused')
