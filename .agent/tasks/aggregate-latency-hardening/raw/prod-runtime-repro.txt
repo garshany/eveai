@@ -1,0 +1,6 @@
+[executor] === DONE (static-aggregate-fast-path) object=systems target=region:The Forge answer=40 chars ===
+server systems -> В регионе **The Forge** — **2 системы**.
+[executor] === DONE (static-aggregate-fast-path) object=stations target=system:Jita answer=35 chars ===
+server station -> В системе **Jita** — **1 станция**.
+[executor] === DONE (static-aggregate-fast-path) object=moons target=constellation:Kimotoro answer=38 chars ===
+server moons -> В созвездии **Kimotoro** — **3 луны**.
