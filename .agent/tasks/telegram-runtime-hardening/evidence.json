@@ -36,10 +36,10 @@
         "Historical prod logs show the old path took 8 iterations with web_search drift and 117389 input tokens.",
         "tools.ts adds deterministic count_moons over local mapPlanets data and prompts.ts routes current-region moon questions into it.",
         "Post-fix prod reproduction finishes in 2 iterations with TOOL_COUNT=1 and TOOLS=count_moons.",
-        "Direct proxy probe shows minimal /responses latency of about 1.34s."
+        "Direct proxy probe shows minimal /responses latency of about 0.8s."
       ],
       "gaps": [
-        "Post-fix moon reproduction still took about 28.5s overall due to model round-trips and prompt size."
+        "Post-fix moon reproduction still took about 30.3s overall due to model round-trips and prompt size."
       ]
     },
     {

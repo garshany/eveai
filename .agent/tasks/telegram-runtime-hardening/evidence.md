@@ -30,9 +30,9 @@
   - Historical production log snapshot shows the original moon request ballooned to 8 iterations with `get_universe_*`, 3 `web_search` attempts, 2 `sde_sql` calls, and `total_in=117389`.
   - `src/agent/tools.ts` adds a deterministic `count_moons` tool backed by local `sde_raw_records` / `mapPlanets`, and `src/agent/prompts.ts` routes current-region moon questions into it.
   - Post-fix production reproduction in `.agent/tasks/telegram-runtime-hardening/raw/prod-repro-post-fix.txt` shows the same prompt finishing with exactly one tool call (`count_moons`) and 2 model iterations, returning `Sinq Laison -> 4104 moons`.
-  - Direct proxy probe in `.agent/tasks/telegram-runtime-hardening/raw/proxy-latency-post-fix.txt` shows a minimal `/responses` request returns in about 1.34s, separating transport latency from tool-loop overhead.
+  - Direct proxy probe in `.agent/tasks/telegram-runtime-hardening/raw/proxy-latency-post-fix.txt` shows a minimal `/responses` request returns in about 0.8s, separating transport latency from tool-loop overhead.
 - Gaps:
-  - The post-fix reproduction still took about 28.5s overall because it required two Responses round-trips with the full Telegram prompt context; this is slower than ideal but no longer due to `web_search` drift.
+  - The post-fix reproduction still took about 30.3s overall because it required two Responses round-trips with the full Telegram prompt context; this is slower than ideal but no longer due to `web_search` drift.
 
 ### AC4
 - Status: PASS
