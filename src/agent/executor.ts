@@ -5,11 +5,13 @@ import { getEveCapabilities } from '../eve/capabilities.js';
 import {
   buildNativeAgentTools,
   executeMoonCount,
+  executeUniverseObjectCount,
   executeSdeSql,
   planRoute,
   getToolPolicy,
   isMoonCountTool,
   isSdeSqlTool,
+  isUniverseCountTool,
   isZkillToolName,
   isBatchMarketTool,
 } from './tools.js';
@@ -384,7 +386,9 @@ async function runNativeAgentLoop(
 ): Promise<string> {
   const chatId = ctx.chatId ?? ctx.userId;
   const requestId = createRequestId();
-  const tools = await buildNativeAgentTools();
+  const tools = await buildNativeAgentTools(
+    isSimpleStaticAggregateCountGoal(goal) ? 'static_aggregate' : 'full',
+  );
   const webSearchState = createWebSearchState();
 
   const continuation = planConversationContinuation(db, threadId);
@@ -552,6 +556,15 @@ async function runNativeAgentLoop(
       });
     }
 
+    const deterministicAnswer = tryBuildDeterministicCountAnswer(goal, toolCalls, results);
+    if (deterministicAnswer) {
+      storeAssistantMessage(db, threadId, deterministicAnswer);
+      saveLastResponseId(db, threadId, null);
+      console.log('[executor] === DONE (deterministic-count) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
+        iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, deterministicAnswer.length);
+      return deterministicAnswer;
+    }
+
     if (!response.id) {
       const message = 'Не удалось продолжить tool loop: proxy не вернул response id.';
       storeAssistantMessage(db, threadId, message);
@@ -642,6 +655,10 @@ async function executeToolCall(
 
   if (isMoonCountTool(name)) {
     return executeMoonCount(db, args);
+  }
+
+  if (isUniverseCountTool(name)) {
+    return executeUniverseObjectCount(db, args);
   }
 
   if (isBatchMarketTool(name)) {
@@ -1080,6 +1097,135 @@ function shouldUseToolStateRecovery(
   return shouldRecoverFromToolStateMismatch(message, previousResponseId, pendingItems);
 }
 
+type StaticAggregateObjectKind = 'constellations' | 'systems' | 'planets' | 'moons' | 'asteroid_belts' | 'stations' | 'stargates';
+
+function isSimpleStaticAggregateCountGoal(goal: string): boolean {
+  return detectStaticAggregateObjectKind(goal) !== null;
+}
+
+function detectStaticAggregateObjectKind(goal: string): StaticAggregateObjectKind | null {
+  const normalized = goal.toLowerCase();
+  if (!/(сколько|посчитай|подсчитай|how many|count)/u.test(normalized)) {
+    return null;
+  }
+  if (/\b(какие|какая|какой|где|почему|зачем|how|which|why|where|market|price|route|маршрут|цена|ордер|рынок)\b/u.test(normalized)) {
+    return null;
+  }
+  if (/\sи\s/u.test(normalized)) {
+    return null;
+  }
+
+  const matches: StaticAggregateObjectKind[] = [];
+  if (/созвезд/u.test(normalized) || /\bconstellation(s)?\b/u.test(normalized)) matches.push('constellations');
+  if (/систем/u.test(normalized) || /\bsystem(s)?\b/u.test(normalized)) matches.push('systems');
+  if (/планет/u.test(normalized) || /\bplanet(s)?\b/u.test(normalized)) matches.push('planets');
+  if (/лун/u.test(normalized) || /\bmoon(s)?\b/u.test(normalized)) matches.push('moons');
+  if (/астероидн(?:ый|ых)?\s+пояс/u.test(normalized) || /\basteroid belt(s)?\b/u.test(normalized)) matches.push('asteroid_belts');
+  if (/станци/u.test(normalized) || /\bstation(s)?\b/u.test(normalized)) matches.push('stations');
+  if (/врат/u.test(normalized) || /\bstargate(s)?\b/u.test(normalized)) matches.push('stargates');
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+type DeterministicCountToolCall = { name: string };
+
+function tryBuildDeterministicCountAnswer(
+  goal: string,
+  toolCalls: DeterministicCountToolCall[],
+  results: unknown[],
+): string | null {
+  if (!isSimpleStaticAggregateCountGoal(goal)) return null;
+  if (toolCalls.length !== 1 || results.length !== 1) return null;
+
+  const toolName = toolCalls[0].name;
+  const result = results[0];
+
+  if (toolName === 'count_moons') {
+    return formatMoonCountAnswer(result);
+  }
+  if (toolName === 'count_universe_objects') {
+    return formatUniverseCountAnswer(result);
+  }
+  return null;
+}
+
+function formatMoonCountAnswer(result: unknown): string | null {
+  if (!result || typeof result !== 'object') return null;
+  const record = result as Record<string, unknown>;
+  if (record.ok !== true || typeof record.target_kind !== 'string' || typeof record.target_name !== 'string') {
+    return null;
+  }
+
+  if (record.target_kind === 'system' && typeof record.moon_count === 'number') {
+    return `В системе **${record.target_name}** — **${record.moon_count} ${formatCountNoun(record.moon_count, ['луна', 'луны', 'лун'])}**.`;
+  }
+
+  if (record.target_kind === 'region' && typeof record.moon_count === 'number') {
+    const extras: string[] = [];
+    if (typeof record.system_count === 'number') {
+      extras.push(`систем: **${record.system_count}**`);
+    }
+    if (typeof record.planet_count === 'number') {
+      extras.push(`планет: **${record.planet_count}**`);
+    }
+    return extras.length > 0
+      ? `В регионе **${record.target_name}** — **${record.moon_count} ${formatCountNoun(record.moon_count, ['луна', 'луны', 'лун'])}**.\n\nДополнительно:\n- ${extras.join('\n- ')}`
+      : `В регионе **${record.target_name}** — **${record.moon_count} ${formatCountNoun(record.moon_count, ['луна', 'луны', 'лун'])}**.`;
+  }
+
+  return null;
+}
+
+function formatUniverseCountAnswer(result: unknown): string | null {
+  if (!result || typeof result !== 'object') return null;
+  const record = result as Record<string, unknown>;
+  if (record.ok !== true || typeof record.target_kind !== 'string' || typeof record.target_name !== 'string') {
+    return null;
+  }
+  if (typeof record.object_kind !== 'string' || typeof record.count !== 'number') {
+    return null;
+  }
+
+  const nounForms = getUniverseCountNounForms(record.object_kind);
+  if (!nounForms) return null;
+  const targetLabel = record.target_kind === 'system'
+    ? 'системе'
+    : record.target_kind === 'constellation'
+      ? 'созвездии'
+      : 'регионе';
+
+  return `В ${targetLabel} **${record.target_name}** — **${record.count} ${formatCountNoun(record.count, nounForms)}**.`;
+}
+
+function getUniverseCountNounForms(objectKind: string): [string, string, string] | null {
+  switch (objectKind) {
+    case 'constellations':
+      return ['созвездие', 'созвездия', 'созвездий'];
+    case 'systems':
+      return ['система', 'системы', 'систем'];
+    case 'planets':
+      return ['планета', 'планеты', 'планет'];
+    case 'moons':
+      return ['луна', 'луны', 'лун'];
+    case 'asteroid_belts':
+      return ['астероидный пояс', 'астероидных пояса', 'астероидных поясов'];
+    case 'stations':
+      return ['станция', 'станции', 'станций'];
+    case 'stargates':
+      return ['старгейт', 'старгейта', 'старгейтов'];
+    default:
+      return null;
+  }
+}
+
+function formatCountNoun(count: number, [one, few, many]: [string, string, string]): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
 type ConversationContinuation = {
   mode: 'warm' | 'cold';
   items: NativeInputItem[];
@@ -1139,6 +1285,10 @@ export const __test__ = {
   resolveSystemLocationContext,
   shouldRecoverFromToolStateMismatch,
   shouldUseToolStateRecovery,
+  isSimpleStaticAggregateCountGoal,
+  detectStaticAggregateObjectKind,
+  tryBuildDeterministicCountAnswer,
+  formatCountNoun,
   planConversationContinuation,
   isRecentSqliteTimestamp,
 };

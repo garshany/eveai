@@ -29,6 +29,9 @@ data_json fields accessed via json_extract():
   sde_raw_records.data_json for dataset_name='mapPlanets': solarSystemID, planetIndex, moonIDs[]`;
 
 const MOON_COUNT_TOOL_NAME = 'count_moons';
+const UNIVERSE_COUNT_TOOL_NAME = 'count_universe_objects';
+type UniverseTargetKind = 'system' | 'constellation' | 'region';
+type UniverseObjectKind = 'constellations' | 'systems' | 'planets' | 'moons' | 'asteroid_belts' | 'stations' | 'stargates';
 
 const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   {
@@ -126,6 +129,22 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   },
   {
     type: 'function',
+    name: UNIVERSE_COUNT_TOOL_NAME,
+    description: 'Count static EVE geography objects from the local SDE for a named system, constellation, or region. Supports constellations, systems, planets, moons, asteroid belts, stations, and stargates. Use for simple aggregate questions like "сколько систем в регионе" or "сколько планет в созвездии". Static data only: do not use web_search or live ESI when this tool is sufficient.',
+    strict: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        target_kind: { type: 'string', enum: ['system', 'constellation', 'region'] },
+        target_name: { type: 'string', description: 'Exact or case-insensitive EVE system, constellation, or region name.' },
+        object_kind: { type: 'string', enum: ['constellations', 'systems', 'planets', 'moons', 'asteroid_belts', 'stations', 'stargates'] },
+      },
+      required: ['target_kind', 'target_name', 'object_kind'],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function',
     name: SDE_SQL_TOOL_NAME,
     description: `Run a read-only SQL query against the local EVE Static Data Export (SDE) SQLite database. Use for all static data: item/ship/module lookups, system/region info, route system names, blueprint materials, etc. Prefer this over ESI for any static data.\n\nIMPORTANT: Batch multiple lookups in ONE query using WHERE name IN (...) or WHERE type_id IN (...). Do NOT make separate queries for each item.\n\n${SDE_SCHEMA}`,
     strict: true,
@@ -212,7 +231,15 @@ const BATCH_MARKET_TOOL: NativeFunctionTool = {
   },
 };
 
-export async function buildNativeAgentTools(): Promise<NativeTool[]> {
+export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 'full'): Promise<NativeTool[]> {
+  if (mode === 'static_aggregate') {
+    return ALWAYS_ON_FUNCTION_TOOLS.filter((tool) =>
+      tool.name === MOON_COUNT_TOOL_NAME
+      || tool.name === UNIVERSE_COUNT_TOOL_NAME
+      || tool.name === SDE_SQL_TOOL_NAME,
+    );
+  }
+
   return [
     { type: 'tool_search' },
     ...ALWAYS_ON_FUNCTION_TOOLS,
@@ -232,6 +259,10 @@ export function isBatchMarketTool(name: string): boolean {
 
 export function isMoonCountTool(name: string): boolean {
   return name === MOON_COUNT_TOOL_NAME;
+}
+
+export function isUniverseCountTool(name: string): boolean {
+  return name === UNIVERSE_COUNT_TOOL_NAME;
 }
 
 export function isSdeSqlTool(name: string): boolean {
@@ -655,6 +686,350 @@ type MoonCountResult =
       ok: false;
       error: string;
     };
+
+type UniverseTargetContext = {
+  target_kind: UniverseTargetKind;
+  target_name: string;
+  system_id?: number;
+  constellation_id?: number;
+  region_id?: number;
+  constellation_name?: string | null;
+  region_name?: string | null;
+};
+
+export type UniverseCountResult =
+  | ({
+      ok: true;
+      object_kind: UniverseObjectKind;
+      count: number;
+    } & UniverseTargetContext)
+  | {
+      ok: false;
+      error: string;
+    };
+
+function resolveUniverseTargetContext(
+  db: Db,
+  targetKind: UniverseTargetKind,
+  targetName: string,
+): UniverseTargetContext | null {
+  if (targetKind === 'system') {
+    const row = db.prepare(`
+      SELECT
+        s.system_id AS system_id,
+        s.name AS system_name,
+        c.constellation_id AS constellation_id,
+        c.name AS constellation_name,
+        r.region_id AS region_id,
+        r.name AS region_name
+      FROM sde_systems s
+      LEFT JOIN sde_constellations c ON c.constellation_id = s.constellation_id
+      LEFT JOIN sde_regions r ON r.region_id = c.region_id
+      WHERE s.name = ? COLLATE NOCASE
+      LIMIT 1
+    `).get(targetName) as {
+      system_id: number;
+      system_name: string;
+      constellation_id: number | null;
+      constellation_name: string | null;
+      region_id: number | null;
+      region_name: string | null;
+    } | undefined;
+
+    if (!row) return null;
+    return {
+      target_kind: 'system',
+      target_name: row.system_name,
+      system_id: row.system_id,
+      constellation_id: row.constellation_id ?? undefined,
+      constellation_name: row.constellation_name,
+      region_id: row.region_id ?? undefined,
+      region_name: row.region_name,
+    };
+  }
+
+  if (targetKind === 'constellation') {
+    const row = db.prepare(`
+      SELECT
+        c.constellation_id AS constellation_id,
+        c.name AS constellation_name,
+        r.region_id AS region_id,
+        r.name AS region_name
+      FROM sde_constellations c
+      LEFT JOIN sde_regions r ON r.region_id = c.region_id
+      WHERE c.name = ? COLLATE NOCASE
+      LIMIT 1
+    `).get(targetName) as {
+      constellation_id: number;
+      constellation_name: string;
+      region_id: number | null;
+      region_name: string | null;
+    } | undefined;
+
+    if (!row) return null;
+    return {
+      target_kind: 'constellation',
+      target_name: row.constellation_name,
+      constellation_id: row.constellation_id,
+      region_id: row.region_id ?? undefined,
+      region_name: row.region_name,
+    };
+  }
+
+  const row = db.prepare(`
+    SELECT region_id, name AS region_name
+    FROM sde_regions
+    WHERE name = ? COLLATE NOCASE
+    LIMIT 1
+  `).get(targetName) as { region_id: number; region_name: string } | undefined;
+
+  if (!row) return null;
+  return {
+    target_kind: 'region',
+    target_name: row.region_name,
+    region_id: row.region_id,
+  };
+}
+
+function isUniverseCountCombinationAllowed(targetKind: UniverseTargetKind, objectKind: UniverseObjectKind): boolean {
+  if (targetKind === 'system') {
+    return objectKind === 'planets'
+      || objectKind === 'moons'
+      || objectKind === 'asteroid_belts'
+      || objectKind === 'stations'
+      || objectKind === 'stargates';
+  }
+  if (targetKind === 'constellation') {
+    return objectKind !== 'constellations';
+  }
+  return true;
+}
+
+function buildUniverseCountError(targetKind: UniverseTargetKind, objectKind: UniverseObjectKind): string {
+  return `Cannot count ${objectKind} inside ${targetKind}.`;
+}
+
+export function executeUniverseObjectCount(db: Db, args: Record<string, unknown>): UniverseCountResult {
+  const targetKind = args.target_kind === 'system' || args.target_kind === 'constellation' || args.target_kind === 'region'
+    ? args.target_kind
+    : null;
+  const objectKind = args.object_kind === 'constellations'
+    || args.object_kind === 'systems'
+    || args.object_kind === 'planets'
+    || args.object_kind === 'moons'
+    || args.object_kind === 'asteroid_belts'
+    || args.object_kind === 'stations'
+    || args.object_kind === 'stargates'
+    ? args.object_kind
+    : null;
+  const targetName = typeof args.target_name === 'string' ? args.target_name.trim() : '';
+
+  if (!targetKind) {
+    return { ok: false, error: 'target_kind must be one of: system, constellation, region.' };
+  }
+  if (!objectKind) {
+    return { ok: false, error: 'object_kind must be one of: constellations, systems, planets, moons, asteroid_belts, stations, stargates.' };
+  }
+  if (!targetName) {
+    return { ok: false, error: 'target_name must be a non-empty EVE geography name.' };
+  }
+  if (!isUniverseCountCombinationAllowed(targetKind, objectKind)) {
+    return { ok: false, error: buildUniverseCountError(targetKind, objectKind) };
+  }
+
+  const target = resolveUniverseTargetContext(db, targetKind, targetName);
+  if (!target) {
+    return { ok: false, error: `${targetKind[0].toUpperCase()}${targetKind.slice(1)} not found: ${targetName}` };
+  }
+
+  let count = 0;
+
+  switch (objectKind) {
+    case 'constellations': {
+      const row = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM sde_constellations
+        WHERE region_id = ?
+      `).get(target.region_id) as { count: number };
+      count = Number(row.count ?? 0);
+      break;
+    }
+    case 'systems': {
+      const row = targetKind === 'region'
+        ? db.prepare(`
+            SELECT COUNT(*) AS count
+            FROM sde_systems s
+            JOIN sde_constellations c ON c.constellation_id = s.constellation_id
+            WHERE c.region_id = ?
+          `).get(target.region_id) as { count: number }
+        : db.prepare(`
+            SELECT COUNT(*) AS count
+            FROM sde_systems
+            WHERE constellation_id = ?
+          `).get(target.constellation_id) as { count: number };
+      count = Number(row.count ?? 0);
+      break;
+    }
+    case 'planets': {
+      const row = targetKind === 'system'
+        ? db.prepare(`
+            SELECT COUNT(*) AS count
+            FROM sde_raw_records
+            WHERE dataset_name = 'mapPlanets'
+              AND json_extract(data_json, '$.solarSystemID') = ?
+          `).get(target.system_id) as { count: number }
+        : targetKind === 'constellation'
+          ? db.prepare(`
+              SELECT COUNT(*) AS count
+              FROM sde_raw_records p
+              JOIN sde_systems s ON s.system_id = json_extract(p.data_json, '$.solarSystemID')
+              WHERE p.dataset_name = 'mapPlanets'
+                AND s.constellation_id = ?
+            `).get(target.constellation_id) as { count: number }
+          : db.prepare(`
+              SELECT COUNT(*) AS count
+              FROM sde_raw_records p
+              JOIN sde_systems s ON s.system_id = json_extract(p.data_json, '$.solarSystemID')
+              JOIN sde_constellations c ON c.constellation_id = s.constellation_id
+              WHERE p.dataset_name = 'mapPlanets'
+                AND c.region_id = ?
+            `).get(target.region_id) as { count: number };
+      count = Number(row.count ?? 0);
+      break;
+    }
+    case 'moons': {
+      const row = targetKind === 'system'
+        ? db.prepare(`
+            SELECT COALESCE(SUM(
+              CASE
+                WHEN json_type(data_json, '$.moonIDs') = 'array' THEN json_array_length(data_json, '$.moonIDs')
+                ELSE 0
+              END
+            ), 0) AS count
+            FROM sde_raw_records
+            WHERE dataset_name = 'mapPlanets'
+              AND json_extract(data_json, '$.solarSystemID') = ?
+          `).get(target.system_id) as { count: number }
+        : targetKind === 'constellation'
+          ? db.prepare(`
+              SELECT COALESCE(SUM(
+                CASE
+                  WHEN json_type(p.data_json, '$.moonIDs') = 'array' THEN json_array_length(p.data_json, '$.moonIDs')
+                  ELSE 0
+                END
+              ), 0) AS count
+              FROM sde_raw_records p
+              JOIN sde_systems s ON s.system_id = json_extract(p.data_json, '$.solarSystemID')
+              WHERE p.dataset_name = 'mapPlanets'
+                AND s.constellation_id = ?
+            `).get(target.constellation_id) as { count: number }
+          : db.prepare(`
+              SELECT COALESCE(SUM(
+                CASE
+                  WHEN json_type(p.data_json, '$.moonIDs') = 'array' THEN json_array_length(p.data_json, '$.moonIDs')
+                  ELSE 0
+                END
+              ), 0) AS count
+              FROM sde_raw_records p
+              JOIN sde_systems s ON s.system_id = json_extract(p.data_json, '$.solarSystemID')
+              JOIN sde_constellations c ON c.constellation_id = s.constellation_id
+              WHERE p.dataset_name = 'mapPlanets'
+                AND c.region_id = ?
+            `).get(target.region_id) as { count: number };
+      count = Number(row.count ?? 0);
+      break;
+    }
+    case 'asteroid_belts': {
+      const row = targetKind === 'system'
+        ? db.prepare(`
+            SELECT COALESCE(SUM(
+              CASE
+                WHEN json_type(data_json, '$.asteroidBeltIDs') = 'array' THEN json_array_length(data_json, '$.asteroidBeltIDs')
+                ELSE 0
+              END
+            ), 0) AS count
+            FROM sde_raw_records
+            WHERE dataset_name = 'mapPlanets'
+              AND json_extract(data_json, '$.solarSystemID') = ?
+          `).get(target.system_id) as { count: number }
+        : targetKind === 'constellation'
+          ? db.prepare(`
+              SELECT COALESCE(SUM(
+                CASE
+                  WHEN json_type(p.data_json, '$.asteroidBeltIDs') = 'array' THEN json_array_length(p.data_json, '$.asteroidBeltIDs')
+                  ELSE 0
+                END
+              ), 0) AS count
+              FROM sde_raw_records p
+              JOIN sde_systems s ON s.system_id = json_extract(p.data_json, '$.solarSystemID')
+              WHERE p.dataset_name = 'mapPlanets'
+                AND s.constellation_id = ?
+            `).get(target.constellation_id) as { count: number }
+          : db.prepare(`
+              SELECT COALESCE(SUM(
+                CASE
+                  WHEN json_type(p.data_json, '$.asteroidBeltIDs') = 'array' THEN json_array_length(p.data_json, '$.asteroidBeltIDs')
+                  ELSE 0
+                END
+              ), 0) AS count
+              FROM sde_raw_records p
+              JOIN sde_systems s ON s.system_id = json_extract(p.data_json, '$.solarSystemID')
+              JOIN sde_constellations c ON c.constellation_id = s.constellation_id
+              WHERE p.dataset_name = 'mapPlanets'
+                AND c.region_id = ?
+            `).get(target.region_id) as { count: number };
+      count = Number(row.count ?? 0);
+      break;
+    }
+    case 'stations': {
+      const row = targetKind === 'system'
+        ? db.prepare('SELECT COUNT(*) AS count FROM sde_stations WHERE system_id = ?').get(target.system_id) as { count: number }
+        : targetKind === 'constellation'
+          ? db.prepare(`
+              SELECT COUNT(*) AS count
+              FROM sde_stations st
+              JOIN sde_systems s ON s.system_id = st.system_id
+              WHERE s.constellation_id = ?
+            `).get(target.constellation_id) as { count: number }
+          : db.prepare(`
+              SELECT COUNT(*) AS count
+              FROM sde_stations st
+              JOIN sde_systems s ON s.system_id = st.system_id
+              JOIN sde_constellations c ON c.constellation_id = s.constellation_id
+              WHERE c.region_id = ?
+            `).get(target.region_id) as { count: number };
+      count = Number(row.count ?? 0);
+      break;
+    }
+    case 'stargates': {
+      const row = targetKind === 'system'
+        ? db.prepare('SELECT COUNT(*) AS count FROM sde_stargates WHERE system_id = ?').get(target.system_id) as { count: number }
+        : targetKind === 'constellation'
+          ? db.prepare(`
+              SELECT COUNT(*) AS count
+              FROM sde_stargates sg
+              JOIN sde_systems s ON s.system_id = sg.system_id
+              WHERE s.constellation_id = ?
+            `).get(target.constellation_id) as { count: number }
+          : db.prepare(`
+              SELECT COUNT(*) AS count
+              FROM sde_stargates sg
+              JOIN sde_systems s ON s.system_id = sg.system_id
+              JOIN sde_constellations c ON c.constellation_id = s.constellation_id
+              WHERE c.region_id = ?
+            `).get(target.region_id) as { count: number };
+      count = Number(row.count ?? 0);
+      break;
+    }
+  }
+
+  return {
+    ok: true,
+    object_kind: objectKind,
+    count,
+    ...target,
+  };
+}
 
 export function executeMoonCount(db: Db, args: Record<string, unknown>): MoonCountResult {
   const targetKind = args.target_kind === 'system' || args.target_kind === 'region'

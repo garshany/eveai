@@ -23,6 +23,7 @@ describe('agent tools', () => {
     expect(functionNames).toContain('get_eve_capabilities');
     expect(functionNames).toContain('plan_route');
     expect(functionNames).toContain('count_moons');
+    expect(functionNames).toContain('count_universe_objects');
     expect(functionNames).toContain('sde_sql');
     // get_markets_region_id_orders is now in ESI namespace (eve_public_market_orders), not top-level
     expect(functionNames).not.toContain('get_markets_region_id_orders');
@@ -75,5 +76,25 @@ describe('agent tools', () => {
       },
       description: 'Optional top-level response fields to return. Allowed fields: is_blueprint_copy, is_singleton, item_id, location_flag, location_id, location_type, quantity, type_id. Null uses the operation default behavior.',
     });
+  });
+
+  it('can build a reduced static-aggregate toolset without namespaces', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    const { buildNativeAgentTools } = await import('../../src/agent/tools.js');
+
+    const tools = await buildNativeAgentTools('static_aggregate');
+    const functionNames = tools
+      .filter((tool): tool is Extract<(typeof tools)[number], { type: 'function' }> => tool.type === 'function')
+      .map((tool) => tool.name);
+
+    expect(functionNames).toContain('count_moons');
+    expect(functionNames).toContain('count_universe_objects');
+    expect(functionNames).toContain('sde_sql');
+    expect(functionNames).not.toContain('batch_market_prices');
+    expect(tools.some((tool) => tool.type === 'namespace')).toBe(false);
   });
 });

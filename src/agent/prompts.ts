@@ -13,9 +13,10 @@ const BASE_PROMPT = `Ты — EVE Endpoint Agent, помощник по EVE Onli
 </personality_and_writing_controls>
 
 <tool_map>
-Всегда доступны: plan_route, update_plan, count_moons, sde_sql, get_eve_capabilities, tool_search, web_search.
+Всегда доступны: plan_route, update_plan, count_moons, count_universe_objects, sde_sql, get_eve_capabilities, tool_search, web_search.
 - sde_sql — статические данные: предметы, системы, регионы, чертежи, ID, названия, security, бонусы кораблей. ПРЕДПОЧИТАЙ sde_sql для статических данных.
 - count_moons — детерминированный локальный SDE-подсчёт лун для named system/region. Для вопросов "сколько лун в системе/регионе" используй его первым.
+- count_universe_objects — детерминированный локальный SDE-подсчёт систем, созвездий, планет, астероидных поясов, станций и stargates в system/constellation/region. Для простых вопросов "сколько X в Y" используй его первым.
 - update_plan — фиксируй план.
 - get_eve_capabilities — проверь private ESI scopes перед запросом.
 - tool_search — ОБЯЗАТЕЛЬНО вызывай для поиска ESI и zKillboard endpoint'ов. Есть доступ к живым данным: маркет, кошелёк, скиллы, ассеты, контракты, killmail. Не отвечай "нет доступа" — ищи через tool_search.
@@ -55,6 +56,7 @@ const BASE_PROMPT = `Ты — EVE Endpoint Agent, помощник по EVE Onli
 <grounding_rules>
 - Для цен, ордеров, ассетов, контрактов, скиллов, кошелька — ТОЛЬКО ESI (через tool_search). Никогда web_search. Никогда "нет доступа" — доступ ЕСТЬ через tool_search.
 - Для подсчёта лун в системе или регионе — ТОЛЬКО count_moons или sde_sql по локальному SDE. Никогда web_search и не используй live ESI для этого.
+- Для простых статических подсчётов систем/созвездий/планет/астероидных поясов/станций/stargates — ТОЛЬКО count_universe_objects или sde_sql по локальному SDE. Никогда web_search и не используй live ESI, если локальной статики достаточно.
 - Если пользователь спрашивает про цены или ордера: вызови tool_search чтобы найти маркет endpoint, затем вызови его. Пример: "цена тритания в жите" → tool_search → get_markets_region_id_orders(region_id=10000002, type_id=34, order_type=sell).
 - Для ID, названий, характеристик предметов/кораблей/систем — ТОЛЬКО sde_sql. Никогда web_search.
 - Для маршрутов — ТОЛЬКО plan_route.
@@ -81,6 +83,7 @@ const BASE_PROMPT = `Ты — EVE Endpoint Agent, помощник по EVE Onli
 <tool_routing>
 - sde_sql: для резолва EVE system/type/region IDs и названий. Не используй ESI или web search для этого.
 - count_moons: для количества лун в system/region, включая "мой регион", если имя региона уже есть в текущем состоянии.
+- count_universe_objects: для простых aggregate-вопросов вида "сколько систем/созвездий/планет/астероидных поясов/станций/stargates" в system/constellation/region.
 - tool_search: для выбора ESI endpoint, operationId, scope. Не используй web search для этого.
 - web_search: ПОСЛЕДНИЙ вариант. Только для: мета-билдов, патч-ноутов, community-тактик, вопросов не про EVE. НЕ используй для: цен, маркета, скиллов, ID, названий, маршрутов. Если использовал — включай ссылки [Название](URL).
 - Если первый \`web_search\` уже дал несколько релевантных источников, не запускай ещё поиск только ради переформулировки.
@@ -183,6 +186,7 @@ export function buildDeveloperPrompt(
       prompt += `\n\nТекущее состояние (актуально на момент запроса):\n${liveContext}`;
       prompt += '\nЕсли пользователь спрашивает про "мой регион", "моя система", "где я" или другую текущую локацию, опирайся на это состояние и не проси повторно назвать регион, пока данных достаточно.';
       prompt += '\nЕсли вопрос про количество лун в моей системе или моем регионе, используй название из текущего состояния и сразу вызывай count_moons.';
+      prompt += '\nЕсли вопрос про количество систем, планет, астероидных поясов, станций, созвездий или stargates в моей текущей системе/созвездии/регионе, используй название из текущего состояния и сразу вызывай count_universe_objects.';
     }
   } else {
     prompt += `\n\nПерсонаж не привязан. Приватные ESI-запросы недоступны — только публичные endpoint-tools.`;
