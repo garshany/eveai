@@ -427,8 +427,7 @@ async function runNativeAgentLoop(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (
-        !usedToolStateRecovery
-        && shouldRecoverFromToolStateMismatch(message, previousResponseId, pendingItems)
+        shouldUseToolStateRecovery(message, usedToolStateRecovery, previousResponseId, pendingItems)
       ) {
         usedToolStateRecovery = true;
         previousResponseId = null;
@@ -452,8 +451,7 @@ async function runNativeAgentLoop(
 
     if (response.error) {
       if (
-        !usedToolStateRecovery
-        && shouldRecoverFromToolStateMismatch(response.error.message, previousResponseId, pendingItems)
+        shouldUseToolStateRecovery(response.error.message, usedToolStateRecovery, previousResponseId, pendingItems)
       ) {
         usedToolStateRecovery = true;
         previousResponseId = null;
@@ -1072,6 +1070,16 @@ function shouldRecoverFromToolStateMismatch(
   return pendingItems.some((item) => item.type === 'function_call_output');
 }
 
+function shouldUseToolStateRecovery(
+  message: string,
+  usedToolStateRecovery: boolean,
+  previousResponseId: string | null,
+  pendingItems: NativeInputItem[],
+): boolean {
+  if (usedToolStateRecovery) return false;
+  return shouldRecoverFromToolStateMismatch(message, previousResponseId, pendingItems);
+}
+
 type ConversationContinuation = {
   mode: 'warm' | 'cold';
   items: NativeInputItem[];
@@ -1130,6 +1138,7 @@ export const __test__ = {
   buildRecentToolSummaryMessage,
   resolveSystemLocationContext,
   shouldRecoverFromToolStateMismatch,
+  shouldUseToolStateRecovery,
   planConversationContinuation,
   isRecentSqliteTimestamp,
 };

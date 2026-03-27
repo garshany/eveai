@@ -245,6 +245,25 @@ describe('warm/cold path DB operations', () => {
       [{ type: 'function_call_output', call_id: 'call_123', output: '{"ok":true}' }],
     )).toBe(false);
   });
+
+  it('allows a single cold-recovery retry for response-level tool-state mismatches', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const pendingItems = [{ type: 'function_call_output', call_id: 'call_123', output: '{"ok":true}' }];
+
+    expect(__test__.shouldUseToolStateRecovery(
+      'No tool call found for function call output with call_id call_123.',
+      false,
+      'resp_prev',
+      pendingItems,
+    )).toBe(true);
+
+    expect(__test__.shouldUseToolStateRecovery(
+      'No tool call found for function call output with call_id call_123.',
+      true,
+      'resp_prev',
+      pendingItems,
+    )).toBe(false);
+  });
 });
 
 describe('native-responses payload', () => {

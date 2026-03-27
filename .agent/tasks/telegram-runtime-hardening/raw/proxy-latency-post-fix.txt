@@ -1,0 +1,16 @@
+Direct proxy latency probe on 2026-03-28 (server-local, sourced .env).
+Request: POST http://127.0.0.1:8080/v1/responses with a minimal one-word reply prompt, no tools, store=false, stream=false.
+
+Observed runtime output:
+PROXY_STATUS=200
+PROXY_ELAPSED_MS=1340
+PROXY_BODY_PREFIX="{\"background\":false,\"completed_at\":1774645636,\"created_at\":1774645635,\"error\":null,\"frequency_penalty\":0.0,\"id\":\"resp_04b45594897496580169c6f183b94881919b6a92f0"
+
+Control probe before adding instructions:
+PROXY_STATUS=400
+PROXY_ELAPSED_MS=215
+PROXY_BODY_PREFIX="{\"detail\":\"Instructions are required\"}"
+
+Interpretation:
+- The proxy itself answers a tiny request in ~1.34s.
+- Slow moon execution after the fix is mostly model round-trip time plus full Telegram prompt context, not proxy transport failure.

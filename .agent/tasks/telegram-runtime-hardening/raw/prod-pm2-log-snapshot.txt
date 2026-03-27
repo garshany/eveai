@@ -1,0 +1,445 @@
+[TAILING] Tailing last 220 lines for [eveai] process (change the value with --lines option)
+/root/.pm2/logs/eveai-error.log last 220 lines:
+0|eveai    |     at async Bot.loop (/opt/eveai/node_modules/grammy/out/bot.js:394:33)
+0|eveai    |     at async Bot.start (/opt/eveai/node_modules/grammy/out/bot.js:315:9) {
+0|eveai    |   method: 'getUpdates',
+0|eveai    |   payload: { offset: 1, limit: undefined, timeout: 30, allowed_updates: [] },
+0|eveai    |   ok: false,
+0|eveai    |   error_code: 409,
+0|eveai    |   description: 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running',
+0|eveai    |   parameters: {}
+0|eveai    | }
+0|eveai    | [bot] setMyCommands failed: GrammyError: Call to 'setMyCommands' failed! (429: Too Many Requests: retry after 313)
+0|eveai    |     at toGrammyError (/opt/eveai/node_modules/grammy/out/core/error.js:47:12)
+0|eveai    |     at ApiClient.callApi (/opt/eveai/node_modules/grammy/out/core/client.js:100:48)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5) {
+0|eveai    |   method: 'setMyCommands',
+0|eveai    |   payload: {
+0|eveai    |     commands: [
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object]
+0|eveai    |     ]
+0|eveai    |   },
+0|eveai    |   ok: false,
+0|eveai    |   error_code: 429,
+0|eveai    |   description: 'Too Many Requests: retry after 313',
+0|eveai    |   parameters: { retry_after: 313 }
+0|eveai    | }
+0|eveai    | [app] Bot start failed: GrammyError: Call to 'getUpdates' failed! (409: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running)
+0|eveai    |     at toGrammyError (/opt/eveai/node_modules/grammy/out/core/error.js:47:12)
+0|eveai    |     at ApiClient.callApi (/opt/eveai/node_modules/grammy/out/core/client.js:100:48)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+0|eveai    |     at async Bot.fetchUpdates (/opt/eveai/node_modules/grammy/out/bot.js:423:27)
+0|eveai    |     at async Bot.loop (/opt/eveai/node_modules/grammy/out/bot.js:394:33)
+0|eveai    |     at async Bot.start (/opt/eveai/node_modules/grammy/out/bot.js:315:9) {
+0|eveai    |   method: 'getUpdates',
+0|eveai    |   payload: { offset: 1, limit: undefined, timeout: 30, allowed_updates: [] },
+0|eveai    |   ok: false,
+0|eveai    |   error_code: 409,
+0|eveai    |   description: 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running',
+0|eveai    |   parameters: {}
+0|eveai    | }
+0|eveai    | [bot] setMyCommands failed: GrammyError: Call to 'setMyCommands' failed! (429: Too Many Requests: retry after 303)
+0|eveai    |     at toGrammyError (/opt/eveai/node_modules/grammy/out/core/error.js:47:12)
+0|eveai    |     at ApiClient.callApi (/opt/eveai/node_modules/grammy/out/core/client.js:100:48)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5) {
+0|eveai    |   method: 'setMyCommands',
+0|eveai    |   payload: {
+0|eveai    |     commands: [
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object]
+0|eveai    |     ]
+0|eveai    |   },
+0|eveai    |   ok: false,
+0|eveai    |   error_code: 429,
+0|eveai    |   description: 'Too Many Requests: retry after 303',
+0|eveai    |   parameters: { retry_after: 303 }
+0|eveai    | }
+0|eveai    | [app] Bot start failed: GrammyError: Call to 'getUpdates' failed! (409: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running)
+0|eveai    |     at toGrammyError (/opt/eveai/node_modules/grammy/out/core/error.js:47:12)
+0|eveai    |     at ApiClient.callApi (/opt/eveai/node_modules/grammy/out/core/client.js:100:48)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+0|eveai    |     at async Bot.fetchUpdates (/opt/eveai/node_modules/grammy/out/bot.js:423:27)
+0|eveai    |     at async Bot.loop (/opt/eveai/node_modules/grammy/out/bot.js:394:33)
+0|eveai    |     at async Bot.start (/opt/eveai/node_modules/grammy/out/bot.js:315:9) {
+0|eveai    |   method: 'getUpdates',
+0|eveai    |   payload: { offset: 1, limit: undefined, timeout: 30, allowed_updates: [] },
+0|eveai    |   ok: false,
+0|eveai    |   error_code: 409,
+0|eveai    |   description: 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running',
+0|eveai    |   parameters: {}
+0|eveai    | }
+0|eveai    | [bot] setMyCommands failed: GrammyError: Call to 'setMyCommands' failed! (429: Too Many Requests: retry after 292)
+0|eveai    |     at toGrammyError (/opt/eveai/node_modules/grammy/out/core/error.js:47:12)
+0|eveai    |     at ApiClient.callApi (/opt/eveai/node_modules/grammy/out/core/client.js:100:48)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5) {
+0|eveai    |   method: 'setMyCommands',
+0|eveai    |   payload: {
+0|eveai    |     commands: [
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object]
+0|eveai    |     ]
+0|eveai    |   },
+0|eveai    |   ok: false,
+0|eveai    |   error_code: 429,
+0|eveai    |   description: 'Too Many Requests: retry after 292',
+0|eveai    |   parameters: { retry_after: 292 }
+0|eveai    | }
+0|eveai    | [app] Bot start failed: GrammyError: Call to 'getUpdates' failed! (409: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running)
+0|eveai    |     at toGrammyError (/opt/eveai/node_modules/grammy/out/core/error.js:47:12)
+0|eveai    |     at ApiClient.callApi (/opt/eveai/node_modules/grammy/out/core/client.js:100:48)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+0|eveai    |     at async Bot.fetchUpdates (/opt/eveai/node_modules/grammy/out/bot.js:423:27)
+0|eveai    |     at async Bot.loop (/opt/eveai/node_modules/grammy/out/bot.js:394:33)
+0|eveai    |     at async Bot.start (/opt/eveai/node_modules/grammy/out/bot.js:315:9) {
+0|eveai    |   method: 'getUpdates',
+0|eveai    |   payload: { offset: 1, limit: undefined, timeout: 30, allowed_updates: [] },
+0|eveai    |   ok: false,
+0|eveai    |   error_code: 409,
+0|eveai    |   description: 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running',
+0|eveai    |   parameters: {}
+0|eveai    | }
+0|eveai    | [bot] setMyCommands failed: GrammyError: Call to 'setMyCommands' failed! (429: Too Many Requests: retry after 282)
+0|eveai    |     at toGrammyError (/opt/eveai/node_modules/grammy/out/core/error.js:47:12)
+0|eveai    |     at ApiClient.callApi (/opt/eveai/node_modules/grammy/out/core/client.js:100:48)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5) {
+0|eveai    |   method: 'setMyCommands',
+0|eveai    |   payload: {
+0|eveai    |     commands: [
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object]
+0|eveai    |     ]
+0|eveai    |   },
+0|eveai    |   ok: false,
+0|eveai    |   error_code: 429,
+0|eveai    |   description: 'Too Many Requests: retry after 282',
+0|eveai    |   parameters: { retry_after: 282 }
+0|eveai    | }
+0|eveai    | [app] Bot start failed: GrammyError: Call to 'getUpdates' failed! (409: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running)
+0|eveai    |     at toGrammyError (/opt/eveai/node_modules/grammy/out/core/error.js:47:12)
+0|eveai    |     at ApiClient.callApi (/opt/eveai/node_modules/grammy/out/core/client.js:100:48)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+0|eveai    |     at async Bot.fetchUpdates (/opt/eveai/node_modules/grammy/out/bot.js:423:27)
+0|eveai    |     at async Bot.loop (/opt/eveai/node_modules/grammy/out/bot.js:394:33)
+0|eveai    |     at async Bot.start (/opt/eveai/node_modules/grammy/out/bot.js:315:9) {
+0|eveai    |   method: 'getUpdates',
+0|eveai    |   payload: { offset: 1, limit: undefined, timeout: 30, allowed_updates: [] },
+0|eveai    |   ok: false,
+0|eveai    |   error_code: 409,
+0|eveai    |   description: 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running',
+0|eveai    |   parameters: {}
+0|eveai    | }
+0|eveai    | [bot] setMyCommands failed: GrammyError: Call to 'setMyCommands' failed! (429: Too Many Requests: retry after 272)
+0|eveai    |     at toGrammyError (/opt/eveai/node_modules/grammy/out/core/error.js:47:12)
+0|eveai    |     at ApiClient.callApi (/opt/eveai/node_modules/grammy/out/core/client.js:100:48)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5) {
+0|eveai    |   method: 'setMyCommands',
+0|eveai    |   payload: {
+0|eveai    |     commands: [
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object],
+0|eveai    |       [Object], [Object]
+0|eveai    |     ]
+0|eveai    |   },
+0|eveai    |   ok: false,
+0|eveai    |   error_code: 429,
+0|eveai    |   description: 'Too Many Requests: retry after 272',
+0|eveai    |   parameters: { retry_after: 272 }
+0|eveai    | }
+0|eveai    | [handler] Agent error: Error: Unsupported state or unable to authenticate data
+0|eveai    |     at Decipheriv.final (node:internal/crypto/cipher:193:29)
+0|eveai    |     at decryptStoredSecret (file:///opt/eveai/dist/auth/secret-storage.js:83:18)
+0|eveai    |     at getAccessToken (file:///opt/eveai/dist/eve/sso.js:20:25)
+0|eveai    |     at resolveAccess (file:///opt/eveai/dist/eve/esi-client.js:69:25)
+0|eveai    |     at callEsiOperation (file:///opt/eveai/dist/eve/esi-client.js:13:26)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+0|eveai    |     at async executeToolCall (file:///opt/eveai/dist/agent/executor.js:496:23)
+0|eveai    |     at async Promise.all (index 0)
+0|eveai    |     at async runNativeAgentLoop (file:///opt/eveai/dist/agent/executor.js:343:15)
+0|eveai    |     at async handleAgentMessage (file:///opt/eveai/dist/agent/executor.js:217:12)
+0|eveai    | [handler] Agent error: Error: Unsupported state or unable to authenticate data
+0|eveai    |     at Decipheriv.final (node:internal/crypto/cipher:193:29)
+0|eveai    |     at decryptStoredSecret (file:///opt/eveai/dist/auth/secret-storage.js:83:18)
+0|eveai    |     at getAccessToken (file:///opt/eveai/dist/eve/sso.js:20:25)
+0|eveai    |     at resolveAccess (file:///opt/eveai/dist/eve/esi-client.js:69:25)
+0|eveai    |     at callEsiOperation (file:///opt/eveai/dist/eve/esi-client.js:13:26)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+0|eveai    |     at async executeToolCall (file:///opt/eveai/dist/agent/executor.js:496:23)
+0|eveai    |     at async Promise.all (index 1)
+0|eveai    |     at async runNativeAgentLoop (file:///opt/eveai/dist/agent/executor.js:343:15)
+0|eveai    |     at async handleAgentMessage (file:///opt/eveai/dist/agent/executor.js:217:12)
+0|eveai    | [auth] Token exchange failed: {"error":"invalid_grant","error_description":"Authorization code is invalid."}
+0|eveai    | [app] Bot start failed: GrammyError: Call to 'getUpdates' failed! (409: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running)
+0|eveai    |     at toGrammyError (/opt/eveai/node_modules/grammy/out/core/error.js:47:12)
+0|eveai    |     at ApiClient.callApi (/opt/eveai/node_modules/grammy/out/core/client.js:100:48)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+0|eveai    |     at async Bot.fetchUpdates (/opt/eveai/node_modules/grammy/out/bot.js:423:27)
+0|eveai    |     at async Bot.loop (/opt/eveai/node_modules/grammy/out/bot.js:394:33)
+0|eveai    |     at async Bot.start (/opt/eveai/node_modules/grammy/out/bot.js:315:9) {
+0|eveai    |   method: 'getUpdates',
+0|eveai    |   payload: {
+0|eveai    |     offset: 140595491,
+0|eveai    |     limit: undefined,
+0|eveai    |     timeout: 30,
+0|eveai    |     allowed_updates: undefined
+0|eveai    |   },
+0|eveai    |   ok: false,
+0|eveai    |   error_code: 409,
+0|eveai    |   description: 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running',
+0|eveai    |   parameters: {}
+0|eveai    | }
+0|eveai    | [handler] Agent error: Error: No tool call found for function call output with call_id call_SmKtRTnBMdYizTOSf4w2jaiJ.
+0|eveai    |     at createNativeResponse (file:///opt/eveai/dist/agent/native-responses.js:54:15)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+0|eveai    |     at async runNativeAgentLoop (file:///opt/eveai/dist/agent/executor.js:277:26)
+0|eveai    |     at async handleAgentMessage (file:///opt/eveai/dist/agent/executor.js:225:12)
+0|eveai    |     at async file:///opt/eveai/dist/telegram/handlers.js:300:34
+0|eveai    |     at async /opt/eveai/node_modules/grammy/out/composer.js:578:13
+0|eveai    |     at async /opt/eveai/node_modules/grammy/out/composer.js:62:13
+0|eveai    |     at async file:///opt/eveai/dist/telegram/handlers.js:251:9
+0|eveai    |     at async /opt/eveai/node_modules/grammy/out/composer.js:578:13
+0|eveai    |     at async /opt/eveai/node_modules/grammy/out/composer.js:62:13
+0|eveai    | [handler] Agent error: Error: No tool call found for function call output with call_id call_SmKtRTnBMdYizTOSf4w2jaiJ.
+0|eveai    |     at createNativeResponse (file:///opt/eveai/dist/agent/native-responses.js:54:15)
+0|eveai    |     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+0|eveai    |     at async runNativeAgentLoop (file:///opt/eveai/dist/agent/executor.js:277:26)
+0|eveai    |     at async handleAgentMessage (file:///opt/eveai/dist/agent/executor.js:225:12)
+0|eveai    |     at async file:///opt/eveai/dist/telegram/handlers.js:300:34
+0|eveai    |     at async /opt/eveai/node_modules/grammy/out/composer.js:578:13
+0|eveai    |     at async /opt/eveai/node_modules/grammy/out/composer.js:62:13
+0|eveai    |     at async file:///opt/eveai/dist/telegram/handlers.js:251:9
+0|eveai    |     at async /opt/eveai/node_modules/grammy/out/composer.js:578:13
+0|eveai    |     at async /opt/eveai/node_modules/grammy/out/composer.js:62:13
+0|eveai    | [executor] tool state lost, switching to cold recovery context: No tool call found for function call output with call_id call_SmKtRTnBMdYizTOSf4w2jaiJ.
+
+/root/.pm2/logs/eveai-out.log last 220 lines:
+0|eveai    | [esi] get_dogma_attributes_attribute_id rows=1 status=200 cached=false
+0|eveai    | [esi]   fields_requested=["attribute_id","name","display_name","description","unit_id"] whitelist=null
+0|eveai    | [esi]   raw_fields=["attribute_id","default_value","description","display_name","icon_id","name","published","unit_id"]
+0|eveai    | [esi]   final=["attribute_id","name","display_name","description","unit_id"] dropped=["default_value","icon_id","published"]
+0|eveai    | [esi]   raw=197 chars final=147 chars saved=25%
+0|eveai    | [esi] get_dogma_attributes_attribute_id rows=1 status=200 cached=false
+0|eveai    | [esi]   fields_requested=["attribute_id","name","display_name","description","unit_id"] whitelist=null
+0|eveai    | [esi]   raw_fields=["attribute_id","default_value","description","display_name","high_is_good","name","stackable","unit_id"]
+0|eveai    | [esi]   final=["attribute_id","name","display_name","description","unit_id"] dropped=["default_value","high_is_good","stackable"]
+0|eveai    | [esi]   raw=234 chars final=179 chars saved=24%
+0|eveai    | [esi] get_dogma_attributes_attribute_id rows=1 status=200 cached=false
+0|eveai    | [esi]   fields_requested=["attribute_id","name","display_name","description","unit_id"] whitelist=null
+0|eveai    | [esi]   raw_fields=["attribute_id","default_value","description","display_name","icon_id","name","published","unit_id"]
+0|eveai    | [esi]   final=["attribute_id","name","display_name","description","unit_id"] dropped=["default_value","icon_id","published"]
+0|eveai    | [esi]   raw=218 chars final=166 chars saved=24%
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":9,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1108 chars sent=1108 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":99,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1115 chars sent=1115 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":107,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1107 chars sent=1107 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":108,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1153 chars sent=1153 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":114,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1086 chars sent=1086 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":116,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1107 chars sent=1107 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":117,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1101 chars sent=1101 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":118,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1101 chars sent=1101 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":265,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1123 chars sent=1123 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":552,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1140 chars sent=1140 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":654,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1122 chars sent=1122 chars
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 228408 chars, 56 tools, 11 input items, prevId=resp_046671e67df10af50169c6c5f018e48191b7b3c2bc7793d034
+0|eveai    | [usage] input=13084 output=392 total=13476 cached=0 reasoning=0
+0|eveai    | [executor] iter=2 tokens: in=13084 out=392 cached=0 reasoning=0
+0|eveai    | [executor] === DONE (text) iterations=3 total_in=31728 total_out=1605 total_cached=0 total_reasoning=223 answer=1163 chars ===
+0|eveai    | [handler] message chat_id=507010363 user_id=7 len=43
+0|eveai    | [executor] context: mode=warm items=1 prevId=resp_0a0a8243c74892080169c6c6044c608191adad88b5ddc8f78c
+0|eveai    | [executor] === NEW REQUEST chat=507010363 thread=271c2361-feb goal="Как это не наносит? По 7 урона каждого вида" ===
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 214153 chars, 56 tools, 1 input items, prevId=resp_0a0a8243c74892080169c6c6044c608191adad88b5ddc8f78c
+0|eveai    | [usage] input=13496 output=438 total=13934 cached=0 reasoning=136
+0|eveai    | [executor] iter=0 tokens: in=13496 out=438 cached=0 reasoning=136
+0|eveai    | [executor] === DONE (text) iterations=1 total_in=13496 total_out=438 total_cached=0 total_reasoning=136 answer=891 chars ===
+0|eveai    | [handler] message chat_id=507010363 user_id=7 len=95
+0|eveai    | [executor] context: mode=warm items=1 prevId=resp_0df882aef2d85a470169c6c6480f6481919a4b539e332a84b9
+0|eveai    | [executor] === NEW REQUEST chat=507010363 thread=271c2361-feb goal="Сколько войд бомб надо, чтобы своим уроном они взорвали дпс бомбу, допустим кине" ===
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 214205 chars, 56 tools, 1 input items, prevId=resp_0df882aef2d85a470169c6c6480f6481919a4b539e332a84b9
+0|eveai    | [usage] input=13834 output=193 total=14027 cached=0 reasoning=98
+0|eveai    | [calls] sde_sql
+0|eveai    | [executor] iter=0 tokens: in=13834 out=193 cached=0 reasoning=98
+0|eveai    | [tool] sde_sql args={"sql":"SELECT t.type_id, t.name, t.group_id, d.data_json AS dogma_json\nFROM sde_types t\nLEFT JOIN sde_type_dogma d ON raw=4443 chars sent=4443 chars
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 219530 chars, 56 tools, 1 input items, prevId=resp_0743033818cfe3b30169c6c6cdbf84819193cfc7cb45144475
+0|eveai    | [usage] input=15276 output=335 total=15611 cached=0 reasoning=0
+0|eveai    | [calls] get_dogma_attributes_attribute_id, get_dogma_attributes_attribute_id, get_dogma_attributes_attribute_id, get_dogma_attributes_attribute_id
+0|eveai    | [executor] iter=1 tokens: in=15276 out=335 cached=0 reasoning=0
+0|eveai    | [esi] get_dogma_attributes_attribute_id rows=1 status=200 cached=false
+0|eveai    | [esi]   fields_requested=["attribute_id","name","display_name","description","unit_id"] whitelist=null
+0|eveai    | [esi]   raw_fields=["attribute_id","default_value","description","display_name","icon_id","name","published","unit_id"]
+0|eveai    | [esi]   final=["attribute_id","name","display_name","description","unit_id"] dropped=["default_value","icon_id","published"]
+0|eveai    | [esi]   raw=235 chars final=185 chars saved=21%
+0|eveai    | [esi] get_dogma_attributes_attribute_id rows=1 status=200 cached=false
+0|eveai    | [esi]   fields_requested=["attribute_id","name","display_name","description","unit_id"] whitelist=null
+0|eveai    | [esi]   raw_fields=["attribute_id","default_value","description","display_name","icon_id","name","published","unit_id"]
+0|eveai    | [esi]   final=["attribute_id","name","display_name","description","unit_id"] dropped=["default_value","icon_id","published"]
+0|eveai    | [esi]   raw=214 chars final=164 chars saved=23%
+0|eveai    | [esi] get_dogma_attributes_attribute_id rows=1 status=200 cached=false
+0|eveai    | [esi]   fields_requested=["attribute_id","name","display_name","description","unit_id"] whitelist=null
+0|eveai    | [esi]   raw_fields=["attribute_id","default_value","description","display_name","icon_id","name","published","unit_id"]
+0|eveai    | [esi]   final=["attribute_id","name","display_name","description","unit_id"] dropped=["default_value","icon_id","published"]
+0|eveai    | [esi]   raw=229 chars final=179 chars saved=22%
+0|eveai    | [esi] get_dogma_attributes_attribute_id rows=1 status=200 cached=false
+0|eveai    | [esi]   fields_requested=["attribute_id","name","display_name","description","unit_id"] whitelist=null
+0|eveai    | [esi]   raw_fields=["attribute_id","default_value","description","display_name","icon_id","name","published","unit_id"]
+0|eveai    | [esi]   final=["attribute_id","name","display_name","description","unit_id"] dropped=["default_value","icon_id","published"]
+0|eveai    | [esi]   raw=229 chars final=179 chars saved=22%
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":267,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1139 chars sent=1139 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":268,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1160 chars sent=1160 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":269,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1153 chars sent=1153 chars
+0|eveai    | [tool] get_dogma_attributes_attribute_id args={"If-None-Match":null,"attribute_id":270,"fields":["attribute_id","name","display_name","description","unit_id"]} raw=1154 chars sent=1154 chars
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 219407 chars, 56 tools, 4 input items, prevId=resp_037aa85582e414090169c6c6d530a481919231969983fc9d6e
+0|eveai    | [usage] input=17014 output=1213 total=18227 cached=0 reasoning=750
+0|eveai    | [executor] iter=2 tokens: in=17014 out=1213 cached=0 reasoning=750
+0|eveai    | [executor] === DONE (text) iterations=3 total_in=46124 total_out=1741 total_cached=0 total_reasoning=848 answer=1282 chars ===
+0|eveai    | [handler] message chat_id=507010363 user_id=7 len=40
+0|eveai    | [executor] context: mode=warm items=1 prevId=resp_023c803417c5f88d0169c6c6de1b2c819182bdc57f71af306e
+0|eveai    | [executor] === NEW REQUEST chat=507010363 thread=271c2361-feb goal="Какие резисты в структуре кинетик бомбы?" ===
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 214150 chars, 56 tools, 1 input items, prevId=resp_023c803417c5f88d0169c6c6de1b2c819182bdc57f71af306e
+0|eveai    | [usage] input=17495 output=363 total=17858 cached=0 reasoning=161
+0|eveai    | [executor] iter=0 tokens: in=17495 out=363 cached=0 reasoning=161
+0|eveai    | [executor] === DONE (text) iterations=1 total_in=17495 total_out=363 total_cached=0 total_reasoning=161 answer=661 chars ===
+0|eveai    | [handler] message chat_id=507010363 user_id=7 len=132
+0|eveai    | [executor] context: mode=warm items=1 prevId=resp_08e7135be79253e10169c6c7278eac81918111c454cadfad9c
+0|eveai    | [executor] === NEW REQUEST chat=507010363 thread=271c2361-feb goal="Если я делаю бомб ран 3 войд бомбы и 7 кинетик, все ли бомбы взорвуться как надо" ===
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 214242 chars, 56 tools, 1 input items, prevId=resp_08e7135be79253e10169c6c7278eac81918111c454cadfad9c
+0|eveai    | [usage] input=17746 output=2754 total=20500 cached=0 reasoning=1421
+0|eveai    | [tool_search] paths: ["eve_public_dogma","get_dogma_attributes","get_dogma_attributes_attribute_id","get_dogma_dynamic_items_type_id_item_id","get_dogma_effects","get_dogma_effects_effect_id"]
+0|eveai    | [executor] iter=0 tokens: in=17746 out=2754 cached=0 reasoning=1421
+0|eveai    | [executor] iteration=0 toolSearchPaths=["eve_public_dogma","get_dogma_attributes","get_dogma_attributes_attribute_id","get_dogma_dynamic_items_type_id_item_id","get_dogma_effects","get_dogma_effects_effect_id"]
+0|eveai    | [executor] === DONE (text) iterations=1 total_in=17746 total_out=2754 total_cached=0 total_reasoning=1421 answer=2377 chars ===
+0|eveai    | [handler] message chat_id=507010363 user_id=7 len=58
+0|eveai    | [executor] context: mode=warm items=1 prevId=resp_04a392f221dc89550169c6c8f6ca788191b1bc4636705bf631
+0|eveai    | [executor] === NEW REQUEST chat=507010363 thread=271c2361-feb goal="Плохо посчитал, добавь в расчёты скорости войд и дпс бомбы" ===
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 214168 chars, 56 tools, 1 input items, prevId=resp_04a392f221dc89550169c6c8f6ca788191b1bc4636705bf631
+0|eveai    | [usage] input=18590 output=1298 total=19888 cached=8320 reasoning=340
+0|eveai    | [executor] iter=0 tokens: in=18590 out=1298 cached=8320 reasoning=340
+0|eveai    | [executor] === DONE (text) iterations=1 total_in=18590 total_out=1298 total_cached=8320 total_reasoning=340 answer=2783 chars ===
+0|eveai    | [handler] message chat_id=137557306 user_id=8 len=21
+0|eveai    | [executor] context: mode=cold items=1 prevId=none
+0|eveai    | [executor] === NEW REQUEST chat=137557306 thread=e94f1c32-731 goal="кто тебя создал, бот?" ===
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 214050 chars, 56 tools, 1 input items, prevId=none
+0|eveai    | [usage] input=6456 output=52 total=6508 cached=0 reasoning=0
+0|eveai    | [executor] iter=0 tokens: in=6456 out=52 cached=0 reasoning=0
+0|eveai    | [executor] === DONE (text) iterations=1 total_in=6456 total_out=52 total_cached=0 total_reasoning=0 answer=139 chars ===
+0|eveai    | [handler] message chat_id=137557306 user_id=8 len=46
+0|eveai    | [executor] context: mode=warm items=1 prevId=resp_09862de6b35715a90169c6cc23fb108191997157d6e45f596b
+0|eveai    | [executor] === NEW REQUEST chat=137557306 thread=e94f1c32-731 goal="для чего тебе все эти разрешения на персонажа?" ===
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 214156 chars, 56 tools, 1 input items, prevId=resp_09862de6b35715a90169c6cc23fb108191997157d6e45f596b
+0|eveai    | [usage] input=6525 output=274 total=6799 cached=0 reasoning=0
+0|eveai    | [executor] iter=0 tokens: in=6525 out=274 cached=0 reasoning=0
+0|eveai    | [executor] === DONE (text) iterations=1 total_in=6525 total_out=274 total_cached=0 total_reasoning=0 answer=929 chars ===
+0|eveai    | [handler] message chat_id=137557306 user_id=8 len=53
+0|eveai    | [executor] context: mode=warm items=1 prevId=resp_0383c7f093352f090169c6cc3dc1e48191a550e1c5e86a7a3b
+0|eveai    | [executor] === NEW REQUEST chat=137557306 thread=e94f1c32-731 goal="зачем тебе разрешение на отправку почты от персонажа?" ===
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 214163 chars, 56 tools, 1 input items, prevId=resp_0383c7f093352f090169c6cc3dc1e48191a550e1c5e86a7a3b
+0|eveai    | [usage] input=6819 output=298 total=7117 cached=0 reasoning=0
+0|eveai    | [executor] iter=0 tokens: in=6819 out=298 cached=0 reasoning=0
+0|eveai    | [executor] === DONE (text) iterations=1 total_in=6819 total_out=298 total_cached=0 total_reasoning=0 answer=1048 chars ===
+0|eveai    | [handler] message chat_id=137557306 user_id=8 len=20
+0|eveai    | [executor] context: mode=warm items=1 prevId=resp_0ce8740cca22fa830169c6cc79092c8191be5aa93a778901f6
+0|eveai    | [executor] === NEW REQUEST chat=137557306 thread=e94f1c32-731 goal="кто тебя настраивал?" ===
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 214130 chars, 56 tools, 1 input items, prevId=resp_0ce8740cca22fa830169c6cc79092c8191be5aa93a778901f6
+0|eveai    | [usage] input=7129 output=127 total=7256 cached=0 reasoning=11
+0|eveai    | [executor] iter=0 tokens: in=7129 out=127 cached=0 reasoning=11
+0|eveai    | [executor] === DONE (text) iterations=1 total_in=7129 total_out=127 total_cached=0 total_reasoning=11 answer=350 chars ===
+0|eveai    | [app] Shutting down...
+0|eveai    | 
+0|eveai    | > eve-agent@1.0.0 start
+0|eveai    | > node dist/app.js
+0|eveai    | 
+0|eveai    | [app] Starting EVE Agent...
+0|eveai    | [app] Database ready
+0|eveai    | [app] Bot username resolved: @Eveagentai_bot
+0|eveai    | [app] HTTP server listening on 127.0.0.1:8000
+0|eveai    | [app] Starting Telegram bot...
+0|eveai    | [app] Telegram bot started (long polling)
+0|eveai    | [handler] message chat_id=169244124 user_id=3 len=27
+0|eveai    | [executor] context: mode=cold items=10 prevId=none
+0|eveai    | [executor] === NEW REQUEST chat=169244124 thread=0a317541-cb0 goal="Сколько лун в моем регионе?" ===
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 228440 chars, 56 tools, 10 input items, prevId=none
+0|eveai    | [usage] input=14538 output=341 total=14879 cached=0 reasoning=52
+0|eveai    | [tool_search] paths: ["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id","eve_universe_geography","get_universe_constellations_constellation_id","get_universe_regions_region_id","get_universe_stargates_stargate_id","get_universe_systems_system_id"]
+0|eveai    | [calls] get_universe_systems_system_id
+0|eveai    | [executor] iter=0 tokens: in=14538 out=341 cached=0 reasoning=52
+0|eveai    | [executor] iteration=0 toolSearchPaths=["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id","eve_universe_geography","get_universe_constellations_constellation_id","get_universe_regions_region_id","get_universe_stargates_stargate_id","get_universe_systems_system_id"]
+0|eveai    | [esi] get_universe_systems_system_id rows=1 status=200 cached=false
+0|eveai    | [esi]   fields_requested=["name","planets"] whitelist=null
+0|eveai    | [esi]   raw_fields=["constellation_id","name","planets","position","security_class","security_status","star_id","stargates","stations","system_id"]
+0|eveai    | [esi]   final=["name","planets"] dropped=["constellation_id","position","security_class","security_status","star_id","stargates","stations","system_id"]
+0|eveai    | [esi]   raw=1094 chars final=770 chars saved=30%
+0|eveai    | [tool] get_universe_systems_system_id args={"Accept-Language":"en","If-None-Match":null,"fields":["name","planets"],"system_id":30002659} raw=1805 chars sent=1805 chars
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 222157 chars, 56 tools, 1 input items, prevId=resp_071a03fcacca682f0169c6edf054d88191b193d841ef6b5dcb
+0|eveai    | [usage] input=15445 output=534 total=15979 cached=0 reasoning=52
+0|eveai    | [tool_search] paths: ["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id","eve_universe_geography","get_universe_constellations_constellation_id","get_universe_regions_region_id","get_universe_stargates_stargate_id","get_universe_systems_system_id"]
+0|eveai    | [calls] get_universe_regions_region_id
+0|eveai    | [executor] iter=1 tokens: in=15445 out=534 cached=0 reasoning=52
+0|eveai    | [executor] iteration=1 toolSearchPaths=["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id","eve_universe_geography","get_universe_constellations_constellation_id","get_universe_regions_region_id","get_universe_stargates_stargate_id","get_universe_systems_system_id"]
+0|eveai    | [esi] get_universe_regions_region_id rows=1 status=200 cached=false
+0|eveai    | [esi]   fields_requested=["name","constellations"] whitelist=null
+0|eveai    | [esi]   raw_fields=["constellations","description","name","region_id"]
+0|eveai    | [esi]   final=["name","constellations"] dropped=["description","region_id"]
+0|eveai    | [esi]   raw=773 chars final=176 chars saved=77%
+0|eveai    | [tool] get_universe_regions_region_id args={"Accept-Language":"en","If-None-Match":null,"fields":["name","constellations"],"region_id":10000032} raw=1168 chars sent=1168 chars
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 221484 chars, 56 tools, 1 input items, prevId=resp_0e298485e2c891e40169c6edfa030881919df8ac8e84415b9c
+0|eveai    | [usage] input=15722 output=723 total=16445 cached=0 reasoning=52
+0|eveai    | [tool_search] paths: ["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id","eve_universe_geography","get_universe_constellations_constellation_id","get_universe_regions_region_id","get_universe_stargates_stargate_id","get_universe_systems_system_id"]
+0|eveai    | [calls] web_search
+0|eveai    | [executor] iter=2 tokens: in=15722 out=723 cached=0 reasoning=52
+0|eveai    | [executor] iteration=2 toolSearchPaths=["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id","eve_universe_geography","get_universe_constellations_constellation_id","get_universe_regions_region_id","get_universe_stargates_stargate_id","get_universe_systems_system_id"]
+0|eveai    | [web_search] query=Sinq Laison region total moons EVE Online
+0|eveai    | [web_search] ok=true results=5
+0|eveai    | [tool] web_search args={"query":"Sinq Laison region total moons EVE Online"} raw=1443 chars sent=1443 chars
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 221749 chars, 56 tools, 1 input items, prevId=resp_0e942aff664c2c460169c6ee0e95d48191a77b0105eead3893
+0|eveai    | [usage] input=14749 output=390 total=15139 cached=0 reasoning=27
+0|eveai    | [tool_search] paths: ["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id"]
+0|eveai    | [calls] web_search
+0|eveai    | [executor] iter=3 tokens: in=14749 out=390 cached=0 reasoning=27
+0|eveai    | [executor] iteration=3 toolSearchPaths=["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id"]
+0|eveai    | [web_search] query=site:evemaps.dotlan.net/region/Sinq_Laison/moons "Number of Moons"
+0|eveai    | [web_search] ok=false results=0
+0|eveai    | [tool] web_search args={"query":"site:evemaps.dotlan.net/region/Sinq_Laison/moons \"Number of Moons\""} raw=38 chars sent=38 chars
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 220264 chars, 56 tools, 1 input items, prevId=resp_0e20aba3e49f6cd50169c6ee210ca88191838f845731d3478b
+0|eveai    | [usage] input=16298 output=477 total=16775 cached=10624 reasoning=52
+0|eveai    | [tool_search] paths: ["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id","eve_universe_geography","get_universe_constellations_constellation_id","get_universe_regions_region_id","get_universe_stargates_stargate_id","get_universe_systems_system_id"]
+0|eveai    | [calls] web_search
+0|eveai    | [executor] iter=4 tokens: in=16298 out=477 cached=10624 reasoning=52
+0|eveai    | [executor] iteration=4 toolSearchPaths=["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id","eve_universe_geography","get_universe_constellations_constellation_id","get_universe_regions_region_id","get_universe_stargates_stargate_id","get_universe_systems_system_id"]
+0|eveai    | [web_search] blocked reason=Достигнут лимит web_search на один ответ. После 1-2 поисков нужно ответить по найденным данным или явно указать, чего не хватило. query=DOTLAN Sinq Laison moons total moons
+0|eveai    | [tool] web_search args={"query":"DOTLAN Sinq Laison moons total moons"} raw=180 chars sent=180 chars
+0|eveai    | [executor] anti-loop: web_search called 3 times consecutively, injecting nudge
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 220688 chars, 56 tools, 2 input items, prevId=resp_04567038cf0800010169c6ee2fba688191805922713e1f16cf
+0|eveai    | [usage] input=12585 output=178 total=12763 cached=0 reasoning=58
+0|eveai    | [calls] sde_sql
+0|eveai    | [executor] iter=5 tokens: in=12585 out=178 cached=0 reasoning=58
+0|eveai    | [tool] sde_sql args={"sql":"SELECT COUNT(*) AS moons\nFROM sde_types t\nJOIN sde_groups g ON g.group_id = t.group_id\nWHERE g.name = 'Moon'  raw=55 chars sent=55 chars
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 220285 chars, 56 tools, 1 input items, prevId=resp_069b3474b89e43420169c6ee3eb7888191ac0b0abf8b945402
+0|eveai    | [usage] input=15020 output=387 total=15407 cached=0 reasoning=27
+0|eveai    | [tool_search] paths: ["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id"]
+0|eveai    | [calls] sde_sql
+0|eveai    | [executor] iter=6 tokens: in=15020 out=387 cached=0 reasoning=27
+0|eveai    | [executor] iteration=6 toolSearchPaths=["eve_universe_celestials","get_universe_asteroid_belts_asteroid_belt_id","get_universe_moons_moon_id","get_universe_planets_planet_id","get_universe_stars_star_id","get_universe_stations_station_id","get_universe_structures","get_universe_structures_structure_id"]
+0|eveai    | [tool] sde_sql args={"sql":"SELECT system_id, name, substr(data_json,1,500) AS sample\nFROM sde_systems\nWHERE system_id = 30002659;"} raw=659 chars sent=659 chars
+0|eveai    | [api] POST http://127.0.0.1:8080/v1/responses — payload 221025 chars, 56 tools, 1 input items, prevId=resp_0686d84f4c4b020c0169c6ee44ff3c8191b38f14d7507366a5
+0|eveai    | [usage] input=13032 output=527 total=13559 cached=0 reasoning=379
+0|eveai    | [executor] iter=7 tokens: in=13032 out=527 cached=0 reasoning=379
+0|eveai    | [executor] === DONE (text) iterations=8 total_in=117389 total_out=3557 total_cached=10624 total_reasoning=699 answer=483 chars ===
+0|eveai    | [app] Shutting down...
+0|eveai    | 
+0|eveai    | > eve-agent@1.0.0 start
+0|eveai    | > node dist/app.js
+0|eveai    | 
+0|eveai    | [app] Starting EVE Agent...
+0|eveai    | [app] Database ready
+0|eveai    | [app] Bot username resolved: @Eveagentai_bot
+0|eveai    | [app] HTTP server listening on 127.0.0.1:8000
+0|eveai    | [app] Starting Telegram bot...
+0|eveai    | [app] Telegram bot started (long polling)
+

@@ -1,0 +1,25 @@
+Post-fix production reproduction on 2026-03-28 (server-local run against /opt/eveai with sourced .env).
+Commit on server: c5e99ee
+Context: user_id=3, chat_id=169244124, prompt='Сколько лун в моем регионе?'
+
+Observed runtime output:
+[executor] context: mode=cold items=1 prevId=none
+[executor] === NEW REQUEST chat=169244124 thread=2e9c1b31-f96 goal="Сколько лун в моем регионе?" ===
+[api] POST http://127.0.0.1:8080/v1/responses — payload 221511 chars, 57 tools, 1 input items, prevId=none
+[usage] input=8711 output=47 total=8758 cached=0 reasoning=17
+[calls] count_moons
+[executor] iter=0 tokens: in=8711 out=47 cached=0 reasoning=17
+[tool] count_moons args={"target_kind":"region","target_name":"Sinq Laison"} raw=139 chars sent=139 chars
+[api] POST http://127.0.0.1:8080/v1/responses — payload 221731 chars, 57 tools, 1 input items, prevId=resp_05b487ea94ed21bf0169c6f1487d908191a3b574db3829c9c1
+[usage] input=8792 output=39 total=8831 cached=0 reasoning=0
+[executor] iter=1 tokens: in=8792 out=39 cached=0 reasoning=0
+[executor] === DONE (text) iterations=2 total_in=17503 total_out=86 total_cached=0 total_reasoning=17 answer=100 chars ===
+REPRO_THREAD=2e9c1b31-f96c-4f25-816f-fd366f379545
+ELAPSED_MS=28532
+TOOL_COUNT=1
+TOOLS=count_moons
+ANSWER="В твоём регионе **Sinq Laison** — **4104 луны**.\n\nДополнительно:\n- систем: **107**\n- планет: **861**"
+
+Interpretation:
+- The post-fix path no longer hits web_search or exploratory SDE loops.
+- The remaining ~28.5s is dominated by two Responses round-trips, not by tool fan-out.
