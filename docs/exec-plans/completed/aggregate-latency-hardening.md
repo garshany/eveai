@@ -14,18 +14,21 @@ Eliminate the avoidable long-turn overhead for deterministic static aggregate co
   - how many systems in a region
   - how many constellations in a region
   - how many planets in a constellation or region
-  - how many stations or stargates in a system/constellation/region
+  - how many moons in the current constellation
+  - how many stations, asteroid belts, or stargates in a system/constellation/region
+  - bare-name and English phrasing such as `Сколько станций в Jita?`, `Количество систем в The Forge`, `How many systems are in The Forge?`
 
 ## Change
 
-- Added `count_universe_objects` as a deterministic local-SDE tool for systems, constellations, planets, moons, stations, and stargates across system/constellation/region scopes.
+- Added `count_universe_objects` as a deterministic local-SDE tool for systems, constellations, planets, moons, asteroid belts, stations, and stargates across system/constellation/region scopes.
 - Added a conservative static-aggregate goal detector that switches those turns onto a reduced toolset instead of the full ESI namespace catalog.
+- Tightened intent parsing so explicit scopes (`в системе Jita`), bare-name targets (`в Jita` / `in The Forge`), current-location aliases (`мой регион`, `current region`, `here`), and moon-in-constellation requests all stay inside the deterministic path.
 - Added server-side fast-finalization for simple deterministic count answers so the executor can return immediately after the count tool result without a second model turn.
 - Expanded prompt routing and reliability docs to keep these requests away from `tool_search`, `web_search`, and live ESI when local SDE is sufficient.
 
 ## Verification
 
-- `npm run test -- tests/unit/static-aggregate.test.ts tests/unit/moon-count.test.ts tests/unit/warm-cold-path.test.ts tests/unit/tools.test.ts tests/unit/sso.test.ts`
+- `npm run test -- tests/unit/static-aggregate.test.ts tests/unit/tools.test.ts tests/unit/prompts.test.ts tests/unit/warm-cold-path.test.ts`
 - `npm run typecheck`
 - `npm run lint`
 - `npm run build`

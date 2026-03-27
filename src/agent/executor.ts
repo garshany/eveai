@@ -282,8 +282,23 @@ export async function handleAgentMessage(
     }
   }
 
-  const liveContext = linked ? await fetchLiveContext(db, linked.characterId, ctx) : null;
+  const liveContextNeeds = deriveLiveContextNeeds(userText);
+  const liveContext = linked && (liveContextNeeds.location || liveContextNeeds.ship)
+    ? await fetchLiveContext(db, linked.characterId, ctx, liveContextNeeds)
+    : null;
+
+  const staticAggregateFastPath = tryHandleStaticAggregateFastPath(
+    db,
+    threadId,
+    userText,
+    liveContext?.location ?? null,
+  );
+  if (staticAggregateFastPath) {
+    return staticAggregateFastPath;
+  }
+
   const summary = getThreadSummary(db, threadId);
+  const promptMode = isSimpleStaticAggregateCountGoal(userText) ? 'static_aggregate' : 'full';
 
   const developerPrompt = buildDeveloperPrompt(
     {
@@ -294,52 +309,94 @@ export async function handleAgentMessage(
     },
     summary,
     userProfile,
-    liveContext,
+    liveContext?.summary ?? null,
+    promptMode,
   );
 
   return await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt);
 }
 
-async function fetchLiveContext(db: Db, characterId: number, ctx: UserContext): Promise<string | null> {
+type LiveContextNeeds = {
+  location: boolean;
+  ship: boolean;
+};
+
+type ShipContext = {
+  shipName: string;
+  shipTypeId: number;
+  shipTypeName: string;
+};
+
+type LiveContext = {
+  summary: string | null;
+  location: SystemLocationContext | null;
+  ship: ShipContext | null;
+};
+
+async function fetchLiveContext(
+  db: Db,
+  characterId: number,
+  ctx: UserContext,
+  needs: LiveContextNeeds,
+): Promise<LiveContext> {
   try {
     await getEveCapabilities(db, 'executor_live_context', ctx);
     const [locationResult, shipResult] = await Promise.all([
-      callEsiOperation<{ solar_system_id: number; station_id?: number; structure_id?: number }>(
-        db, 'get_characters_character_id_location', { character_id: characterId }, ctx,
-      ),
-      callEsiOperation<{ ship_type_id: number; ship_item_id: number; ship_name: string }>(
-        db, 'get_characters_character_id_ship', { character_id: characterId }, ctx,
-      ),
+      needs.location
+        ? callEsiOperation<{ solar_system_id: number; station_id?: number; structure_id?: number }>(
+            db, 'get_characters_character_id_location', { character_id: characterId }, ctx,
+          )
+        : Promise.resolve(null),
+      needs.ship
+        ? callEsiOperation<{ ship_type_id: number; ship_item_id: number; ship_name: string }>(
+            db, 'get_characters_character_id_ship', { character_id: characterId }, ctx,
+          )
+        : Promise.resolve(null),
     ]);
 
     const parts: string[] = [];
+    let locationContext: SystemLocationContext | null = null;
+    let shipContext: ShipContext | null = null;
 
-    if (locationResult.ok) {
+    if (locationResult?.ok) {
       const sysId = locationResult.data.solar_system_id;
-      const systemContext = resolveSystemLocationContext(db, sysId);
-      const sysName = systemContext?.systemName ?? `ID ${sysId}`;
-      const sec = systemContext?.security != null ? ` (sec ${Number(systemContext.security).toFixed(1)})` : '';
+      locationContext = resolveSystemLocationContext(db, sysId);
+      const sysName = locationContext?.systemName ?? `ID ${sysId}`;
+      const sec = locationContext?.security != null ? ` (sec ${Number(locationContext.security).toFixed(1)})` : '';
       parts.push(`Система: ${sysName}${sec}, system_id=${sysId}`);
-      if (systemContext?.constellationName) {
-        parts.push(`Созвездие: ${systemContext.constellationName}`);
+      if (locationContext?.constellationName) {
+        parts.push(`Созвездие: ${locationContext.constellationName}`);
       }
-      if (systemContext?.regionName) {
-        parts.push(`Регион: ${systemContext.regionName}`);
+      if (locationContext?.regionName) {
+        parts.push(`Регион: ${locationContext.regionName}`);
       }
       if (locationResult.data.station_id) parts.push(`Станция: station_id=${locationResult.data.station_id}`);
     }
 
-    if (shipResult.ok) {
+    if (shipResult?.ok) {
       const typeRow = db.prepare('SELECT name FROM sde_types WHERE type_id = ?').get(shipResult.data.ship_type_id) as { name: string } | undefined;
       const shipType = typeRow?.name ?? `type_id ${shipResult.data.ship_type_id}`;
+      shipContext = {
+        shipName: shipResult.data.ship_name,
+        shipTypeId: shipResult.data.ship_type_id,
+        shipTypeName: shipType,
+      };
       parts.push(`Корабль: ${shipResult.data.ship_name} (${shipType}), type_id=${shipResult.data.ship_type_id}`);
     }
 
-    return parts.length > 0 ? parts.join('\n') : null;
+    return {
+      summary: parts.length > 0 ? parts.join('\n') : null,
+      location: locationContext,
+      ship: shipContext,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn('[executor] live context unavailable: %s', message);
-    return null;
+    return {
+      summary: null,
+      location: null,
+      ship: null,
+    };
   }
 }
 
@@ -1098,33 +1155,180 @@ function shouldUseToolStateRecovery(
 }
 
 type StaticAggregateObjectKind = 'constellations' | 'systems' | 'planets' | 'moons' | 'asteroid_belts' | 'stations' | 'stargates';
+type StaticAggregateTargetKind = 'system' | 'constellation' | 'region';
+
+type StaticAggregateIntent = {
+  objectKind: StaticAggregateObjectKind;
+  targetKind: StaticAggregateTargetKind;
+  targetName: string;
+};
+
+export function deriveLiveContextNeeds(goal: string): LiveContextNeeds {
+  const normalized = goal.toLowerCase();
+  const ship = /(мой корабль|мой шип|на чем я|на чём я|какой у меня корабль|какой у меня шип|my ship|what ship|летаю)/u.test(normalized);
+  const location = ship
+    || /\b(где я|мой регион|моя система|мо[её] созвездие|my region|my system|my constellation|current region|current system|current constellation|отсюда|from here|here|здесь)\b/u.test(normalized)
+    || /\b(маршрут|route|автопилот|autopilot)\b/u.test(normalized)
+    || /в мо[её]м регионе/u.test(normalized)
+    || /в мо[её]й системе/u.test(normalized)
+    || /в мо[её]м созвездии/u.test(normalized)
+    || /в текущ(?:ем|ей)\s+(?:регионе|системе|созвездии)/u.test(normalized);
+
+  return { location, ship };
+}
 
 function isSimpleStaticAggregateCountGoal(goal: string): boolean {
   return detectStaticAggregateObjectKind(goal) !== null;
 }
 
+function extractStaticAggregateObjectScope(normalized: string): string {
+  return normalized
+    .replace(/^(?:сколько|посчитай|подсчитай|количеств[оа]|how many|count|number of)\s+/u, '')
+    .replace(/\s+(?:are\s+)?(?:в|in)\s+.+$/u, '')
+    .trim();
+}
+
 function detectStaticAggregateObjectKind(goal: string): StaticAggregateObjectKind | null {
   const normalized = goal.toLowerCase();
-  if (!/(сколько|посчитай|подсчитай|how many|count)/u.test(normalized)) {
+  if (!/(сколько|посчитай|подсчитай|количеств[оа]|how many|count|number of)/u.test(normalized)) {
     return null;
   }
-  if (/\b(какие|какая|какой|где|почему|зачем|how|which|why|where|market|price|route|маршрут|цена|ордер|рынок)\b/u.test(normalized)) {
+  const objectScope = extractStaticAggregateObjectScope(normalized);
+  if (!objectScope) return null;
+  if (/\b(какие|какая|какой|где|почему|зачем|how|which|why|where|market|price|route|маршрут|цена|ордер|рынок)\b/u.test(objectScope)) {
     return null;
   }
-  if (/\sи\s/u.test(normalized)) {
+  if (/\sи\s/u.test(objectScope)) {
     return null;
   }
 
   const matches: StaticAggregateObjectKind[] = [];
-  if (/созвезд/u.test(normalized) || /\bconstellation(s)?\b/u.test(normalized)) matches.push('constellations');
-  if (/систем/u.test(normalized) || /\bsystem(s)?\b/u.test(normalized)) matches.push('systems');
-  if (/планет/u.test(normalized) || /\bplanet(s)?\b/u.test(normalized)) matches.push('planets');
-  if (/лун/u.test(normalized) || /\bmoon(s)?\b/u.test(normalized)) matches.push('moons');
-  if (/астероидн(?:ый|ых)?\s+пояс/u.test(normalized) || /\basteroid belt(s)?\b/u.test(normalized)) matches.push('asteroid_belts');
-  if (/станци/u.test(normalized) || /\bstation(s)?\b/u.test(normalized)) matches.push('stations');
-  if (/врат/u.test(normalized) || /\bstargate(s)?\b/u.test(normalized)) matches.push('stargates');
+  if (/созвезд/u.test(objectScope) || /\bconstellation(s)?\b/u.test(objectScope)) matches.push('constellations');
+  if (/систем/u.test(objectScope) || /\bsystem(s)?\b/u.test(objectScope)) matches.push('systems');
+  if (/планет/u.test(objectScope) || /\bplanet(s)?\b/u.test(objectScope)) matches.push('planets');
+  if (/лун/u.test(objectScope) || /\bmoon(s)?\b/u.test(objectScope)) matches.push('moons');
+  if (/астероидн(?:ый|ых)?\s+пояс/u.test(objectScope) || /\basteroid belt(s)?\b/u.test(objectScope)) matches.push('asteroid_belts');
+  if (/станци/u.test(objectScope) || /\bstation(s)?\b/u.test(objectScope)) matches.push('stations');
+  if (/врат/u.test(objectScope) || /\bstargate(s)?\b/u.test(objectScope)) matches.push('stargates');
 
   return matches.length === 1 ? matches[0] : null;
+}
+
+function normalizeStaticAggregateTargetName(value: string): string {
+  return value
+    .trim()
+    .replace(/^[«"'`]+/u, '')
+    .replace(/[»"'`?!.,:;]+$/u, '')
+    .trim();
+}
+
+function resolveBareStaticAggregateTarget(
+  db: Db,
+  objectKind: StaticAggregateObjectKind,
+  targetName: string,
+): { targetKind: StaticAggregateTargetKind; targetName: string } | null {
+  const canonicalName = normalizeStaticAggregateTargetName(targetName);
+  if (!canonicalName) return null;
+
+  const candidateKinds: StaticAggregateTargetKind[] = objectKind === 'constellations'
+    ? ['region']
+    : objectKind === 'systems'
+      ? ['constellation', 'region']
+      : ['system', 'constellation', 'region'];
+
+  for (const targetKind of candidateKinds) {
+    if (targetKind === 'system') {
+      const row = db.prepare('SELECT name FROM sde_systems WHERE name = ? COLLATE NOCASE LIMIT 1')
+        .get(canonicalName) as { name: string } | undefined;
+      if (row) return { targetKind, targetName: row.name };
+      continue;
+    }
+    if (targetKind === 'constellation') {
+      const row = db.prepare('SELECT name FROM sde_constellations WHERE name = ? COLLATE NOCASE LIMIT 1')
+        .get(canonicalName) as { name: string } | undefined;
+      if (row) return { targetKind, targetName: row.name };
+      continue;
+    }
+    const row = db.prepare('SELECT name FROM sde_regions WHERE name = ? COLLATE NOCASE LIMIT 1')
+      .get(canonicalName) as { name: string } | undefined;
+    if (row) return { targetKind, targetName: row.name };
+  }
+
+  return null;
+}
+
+function parseStaticAggregateIntent(
+  db: Db,
+  goal: string,
+  locationContext: SystemLocationContext | null,
+): StaticAggregateIntent | null {
+  const objectKind = detectStaticAggregateObjectKind(goal);
+  if (!objectKind) return null;
+
+  const normalized = goal.toLowerCase();
+  if (/в мо[её]м регионе/u.test(normalized) && locationContext?.regionName) {
+    return { objectKind, targetKind: 'region', targetName: locationContext.regionName };
+  }
+  if (/в мо[её]й системе/u.test(normalized) && locationContext?.systemName) {
+    return { objectKind, targetKind: 'system', targetName: locationContext.systemName };
+  }
+  if (/в мо[её]м созвездии/u.test(normalized) && locationContext?.constellationName) {
+    return { objectKind, targetKind: 'constellation', targetName: locationContext.constellationName };
+  }
+  if (/\b(current region|текущ(?:ем|ий)\s+регион(?:е)?)\b/u.test(normalized) && locationContext?.regionName) {
+    return { objectKind, targetKind: 'region', targetName: locationContext.regionName };
+  }
+  if (/\b(current system|текущ(?:ей|ая)\s+систем(?:е|а)|here|здесь)\b/u.test(normalized) && locationContext?.systemName) {
+    return { objectKind, targetKind: 'system', targetName: locationContext.systemName };
+  }
+  if (/\b(current constellation|текущ(?:ем|ее)\s+созвездии)\b/u.test(normalized) && locationContext?.constellationName) {
+    return { objectKind, targetKind: 'constellation', targetName: locationContext.constellationName };
+  }
+
+  const regionMatch = /(?:^|\s)в\s+регионе?\s+(.+)$/iu.exec(goal);
+  if (regionMatch) {
+    const targetName = normalizeStaticAggregateTargetName(regionMatch[1]);
+    if (targetName) return { objectKind, targetKind: 'region', targetName };
+  }
+  const regionMatchEn = /(?:^|\s)in\s+region\s+(.+)$/iu.exec(goal);
+  if (regionMatchEn) {
+    const targetName = normalizeStaticAggregateTargetName(regionMatchEn[1]);
+    if (targetName) return { objectKind, targetKind: 'region', targetName };
+  }
+
+  const systemMatch = /(?:^|\s)в\s+систем[еуы]?\s+(.+)$/iu.exec(goal);
+  if (systemMatch) {
+    const targetName = normalizeStaticAggregateTargetName(systemMatch[1]);
+    if (targetName) return { objectKind, targetKind: 'system', targetName };
+  }
+  const systemMatchEn = /(?:^|\s)in\s+system\s+(.+)$/iu.exec(goal);
+  if (systemMatchEn) {
+    const targetName = normalizeStaticAggregateTargetName(systemMatchEn[1]);
+    if (targetName) return { objectKind, targetKind: 'system', targetName };
+  }
+
+  const constellationMatch = /(?:^|\s)в\s+созвездии\s+(.+)$/iu.exec(goal);
+  if (constellationMatch) {
+    const targetName = normalizeStaticAggregateTargetName(constellationMatch[1]);
+    if (targetName) return { objectKind, targetKind: 'constellation', targetName };
+  }
+  const constellationMatchEn = /(?:^|\s)in\s+constellation\s+(.+)$/iu.exec(goal);
+  if (constellationMatchEn) {
+    const targetName = normalizeStaticAggregateTargetName(constellationMatchEn[1]);
+    if (targetName) return { objectKind, targetKind: 'constellation', targetName };
+  }
+
+  const bareTargetMatch = /(?:^|\s)в\s+(.+)$/iu.exec(goal);
+  const targetFragment = bareTargetMatch?.[1] ?? /\bin\s+(.+)$/iu.exec(goal)?.[1];
+  if (!targetFragment) return null;
+  const resolvedTarget = resolveBareStaticAggregateTarget(db, objectKind, targetFragment);
+  if (!resolvedTarget) return null;
+
+  return {
+    objectKind,
+    targetKind: resolvedTarget.targetKind,
+    targetName: resolvedTarget.targetName,
+  };
 }
 
 type DeterministicCountToolCall = { name: string };
@@ -1135,18 +1339,55 @@ function tryBuildDeterministicCountAnswer(
   results: unknown[],
 ): string | null {
   if (!isSimpleStaticAggregateCountGoal(goal)) return null;
-  if (toolCalls.length !== 1 || results.length !== 1) return null;
+  if (toolCalls.length !== results.length) return null;
 
-  const toolName = toolCalls[0].name;
-  const result = results[0];
-
-  if (toolName === 'count_moons') {
-    return formatMoonCountAnswer(result);
-  }
-  if (toolName === 'count_universe_objects') {
-    return formatUniverseCountAnswer(result);
+  for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+    const toolName = toolCalls[index].name;
+    const result = results[index];
+    if (toolName === 'count_moons') {
+      const answer = formatMoonCountAnswer(result);
+      if (answer) return answer;
+      continue;
+    }
+    if (toolName === 'count_universe_objects') {
+      const answer = formatUniverseCountAnswer(result);
+      if (answer) return answer;
+    }
   }
   return null;
+}
+
+function tryHandleStaticAggregateFastPath(
+  db: Db,
+  threadId: string,
+  goal: string,
+  locationContext: SystemLocationContext | null,
+): string | null {
+  const intent = parseStaticAggregateIntent(db, goal, locationContext);
+  if (!intent) return null;
+
+  const result = intent.objectKind === 'moons'
+    && (intent.targetKind === 'system' || intent.targetKind === 'region')
+    ? executeMoonCount(db, {
+        target_kind: intent.targetKind,
+        target_name: intent.targetName,
+      })
+    : executeUniverseObjectCount(db, {
+        target_kind: intent.targetKind,
+        target_name: intent.targetName,
+        object_kind: intent.objectKind,
+      });
+
+  const answer = intent.objectKind === 'moons' && (intent.targetKind === 'system' || intent.targetKind === 'region')
+    ? formatMoonCountAnswer(result)
+    : formatUniverseCountAnswer(result);
+  if (!answer) return null;
+
+  storeAssistantMessage(db, threadId, answer);
+  saveLastResponseId(db, threadId, null);
+  console.log('[executor] === DONE (static-aggregate-fast-path) object=%s target=%s:%s answer=%d chars ===',
+    intent.objectKind, intent.targetKind, intent.targetName, answer.length);
+  return answer;
 }
 
 function formatMoonCountAnswer(result: unknown): string | null {
@@ -1282,12 +1523,15 @@ export const __test__ = {
   buildSmartContext,
   buildToolStateRecoveryContext,
   buildRecentToolSummaryMessage,
+  deriveLiveContextNeeds,
   resolveSystemLocationContext,
   shouldRecoverFromToolStateMismatch,
   shouldUseToolStateRecovery,
   isSimpleStaticAggregateCountGoal,
   detectStaticAggregateObjectKind,
+  parseStaticAggregateIntent,
   tryBuildDeterministicCountAnswer,
+  tryHandleStaticAggregateFastPath,
   formatCountNoun,
   planConversationContinuation,
   isRecentSqliteTimestamp,

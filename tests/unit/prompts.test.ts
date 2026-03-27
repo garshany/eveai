@@ -31,7 +31,7 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('Персонаж не привязан');
     expect(prompt).toContain('EFT');
     expect(prompt).toContain('ломают импорт');
-    expect(prompt.length).toBeLessThan(10500);
+    expect(prompt.length).toBeLessThan(12000);
   });
 
   it('appends profile and summary when provided', () => {
@@ -67,5 +67,25 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('Регион: The Forge');
     expect(prompt).toContain('мой регион');
     expect(prompt).not.toContain('Персонаж не привязан');
+  });
+
+  it('builds a compact static-aggregate prompt mode', () => {
+    const prompt = buildDeveloperPrompt({
+      authenticated: true,
+      characterId: 12345,
+      characterName: 'TestPilot',
+      grantedScopes: ['esi-location.read_location.v1'],
+    }, 'summary text', 'profile text', 'Система: Jita\nРегион: The Forge', 'static_aggregate');
+
+    expect(prompt).toContain('только простой статический aggregate-вопрос');
+    expect(prompt).toContain('count_universe_objects');
+    expect(prompt).toContain('Не используй tool_search');
+    expect(prompt).toContain('current region/system/constellation');
+    expect(prompt).toContain('количество лун в моем созвездии');
+    expect(prompt).not.toContain('batch_market_prices');
+    expect(prompt).not.toContain('EFT');
+    expect(prompt).not.toContain('<user_profile_data>');
+    expect(prompt).not.toContain('<memory_summary>');
+    expect(prompt.length).toBeLessThan(2500);
   });
 });

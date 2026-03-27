@@ -94,7 +94,12 @@ describe('agent tools', () => {
     expect(functionNames).toContain('count_moons');
     expect(functionNames).toContain('count_universe_objects');
     expect(functionNames).toContain('sde_sql');
+    expect(functionNames).not.toContain('web_search');
+    expect(functionNames).not.toContain('update_plan');
+    expect(functionNames).not.toContain('get_eve_capabilities');
+    expect(functionNames).not.toContain('plan_route');
     expect(functionNames).not.toContain('batch_market_prices');
+    expect(tools.some((tool) => tool.type === 'tool_search')).toBe(false);
     expect(tools.some((tool) => tool.type === 'namespace')).toBe(false);
   });
 });

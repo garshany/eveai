@@ -14,7 +14,7 @@
 - Telegram request handling dedupes identical in-flight requests per chat/thread
 - Telegram ingress rejects overlapping agent turns in the same chat, rate-limits recent requests per actor, and caps global in-process concurrency
 - static moon-count questions use a deterministic local-SDE path (`count_moons` / `mapPlanets`) instead of exploratory web or live-ESI loops
-- simple static aggregate count questions (systems, constellations, planets, moons, stations, stargates) use a reduced static toolset plus deterministic local-SDE counters instead of the full ESI namespace catalog
+- simple static aggregate count questions (systems, constellations, planets, moons, asteroid belts, stations, stargates) use a reduced static toolset plus deterministic local-SDE counters instead of the full ESI namespace catalog
 - when a deterministic static count tool fully answers the user request, the executor finalizes the reply server-side and skips the extra model round-trip
 
 ## Failure Model
@@ -24,7 +24,7 @@
 - if the stored `previous_response_id` is stale, missing, or no longer trustworthy, the agent falls back to local history instead of assuming proxy-side continuity
 - if a `function_call_output` no longer matches proxy-side tool state, the agent drops warm continuation and retries from local recovery context instead of surfacing the raw call-id mismatch to the user
 - if stored EVE secrets no longer decrypt under the current auth key, private requests fail closed as "relink required" instead of crashing the request handler
-- if a user asks a simple static geography count question, the runtime should stay within local SDE-backed tools; drifting into `web_search`, `tool_search`, or live ESI is treated as a routing failure
+- if a user asks a simple static geography count question, including current-location aliases like "мой регион", "current region", or "here", the runtime should stay within local SDE-backed tools; drifting into `web_search`, `tool_search`, or live ESI is treated as a routing failure
 - if ESI pagination changes during collection, the request fails instead of silently truncating
 - if required auth state expires, callback flows fail closed
 - if Telegram ingress exceeds the configured recent-rate or global active ceiling, the request is rejected early with a retry-later message instead of consuming more model or ESI capacity

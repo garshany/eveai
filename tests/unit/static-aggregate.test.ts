@@ -65,9 +65,9 @@ beforeEach(() => {
     INSERT INTO sde_raw_records (dataset_name, record_id, name, data_json)
     VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)
   `).run(
-    'mapPlanets', '40000001', 'Jita I', JSON.stringify({ solarSystemID: 30000142, moonIDs: [1, 2] }),
-    'mapPlanets', '40000002', 'Jita II', JSON.stringify({ solarSystemID: 30000142, moonIDs: [3] }),
-    'mapPlanets', '40000003', 'Perimeter I', JSON.stringify({ solarSystemID: 30000144, moonIDs: [] }),
+    'mapPlanets', '40000001', 'Jita I', JSON.stringify({ solarSystemID: 30000142, moonIDs: [1, 2], asteroidBeltIDs: [10] }),
+    'mapPlanets', '40000002', 'Jita II', JSON.stringify({ solarSystemID: 30000142, moonIDs: [3], asteroidBeltIDs: [11, 12] }),
+    'mapPlanets', '40000003', 'Perimeter I', JSON.stringify({ solarSystemID: 30000144, moonIDs: [], asteroidBeltIDs: [] }),
   );
 });
 
@@ -123,15 +123,98 @@ describe('executeUniverseObjectCount', () => {
       count: 1,
     });
   });
+
+  it('counts asteroid belts inside a system', async () => {
+    const { executeUniverseObjectCount } = await import('../../src/agent/tools.js');
+
+    expect(executeUniverseObjectCount(db as never, {
+      target_kind: 'system',
+      target_name: 'Jita',
+      object_kind: 'asteroid_belts',
+    })).toMatchObject({
+      ok: true,
+      target_kind: 'system',
+      target_name: 'Jita',
+      object_kind: 'asteroid_belts',
+      count: 3,
+    });
+  });
 });
 
 describe('static aggregate helpers', () => {
+  it('derives live-context needs only for current-state questions', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+
+    expect(__test__.deriveLiveContextNeeds('Сколько систем в регионе The Forge?')).toEqual({
+      location: false,
+      ship: false,
+    });
+    expect(__test__.deriveLiveContextNeeds('Сколько систем в моем регионе?')).toEqual({
+      location: true,
+      ship: false,
+    });
+    expect(__test__.deriveLiveContextNeeds('How many moons here?')).toEqual({
+      location: true,
+      ship: false,
+    });
+    expect(__test__.deriveLiveContextNeeds('На чем я сейчас летаю?')).toEqual({
+      location: true,
+      ship: true,
+    });
+  });
+
   it('detects simple static aggregate count goals', async () => {
     const { __test__ } = await import('../../src/agent/executor.js');
 
     expect(__test__.detectStaticAggregateObjectKind('Сколько систем в моем регионе?')).toBe('systems');
+    expect(__test__.detectStaticAggregateObjectKind('Сколько астероидных поясов в Jita?')).toBe('asteroid_belts');
+    expect(__test__.detectStaticAggregateObjectKind('Количество систем в The Forge')).toBe('systems');
     expect(__test__.detectStaticAggregateObjectKind('Сколько лун и какие хабы в регионе?')).toBeNull();
     expect(__test__.isSimpleStaticAggregateCountGoal('Сколько станций в Jita?')).toBe(true);
+  });
+
+  it('parses current-location and explicit static aggregate intents', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+
+    expect(__test__.parseStaticAggregateIntent(db as never, 'Сколько систем в моем регионе?', {
+      systemName: 'Jita',
+      security: 0.9,
+      constellationName: 'Kimotoro',
+      regionName: 'The Forge',
+    })).toEqual({
+      objectKind: 'systems',
+      targetKind: 'region',
+      targetName: 'The Forge',
+    });
+
+    expect(__test__.parseStaticAggregateIntent(db as never, 'Сколько станций в системе Jita?', null)).toEqual({
+      objectKind: 'stations',
+      targetKind: 'system',
+      targetName: 'Jita',
+    });
+
+    expect(__test__.parseStaticAggregateIntent(db as never, 'Сколько систем в The Forge?', null)).toEqual({
+      objectKind: 'systems',
+      targetKind: 'region',
+      targetName: 'The Forge',
+    });
+
+    expect(__test__.parseStaticAggregateIntent(db as never, 'How many systems are in The Forge?', null)).toEqual({
+      objectKind: 'systems',
+      targetKind: 'region',
+      targetName: 'The Forge',
+    });
+
+    expect(__test__.parseStaticAggregateIntent(db as never, 'Сколько лун в моем созвездии?', {
+      systemName: 'Jita',
+      security: 0.9,
+      constellationName: 'Kimotoro',
+      regionName: 'The Forge',
+    })).toEqual({
+      objectKind: 'moons',
+      targetKind: 'constellation',
+      targetName: 'Kimotoro',
+    });
   });
 
   it('formats a deterministic answer without a second model turn', async () => {
@@ -161,5 +244,78 @@ describe('static aggregate helpers', () => {
         planet_count: 3,
       }],
     )).toContain('В регионе **The Forge** — **3 луны**.');
+
+    expect(__test__.tryBuildDeterministicCountAnswer(
+      'Сколько астероидных поясов в Jita?',
+      [{ name: 'count_universe_objects' }],
+      [{
+        ok: true,
+        target_kind: 'system',
+        target_name: 'Jita',
+        object_kind: 'asteroid_belts',
+        count: 3,
+      }],
+    )).toBe('В системе **Jita** — **3 астероидных пояса**.');
+  });
+
+  it('can answer a current-region aggregate question before entering the model loop', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(1);
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)").run('t1', 1);
+
+    const answer = __test__.tryHandleStaticAggregateFastPath(
+      db as never,
+      't1',
+      'Сколько систем в моем регионе?',
+      {
+        systemName: 'Jita',
+        security: 0.9,
+        constellationName: 'Kimotoro',
+        regionName: 'The Forge',
+      },
+    );
+
+    expect(answer).toBe('В регионе **The Forge** — **2 системы**.');
+    const stored = db.prepare("SELECT role, content FROM messages WHERE thread_id = ? ORDER BY id ASC").all('t1') as Array<{ role: string; content: string }>;
+    expect(stored.at(-1)).toEqual({ role: 'assistant', content: 'В регионе **The Forge** — **2 системы**.' });
+  });
+
+  it('can answer a bare-name aggregate question before entering the model loop', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(2);
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)").run('t2', 2);
+
+    const answer = __test__.tryHandleStaticAggregateFastPath(
+      db as never,
+      't2',
+      'Сколько станций в Jita?',
+      null,
+    );
+
+    expect(answer).toBe('В системе **Jita** — **1 станция**.');
+    const stored = db.prepare("SELECT role, content FROM messages WHERE thread_id = ? ORDER BY id ASC").all('t2') as Array<{ role: string; content: string }>;
+    expect(stored.at(-1)).toEqual({ role: 'assistant', content: 'В системе **Jita** — **1 станция**.' });
+  });
+
+  it('can answer a current-constellation moon question before entering the model loop', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(3);
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)").run('t3', 3);
+
+    const answer = __test__.tryHandleStaticAggregateFastPath(
+      db as never,
+      't3',
+      'Сколько лун в моем созвездии?',
+      {
+        systemName: 'Jita',
+        security: 0.9,
+        constellationName: 'Kimotoro',
+        regionName: 'The Forge',
+      },
+    );
+
+    expect(answer).toBe('В созвездии **Kimotoro** — **3 луны**.');
+    const stored = db.prepare("SELECT role, content FROM messages WHERE thread_id = ? ORDER BY id ASC").all('t3') as Array<{ role: string; content: string }>;
+    expect(stored.at(-1)).toEqual({ role: 'assistant', content: 'В созвездии **Kimotoro** — **3 луны**.' });
   });
 });
