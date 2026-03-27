@@ -100,8 +100,9 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 2. grammY middleware validates access and session context.
 3. The handler resolves user/chat identity and active character.
 4. The agent runtime chooses a warm or cold context path: it reuses a fresh `last_response_id` as `previous_response_id` for warm turns, or rebuilds context from SQLite history for cold starts.
-5. The model runs through hosted `tool_search` and deferred tools.
-6. Tool calls and final messages are written back to SQLite.
+5. When a linked character has fresh private location access, the developer prompt also carries current live location context resolved as system plus constellation and region via local SDE.
+6. The model runs through hosted `tool_search` and deferred tools.
+7. Tool calls and final messages are written back to SQLite.
 
 ### Web Auth Flow
 

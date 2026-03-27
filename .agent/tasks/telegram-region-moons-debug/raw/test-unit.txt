@@ -1,0 +1,15 @@
+
+> eve-agent@1.0.0 test
+> vitest run tests/unit/warm-cold-path.test.ts tests/unit/prompts.test.ts
+
+
+ RUN  v3.2.4 /home/antipedik/eveai
+
+ ✓ tests/unit/prompts.test.ts (3 tests) 2ms
+ ✓ tests/unit/warm-cold-path.test.ts (11 tests) 174ms
+
+ Test Files  2 passed (2)
+      Tests  14 passed (14)
+   Start at  23:46:16
+   Duration  393ms (transform 200ms, setup 0ms, collect 104ms, tests 176ms, environment 0ms, prepare 100ms)
+

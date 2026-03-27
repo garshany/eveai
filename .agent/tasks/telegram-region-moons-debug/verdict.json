@@ -1,0 +1,42 @@
+{
+  "task_id": "telegram-region-moons-debug",
+  "overall_verdict": "PASS",
+  "criteria": [
+    {
+      "id": "AC1",
+      "status": "PASS",
+      "reason": "Executor live context now includes current region derived from local SDE, and prompt guidance explicitly covers current-location phrasing."
+    },
+    {
+      "id": "AC2",
+      "status": "PASS",
+      "reason": "The change keeps private ESI behind the existing capability-gated path and still fails closed to null for live-context fetch failures."
+    },
+    {
+      "id": "AC3",
+      "status": "PASS",
+      "reason": "Targeted regression tests for region-resolution and prompt behavior pass, along with typecheck, lint, and build."
+    },
+    {
+      "id": "AC4",
+      "status": "PASS",
+      "reason": "Evidence captures the production server findings and clearly separates proxy/API behavior from app-side live-context behavior and unrelated decrypt failures."
+    }
+  ],
+  "commands_run": [
+    "npm run test -- tests/unit/warm-cold-path.test.ts tests/unit/prompts.test.ts",
+    "npm run typecheck",
+    "npm run lint",
+    "npm run build"
+  ],
+  "artifacts_used": [
+    ".agent/tasks/telegram-region-moons-debug/evidence.md",
+    ".agent/tasks/telegram-region-moons-debug/evidence.json",
+    ".agent/tasks/telegram-region-moons-debug/raw/build.txt",
+    ".agent/tasks/telegram-region-moons-debug/raw/lint.txt",
+    ".agent/tasks/telegram-region-moons-debug/raw/server-findings.txt",
+    ".agent/tasks/telegram-region-moons-debug/raw/test-integration.txt",
+    ".agent/tasks/telegram-region-moons-debug/raw/test-unit.txt",
+    ".agent/tasks/telegram-region-moons-debug/raw/typecheck.txt"
+  ]
+}

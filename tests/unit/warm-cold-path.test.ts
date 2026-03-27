@@ -189,6 +189,41 @@ describe('warm/cold path DB operations', () => {
     expect(JSON.stringify(items[3])).toContain('Proxy-side tool state was lost');
   });
 
+  it('resolves system live context through constellation and region', async () => {
+    db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(1);
+    db.prepare(`
+      INSERT INTO sde_regions (region_id, name, data_json)
+      VALUES (?, ?, ?)
+    `).run(10000002, 'The Forge', JSON.stringify({ region_id: 10000002, name: 'The Forge' }));
+    db.prepare(`
+      INSERT INTO sde_constellations (constellation_id, name, region_id, data_json)
+      VALUES (?, ?, ?, ?)
+    `).run(20000020, 'Kimotoro', 10000002, JSON.stringify({
+      constellation_id: 20000020,
+      name: 'Kimotoro',
+      region_id: 10000002,
+    }));
+    db.prepare(`
+      INSERT INTO sde_systems (system_id, name, constellation_id, data_json)
+      VALUES (?, ?, ?, ?)
+    `).run(30000142, 'Jita', 20000020, JSON.stringify({
+      system_id: 30000142,
+      name: 'Jita',
+      constellation_id: 20000020,
+      security: 0.9,
+    }));
+
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const context = __test__.resolveSystemLocationContext(db as never, 30000142);
+
+    expect(context).toEqual({
+      systemName: 'Jita',
+      security: 0.9,
+      constellationName: 'Kimotoro',
+      regionName: 'The Forge',
+    });
+  });
+
   it('detects recoverable tool-state mismatch only for function_call outputs', async () => {
     const { __test__ } = await import('../../src/agent/executor.js');
 

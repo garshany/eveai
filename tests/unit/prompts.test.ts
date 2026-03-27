@@ -59,11 +59,13 @@ describe('buildDeveloperPrompt', () => {
       characterId: 12345,
       characterName: 'TestPilot',
       grantedScopes: ['esi-skills.read_skills.v1'],
-    });
+    }, undefined, undefined, 'Система: Jita\nРегион: The Forge');
 
     expect(prompt).toContain('TestPilot');
     expect(prompt).toContain('character_id=12345');
     expect(prompt).toContain('esi-skills.read_skills.v1');
+    expect(prompt).toContain('Регион: The Forge');
+    expect(prompt).toContain('мой регион');
     expect(prompt).not.toContain('Персонаж не привязан');
   });
 });

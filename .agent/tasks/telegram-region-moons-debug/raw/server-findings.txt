@@ -1,0 +1,25 @@
+Server: 144.31.223.134
+Investigated on: 2026-03-27
+
+Key observations
+- Production checkout path: /opt/eveai
+- Running process manager: PM2
+- Running app checkout: 3edf5057418e92bfb28c1d5647a8400e237185ec
+- Local repository after user-requested checkpoint push: 2b3a45d on master
+- OPENAI_BASE_URL on server: http://127.0.0.1:8080/v1
+
+Production-path findings
+- PM2 error log contains recovered proxy-side tool-state loss:
+  Error: No tool call found for function call output with call_id ...
+  followed by:
+  [executor] tool state lost, switching to cold recovery context ...
+- PM2 error log also contains private ESI decrypt failures:
+  Error: Unsupported state or unable to authenticate data
+- Manual server reproduction with correct linked user context succeeded through proxy and tool loop, but the old code did not expose current region explicitly enough to the model.
+
+Relevant manual checks
+- `pm2 ls`
+- `pm2 logs --lines 120 --nostream`
+- `git rev-parse HEAD` inside /opt/eveai
+- `node --input-type=module` reproduction via `handleAgentMessage(...)`
+- `node --input-type=module` checks for `getEveCapabilities(...)` and `callEsiOperation('get_characters_character_id_location', ...)`

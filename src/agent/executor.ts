@@ -312,12 +312,16 @@ async function fetchLiveContext(db: Db, characterId: number, ctx: UserContext): 
 
     if (locationResult.ok) {
       const sysId = locationResult.data.solar_system_id;
-      const sysRow = db.prepare(
-        "SELECT name, json_extract(data_json, '$.security') as sec FROM sde_systems WHERE system_id = ?"
-      ).get(sysId) as { name: string; sec: number } | undefined;
-      const sysName = sysRow?.name ?? `ID ${sysId}`;
-      const sec = sysRow?.sec != null ? ` (sec ${Number(sysRow.sec).toFixed(1)})` : '';
+      const systemContext = resolveSystemLocationContext(db, sysId);
+      const sysName = systemContext?.systemName ?? `ID ${sysId}`;
+      const sec = systemContext?.security != null ? ` (sec ${Number(systemContext.security).toFixed(1)})` : '';
       parts.push(`Система: ${sysName}${sec}, system_id=${sysId}`);
+      if (systemContext?.constellationName) {
+        parts.push(`Созвездие: ${systemContext.constellationName}`);
+      }
+      if (systemContext?.regionName) {
+        parts.push(`Регион: ${systemContext.regionName}`);
+      }
       if (locationResult.data.station_id) parts.push(`Станция: station_id=${locationResult.data.station_id}`);
     }
 
@@ -328,9 +332,45 @@ async function fetchLiveContext(db: Db, characterId: number, ctx: UserContext): 
     }
 
     return parts.length > 0 ? parts.join('\n') : null;
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn('[executor] live context unavailable: %s', message);
     return null;
   }
+}
+
+type SystemLocationContext = {
+  systemName: string;
+  security: number | null;
+  constellationName: string | null;
+  regionName: string | null;
+};
+
+function resolveSystemLocationContext(db: Db, systemId: number): SystemLocationContext | null {
+  const row = db.prepare(`
+    SELECT
+      s.name AS system_name,
+      json_extract(s.data_json, '$.security') AS security,
+      c.name AS constellation_name,
+      r.name AS region_name
+    FROM sde_systems s
+    LEFT JOIN sde_constellations c ON c.constellation_id = s.constellation_id
+    LEFT JOIN sde_regions r ON r.region_id = c.region_id
+    WHERE s.system_id = ?
+  `).get(systemId) as {
+    system_name: string;
+    security: number | null;
+    constellation_name: string | null;
+    region_name: string | null;
+  } | undefined;
+
+  if (!row) return null;
+  return {
+    systemName: row.system_name,
+    security: row.security == null ? null : Number(row.security),
+    constellationName: row.constellation_name,
+    regionName: row.region_name,
+  };
 }
 
 async function runNativeAgentLoop(
@@ -1071,6 +1111,7 @@ export const __test__ = {
   buildSmartContext,
   buildToolStateRecoveryContext,
   buildRecentToolSummaryMessage,
+  resolveSystemLocationContext,
   shouldRecoverFromToolStateMismatch,
   planConversationContinuation,
   isRecentSqliteTimestamp,
