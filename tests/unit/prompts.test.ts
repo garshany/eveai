@@ -19,6 +19,9 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('ТОЛЬКО sde_sql');
     expect(prompt).toContain('web_search');
     expect(prompt).toContain('tool_search');
+    expect(prompt).toContain('основной discovery-инструмент');
+    expect(prompt).toContain('Если подходящий endpoint уже доступен, не делай лишний tool_search');
+    expect(prompt).toContain('сначала используй уже доступный маркет endpoint');
     expect(prompt).toContain('Backend управляет auth, tokens, pagination, retries, rate limits');
     expect(prompt).toContain('Не спрашивай character_id');
     expect(prompt).toContain('Не повторяй один и тот же вызов');
@@ -31,6 +34,7 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('Персонаж не привязан');
     expect(prompt).toContain('EFT');
     expect(prompt).toContain('ломают импорт');
+    expect(prompt).not.toContain('ОБЯЗАТЕЛЬНО вызывай для поиска ESI');
     expect(prompt.length).toBeLessThan(12000);
   });
 

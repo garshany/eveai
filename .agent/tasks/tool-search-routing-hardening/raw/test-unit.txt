@@ -1,0 +1,19 @@
+
+> eve-agent@1.0.0 test
+> vitest run tests/unit/prompts.test.ts tests/unit/tools.test.ts tests/unit/native-responses.test.ts
+
+
+ RUN  v3.2.4 /home/antipedik/eveai
+
+ ✓ tests/unit/prompts.test.ts (4 tests) 3ms
+stdout | tests/unit/native-responses.test.ts > createNativeResponse request body > forwards previous_response_id and context_management to the proxy
+[api] POST http://localhost:8088/v1/responses — payload 371 chars, 0 tools, 1 input items, prevId=resp_prev
+
+ ✓ tests/unit/native-responses.test.ts (5 tests) 47ms
+ ✓ tests/unit/tools.test.ts (2 tests) 137ms
+
+ Test Files  3 passed (3)
+      Tests  11 passed (11)
+   Start at  21:56:00
+   Duration  319ms (transform 165ms, setup 0ms, collect 95ms, tests 186ms, environment 0ms, prepare 156ms)
+

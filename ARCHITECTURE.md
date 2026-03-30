@@ -41,6 +41,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/agent/executor.ts` drives tool execution, tool audit persistence, and response continuation.
 - `src/agent/planner.ts`, `replanner.ts`, and `compact.ts` handle plan state and history reduction.
 - `src/agent/prompts.ts` is the model-policy boundary.
+- Hosted deferred ESI surfaces are grouped into concise namespaces by use case and access boundary so `tool_search` can stay the primary discovery path without mixing unrelated public and private tools.
 
 ### Web Boundary
 
@@ -101,7 +102,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 3. The handler resolves user/chat identity and active character.
 4. The agent runtime chooses a warm or cold context path: it reuses a fresh `last_response_id` as `previous_response_id` for warm turns, or rebuilds context from SQLite history for cold starts.
 5. When a linked character has fresh private location access, the developer prompt also carries current live location context resolved as system plus constellation and region via local SDE.
-6. The model runs through hosted `tool_search` and deferred tools.
+6. The model uses hosted `tool_search` to discover/load deferred tools when endpoint selection is unclear or the needed namespace is not yet loaded, then reuses the loaded tools directly instead of repeating discovery.
 7. Tool calls and final messages are written back to SQLite.
 
 ### Web Auth Flow

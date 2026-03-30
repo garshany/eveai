@@ -560,8 +560,8 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
     description: 'Public alliance identity and icon lookup tools from live EVE ESI.',
   },
   esi_characters_affiliation: {
-    name: 'eve_public_universe_lookup',
-    description: 'Public universe and affiliation lookup tools from live EVE ESI.',
+    name: 'eve_public_affiliation_lookup',
+    description: 'Public character affiliation lookup tools from live EVE ESI.',
   },
   esi_characters_agents_research: {
     name: 'eve_character_research_activity',
@@ -596,8 +596,8 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
     description: 'Bound character skills, attributes, implants, and fatigue tools from live EVE ESI.',
   },
   esi_characters_fittings: {
-    name: 'eve_character_fittings_bookmarks',
-    description: 'Bound character fittings and bookmark tools from live EVE ESI.',
+    name: 'eve_character_fittings',
+    description: 'Bound character fitting tools from live EVE ESI.',
   },
   esi_characters_fleet: {
     name: 'eve_character_profile',
@@ -664,8 +664,8 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
     description: 'Bound character identity, profile, and affiliation history tools from live EVE ESI.',
   },
   esi_characters_search: {
-    name: 'eve_public_universe_lookup',
-    description: 'Public universe and affiliation lookup tools from live EVE ESI.',
+    name: 'eve_character_search',
+    description: 'Bound character directory and structure-aware search tools from live EVE ESI.',
   },
   esi_characters_ship: {
     name: 'eve_character_location',
@@ -829,19 +829,19 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_markets_history: {
     name: 'eve_public_market_orders',
-    description: 'Public market order, history, and structure market tools from live EVE ESI.',
+    description: 'Public regional market order and history tools from live EVE ESI.',
   },
   esi_markets_orders: {
     name: 'eve_public_market_orders',
-    description: 'Public market order, history, and structure market tools from live EVE ESI.',
+    description: 'Public regional market order and history tools from live EVE ESI.',
   },
   esi_markets_prices: {
     name: 'eve_public_market_reference',
     description: 'Public market prices, insurance, and market reference tools from live EVE ESI.',
   },
   esi_markets_structures: {
-    name: 'eve_public_market_orders',
-    description: 'Public market order, history, and structure market tools from live EVE ESI.',
+    name: 'eve_authenticated_market_structures',
+    description: 'Authenticated structure market order tools from live EVE ESI.',
   },
   esi_markets_types: {
     name: 'eve_public_market_reference',

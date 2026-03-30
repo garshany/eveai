@@ -1,0 +1,77 @@
+{
+  "task_id": "tool-search-routing-hardening",
+  "overall_status": "PASS",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "text": "`tool_search` remains enabled in the full runtime toolset as the primary discovery mechanism for the deferred ESI surface; the change must not remove `tool_search` or flatten the full ESI catalog into always-on function tools.",
+      "status": "PASS",
+      "proof": [
+        "src/agent/tools.ts:243 keeps { type: 'tool_search' } in the full tool array.",
+        "tests/unit/tools.test.ts asserts the full toolset still contains tool_search and hosted namespaces."
+      ],
+      "gaps": []
+    },
+    {
+      "id": "AC2",
+      "text": "Prompt policy in `src/agent/prompts.ts` is softened from mandatory `tool_search` usage to conditional usage: call `tool_search` when endpoint/namespace availability is unknown, not yet loaded, or discovery is needed; avoid unnecessary `tool_search` hops when a suitable tool is already available.",
+      "status": "PASS",
+      "proof": [
+        "src/agent/prompts.ts:22 changes tool_search guidance to conditional discovery/reuse wording.",
+        "src/agent/prompts.ts:57, src/agent/prompts.ts:60, src/agent/prompts.ts:63, and src/agent/prompts.ts:87 update grounding/routing rules to reuse already available endpoints.",
+        "tests/unit/prompts.test.ts checks the new wording and rejects the old mandatory phrase."
+      ],
+      "gaps": []
+    },
+    {
+      "id": "AC3",
+      "text": "Tool-search contours remain semantically grouped and aligned with OpenAI guidance: namespaces stay meaningful and use-case oriented, deferred-loading semantics are preserved for deferred ESI tools, and namespace descriptions remain clear and concise.",
+      "status": "PASS",
+      "proof": [
+        "src/eve/esi-catalog.ts:562 maps character affiliation to eve_public_affiliation_lookup.",
+        "src/eve/esi-catalog.ts:598 maps character fittings to eve_character_fittings.",
+        "src/eve/esi-catalog.ts:666 maps character search to eve_character_search.",
+        "src/eve/esi-catalog.ts:830 and src/eve/esi-catalog.ts:842 split public regional market orders/history from authenticated structure market orders.",
+        "tests/unit/tools.test.ts asserts the new namespace names, descriptions, and deferred-loading placement."
+      ],
+      "gaps": []
+    },
+    {
+      "id": "AC4",
+      "text": "Coverage is added/updated to prevent regression for the new conditional prompt-routing behavior and for the intended tool-surface shape (including that `tool_search` stays present in full mode).",
+      "status": "PASS",
+      "proof": [
+        "tests/unit/prompts.test.ts updated prompt expectations for conditional tool_search behavior.",
+        "tests/unit/tools.test.ts updated namespace-shape assertions for the public/private splits.",
+        "Raw outputs show passing targeted unit tests, build, and lint in .agent/tasks/tool-search-routing-hardening/raw/test-unit.txt, raw/build.txt, and raw/lint.txt."
+      ],
+      "gaps": []
+    },
+    {
+      "id": "AC5",
+      "text": "If runtime behavior or operator-facing guidance changes, matching repository docs are updated in the same change and evidence references the exact updated doc paths.",
+      "status": "PASS",
+      "proof": [
+        "ARCHITECTURE.md:44 documents use-case/access-boundary namespace grouping for hosted tool_search surfaces.",
+        "ARCHITECTURE.md:105 documents conditional tool_search discovery followed by direct reuse of loaded tools.",
+        "evidence.md and raw artifacts in .agent/tasks/tool-search-routing-hardening/ reference the updated docs and verification outputs."
+      ],
+      "gaps": []
+    }
+  ],
+  "changed_files": [
+    "ARCHITECTURE.md",
+    "src/agent/prompts.ts",
+    "src/eve/esi-catalog.ts",
+    "tests/unit/prompts.test.ts",
+    "tests/unit/tools.test.ts"
+  ],
+  "commands_for_fresh_verifier": [
+    "npm run test -- tests/unit/prompts.test.ts tests/unit/tools.test.ts tests/unit/native-responses.test.ts",
+    "npm run build",
+    "npm run lint"
+  ],
+  "known_gaps": [
+    "Fresh verifier has not run yet."
+  ]
+}
