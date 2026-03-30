@@ -1,0 +1,91 @@
+{
+  "task_id": "route-to-jita-prod-audit",
+  "overall_status": "PASS",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "text": "The task artifacts must capture a production-first audit of a live route-to-Jita request. The audit must include concrete prod evidence for one real request or one prod-faithful repro of `handleAgentMessage`, including the user prompt, route tool call arguments, iteration count, token/latency signals available in logs, and the final rendered answer.",
+      "status": "PASS",
+      "proof": [
+        "src/telegram/handlers.ts#L298-L380 shows the Telegram entrypoint, thread persistence, and call into handleAgentMessage.",
+        "src/agent/executor.ts#L258-L316 shows handleAgentMessage deriving live context and running the native route flow.",
+        "src/agent/executor.ts#L725-L766 shows plan_route being executed and returned with formatted_summary.",
+        "src/eve/route-planner.ts#L72-L159 shows origin resolution, route fetching, SDE resolution, danger scan, and summary assembly.",
+        ".agent/tasks/route-to-jita-prod-audit/raw/prod-route-repro.txt captures a fresh prod-faithful handleAgentMessage repro."
+      ],
+      "gaps": []
+    },
+    {
+      "id": "AC2",
+      "text": "The audit must explain the current route execution path end to end for a \"route to Jita\" request, starting from the Telegram or equivalent request entrypoint through `handleAgentMessage`, `plan_route`, and the final Telegram-facing formatting path. It must state what data is gathered at each step and which parts come from local SDE, cached/live ESI, zKill, and model output.",
+      "status": "PASS",
+      "proof": [
+        ".agent/tasks/route-to-jita-prod-audit/raw/prod-route-repro.txt records the fresh prod repro for `Построй маршрут до Житы`, including the cold request, plan_route call, danger_scan, and final answer.",
+        ".agent/tasks/route-to-jita-prod-audit/raw/prod-route-log-snapshot.txt records the matching prod log pattern with 35 scanned systems, 40 zKill feed items, 29 enriched killmails, three route variants, and two model iterations.",
+        "The code path and data-source split are proven by src/telegram/handlers.ts, src/agent/executor.ts, and src/eve/route-planner.ts."
+      ],
+      "gaps": [
+        "No post-fix deploy/repro was performed; the prod artifacts intentionally preserve the pre-fix baseline."
+      ]
+    },
+    {
+      "id": "AC3",
+      "text": "The audit must identify any concrete correctness risks, unstable behavior, or unnecessary work in the current route flow. If such issues exist, they must be described with current-code and prod-backed evidence; if not, the artifacts must explicitly state that no issue was proven. This includes route origin resolution, danger-scan breadth, side effects such as autopilot behavior, and formatting stability.",
+      "status": "PASS",
+      "proof": [
+        "src/eve/route-planner.ts#L173-L217 now separates preferred-route danger counts from merged danger coverage and formats the route path with emphasized system names.",
+        "src/eve/route-planner.ts#L200-L213 now surfaces route association and makes detail scope explicit instead of silently truncating the rendered danger section.",
+        "tests/unit/route-planner.test.ts#L164-L272 covers the updated route summary shape and preferred-route-vs-merged metric separation.",
+        "npm run build exited 0 and npm run lint exited 0."
+      ],
+      "gaps": [
+        "Telegram rendering was checked through the HTML/Telegram formatting boundary in code, not by a post-fix live bot message."
+      ]
+    },
+    {
+      "id": "AC4",
+      "text": "The task must produce a minimal, defensible fix proposal that is grounded in the audited behavior. The proposal must explain what should change, why that is the smallest safe fix, what tests or docs should move with it, and what risks remain.",
+      "status": "PASS",
+      "proof": [
+        "The implementation stayed inside src/eve/route-planner.ts and tests/unit/route-planner.test.ts.",
+        "The route summary now renders all merged danger systems, route associations, every enriched kill preview, and an explicit note when enriched detail is narrower than kills_1h.",
+        "Three focused route-planner tests cover the updated formatting and metric separation."
+      ],
+      "gaps": [
+        "The remaining per-system enrichment cap is disclosed in the rendered output rather than removed entirely."
+      ]
+    },
+    {
+      "id": "AC5",
+      "text": "If the workflow proceeds to implementation later, the resulting route output must remain Telegram-safe and stable: system names emphasized consistently, route comparison presented in a stable table-like format supported by Telegram, and route responses covered by regression tests so formatting and data shape do not drift.",
+      "status": "PASS",
+      "proof": [
+        "src/eve/route-planner.ts#L187-L217 keeps the fixed-width route table and stabilizes the surrounding HTML summary shape.",
+        "src/eve/route-planner.ts#L237-L245 adds emphasized system-name formatting and non-truncating kill preview rendering.",
+        "tests/unit/route-planner.test.ts#L133-L272 provides regression coverage for the updated route summary."
+      ],
+      "gaps": []
+    }
+  ],
+  "changed_files": [
+    "src/eve/route-planner.ts",
+    "tests/unit/route-planner.test.ts",
+    ".agent/tasks/route-to-jita-prod-audit/spec.md",
+    ".agent/tasks/route-to-jita-prod-audit/evidence.md",
+    ".agent/tasks/route-to-jita-prod-audit/evidence.json",
+    ".agent/tasks/route-to-jita-prod-audit/raw/build.txt",
+    ".agent/tasks/route-to-jita-prod-audit/raw/test-unit.txt",
+    ".agent/tasks/route-to-jita-prod-audit/raw/test-integration.txt",
+    ".agent/tasks/route-to-jita-prod-audit/raw/lint.txt",
+    ".agent/tasks/route-to-jita-prod-audit/raw/prod-route-repro.txt",
+    ".agent/tasks/route-to-jita-prod-audit/raw/prod-route-log-snapshot.txt"
+  ],
+  "commands_for_fresh_verifier": [
+    "npm run test -- tests/unit/route-planner.test.ts",
+    "npm run build",
+    "npm run lint"
+  ],
+  "known_gaps": [
+    "No post-deploy production repro of the fixed summary was performed in this task."
+  ]
+}

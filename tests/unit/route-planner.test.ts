@@ -28,6 +28,7 @@ let consoleLogSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.resetModules();
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);
@@ -179,10 +180,10 @@ describe('route planner', () => {
     expect(result.formatted_summary).toContain('<b>Dodixie → Jita</b>');
     expect(result.formatted_summary).toContain('Автопилот: выставлен');
     expect(result.formatted_summary).toContain('<code>route     jumps min  kills isk');
-    expect(result.formatted_summary).toContain('secure: Dodixie -&gt; Midpoint -&gt; Jita');
+    expect(result.formatted_summary).toContain('<b>Основной маршрут</b> (secure): <b>Dodixie</b> → <b>Midpoint</b> → <b>Jita</b>');
     expect(result.formatted_summary).toContain('Альтернативы: shortest 1j min 0.9 | insecure 2j min 0.1');
-    expect(result.formatted_summary).toContain('<b>Опасные системы</b>');
-    expect(result.formatted_summary).toContain('Midpoint 0.5 | 1 kills | PvP 1 | 42M ISK');
+    expect(result.formatted_summary).toContain('<b>Опасные системы по всем вариантам</b>');
+    expect(result.formatted_summary).toContain('<b>Midpoint</b> 0.5 | маршруты: secure | 1 kills | PvP 1 | 42M ISK');
     expect(result.formatted_summary).toContain('Victim One');
     expect(result.formatted_summary).toContain('Attacker One');
     expect(result.formatted_summary).toContain('<a href="https://zkillboard.com/kill/134200001/">zKill</a>');
@@ -197,6 +198,77 @@ describe('route planner', () => {
       },
       { userId: 1, chatId: 1 },
     );
+  });
+
+  it('keeps preferred-route risk metrics separate from merged danger coverage and shows route association', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('systemID/30002659/pastSeconds/3600/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ([{
+            killmail_id: 134200010,
+            zkb: {
+              hash: 'hash-dodixie',
+              totalValue: 42000000,
+              npc: false,
+            },
+          }]),
+        } as unknown as Response;
+      }
+      if (url.includes('systemID/30002660/pastSeconds/3600/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ([{
+            killmail_id: 134200011,
+            zkb: {
+              hash: 'hash-midpoint',
+              totalValue: 42000000,
+              npc: false,
+            },
+          }]),
+        } as unknown as Response;
+      }
+      if (url.includes('systemID/30002661/pastSeconds/3600/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ([{
+            killmail_id: 134200012,
+            zkb: {
+              hash: 'hash-scout',
+              totalValue: 42000000,
+              npc: false,
+            },
+          }]),
+        } as unknown as Response;
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ([]),
+      } as unknown as Response;
+    });
+
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      {
+        origin: 'current',
+        destination: 'Jita',
+        set_autopilot: false,
+        prefer: 'secure',
+      },
+      { userId: 1, chatId: 1 },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.formatted_summary).toContain('опасных систем: 2, киллов за 1ч: 2, потери: 84M ISK');
+    expect(result.formatted_summary).toContain('<b>Dodixie</b> 0.9 | маршруты: secure, shortest, insecure | 1 kills | PvP 1 | 42M ISK');
+    expect(result.formatted_summary).toContain('<b>Scout Gate</b> 0.1 | маршруты: insecure | 1 kills | PvP 1 | 42M ISK');
   });
 });
 

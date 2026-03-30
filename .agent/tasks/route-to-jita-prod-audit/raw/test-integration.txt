@@ -1,0 +1,2 @@
+Integration tests were not run.
+Reason: the change is confined to route-summary rendering in `src/eve/route-planner.ts` plus targeted unit coverage in `tests/unit/route-planner.test.ts`.

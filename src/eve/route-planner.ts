@@ -174,6 +174,7 @@ function formatRouteSummary(
   const mergedDangerSystems = mergeDangerSystems(routes);
   const totalKills1h = preferred.total_kills_1h;
   const totalValueM = preferred.total_value_m;
+  const preferredDangerSystems = preferred.danger_systems.length;
   const alternatives = routes
     .filter((route) => route.flag !== preferred.flag)
     .map((route) => `${route.flag} ${route.jumps}j min ${route.min_sec.toFixed(1)}`)
@@ -181,7 +182,7 @@ function formatRouteSummary(
 
   lines.push(`<b>${esc(origin.name)} → ${esc(dest.name)}</b>`);
   lines.push(`Автопилот: ${esc(describeAutopilotMode(autopilotMode))}`);
-  lines.push(`Риск: ${describeRouteRisk(preferred, mergedDangerSystems.length)}, опасных систем: ${mergedDangerSystems.length}, киллов за 1ч: ${totalKills1h}, потери: ${totalValueM}M ISK`);
+  lines.push(`Риск: ${describeRouteRisk(preferred, preferredDangerSystems)}, опасных систем: ${preferredDangerSystems}, киллов за 1ч: ${totalKills1h}, потери: ${totalValueM}M ISK`);
 
   lines.push('');
   lines.push('<code>route     jumps min  kills isk');
@@ -191,18 +192,24 @@ function formatRouteSummary(
   lines.push('</code>');
 
   lines.push('');
-  lines.push(`<code>${esc(preferred.flag)}: ${esc(preferred.systems.join(' -> '))}</code>`);
+  lines.push(`<b>Основной маршрут</b> (${esc(preferred.flag)}): ${formatSystemChain(preferred.systems)}`);
   if (alternatives) {
     lines.push(`Альтернативы: ${esc(alternatives)}`);
   }
 
   if (mergedDangerSystems.length > 0) {
     lines.push('');
-    lines.push('<b>Опасные системы</b>');
-    for (const ds of mergedDangerSystems.slice(0, 3)) {
-      lines.push(`${esc(ds.name)} ${ds.sec.toFixed(1)} | ${ds.kills_1h} kills | PvP ${ds.pvp} | ${ds.total_value_m}M ISK`);
+    lines.push('<b>Опасные системы по всем вариантам</b>');
+    for (const ds of mergedDangerSystems) {
+      lines.push(
+        `<b>${esc(ds.name)}</b> ${ds.sec.toFixed(1)} | маршруты: ${esc(formatRouteFlags(ds.route_flags))} | ` +
+        `${ds.kills_1h} kills | PvP ${ds.pvp} | ${ds.total_value_m}M ISK`,
+      );
       for (const preview of formatDangerPreview(ds)) {
         lines.push(preview);
+      }
+      if (ds.kills.length < ds.kills_1h) {
+        lines.push(`  Показаны детальные данные для ${ds.kills.length} из ${ds.kills_1h} киллов.`);
       }
     }
   }
@@ -227,8 +234,16 @@ function describeRouteRisk(route: RouteVariant, dangerSystems: number): string {
   return 'низкий';
 }
 
+function formatSystemChain(systems: string[]): string {
+  return systems.map((name) => `<b>${escapeHtml(name)}</b>`).join(' → ');
+}
+
+function formatRouteFlags(flags: RouteFlag[]): string {
+  return flags.join(', ');
+}
+
 function formatDangerPreview(ds: DangerSystem): string[] {
-  return ds.kills.slice(0, 2).map((kill) => {
+  return ds.kills.map((kill) => {
     const time = escapeHtml(kill.time ?? '?');
     const victim = escapeHtml(kill.victim ?? '?');
     const attacker = escapeHtml(kill.attacker ?? '?');
