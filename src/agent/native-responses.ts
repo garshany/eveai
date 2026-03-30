@@ -84,6 +84,7 @@ export async function createNativeResponse(input: {
   tools: NativeTool[];
   model?: string;
   previousResponseId?: string | null;
+  promptCacheKey?: string;
   parallelToolCalls?: boolean;
   truncation?: string;
   contextManagement?: Array<{ type: string; compact_threshold: number }>;
@@ -94,6 +95,7 @@ export async function createNativeResponse(input: {
       instructions: input.instructions,
       input: input.items,
       previous_response_id: input.previousResponseId ?? undefined,
+      prompt_cache_key: input.promptCacheKey ?? undefined,
       tools: input.tools,
       tool_choice: 'auto',
       parallel_tool_calls: input.parallelToolCalls ?? false,

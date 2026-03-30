@@ -149,4 +149,49 @@ describe('createNativeResponse request body', () => {
     expect(body?.previous_response_id).toBe('resp_prev');
     expect(body?.context_management).toEqual([{ type: 'compaction', compact_threshold: 1234 }]);
   });
+
+  it('forwards prompt_cache_key to the proxy', async () => {
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"resp_y","output_text":"ok","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+
+    await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+      promptCacheKey: 'thread_abc123',
+    });
+
+    expect(body?.prompt_cache_key).toBe('thread_abc123');
+  });
+
+  it('omits prompt_cache_key when not provided', async () => {
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"resp_z","output_text":"ok","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+
+    await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+    });
+
+    expect(body).not.toHaveProperty('prompt_cache_key');
+  });
 });

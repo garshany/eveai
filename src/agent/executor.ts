@@ -480,6 +480,7 @@ async function runNativeAgentLoop(
         instructions: developerPrompt,
         items: pendingItems,
         previousResponseId,
+        promptCacheKey: threadId,
         tools,
         parallelToolCalls: true,
         truncation: 'auto',
