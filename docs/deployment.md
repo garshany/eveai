@@ -87,8 +87,8 @@ npm run build
 
 Важные production значения:
 
-- `WEB_BASE_URL=https://144-31-223-134.sslip.io:4443`
-- `EVE_CALLBACK_URL=https://144-31-223-134.sslip.io:4443/auth/eve/callback`
+- `WEB_BASE_URL=https://eveonline-ai.ru`
+- `EVE_CALLBACK_URL=https://eveonline-ai.ru/auth/eve/callback`
 - `OPENAI_BASE_URL=http://127.0.0.1:8080/v1`
 - `ESI_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)`
 - `ZKILL_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)`
@@ -133,29 +133,23 @@ nginx -t
 
 HTTP:
 
-- `http://144-31-223-134.sslip.io` (redirect → HTTPS)
+- `http://eveonline-ai.ru` (redirect → HTTPS)
 
 HTTPS:
 
-- `https://144-31-223-134.sslip.io:4443`
-- `https://144-31-223-134.sslip.io:4443/health`
-
-Важно:
-
-- `443` на сервере занят другим сервисом
-- production HTTPS для этого приложения работает на `4443`
-- `:80` используется для redirect и ACME challenge
+- `https://eveonline-ai.ru`
+- `https://eveonline-ai.ru/health`
 
 ## SSL
 
-Сертификат выпускается для `144-31-223-134.sslip.io` через `certbot`.
+Сертификат выпускается для `eveonline-ai.ru` через `certbot`.
 
 Полезные команды:
 
 ```bash
 certbot certificates
 certbot renew --dry-run --no-random-sleep-on-renew
-openssl x509 -in /etc/letsencrypt/live/144-31-223-134.sslip.io/fullchain.pem -noout -issuer -dates -subject
+openssl x509 -in /etc/letsencrypt/live/eveonline-ai.ru/fullchain.pem -noout -issuer -dates -subject
 ```
 
 Deploy hook reload'ит nginx после renewal (`systemctl reload nginx`).
@@ -172,8 +166,8 @@ curl -sk https://127.0.0.1:4443/health
 Снаружи:
 
 ```bash
-curl -I http://144-31-223-134.sslip.io
-curl -sI https://144-31-223-134.sslip.io:4443/health
+curl -I http://eveonline-ai.ru
+curl -sI https://eveonline-ai.ru/health
 ```
 
 Smoke:
@@ -188,7 +182,7 @@ npm run smoke
 В EVE Developer Portal redirect URI должен совпадать точно:
 
 ```text
-https://144-31-223-134.sslip.io:4443/auth/eve/callback
+https://eveonline-ai.ru/auth/eve/callback
 ```
 
 Если URI отличается, логин через EVE SSO будет отклонён до callback.
