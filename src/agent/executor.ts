@@ -1147,10 +1147,17 @@ function shouldRecoverFromToolStateMismatch(
 
 /** Errors that indicate a broken continuation chain — recoverable via cold restart. */
 const WS_RETRIABLE_PATTERNS = [
-  'not found',                  // "Previous response with id ... not found"
-  'ws_transport_error',         // proxy WS transport failure
-  'WS closed',                  // server closed WebSocket
-  'ws timeout',                 // first-frame timeout
+  'not found',                          // "Previous response with id ... not found"
+  'ws_transport_error',                 // proxy WS transport failure
+  'ws closed',                          // server closed WebSocket
+  'ws timeout',                         // idle timeout
+  'ws idle timeout',                    // per-frame idle timeout
+  'ws error',                           // generic WS error
+  'connection_limit_reached',           // server WS connection limit (codex-specific)
+  'connection reset',                   // TCP reset
+  'socket hang up',                     // Node undici socket error
+  'econnrefused',                       // connection refused
+  'terminated',                         // undici terminated
 ];
 
 function isWsRetriableError(message: string): boolean {
