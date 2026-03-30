@@ -1145,6 +1145,19 @@ function shouldRecoverFromToolStateMismatch(
   return pendingItems.some((item) => item.type === 'function_call_output');
 }
 
+/** Errors that indicate a broken continuation chain — recoverable via cold restart. */
+const WS_RETRIABLE_PATTERNS = [
+  'not found',                  // "Previous response with id ... not found"
+  'ws_transport_error',         // proxy WS transport failure
+  'WS closed',                  // server closed WebSocket
+  'ws timeout',                 // first-frame timeout
+];
+
+function isWsRetriableError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return WS_RETRIABLE_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+}
+
 function shouldUseToolStateRecovery(
   message: string,
   usedToolStateRecovery: boolean,
@@ -1152,7 +1165,10 @@ function shouldUseToolStateRecovery(
   pendingItems: NativeInputItem[],
 ): boolean {
   if (usedToolStateRecovery) return false;
-  return shouldRecoverFromToolStateMismatch(message, previousResponseId, pendingItems);
+  if (shouldRecoverFromToolStateMismatch(message, previousResponseId, pendingItems)) return true;
+  // Also recover from WS transport errors (broken continuation chain)
+  if (previousResponseId && isWsRetriableError(message)) return true;
+  return false;
 }
 
 type StaticAggregateObjectKind = 'constellations' | 'systems' | 'planets' | 'moons' | 'asteroid_belts' | 'stations' | 'stargates';
