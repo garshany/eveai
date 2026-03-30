@@ -55,7 +55,13 @@ sshpass -p '***' ssh -o StrictHostKeyChecking=no root@144.31.223.134
 
 ## Deployment Flow
 
-`codex-proxy` на сервере считается внешним сервисом. Этот runbook не управляет его lifecycle.
+Целевое production состояние:
+
+- `eveai` backend управляется через `pm2`
+- `codex-openai-proxy` управляется через `systemd`
+- `nginx` управляется через `systemd`
+
+Если proxy запущен отдельным root-процессом без supervisor, это drift. Его нужно вернуть под `systemd`, а не добавлять во второй process tree через `pm2`.
 
 Базовый деплой:
 
@@ -68,6 +74,16 @@ git pull --ff-only origin master
 npm ci
 npm run build
 pm2 restart eveai --update-env
+```
+
+Proxy после обновления бинаря:
+
+```bash
+ssh root@144.31.223.134
+cd /opt/codex_proxy
+cargo build --release
+systemctl restart eveai-codex-proxy
+systemctl status eveai-codex-proxy --no-pager
 ```
 
 Если каталог ещё не создан:
@@ -102,6 +118,105 @@ npm run build
 pm2 restart eveai --update-env
 ```
 
+## Codex Proxy
+
+Предпочтительный supervisor для proxy: `systemd`, не `pm2`.
+
+Почему:
+
+- proxy является инфраструктурным dependency для backend, а не частью Node.js runtime
+- `systemd` поднимает процесс после reboot без отдельной PM2 ecosystem
+- `journalctl` удобнее для диагностики раннего старта и auth-проблем
+- backend можно перезапускать отдельно через `pm2`, не трогая proxy
+
+Текущий service template в репозитории:
+
+- `deploy/systemd/eveai-codex-proxy.service`
+
+Установка или восстановление unit на проде:
+
+```bash
+ssh root@144.31.223.134
+install -m 644 /opt/eveai/deploy/systemd/eveai-codex-proxy.service /etc/systemd/system/eveai-codex-proxy.service
+systemctl daemon-reload
+systemctl enable --now eveai-codex-proxy
+systemctl status eveai-codex-proxy --no-pager
+```
+
+Проверка:
+
+```bash
+systemctl status eveai-codex-proxy --no-pager
+journalctl -u eveai-codex-proxy -n 100 --no-pager
+curl -fsS http://127.0.0.1:8080/health
+```
+
+## Codex Proxy Auth Rotation
+
+Proxy читает все `*.json` в директории auth-path. На проде активная директория:
+
+- `/root/.codex/auth/`
+
+Важно:
+
+- не оставлять протухшие `*.json` в `/root/.codex/auth/`
+- backup хранить вне активной директории, иначе proxy подхватит старые credentials
+- в проде держать один активный auth-файл, если не нужна осознанная ротация между несколькими аккаунтами
+- никогда не коммитить auth JSON или токены в репозиторий
+
+Минимальный поддерживаемый формат auth-файла:
+
+```json
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "access_token": "REDACTED",
+    "account_id": "REDACTED"
+  }
+}
+```
+
+Порядок обновления auth:
+
+```bash
+ssh root@144.31.223.134
+mkdir -p /root/.codex/auth
+ts=$(date +%Y%m%dT%H%M%S)
+mkdir -p /root/.codex/auth-backup-$ts
+mv /root/.codex/auth/*.json /root/.codex/auth-backup-$ts/ 2>/dev/null || true
+cat > /root/.codex/auth/prod-primary.json <<'JSON'
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "access_token": "REDACTED",
+    "account_id": "REDACTED"
+  }
+}
+JSON
+chmod 600 /root/.codex/auth/prod-primary.json
+systemctl restart eveai-codex-proxy
+```
+
+Проверка после rotation:
+
+```bash
+curl -fsS http://127.0.0.1:8080/health
+curl -sS -N \
+  -H 'Content-Type: application/json' \
+  -X POST http://127.0.0.1:8080/v1/responses \
+  -d '{"model":"gpt-5.4","instructions":"You are a concise assistant.","input":[{"role":"user","content":[{"type":"input_text","text":"Reply with the single word pong."}]}]}' \
+  | sed -n '1,40p'
+pm2 status eveai
+curl -fsS http://127.0.0.1:8000/health
+pm2 logs eveai --lines 50 --nostream
+```
+
+Успешный признак:
+
+- proxy отвечает `200 OK` на `POST /v1/responses`
+- stream содержит `response.completed`
+- `eveai` перестаёт писать `token_expired`
+
 ## Process Model
 
 Приложение:
@@ -114,6 +229,20 @@ pm2 restart eveai --update-env
 ```bash
 pm2 status eveai
 pm2 logs eveai --lines 100
+```
+
+Codex proxy:
+
+- process manager: `systemd`
+- service name: `eveai-codex-proxy`
+- binary dir: `/opt/codex_proxy`
+- auth dir: `/root/.codex/auth/`
+
+Проверка:
+
+```bash
+systemctl status eveai-codex-proxy --no-pager
+journalctl -u eveai-codex-proxy -n 100 --no-pager
 ```
 
 Reverse proxy:

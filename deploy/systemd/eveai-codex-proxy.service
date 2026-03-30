@@ -5,19 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/antipedik/codex_proxy_v2
+# Current production layout keeps auth under /root/.codex/auth/.
+# If auth is moved to a dedicated service account, update User and auth-path together.
+User=root
+WorkingDirectory=/opt/codex_proxy
 Environment=RUST_LOG=info
-Environment=ALL_PROXY=socks5://127.0.0.1:10808
-Environment=all_proxy=socks5://127.0.0.1:10808
-Environment=HTTP_PROXY=http://127.0.0.1:10809
-Environment=http_proxy=http://127.0.0.1:10809
-Environment=HTTPS_PROXY=http://127.0.0.1:10809
-Environment=https_proxy=http://127.0.0.1:10809
-Environment=NO_PROXY=localhost,127.0.0.1
-Environment=no_proxy=localhost,127.0.0.1
-ExecStart=/home/antipedik/codex_proxy_v2/target/release/codex-openai-proxy --port 8088 --auth-path /home/antipedik/.codex/auth.json
+ExecStart=/opt/codex_proxy/target/release/codex-openai-proxy --port 8080 --auth-path /root/.codex/auth/
 Restart=always
 RestartSec=3
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
