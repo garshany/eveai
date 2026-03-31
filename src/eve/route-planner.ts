@@ -156,7 +156,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     autopilot_set: autopilotSet,
     autopilot_mode: autopilotMode,
     error: null,
-    formatted_summary: formatRouteSummary(originInfo, destInfo, routes, autopilotMode),
+    formatted_summary: formatRouteSummary(originInfo, destInfo, routes, autopilotMode, args.prefer),
   };
 }
 
@@ -165,12 +165,15 @@ function formatRouteSummary(
   dest: SystemInfo,
   routes: RouteVariant[],
   autopilotMode: AutopilotMode,
+  preferFlag?: RouteFlag,
 ): string {
   if (routes.length === 0) return 'Маршруты не найдены.';
 
   const esc = escapeHtml;
   const lines: string[] = [];
-  const preferred = routes.find((route) => route.flag === 'secure') ?? routes[0];
+  const preferred = (preferFlag && routes.find((route) => route.flag === preferFlag))
+    ?? routes.find((route) => route.flag === 'secure')
+    ?? routes[0];
   const mergedDangerSystems = mergeDangerSystems(routes);
   const totalKills1h = preferred.total_kills_1h;
   const totalValueM = preferred.total_value_m;
