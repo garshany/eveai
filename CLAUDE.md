@@ -104,4 +104,9 @@ Installed workflow agents:
 - `.claude/agents/task-builder.md`
 - `.claude/agents/task-verifier.md`
 - `.claude/agents/task-fixer.md`
+
+Claude Code note:
+- If `init` just created or refreshed these files during a running Claude Code session, start a new Claude Code session before relying on the updated agent list.
+- Use `/agents` to inspect the available agents.
+- Keep this block in the root `CLAUDE.md`. If the workflow needs longer repo guidance, prefer `@path` imports or `.claude/rules/*.md` instead of expanding this block.
 <!-- repo-task-proof-loop:end -->

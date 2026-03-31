@@ -5,7 +5,6 @@ import { randomUUID } from 'node:crypto';
 import { handleAgentMessage } from '../agent/executor.js';
 import { finalizeThreadMessage, splitForTelegram } from '../agent/finalizer.js';
 import { ALL_REQUESTED_SCOPES } from '../eve/scopes.js';
-import { needsCompaction, compactThread } from '../agent/compact.js';
 import { getLinkedCharacter, listLinkedCharacters, setActiveCharacter } from '../eve/sso.js';
 import { refreshUserProfile, readUserProfile } from '../eve/user-profile.js';
 import { callEsiOperation } from '../eve/esi-client.js';
@@ -373,21 +372,7 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
         // Delete thinking placeholder, then send real response
         await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
         await replyChunks(ctx, cleaned);
-        // Compaction: if cumulative tokens exceed 100K, compact with notification
-        if (needsCompaction(db, thread.thread_id)) {
-          const compactMsg = await ctx.reply('⏳ Сжимаю контекст разговора...').catch(() => null);
-          try {
-            await compactThread(db, thread.thread_id);
-            if (compactMsg) {
-              await ctx.api.editMessageText(chatId, compactMsg.message_id, '✓ Контекст сжат. Можно продолжать.').catch(() => {});
-            }
-          } catch (e) {
-            console.error('[compact] failed:', e);
-            if (compactMsg) {
-              await ctx.api.deleteMessage(chatId, compactMsg.message_id).catch(() => {});
-            }
-          }
-        }
+        // Compaction is handled inside executor.ts (pre-turn + mid-turn, Codex-style).
       } finally {
         stopTyping();
       }

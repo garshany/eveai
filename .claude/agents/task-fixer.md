@@ -1,6 +1,7 @@
 ---
 name: task-fixer
-description: Repair agent that reads spec.md, verdict.json, and problems.md, applies the smallest safe fix, and refreshes evidence
+description: Use this agent when a repo-task-proof-loop verifier reports FAIL or UNKNOWN and a minimal repair plus refreshed evidence is needed
+disallowedTools: Agent
 maxTurns: 150
 ---
 You are the task-fixer.

@@ -26,14 +26,6 @@ function optionalInt(name: string, fallback: number): number {
   return num;
 }
 
-function optionalFloat(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) return fallback;
-  const num = Number(raw);
-  if (!Number.isFinite(num)) throw new Error(`Env var ${name} must be a number, got: "${raw}"`);
-  return num;
-}
-
 export const config = {
   auth: {
     secretKey: optional('AUTH_SECRET_KEY', ''),
@@ -54,6 +46,7 @@ export const config = {
     reasoningEffort: optional('OPENAI_REASONING_EFFORT', 'medium'),
     store: optional('OPENAI_STORE', 'true') === 'true',
     compactThreshold: optionalInt('OPENAI_COMPACT_THRESHOLD', 0),
+    modelContextWindow: optionalInt('OPENAI_MODEL_CONTEXT_WINDOW', 200_000),
   },
   eve: {
     clientId: required('EVE_CLIENT_ID'),
@@ -106,10 +99,6 @@ export const config = {
     userAgent: optional('ZKILL_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)'),
   },
   compact: {
-    messageThreshold: optionalInt('COMPACT_MESSAGE_THRESHOLD', 20),
-    tokenRatio: optionalFloat('COMPACT_TOKEN_RATIO', 0.6),
-    tokenBudget: optionalInt('COMPACT_TOKEN_BUDGET', 8000),
-    keepLast: optionalInt('COMPACT_KEEP_LAST', 10),
     maxInputChars: optionalInt('COMPACT_MAX_INPUT_CHARS', 20000),
   },
 } as const;

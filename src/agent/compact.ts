@@ -15,6 +15,15 @@ export type SummarizerFn = (input: {
 
 const MAX_SUMMARY_CHARS = 4000;
 
+/**
+ * Max tokens of recent user messages to preserve in compacted history.
+ * Mirrors Codex COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000.
+ */
+const COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000;
+
+/** Max retries when summarizer fails (Codex-style retry on transient errors). */
+const COMPACT_MAX_RETRIES = 2;
+
 // Codex-style compaction prompt — adapted for EVE Online assistant
 const COMPACTION_DEVELOPER_PROMPT = `Ты выполняешь СЖАТИЕ КОНТЕКСТА. Создай краткую передачу для другой языковой модели, которая продолжит диалог.
 
@@ -32,8 +41,30 @@ const COMPACTION_DEVELOPER_PROMPT = `Ты выполняешь СЖАТИЕ КО
 // Prefix injected before the summary when loading into cold context
 export const SUMMARY_PREFIX = 'Другая языковая модель начала решать эту задачу и создала сводку своего процесса. Используй эту информацию, чтобы продолжить работу и не дублировать уже сделанное. Вот сводка:\n\n';
 
-/** Compaction token threshold — when cumulative thread tokens exceed this, compact. */
-const COMPACT_TOKEN_THRESHOLD = 100_000;
+// ---------------------------------------------------------------------------
+// Codex-style: dynamic auto-compact limit
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the auto-compaction token limit.
+ * Codex approach: 90% of model context window, or explicit override.
+ *
+ * ```rust
+ * let context_limit = context_window.map(|cw| (cw * 9) / 10);
+ * let config_limit = model.auto_compact_token_limit;
+ * return min(config_limit, context_limit)
+ * ```
+ */
+export function autoCompactLimit(): number {
+  const contextLimit = Math.floor(config.openai.modelContextWindow * 0.9);
+  const override = config.openai.compactThreshold;
+  if (override > 0) return Math.min(override, contextLimit);
+  return contextLimit;
+}
+
+// ---------------------------------------------------------------------------
+// DB accessors
+// ---------------------------------------------------------------------------
 
 export function getThreadSummary(db: Db, threadId: string): string | null {
   const row = db.prepare('SELECT summary FROM thread_summaries WHERE thread_id = ?').get(threadId) as
@@ -42,7 +73,6 @@ export function getThreadSummary(db: Db, threadId: string): string | null {
   return row?.summary ?? null;
 }
 
-/** Get cumulative token count for a thread. */
 export function getThreadTotalTokens(db: Db, threadId: string): number {
   const row = db.prepare('SELECT total_tokens FROM agent_threads WHERE thread_id = ?').get(threadId) as
     | { total_tokens: number | null }
@@ -50,10 +80,97 @@ export function getThreadTotalTokens(db: Db, threadId: string): number {
   return row?.total_tokens ?? 0;
 }
 
-/** Check if compaction is needed based on cumulative token usage. */
-export function needsCompaction(db: Db, threadId: string): boolean {
-  return getThreadTotalTokens(db, threadId) >= COMPACT_TOKEN_THRESHOLD;
+// ---------------------------------------------------------------------------
+// Codex-style: pre-turn compaction check
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if pre-turn compaction is needed.
+ * Codex `run_pre_sampling_compact`: before the first API call of a turn,
+ * if accumulated total_tokens >= autoCompactLimit, compact now.
+ */
+export function needsPreTurnCompaction(db: Db, threadId: string): boolean {
+  return getThreadTotalTokens(db, threadId) >= autoCompactLimit();
 }
+
+/**
+ * Run pre-turn compaction (Codex `run_pre_sampling_compact`).
+ * Called before the response loop starts. Returns true if compaction ran.
+ */
+export async function runPreTurnCompact(
+  db: Db,
+  threadId: string,
+  summarizer: SummarizerFn = defaultSummarizer,
+): Promise<boolean> {
+  if (!needsPreTurnCompaction(db, threadId)) return false;
+  console.log('[compact] pre-turn: total_tokens=%d >= limit=%d, compacting',
+    getThreadTotalTokens(db, threadId), autoCompactLimit());
+  return compactThreadWithRetry(db, threadId, summarizer);
+}
+
+// ---------------------------------------------------------------------------
+// Codex-style: mid-turn compaction check
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if mid-turn compaction should run.
+ * Codex: after each sampling request, if total_usage_tokens >= autoCompactLimit
+ * AND model needs a follow-up (tool call), compact and continue.
+ */
+export function needsMidTurnCompaction(inputTokens: number): boolean {
+  return inputTokens >= autoCompactLimit();
+}
+
+/**
+ * Run mid-turn compaction (Codex `run_inline_auto_compact_task`).
+ * Called inside the response loop when input tokens exceed the limit.
+ * Returns true if compaction ran successfully.
+ */
+export async function runMidTurnCompact(
+  db: Db,
+  threadId: string,
+  summarizer: SummarizerFn = defaultSummarizer,
+): Promise<boolean> {
+  console.log('[compact] mid-turn: compacting thread=%s', threadId.slice(0, 12));
+  return compactThreadWithRetry(db, threadId, summarizer);
+}
+
+// ---------------------------------------------------------------------------
+// Core compaction with retry (Codex `run_compact_task_inner`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compact thread with retry on summarizer failure.
+ * Codex approach: on transient error, retry up to COMPACT_MAX_RETRIES times.
+ * On ContextWindowExceeded-like failure, could remove oldest messages and retry
+ * (simplified: we retry the summarizer since our summarizer is a separate call).
+ */
+export async function compactThreadWithRetry(
+  db: Db,
+  threadId: string,
+  summarizer: SummarizerFn = defaultSummarizer,
+): Promise<boolean> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= COMPACT_MAX_RETRIES; attempt++) {
+    try {
+      return await compactThread(db, threadId, summarizer);
+    } catch (error) {
+      lastError = error;
+      console.warn('[compact] attempt %d/%d failed: %s',
+        attempt + 1, COMPACT_MAX_RETRIES + 1, error instanceof Error ? error.message : String(error));
+      if (attempt < COMPACT_MAX_RETRIES) {
+        // Brief pause before retry (Codex-style backoff)
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
+    }
+  }
+  console.error('[compact] all %d attempts failed for thread=%s', COMPACT_MAX_RETRIES + 1, threadId.slice(0, 12));
+  throw lastError;
+}
+
+// ---------------------------------------------------------------------------
+// Core compaction logic (Codex `build_compacted_history_with_limit`)
+// ---------------------------------------------------------------------------
 
 export async function compactThread(
   db: Db,
@@ -70,14 +187,14 @@ export async function compactThread(
     'SELECT summary, last_message_id FROM thread_summaries WHERE thread_id = ?'
   ).get(threadId) as { summary: string; last_message_id: number } | undefined;
 
-  // Keep recent messages by token budget (codex-style backward selection)
-  const keepTokenBudget = 20_000; // ~20K tokens of recent messages
+  // Codex-style: backward selection of recent messages to preserve
+  // COMPACT_USER_MESSAGE_MAX_TOKENS budget
   const keepMessages: MessageRow[] = [];
   let keepTokens = 0;
   for (let i = allMessages.length - 1; i >= 0; i--) {
     const msg = allMessages[i];
     const tokens = Math.ceil(msg.content.length / 4);
-    if (keepMessages.length > 0 && keepTokens + tokens > keepTokenBudget) break;
+    if (keepMessages.length > 0 && keepTokens + tokens > COMPACT_USER_MESSAGE_MAX_TOKENS) break;
     keepMessages.unshift(msg);
     keepTokens += tokens;
   }
@@ -130,15 +247,9 @@ export async function compactThread(
   return true;
 }
 
-// Legacy compat — called from handlers.ts background
-export async function compactThreadIfNeeded(
-  db: Db,
-  threadId: string,
-  summarizer: SummarizerFn = defaultSummarizer,
-): Promise<boolean> {
-  if (!needsCompaction(db, threadId)) return false;
-  return compactThread(db, threadId, summarizer);
-}
+// ---------------------------------------------------------------------------
+// Default summarizer
+// ---------------------------------------------------------------------------
 
 async function defaultSummarizer(input: {
   existingSummary: string | null;

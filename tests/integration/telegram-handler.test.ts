@@ -14,7 +14,7 @@ vi.mock('../../src/config.js', () => ({
     esi: { maxPages: 5, backoffMaxSeconds: 10 },
     userProfile: { path: './data/USER_{character_id}.md', refreshSeconds: 300 },
     market: { defaultRegionId: 10000002, defaultRegionName: 'The Forge' },
-    compact: { messageThreshold: 50, tokenRatio: 0.6, tokenBudget: 8000, keepLast: 10, maxInputChars: 20000 },
+    compact: { maxInputChars: 20000 },
   },
 }));
 
