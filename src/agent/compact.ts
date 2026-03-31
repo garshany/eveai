@@ -86,7 +86,11 @@ export async function compactThread(
   const keepMinId = keepMessages[0]?.id ?? Number.MAX_SAFE_INTEGER;
   const startId = existingSummaryRow?.last_message_id ?? 0;
   const candidates = allMessages.filter((msg) => msg.id > startId && msg.id < keepMinId);
-  if (candidates.length === 0) return false;
+  if (candidates.length === 0) {
+    // Nothing to summarize, but reset token counter to stop re-triggering
+    db.prepare('UPDATE agent_threads SET total_tokens = 0 WHERE thread_id = ?').run(threadId);
+    return false;
+  }
 
   const lastSummarizedId = candidates[candidates.length - 1].id;
   const summaryText = (await summarizer({

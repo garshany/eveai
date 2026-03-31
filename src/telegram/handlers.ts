@@ -7,6 +7,7 @@ import { finalizeThreadMessage, splitForTelegram } from '../agent/finalizer.js';
 import { ALL_REQUESTED_SCOPES } from '../eve/scopes.js';
 import { needsCompaction, compactThread } from '../agent/compact.js';
 import { getLinkedCharacter, listLinkedCharacters, setActiveCharacter } from '../eve/sso.js';
+import { planRoute } from '../eve/route-planner.js';
 import { refreshUserProfile, readUserProfile } from '../eve/user-profile.js';
 import { callEsiOperation } from '../eve/esi-client.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
@@ -360,6 +361,43 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     // Store user message
     db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(thread.thread_id, 'user', text);
 
+    // --- Route skill: detect route intent and call planRoute() directly ---
+    const routeDest = parseRouteDestination(text);
+    if (routeDest && getLinkedCharacter(db, userCtx)) {
+      const thinkingMsg = await ctx.reply('🛸 Строю маршрут...');
+      const stopTyping = startTyping(ctx);
+      try {
+        const prefer = /опасн|pvp|инсекьюр|insecure|грязн|lowsec|лоусек/i.test(text) ? 'insecure' as const
+          : /быстр|коротк|shortest/i.test(text) ? 'shortest' as const
+          : 'secure' as const;
+        const result = await planRoute(db, {
+          origin: 'current',
+          destination: routeDest,
+          set_autopilot: true,
+          prefer,
+        }, userCtx);
+        await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
+        if (result.ok) {
+          db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(
+            thread.thread_id, 'assistant', result.formatted_summary,
+          );
+          await replyChunks(ctx, result.formatted_summary);
+          console.log('[route-skill] %s → %s prefer=%s routes=%d',
+            result.origin?.name, result.destination?.name, prefer, result.routes.length);
+        } else {
+          await ctx.reply(`Не удалось построить маршрут: ${result.error}`);
+        }
+      } catch (e) {
+        await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
+        console.error('[route-skill] error:', e);
+        await ctx.reply('Ошибка при построении маршрута.');
+      } finally {
+        stopTyping();
+        clearInFlightRequest(chatId, requestToken);
+      }
+      return;
+    }
+
     // Send EVE-flavored "thinking" placeholder
     const thinkingMsg = await ctx.reply(pickThinkingPhrase());
 
@@ -678,4 +716,20 @@ function collectErrorText(err: unknown): string {
   }
 
   return parts.join(' ');
+}
+
+/**
+ * Detect route-building intent and extract destination from natural text.
+ * Returns destination string or null if not a route request.
+ */
+function parseRouteDestination(text: string): string | null {
+  const lower = text.toLowerCase();
+  // Must contain route-related keywords
+  if (!/маршрут|route|путь до|лети до|дорог[уа] до|перелёт|автопилот до|построй до/i.test(lower)) {
+    return null;
+  }
+  // Extract destination: "до <destination>" or "в <destination>" or "to <destination>"
+  const match = text.match(/(?:до|в|to)\s+([a-zA-Zа-яА-ЯёЁ0-9][\w\s\-']{1,30})/i);
+  if (!match) return null;
+  return match[1].trim().replace(/[.,!?]+$/, '');
 }
