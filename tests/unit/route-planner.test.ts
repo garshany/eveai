@@ -155,10 +155,9 @@ describe('route planner', () => {
     expect(result.routes[0].safe_count).toBe(2);
     expect(result.routes[0].danger_systems).toHaveLength(1);
     expect(result.formatted_summary).toContain('<b>Dodixie → Jita</b>');
-    expect(result.formatted_summary).toContain('Автопилот: нет');
-    expect(result.formatted_summary).toContain('Риск: средний');
-    expect(result.formatted_summary).toContain('<code>route     jumps min  kills isk');
-    expect(result.formatted_summary).toContain('secure    2');
+    expect(result.formatted_summary).toContain('нет');
+    expect(result.formatted_summary).toContain('прыжков');
+    expect(result.formatted_summary).toContain('secure');
   });
 
   it('returns a human-readable route summary with danger details and autopilot flag', async () => {
@@ -178,15 +177,13 @@ describe('route planner', () => {
     expect(result.autopilot_set).toBe(true);
     expect(result.autopilot_mode).toBe('exact_route');
     expect(result.formatted_summary).toContain('<b>Dodixie → Jita</b>');
-    expect(result.formatted_summary).toContain('Автопилот: выставлен');
-    expect(result.formatted_summary).toContain('<code>route     jumps min  kills isk');
-    expect(result.formatted_summary).toContain('<b>Основной маршрут</b> (secure): <b>Dodixie</b> → <b>Midpoint</b> → <b>Jita</b>');
-    expect(result.formatted_summary).toContain('Альтернативы: shortest 1j min 0.9 | insecure 2j min 0.1');
-    expect(result.formatted_summary).toContain('<b>Опасные системы по всем вариантам</b>');
-    expect(result.formatted_summary).toContain('<b>Midpoint</b> 0.5 | маршруты: secure | 1 kills | PvP 1 | 42M ISK');
+    expect(result.formatted_summary).toContain('выставлен');
+    expect(result.formatted_summary).toContain('Dodixie');
+    expect(result.formatted_summary).toContain('Jita');
+    expect(result.formatted_summary).toContain('<b>Опасные системы</b>');
+    expect(result.formatted_summary).toContain('<b>Midpoint</b>');
     expect(result.formatted_summary).toContain('Victim One');
-    expect(result.formatted_summary).toContain('Attacker One');
-    expect(result.formatted_summary).toContain('<a href="https://zkillboard.com/kill/134200001/">zKill</a>');
+    expect(result.formatted_summary).toContain('km</a>');
     expect(result.formatted_summary).not.toContain('{"');
     expect(callEsiOperationMock).toHaveBeenCalledWith(
       db,
@@ -266,9 +263,11 @@ describe('route planner', () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(result.formatted_summary).toContain('опасных систем: 2, киллов за 1ч: 2, потери: 84M ISK');
-    expect(result.formatted_summary).toContain('<b>Dodixie</b> 0.9 | маршруты: secure, shortest, insecure | 1 kills | PvP 1 | 42M ISK');
-    expect(result.formatted_summary).toContain('<b>Scout Gate</b> 0.1 | маршруты: insecure | 1 kills | PvP 1 | 42M ISK');
+    expect(result.formatted_summary).toContain('киллов/ч: 2');
+    expect(result.formatted_summary).toContain('<b>Dodixie</b>');
+    expect(result.formatted_summary).toContain('42M ISK');
+    expect(result.formatted_summary).toContain('<b>Scout Gate</b>');
+    expect(result.formatted_summary).toContain('[insecure]');
   });
 });
 

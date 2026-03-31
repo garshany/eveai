@@ -175,86 +175,98 @@ function formatRouteSummary(
     ?? routes.find((route) => route.flag === 'secure')
     ?? routes[0];
   const mergedDangerSystems = mergeDangerSystems(routes);
-  const totalKills1h = preferred.total_kills_1h;
-  const totalValueM = preferred.total_value_m;
-  const preferredDangerSystems = preferred.danger_systems.length;
-  const alternatives = routes
-    .filter((route) => route.flag !== preferred.flag)
-    .map((route) => `${route.flag} ${route.jumps}j min ${route.min_sec.toFixed(1)}`)
-    .join(' | ');
+  const dangerCount = preferred.danger_systems.length;
 
+  // Header
   lines.push(`<b>${esc(origin.name)} → ${esc(dest.name)}</b>`);
-  lines.push(`Автопилот: ${esc(describeAutopilotMode(autopilotMode))}`);
-  lines.push(`Риск: ${describeRouteRisk(preferred, preferredDangerSystems)}, опасных систем: ${preferredDangerSystems}, киллов за 1ч: ${totalKills1h}, потери: ${totalValueM}M ISK`);
+  const riskEmoji = describeRouteRiskEmoji(preferred, dangerCount);
+  lines.push(`${riskEmoji} ${preferred.jumps} прыжков | мин. сек: ${preferred.min_sec.toFixed(1)} | киллов/ч: ${preferred.total_kills_1h} | потери: ${preferred.total_value_m}M`);
+  lines.push(`Автопилот: ${esc(describeAutopilotMode(autopilotMode))} (${esc(preferred.flag)})`);
 
-  lines.push('');
-  lines.push('<code>route     jumps min  kills isk');
-  for (const route of routes) {
-    lines.push(formatVariantRow(route));
-  }
-  lines.push('</code>');
-
-  lines.push('');
-  lines.push(`<b>Основной маршрут</b> (${esc(preferred.flag)}): ${formatSystemChain(preferred.systems)}`);
-  if (alternatives) {
-    lines.push(`Альтернативы: ${esc(alternatives)}`);
-  }
-
-  if (mergedDangerSystems.length > 0) {
+  // Route comparison table
+  if (routes.length > 1) {
     lines.push('');
-    lines.push('<b>Опасные системы по всем вариантам</b>');
-    for (const ds of mergedDangerSystems) {
-      lines.push(
-        `<b>${esc(ds.name)}</b> ${ds.sec.toFixed(1)} | маршруты: ${esc(formatRouteFlags(ds.route_flags))} | ` +
-        `${ds.kills_1h} kills | PvP ${ds.pvp} | ${ds.total_value_m}M ISK`,
-      );
-      for (const preview of formatDangerPreview(ds)) {
-        lines.push(preview);
-      }
-      if (ds.kills.length < ds.kills_1h) {
-        lines.push(`  Показаны детальные данные для ${ds.kills.length} из ${ds.kills_1h} киллов.`);
+    lines.push('<code>');
+    lines.push('         прыж  сек   kills  ISK');
+    for (const route of routes) {
+      const marker = route.flag === preferred.flag ? '>' : ' ';
+      lines.push(`${marker}${formatVariantRow(route)}`);
+    }
+    lines.push('</code>');
+  }
+
+  // System chain — compact, no bold per system
+  lines.push('');
+  const chain = preferred.systems.join(' → ');
+  if (chain.length > 120) {
+    // Long chain: split into lines of ~60 chars
+    const parts: string[] = [];
+    let current = '';
+    for (const sys of preferred.systems) {
+      const next = current ? `${current} → ${sys}` : sys;
+      if (next.length > 60 && current) {
+        parts.push(current + ' →');
+        current = sys;
+      } else {
+        current = next;
       }
     }
+    if (current) parts.push(current);
+    lines.push(`<code>${parts.join('\n')}</code>`);
+  } else {
+    lines.push(`<code>${esc(chain)}</code>`);
+  }
+
+  // Danger report
+  if (mergedDangerSystems.length > 0) {
+    lines.push('');
+    lines.push('<b>Опасные системы</b>');
+    for (const ds of mergedDangerSystems) {
+      const secLabel = ds.sec < 0.5 ? 'low' : 'hi';
+      const routeLabel = ds.route_flags.length < routes.length
+        ? ` [${ds.route_flags.join(', ')}]`
+        : '';
+      lines.push(`\n<b>${esc(ds.name)}</b> ${ds.sec.toFixed(1)} ${secLabel}${routeLabel} — ${ds.kills_1h} kills, ${ds.total_value_m}M ISK`);
+
+      for (const kill of ds.kills) {
+        const time = kill.time?.split(' ')[0] ?? '?'; // just HH:MM
+        const ship = esc(kill.victim_ship ?? '?');
+        const isk = kill.value_m ? ` ${kill.value_m}M` : '';
+        const link = kill.url ? `<a href="${escapeHtmlAttribute(kill.url)}">km</a>` : '';
+        const victim = esc(truncateName(kill.victim));
+        lines.push(`  ${time} ${ship}${isk} ${victim} ${link}`);
+      }
+      if (ds.kills.length < ds.kills_1h) {
+        lines.push(`  <i>+${ds.kills_1h - ds.kills.length} ещё</i>`);
+      }
+    }
+  } else {
+    lines.push('');
+    lines.push('Опасных систем не обнаружено.');
   }
 
   return lines.join('\n').trim();
 }
 
 function formatVariantRow(route: RouteVariant): string {
-  const cols = [
-    route.flag.padEnd(9, ' '),
-    String(route.jumps).padEnd(5, ' '),
-    route.min_sec.toFixed(1).padEnd(4, ' '),
-    String(route.total_kills_1h).padEnd(5, ' '),
-    `${route.total_value_m}M`,
-  ];
-  return cols.join(' ');
+  return [
+    route.flag.padEnd(8),
+    String(route.jumps).padStart(3),
+    `  ${route.min_sec.toFixed(1)}`,
+    `  ${String(route.total_kills_1h).padStart(4)}`,
+    `  ${route.total_value_m}M`,
+  ].join('');
 }
 
-function describeRouteRisk(route: RouteVariant, dangerSystems: number): string {
-  if (route.min_sec < 0.5 || route.total_kills_1h >= 10) return 'высокий';
-  if (route.min_sec < 0.8 || dangerSystems > 0 || route.total_kills_1h > 0) return 'средний';
-  return 'низкий';
+function describeRouteRiskEmoji(route: RouteVariant, dangerSystems: number): string {
+  if (route.min_sec < 0.5 || route.total_kills_1h >= 10) return '\u{1F534}'; // red circle
+  if (route.min_sec < 0.8 || dangerSystems > 0 || route.total_kills_1h > 0) return '\u{1F7E1}'; // yellow circle
+  return '\u{1F7E2}'; // green circle
 }
 
-function formatSystemChain(systems: string[]): string {
-  return systems.map((name) => `<b>${escapeHtml(name)}</b>`).join(' → ');
-}
-
-function formatRouteFlags(flags: RouteFlag[]): string {
-  return flags.join(', ');
-}
-
-function formatDangerPreview(ds: DangerSystem): string[] {
-  return ds.kills.map((kill) => {
-    const time = escapeHtml(kill.time ?? '?');
-    const victim = escapeHtml(kill.victim ?? '?');
-    const attacker = escapeHtml(kill.attacker ?? '?');
-    const ship = escapeHtml(kill.victim_ship ?? '?');
-    const isk = kill.value_m ? ` | ${kill.value_m}M` : '';
-    const link = kill.url ? ` | <a href="${escapeHtmlAttribute(kill.url)}">zKill</a>` : '';
-    return `  ${time} ${victim} -> ${attacker} | ${ship}${isk}${link}`;
-  });
+function truncateName(name: string | null): string {
+  if (!name) return '?';
+  return name.length > 16 ? name.slice(0, 14) + '..' : name;
 }
 
 function escapeHtml(text: string): string {
