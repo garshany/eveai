@@ -488,7 +488,8 @@ async function runNativeAgentLoop(
   let totalReasoningTokens = 0;
   /** Peak input tokens in a single iteration — reflects actual context size for compaction. */
   let peakInputTokens = 0;
-  let usedToolStateRecovery = false;
+  let toolStateRecoveryCount = 0;
+  const MAX_TOOL_STATE_RECOVERIES = 3;
   let usedMidTurnCompact = false;
 
   console.log('[executor] === NEW REQUEST chat=%d thread=%s goal="%s" ===', chatId, threadId.slice(0, 12), goal.slice(0, 80));
@@ -509,9 +510,9 @@ async function runNativeAgentLoop(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (
-        shouldUseToolStateRecovery(message, usedToolStateRecovery, previousResponseId, pendingItems)
+        shouldUseToolStateRecovery(message, toolStateRecoveryCount >= MAX_TOOL_STATE_RECOVERIES,previousResponseId, pendingItems)
       ) {
-        usedToolStateRecovery = true;
+        toolStateRecoveryCount += 1;
         previousResponseId = null;
         pendingItems = buildToolStateRecoveryContext(db, threadId);
         saveLastResponseId(db, threadId, null);
@@ -557,9 +558,9 @@ async function runNativeAgentLoop(
 
     if (response.error) {
       if (
-        shouldUseToolStateRecovery(response.error.message, usedToolStateRecovery, previousResponseId, pendingItems)
+        shouldUseToolStateRecovery(response.error.message, toolStateRecoveryCount >= MAX_TOOL_STATE_RECOVERIES,previousResponseId, pendingItems)
       ) {
-        usedToolStateRecovery = true;
+        toolStateRecoveryCount += 1;
         previousResponseId = null;
         pendingItems = buildToolStateRecoveryContext(db, threadId);
         saveLastResponseId(db, threadId, null);
@@ -1227,11 +1228,11 @@ function isWsRetriableError(message: string): boolean {
 
 function shouldUseToolStateRecovery(
   message: string,
-  usedToolStateRecovery: boolean,
+  exhausted: boolean,
   previousResponseId: string | null,
   pendingItems: NativeInputItem[],
 ): boolean {
-  if (usedToolStateRecovery) return false;
+  if (exhausted) return false;
   if (shouldRecoverFromToolStateMismatch(message, previousResponseId, pendingItems)) return true;
   // Also recover from WS transport errors (broken continuation chain)
   if (previousResponseId && isWsRetriableError(message)) return true;
