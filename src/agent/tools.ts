@@ -227,7 +227,7 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
   return [
     { type: 'tool_search' },
     ...ALWAYS_ON_FUNCTION_TOOLS,
-    buildBatchMarketNamespace(),
+    BATCH_MARKET_TOOL,
     buildZkillNamespace(),
     ...(await listEsiNamespaces()),
   ];
@@ -1041,15 +1041,6 @@ export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'u
   }
   const catalog = await loadEsiCatalog();
   return catalog.get(name)?.toolPolicy ?? null;
-}
-
-function buildBatchMarketNamespace(): NativeNamespaceTool {
-  return {
-    type: 'namespace',
-    name: 'eve_market_batch',
-    description: 'Batch market price lookup for multiple items at once. Use for fits, shopping lists, cost estimation.',
-    tools: [{ ...BATCH_MARKET_TOOL, defer_loading: true }],
-  };
 }
 
 function buildZkillNamespace(): NativeNamespaceTool {
