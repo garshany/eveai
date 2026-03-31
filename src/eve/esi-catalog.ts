@@ -80,18 +80,30 @@ type SwaggerSchema = {
 };
 
 // Operations excluded from agent tools — static equivalents live in SDE.
+// Includes both list endpoints and by-ID endpoints when SDE has the same data.
 const EXCLUDED_OPERATIONS = new Set([
-  'get_universe_systems',        // ~8500 IDs, available in SDE
-  'get_universe_types',          // ~51000 IDs, available in SDE
-  'get_universe_categories',     // available in SDE
-  'get_universe_groups',         // available in SDE
-  'get_universe_constellations', // available in SDE
-  'get_universe_regions',        // available in SDE
-  'get_universe_ancestries',     // available in SDE
-  'get_universe_bloodlines',     // available in SDE
-  'get_universe_factions',       // available in SDE
-  'get_universe_graphics',       // available in SDE
-  'get_universe_races',          // available in SDE
+  // List endpoints (return arrays of IDs)
+  'get_universe_systems',        // ~8500 IDs → sde_systems
+  'get_universe_types',          // ~51000 IDs → sde_types
+  'get_universe_categories',     // → sde_categories
+  'get_universe_groups',         // → sde_groups
+  'get_universe_constellations', // → sde_constellations
+  'get_universe_regions',        // → sde_regions
+  'get_universe_ancestries',     // → SDE
+  'get_universe_bloodlines',     // → SDE
+  'get_universe_factions',       // → sde_factions
+  'get_universe_graphics',       // → SDE
+  'get_universe_races',          // → SDE
+  // By-ID endpoints with full SDE coverage — model must use sde_sql instead
+  'get_universe_systems_system_id',                // → sde_systems (name, security, constellation_id, stargates, stations)
+  'get_universe_constellations_constellation_id',  // → sde_constellations (name, region_id, systems)
+  'get_universe_regions_region_id',                // → sde_regions (name, constellations)
+  'get_universe_stargates_stargate_id',            // → sde_stargates (destination_system_id, destination_stargate_id)
+  'get_universe_stations_station_id',              // → sde_stations (name, system_id)
+  'get_universe_types_type_id',                    // → sde_types (name, group_id, data_json with mass/volume/etc)
+  'get_universe_groups_group_id',                  // → sde_groups (name, category_id)
+  'get_universe_categories_category_id',           // → sde_categories (name)
+  'get_universe_graphics_graphic_id',              // → SDE
 ]);
 
 /**
