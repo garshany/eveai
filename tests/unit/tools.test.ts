@@ -22,15 +22,18 @@ describe('agent tools', () => {
     expect(functionNames).toContain('update_plan');
     expect(functionNames).toContain('get_eve_capabilities');
     expect(functionNames).toContain('plan_route');
-    expect(functionNames).toContain('count_moons');
+    expect(functionNames).not.toContain('count_moons');
     expect(functionNames).toContain('count_universe_objects');
     expect(functionNames).toContain('sde_sql');
+    // batch_market_prices is now in a namespace, not top-level
+    expect(functionNames).not.toContain('batch_market_prices');
     // get_markets_region_id_orders is now in ESI namespace (eve_public_market_orders), not top-level
     expect(functionNames).not.toContain('get_markets_region_id_orders');
     expect(functionNames).not.toContain('sde_lookup_types');
     expect(functionNames).not.toContain('zkill_system_recent_kills');
     expect(functionNames).not.toContain('get_characters_character_id_assets');
     expect(functionNames).not.toContain('get_universe_systems_system_id');
+    expect(namespaceNames).toContain('eve_market_batch');
     expect(namespaceNames).toContain('eve_zkill');
     expect(namespaceNames).toContain('eve_character_assets');
     expect(namespaceNames).toContain('eve_public_market_orders');
@@ -46,6 +49,14 @@ describe('agent tools', () => {
         && tool.tools.some((entry) => entry.name === 'zkill'),
       ),
     ).toBe(true);
+
+    // batch_market_prices lives inside eve_market_batch namespace (AC2)
+    const batchMarketNamespace = namespaces.find((tool) => tool.name === 'eve_market_batch');
+    expect(batchMarketNamespace).toBeDefined();
+    expect(batchMarketNamespace?.description).toContain('Batch market price lookup');
+    const batchMarketTool = batchMarketNamespace?.tools.find((tool) => tool.name === 'batch_market_prices');
+    expect(batchMarketTool).toBeDefined();
+    expect(batchMarketTool?.defer_loading).toBe(true);
 
     // get_markets_region_id_orders lives inside eve_public_market_orders namespace
     const marketNamespace = namespaces.find((tool) => tool.name === 'eve_public_market_orders');
@@ -74,6 +85,7 @@ describe('agent tools', () => {
     const capabilitiesTool = tools.find((tool): tool is Extract<(typeof tools)[number], { type: 'function'; name: 'get_eve_capabilities' }> =>
       tool.type === 'function' && tool.name === 'get_eve_capabilities');
     expect(capabilitiesTool).toBeDefined();
+    expect(capabilitiesTool?.defer_loading).toBe(true);
     expect(capabilitiesTool?.parameters).toEqual({
       type: 'object',
       properties: {
@@ -113,7 +125,7 @@ describe('agent tools', () => {
       .filter((tool): tool is Extract<(typeof tools)[number], { type: 'function' }> => tool.type === 'function')
       .map((tool) => tool.name);
 
-    expect(functionNames).toContain('count_moons');
+    expect(functionNames).not.toContain('count_moons');
     expect(functionNames).toContain('count_universe_objects');
     expect(functionNames).toContain('sde_sql');
     expect(functionNames).not.toContain('web_search');

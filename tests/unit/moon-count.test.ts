@@ -68,41 +68,47 @@ function seedUniverse(): void {
   );
 }
 
-describe('executeMoonCount', () => {
-  it('counts moons for a single system from mapPlanets', async () => {
+describe('executeUniverseObjectCount (moon counting, consolidated from count_moons)', () => {
+  it('counts moons for a single system with enriched data', async () => {
     seedUniverse();
-    const { executeMoonCount } = await import('../../src/agent/tools.js');
+    const { executeUniverseObjectCount } = await import('../../src/agent/tools.js');
 
-    expect(executeMoonCount(db as never, {
+    expect(executeUniverseObjectCount(db as never, {
       target_kind: 'system',
       target_name: 'jita',
+      object_kind: 'moons',
     })).toEqual({
       ok: true,
       target_kind: 'system',
       target_name: 'Jita',
       system_id: 30000142,
+      constellation_id: 20000020,
       constellation_name: 'Kimotoro',
+      region_id: 10000002,
       region_name: 'The Forge',
+      object_kind: 'moons',
+      count: 3,
       planet_count: 2,
-      moon_count: 3,
     });
   });
 
-  it('counts moons for an entire region without mixing other regions', async () => {
+  it('counts moons for an entire region with enriched data', async () => {
     seedUniverse();
-    const { executeMoonCount } = await import('../../src/agent/tools.js');
+    const { executeUniverseObjectCount } = await import('../../src/agent/tools.js');
 
-    expect(executeMoonCount(db as never, {
+    expect(executeUniverseObjectCount(db as never, {
       target_kind: 'region',
       target_name: 'The Forge',
+      object_kind: 'moons',
     })).toEqual({
       ok: true,
       target_kind: 'region',
       target_name: 'The Forge',
       region_id: 10000002,
-      system_count: 2,
+      object_kind: 'moons',
+      count: 4,
       planet_count: 3,
-      moon_count: 4,
+      system_count: 2,
     });
   });
 });

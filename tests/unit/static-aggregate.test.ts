@@ -234,12 +234,13 @@ describe('static aggregate helpers', () => {
 
     expect(__test__.tryBuildDeterministicCountAnswer(
       'Сколько лун в моем регионе?',
-      [{ name: 'count_moons' }],
+      [{ name: 'count_universe_objects' }],
       [{
         ok: true,
         target_kind: 'region',
         target_name: 'The Forge',
-        moon_count: 3,
+        object_kind: 'moons',
+        count: 3,
         system_count: 2,
         planet_count: 3,
       }],
@@ -314,8 +315,9 @@ describe('static aggregate helpers', () => {
       },
     );
 
-    expect(answer).toBe('В созвездии **Kimotoro** — **3 луны**.');
+    expect(answer).toContain('В созвездии **Kimotoro** — **3 луны**.');
+    expect(answer).toContain('планет: **3**');
     const stored = db.prepare("SELECT role, content FROM messages WHERE thread_id = ? ORDER BY id ASC").all('t3') as Array<{ role: string; content: string }>;
-    expect(stored.at(-1)).toEqual({ role: 'assistant', content: 'В созвездии **Kimotoro** — **3 луны**.' });
+    expect(stored.at(-1)?.content).toContain('В созвездии **Kimotoro** — **3 луны**.');
   });
 });

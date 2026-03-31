@@ -4,12 +4,10 @@ import { buildDeveloperPrompt } from './prompts.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
 import {
   buildNativeAgentTools,
-  executeMoonCount,
   executeUniverseObjectCount,
   executeSdeSql,
   planRoute,
   getToolPolicy,
-  isMoonCountTool,
   isSdeSqlTool,
   isUniverseCountTool,
   isZkillToolName,
@@ -780,10 +778,6 @@ async function executeToolCall(
     return executeSdeSql(db, String(args.sql ?? ''));
   }
 
-  if (isMoonCountTool(name)) {
-    return executeMoonCount(db, args);
-  }
-
   if (isUniverseCountTool(name)) {
     return executeUniverseObjectCount(db, args);
   }
@@ -1437,11 +1431,6 @@ function tryBuildDeterministicCountAnswer(
   for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
     const toolName = toolCalls[index].name;
     const result = results[index];
-    if (toolName === 'count_moons') {
-      const answer = formatMoonCountAnswer(result);
-      if (answer) return answer;
-      continue;
-    }
     if (toolName === 'count_universe_objects') {
       const answer = formatUniverseCountAnswer(result);
       if (answer) return answer;
@@ -1459,21 +1448,13 @@ function tryHandleStaticAggregateFastPath(
   const intent = parseStaticAggregateIntent(db, goal, locationContext);
   if (!intent) return null;
 
-  const result = intent.objectKind === 'moons'
-    && (intent.targetKind === 'system' || intent.targetKind === 'region')
-    ? executeMoonCount(db, {
-        target_kind: intent.targetKind,
-        target_name: intent.targetName,
-      })
-    : executeUniverseObjectCount(db, {
-        target_kind: intent.targetKind,
-        target_name: intent.targetName,
-        object_kind: intent.objectKind,
-      });
+  const result = executeUniverseObjectCount(db, {
+    target_kind: intent.targetKind,
+    target_name: intent.targetName,
+    object_kind: intent.objectKind,
+  });
 
-  const answer = intent.objectKind === 'moons' && (intent.targetKind === 'system' || intent.targetKind === 'region')
-    ? formatMoonCountAnswer(result)
-    : formatUniverseCountAnswer(result);
+  const answer = formatUniverseCountAnswer(result);
   if (!answer) return null;
 
   storeAssistantMessage(db, threadId, answer);
@@ -1481,33 +1462,6 @@ function tryHandleStaticAggregateFastPath(
   console.log('[executor] === DONE (static-aggregate-fast-path) object=%s target=%s:%s answer=%d chars ===',
     intent.objectKind, intent.targetKind, intent.targetName, answer.length);
   return answer;
-}
-
-function formatMoonCountAnswer(result: unknown): string | null {
-  if (!result || typeof result !== 'object') return null;
-  const record = result as Record<string, unknown>;
-  if (record.ok !== true || typeof record.target_kind !== 'string' || typeof record.target_name !== 'string') {
-    return null;
-  }
-
-  if (record.target_kind === 'system' && typeof record.moon_count === 'number') {
-    return `В системе **${record.target_name}** — **${record.moon_count} ${formatCountNoun(record.moon_count, ['луна', 'луны', 'лун'])}**.`;
-  }
-
-  if (record.target_kind === 'region' && typeof record.moon_count === 'number') {
-    const extras: string[] = [];
-    if (typeof record.system_count === 'number') {
-      extras.push(`систем: **${record.system_count}**`);
-    }
-    if (typeof record.planet_count === 'number') {
-      extras.push(`планет: **${record.planet_count}**`);
-    }
-    return extras.length > 0
-      ? `В регионе **${record.target_name}** — **${record.moon_count} ${formatCountNoun(record.moon_count, ['луна', 'луны', 'лун'])}**.\n\nДополнительно:\n- ${extras.join('\n- ')}`
-      : `В регионе **${record.target_name}** — **${record.moon_count} ${formatCountNoun(record.moon_count, ['луна', 'луны', 'лун'])}**.`;
-  }
-
-  return null;
 }
 
 function formatUniverseCountAnswer(result: unknown): string | null {
@@ -1528,7 +1482,23 @@ function formatUniverseCountAnswer(result: unknown): string | null {
       ? 'созвездии'
       : 'регионе';
 
-  return `В ${targetLabel} **${record.target_name}** — **${record.count} ${formatCountNoun(record.count, nounForms)}**.`;
+  const base = `В ${targetLabel} **${record.target_name}** — **${record.count} ${formatCountNoun(record.count, nounForms)}**.`;
+
+  // Enriched moon answer: append planet_count and system_count extras (region-level)
+  if (record.object_kind === 'moons') {
+    const extras: string[] = [];
+    if (typeof record.system_count === 'number') {
+      extras.push(`систем: **${record.system_count}**`);
+    }
+    if (typeof record.planet_count === 'number') {
+      extras.push(`планет: **${record.planet_count}**`);
+    }
+    if (extras.length > 0) {
+      return `${base}\n\nДополнительно:\n- ${extras.join('\n- ')}`;
+    }
+  }
+
+  return base;
 }
 
 function getUniverseCountNounForms(objectKind: string): [string, string, string] | null {

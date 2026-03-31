@@ -35,7 +35,8 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('EFT');
     expect(prompt).toContain('ломают импорт');
     expect(prompt).not.toContain('ОБЯЗАТЕЛЬНО вызывай для поиска ESI');
-    expect(prompt.length).toBeLessThan(14000);
+    expect(prompt).toContain('<sde_schema>');
+    expect(prompt.length).toBeLessThan(16000);
   });
 
   it('appends profile and summary when provided', () => {
@@ -85,11 +86,13 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('count_universe_objects');
     expect(prompt).toContain('Не используй tool_search');
     expect(prompt).toContain('current region/system/constellation');
-    expect(prompt).toContain('количество лун в моем созвездии');
+    expect(prompt).toContain('количество лун');
+    expect(prompt).toContain('count_universe_objects');
     expect(prompt).not.toContain('batch_market_prices');
     expect(prompt).not.toContain('EFT');
     expect(prompt).not.toContain('<user_profile_data>');
     expect(prompt).not.toContain('<conversation_summary>');
-    expect(prompt.length).toBeLessThan(2500);
+    expect(prompt).toContain('<sde_schema>');
+    expect(prompt.length).toBeLessThan(4000);
   });
 });
