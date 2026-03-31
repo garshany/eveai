@@ -15,13 +15,11 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('1-2 фразы');
     expect(prompt).toContain('не teaser');
     expect(prompt).toContain('Не выдавай предположение');
-    expect(prompt).toContain('ТОЛЬКО ESI');
     expect(prompt).toContain('ТОЛЬКО sde_sql');
+    expect(prompt).toContain('НЕ вызывай ESI для статики');
     expect(prompt).toContain('web_search');
     expect(prompt).toContain('tool_search');
-    expect(prompt).toContain('основной discovery-инструмент');
-    expect(prompt).toContain('Если подходящий endpoint уже доступен, не делай лишний tool_search');
-    expect(prompt).toContain('сначала используй уже доступный маркет endpoint');
+    expect(prompt).toContain('batch_market_prices');
     expect(prompt).toContain('Backend управляет auth, tokens, pagination, retries, rate limits');
     expect(prompt).toContain('Не спрашивай character_id');
     expect(prompt).toContain('Не повторяй один и тот же вызов');
