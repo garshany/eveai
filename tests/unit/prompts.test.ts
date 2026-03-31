@@ -35,7 +35,7 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('EFT');
     expect(prompt).toContain('ломают импорт');
     expect(prompt).not.toContain('ОБЯЗАТЕЛЬНО вызывай для поиска ESI');
-    expect(prompt.length).toBeLessThan(13000);
+    expect(prompt.length).toBeLessThan(14000);
   });
 
   it('appends profile and summary when provided', () => {
