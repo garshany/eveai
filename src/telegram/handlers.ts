@@ -367,7 +367,7 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
       const thinkingMsg = await ctx.reply('🛸 Строю маршрут...');
       const stopTyping = startTyping(ctx);
       try {
-        const prefer = /опасн|pvp|инсекьюр|insecure|грязн|lowsec|лоусек/i.test(text) ? 'insecure' as const
+        const prefer = /опасн|pvp|пвп|инсекьюр|insecure|грязн|lowsec|лоусек|danger/i.test(text) ? 'insecure' as const
           : /быстр|коротк|shortest/i.test(text) ? 'shortest' as const
           : 'secure' as const;
         const result = await planRoute(db, {
