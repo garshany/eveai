@@ -107,6 +107,7 @@ Use it when you need to find the right file or folder before reading implementat
 - `skills/eve-esi/SKILL.md`: ESI workflow skill
 - `skills/eve-planning/SKILL.md`: planning workflow skill
 - `skills/eve-sde/SKILL.md`: SDE workflow skill
+- `docs/skills-protocol.md`: how skills work through Codex proxy (tool types, model compatibility, execution flow)
 - `.agent/tasks/`: repo-task-proof-loop task artifacts
 
 ## Read This Next

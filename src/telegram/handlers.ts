@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { handleAgentMessage } from '../agent/executor.js';
 import { finalizeThreadMessage, splitForTelegram } from '../agent/finalizer.js';
 import { ALL_REQUESTED_SCOPES } from '../eve/scopes.js';
-import { compactThreadIfNeeded } from '../agent/compact.js';
+import { needsCompaction, compactThread } from '../agent/compact.js';
 import { getLinkedCharacter, listLinkedCharacters, setActiveCharacter } from '../eve/sso.js';
 import { refreshUserProfile, readUserProfile } from '../eve/user-profile.js';
 import { callEsiOperation } from '../eve/esi-client.js';
@@ -368,13 +368,26 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
       try {
         void maybeRefreshUserProfile(db, userCtx);
         console.log(`[handler] message chat_id=${chatId} user_id=${userCtx.userId} len=${text.length}`);
-        const response = await handleAgentMessage(db, thread.thread_id, userCtx, text);
-        const cleaned = finalizeThreadMessage(db, thread.thread_id, response);
+        const agentResult = await handleAgentMessage(db, thread.thread_id, userCtx, text);
+        const cleaned = finalizeThreadMessage(db, thread.thread_id, agentResult.text);
         // Delete thinking placeholder, then send real response
         await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
         await replyChunks(ctx, cleaned);
-        // Background: update summary for cold start fallback (proxy restart, >30 days, etc.)
-        void compactThreadIfNeeded(db, thread.thread_id).catch(() => {});
+        // Compaction: if cumulative tokens exceed 100K, compact with notification
+        if (needsCompaction(db, thread.thread_id)) {
+          const compactMsg = await ctx.reply('⏳ Сжимаю контекст разговора...').catch(() => null);
+          try {
+            await compactThread(db, thread.thread_id);
+            if (compactMsg) {
+              await ctx.api.editMessageText(chatId, compactMsg.message_id, '✓ Контекст сжат. Можно продолжать.').catch(() => {});
+            }
+          } catch (e) {
+            console.error('[compact] failed:', e);
+            if (compactMsg) {
+              await ctx.api.deleteMessage(chatId, compactMsg.message_id).catch(() => {});
+            }
+          }
+        }
       } finally {
         stopTyping();
       }

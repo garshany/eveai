@@ -17,6 +17,13 @@
 - simple static aggregate count questions (systems, constellations, planets, moons, asteroid belts, stations, stargates) use a reduced static toolset plus deterministic local-SDE counters instead of the full ESI namespace catalog
 - when a deterministic static count tool fully answers the user request, the executor finalizes the reply server-side and skips the extra model round-trip
 
+## Skills Execution Model
+
+- skills work through a function tool `"shell"` on gpt-5.4, not `type: "local_shell"` or `type: "shell"` (both rejected by ChatGPT backend)
+- skill metadata (name, description, path) is injected into `instructions`; the model reads `SKILL.md` via the shell tool and follows its instructions
+- the client must execute shell commands in a sandboxed environment with timeouts and output caps
+- full protocol reference: [skills-protocol.md](./skills-protocol.md)
+
 ## Failure Model
 
 - if Telegram bot startup fails, health becomes degraded or failed

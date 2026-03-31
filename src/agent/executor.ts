@@ -255,12 +255,17 @@ function stripRedundantFields(data: unknown, requestArgs: Record<string, unknown
   });
 }
 
+export type AgentResult = {
+  text: string;
+  totalInputTokens: number;
+};
+
 export async function handleAgentMessage(
   db: Db,
   threadId: string,
   ctx: UserContext,
   userText: string,
-): Promise<string> {
+): Promise<AgentResult> {
   ensureThreadOwnership(db, threadId, ctx);
 
   const linked = getLinkedCharacter(db, ctx);
@@ -294,7 +299,7 @@ export async function handleAgentMessage(
     liveContext?.location ?? null,
   );
   if (staticAggregateFastPath) {
-    return staticAggregateFastPath;
+    return { text: staticAggregateFastPath, totalInputTokens: 0 };
   }
 
   const summary = getThreadSummary(db, threadId);
@@ -313,7 +318,14 @@ export async function handleAgentMessage(
     promptMode,
   );
 
-  return await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt);
+  const result = await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt);
+
+  // Track cumulative token usage for compaction trigger
+  db.prepare(
+    'UPDATE agent_threads SET total_tokens = COALESCE(total_tokens, 0) + ? WHERE thread_id = ?'
+  ).run(result.totalInputTokens, threadId);
+
+  return result;
 }
 
 type LiveContextNeeds = {
@@ -440,7 +452,7 @@ async function runNativeAgentLoop(
   ctx: UserContext,
   goal: string,
   developerPrompt: string,
-): Promise<string> {
+): Promise<AgentResult> {
   const chatId = ctx.chatId ?? ctx.userId;
   const requestId = createRequestId();
   const tools = await buildNativeAgentTools(
@@ -528,7 +540,7 @@ async function runNativeAgentLoop(
       saveLastResponseId(db, threadId, null);
       console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
         totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
-      return message;
+      return { text: message, totalInputTokens };
     }
 
     if (response.toolSearchPaths.length > 0) {
@@ -557,7 +569,7 @@ async function runNativeAgentLoop(
         saveLastResponseId(db, threadId, response.id);
         console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
           iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, response.outputText.length);
-        return response.outputText;
+        return { text: response.outputText, totalInputTokens };
       }
       if (response.toolSearchPaths.length > 0 && response.id) {
         previousResponseId = response.id;
@@ -578,7 +590,7 @@ async function runNativeAgentLoop(
       const fallback = 'Не удалось завершить ответ: модель не вернула ни текст, ни tool calls.';
       storeAssistantMessage(db, threadId, fallback);
       saveLastResponseId(db, threadId, null);
-      return fallback;
+      return { text: fallback, totalInputTokens };
     }
     emptyResponseRetries = 0;
 
@@ -620,14 +632,14 @@ async function runNativeAgentLoop(
       saveLastResponseId(db, threadId, null);
       console.log('[executor] === DONE (deterministic-count) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
         iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, deterministicAnswer.length);
-      return deterministicAnswer;
+      return { text: deterministicAnswer, totalInputTokens };
     }
 
     if (!response.id) {
       const message = 'Не удалось продолжить tool loop: proxy не вернул response id.';
       storeAssistantMessage(db, threadId, message);
       saveLastResponseId(db, threadId, null);
-      return message;
+      return { text: message, totalInputTokens };
     }
 
     previousResponseId = response.id;
@@ -650,7 +662,7 @@ async function runNativeAgentLoop(
   saveLastResponseId(db, threadId, null);
   console.log('[executor] === DONE (timeout) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
     MAX_TOOL_ITERATIONS, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
-  return timeout;
+  return { text: timeout, totalInputTokens };
 }
 
 async function executeToolCallsSequentially(

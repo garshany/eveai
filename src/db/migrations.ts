@@ -20,6 +20,8 @@ export function runMigrations(db: Db): void {
     createIndexIfMissing(db, 'idx_eve_character_links_user', 'eve_character_links', 'user_id');
     backfillUsers(db);
     clearLegacyOauthStates(db);
+    addColumnIfMissing(db, 'agent_threads', 'total_tokens', 'INTEGER DEFAULT 0');
+    createIndexIfMissing(db, 'idx_messages_thread', 'messages', 'thread_id');
   });
 
   migrate();

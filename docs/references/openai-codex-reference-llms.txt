@@ -10,5 +10,13 @@ Primary URLs:
 - https://developers.openai.com/api/docs/guides/latest-model/
 - https://developers.openai.com/api/docs/guides/tools-tool-search/
 - https://developers.openai.com/api/docs/guides/function-calling/
+- https://developers.openai.com/api/docs/guides/tools-skills/
+- https://developers.openai.com/api/docs/guides/tools-shell/
 - https://developers.openai.com/codex/guides/agents-md/
 - https://developers.openai.com/codex/skills/
+- https://agentskills.io/specification
+
+Notes:
+- Skills API (type: "shell" + environment.skills) does NOT work through Codex proxy ChatGPT backend
+- Working approach: function tool "shell" + skill metadata in instructions (see docs/skills-protocol.md)
+- Codex CLI source for skills: https://github.com/openai/codex/blob/main/codex-rs/tools/src/local_tool.rs

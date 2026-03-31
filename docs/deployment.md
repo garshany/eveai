@@ -217,6 +217,28 @@ pm2 logs eveai --lines 50 --nostream
 - stream содержит `response.completed`
 - `eveai` перестаёт писать `token_expired`
 
+## Skills Through Codex Proxy
+
+Skills (SKILL.md bundles) work through the proxy via a function tool `"shell"`, not the official `type: "shell"` API format (rejected by ChatGPT backend).
+
+The model calls `shell(["bash", "-lc", "cat /path/to/SKILL.md"])`, the app executes locally and returns output. Full protocol: [docs/skills-protocol.md](./skills-protocol.md).
+
+Quick verification on prod:
+
+```bash
+curl -sS -H 'Content-Type: application/json' \
+  -X POST http://127.0.0.1:8080/v1/responses \
+  -d '{
+    "model": "gpt-5.4",
+    "instructions": "You have a skill: basic-math at /tmp/skills/basic-math. Read SKILL.md first.",
+    "input": [{"role":"user","content":[{"type":"input_text","text":"Add 2+2 using the skill"}]}],
+    "tools": [{"type":"function","name":"shell","description":"Run a local command.","parameters":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"}}},"required":["command"]}}],
+    "store": false, "stream": false
+  }'
+```
+
+Expected: `function_call` with `shell(["bash","-lc","cat /tmp/skills/basic-math/SKILL.md"])`.
+
 ## Process Model
 
 Приложение:

@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS agent_threads (
   character_id INTEGER,
   user_id    INTEGER,
   last_response_id TEXT,
+  total_tokens INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -106,6 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_eve_character_links_chat ON eve_character_links(c
 CREATE INDEX IF NOT EXISTS idx_eve_character_links_user ON eve_character_links(user_id);
 
 CREATE INDEX IF NOT EXISTS idx_agent_threads_user ON agent_threads(user_id);
+CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 
 CREATE TABLE IF NOT EXISTS plans (
   request_id TEXT PRIMARY KEY,

@@ -13,25 +13,25 @@ export type SummarizerFn = (input: {
   messages: MessageRow[];
 }) => Promise<string>;
 
-const MAX_SUMMARY_CHARS = 2000;
+const MAX_SUMMARY_CHARS = 4000;
 
-const SUMMARY_DEVELOPER_PROMPT = `Ты сжимаешь историю диалога в краткую структурированную память.
+// Codex-style compaction prompt — handoff summary for another LLM
+const COMPACTION_DEVELOPER_PROMPT = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
-Формат:
-Facts:
-- ...
-Preferences:
-- ...
-Active tasks:
-- ...
-Open questions:
-- ...
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue (IDs, names, locations, numbers)
 
-Правила:
-- Не выдумывай факты.
-- Сохраняй имена, ID, локации, ассеты и числа.
-- Пиши кратко и по делу.
-- Максимум 12 пунктов суммарно.`;
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
+Write in Russian if the conversation was in Russian.`;
+
+// Prefix injected before the summary when loading into cold context
+export const SUMMARY_PREFIX = 'Другая языковая модель начала решать эту задачу и создала сводку своего процесса. Используй эту информацию, чтобы продолжить работу и не дублировать уже сделанное. Вот сводка:\n\n';
+
+/** Compaction token threshold — when cumulative thread tokens exceed this, compact. */
+const COMPACT_TOKEN_THRESHOLD = 100_000;
 
 export function getThreadSummary(db: Db, threadId: string): string | null {
   const row = db.prepare('SELECT summary FROM thread_summaries WHERE thread_id = ?').get(threadId) as
@@ -40,7 +40,20 @@ export function getThreadSummary(db: Db, threadId: string): string | null {
   return row?.summary ?? null;
 }
 
-export async function compactThreadIfNeeded(
+/** Get cumulative token count for a thread. */
+export function getThreadTotalTokens(db: Db, threadId: string): number {
+  const row = db.prepare('SELECT total_tokens FROM agent_threads WHERE thread_id = ?').get(threadId) as
+    | { total_tokens: number | null }
+    | undefined;
+  return row?.total_tokens ?? 0;
+}
+
+/** Check if compaction is needed based on cumulative token usage. */
+export function needsCompaction(db: Db, threadId: string): boolean {
+  return getThreadTotalTokens(db, threadId) >= COMPACT_TOKEN_THRESHOLD;
+}
+
+export async function compactThread(
   db: Db,
   threadId: string,
   summarizer: SummarizerFn = defaultSummarizer,
@@ -49,24 +62,28 @@ export async function compactThreadIfNeeded(
     "SELECT id, role, content FROM messages WHERE thread_id = ? AND role IN ('user','assistant') ORDER BY id ASC"
   ).all(threadId) as MessageRow[];
 
-  if (allMessages.length === 0) return false;
-
-  const estimatedTokens = estimateTokens(allMessages);
-  const tokenTrigger = estimatedTokens >= config.compact.tokenBudget * config.compact.tokenRatio;
-  const messageTrigger = allMessages.length >= config.compact.messageThreshold;
-  if (!messageTrigger && !tokenTrigger) return false;
-
-  const keepLast = Math.max(1, config.compact.keepLast);
-  if (allMessages.length <= keepLast) return false;
+  if (allMessages.length <= 2) return false;
 
   const existingSummaryRow = db.prepare(
     'SELECT summary, last_message_id FROM thread_summaries WHERE thread_id = ?'
   ).get(threadId) as { summary: string; last_message_id: number } | undefined;
 
+  // Keep recent messages by token budget (codex-style backward selection)
+  const keepTokenBudget = 20_000; // ~20K tokens of recent messages
+  const keepMessages: MessageRow[] = [];
+  let keepTokens = 0;
+  for (let i = allMessages.length - 1; i >= 0; i--) {
+    const msg = allMessages[i];
+    const tokens = Math.ceil(msg.content.length / 4);
+    if (keepMessages.length > 0 && keepTokens + tokens > keepTokenBudget) break;
+    keepMessages.unshift(msg);
+    keepTokens += tokens;
+  }
+
+  // Messages to summarize = everything before the kept messages
+  const keepMinId = keepMessages[0]?.id ?? Number.MAX_SAFE_INTEGER;
   const startId = existingSummaryRow?.last_message_id ?? 0;
-  const recentKeep = allMessages.slice(-keepLast);
-  const recentKeepMinId = recentKeep[0]?.id ?? Number.MAX_SAFE_INTEGER;
-  const candidates = allMessages.filter((msg) => msg.id > startId && msg.id < recentKeepMinId);
+  const candidates = allMessages.filter((msg) => msg.id > startId && msg.id < keepMinId);
   if (candidates.length === 0) return false;
 
   const lastSummarizedId = candidates[candidates.length - 1].id;
@@ -77,7 +94,6 @@ export async function compactThreadIfNeeded(
 
   if (!summaryText) return false;
 
-  // Cap summary length to prevent unbounded growth
   const cappedSummary = summaryText.length > MAX_SUMMARY_CHARS
     ? summaryText.slice(0, MAX_SUMMARY_CHARS)
     : summaryText;
@@ -92,11 +108,30 @@ export async function compactThreadIfNeeded(
     // Delete compacted user+assistant messages
     db.prepare('DELETE FROM messages WHERE thread_id = ? AND id <= ?').run(threadId, lastSummarizedId);
 
-    // Clean up tool messages outside the keep window
-    db.prepare("DELETE FROM messages WHERE thread_id = ? AND role = 'tool' AND id < ?").run(threadId, recentKeepMinId);
+    // Clean up tool messages outside keep window
+    db.prepare("DELETE FROM messages WHERE thread_id = ? AND role = 'tool' AND id < ?").run(threadId, keepMinId);
+
+    // Reset cumulative token counter (compaction = fresh start)
+    db.prepare('UPDATE agent_threads SET total_tokens = 0 WHERE thread_id = ?').run(threadId);
+
+    // Clear last_response_id to force cold start with new context
+    db.prepare("UPDATE agent_threads SET last_response_id = NULL, updated_at = datetime('now') WHERE thread_id = ?").run(threadId);
   });
   tx();
+
+  console.log('[compact] thread=%s summarized %d messages, kept %d, summary=%d chars, tokens reset',
+    threadId.slice(0, 12), candidates.length, keepMessages.length, cappedSummary.length);
   return true;
+}
+
+// Legacy compat — called from handlers.ts background
+export async function compactThreadIfNeeded(
+  db: Db,
+  threadId: string,
+  summarizer: SummarizerFn = defaultSummarizer,
+): Promise<boolean> {
+  if (!needsCompaction(db, threadId)) return false;
+  return compactThread(db, threadId, summarizer);
 }
 
 async function defaultSummarizer(input: {
@@ -107,12 +142,12 @@ async function defaultSummarizer(input: {
   if (!transcript) return '';
 
   const userText = [
-    input.existingSummary ? `Текущая сводка:\n${input.existingSummary}\n` : '',
-    'Новые сообщения для сводки:',
+    input.existingSummary ? `Previous summary:\n${input.existingSummary}\n` : '',
+    'New messages to summarize:',
     transcript,
   ].filter(Boolean).join('\n\n');
 
-  return await runModelText(SUMMARY_DEVELOPER_PROMPT, userText);
+  return await runModelText(COMPACTION_DEVELOPER_PROMPT, userText);
 }
 
 function buildTranscript(messages: MessageRow[], maxChars: number): string {
@@ -126,9 +161,4 @@ function buildTranscript(messages: MessageRow[], maxChars: number): string {
     total += line.length;
   }
   return lines.join('\n');
-}
-
-function estimateTokens(messages: MessageRow[]): number {
-  const chars = messages.reduce((sum, msg) => sum + msg.content.length, 0);
-  return Math.ceil(chars / 4);
 }
