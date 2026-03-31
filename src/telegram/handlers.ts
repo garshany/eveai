@@ -361,20 +361,17 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     // Store user message
     db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(thread.thread_id, 'user', text);
 
-    // --- Route skill: detect route intent and call planRoute() directly ---
-    const routeDest = parseRouteDestination(text);
-    if (routeDest && getLinkedCharacter(db, userCtx)) {
+    // --- Route skill: LLM extracts intent, planRoute() executes directly ---
+    const routeIntent = await detectRouteIntent(text);
+    if (routeIntent && getLinkedCharacter(db, userCtx)) {
       const thinkingMsg = await ctx.reply('🛸 Строю маршрут...');
       const stopTyping = startTyping(ctx);
       try {
-        const prefer = /опасн|pvp|пвп|инсекьюр|insecure|грязн|lowsec|лоусек|danger/i.test(text) ? 'insecure' as const
-          : /быстр|коротк|shortest/i.test(text) ? 'shortest' as const
-          : 'secure' as const;
         const result = await planRoute(db, {
-          origin: 'current',
-          destination: routeDest,
+          origin: routeIntent.origin ?? 'current',
+          destination: routeIntent.destination,
           set_autopilot: true,
-          prefer,
+          prefer: routeIntent.prefer ?? 'secure',
         }, userCtx);
         await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
         if (result.ok) {
@@ -383,7 +380,7 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
           );
           await replyChunks(ctx, result.formatted_summary);
           console.log('[route-skill] %s → %s prefer=%s routes=%d',
-            result.origin?.name, result.destination?.name, prefer, result.routes.length);
+            result.origin?.name, result.destination?.name, routeIntent.prefer, result.routes.length);
         } else {
           await ctx.reply(`Не удалось построить маршрут: ${result.error}`);
         }
@@ -719,17 +716,39 @@ function collectErrorText(err: unknown): string {
 }
 
 /**
- * Detect route-building intent and extract destination from natural text.
- * Returns destination string or null if not a route request.
+ * Use a fast LLM call to detect route intent and extract parameters.
+ * Returns null if the text is not a route request.
  */
-function parseRouteDestination(text: string): string | null {
+async function detectRouteIntent(text: string): Promise<{
+  destination: string;
+  origin?: string;
+  prefer?: 'secure' | 'shortest' | 'insecure';
+} | null> {
+  // Quick pre-filter: skip obvious non-route messages (saves an LLM call)
+  if (text.length > 200 || text.length < 5) return null;
   const lower = text.toLowerCase();
-  // Must contain route-related keywords
-  if (!/маршрут|route|путь до|лети до|дорог[уа] до|перелёт|автопилот до|построй до/i.test(lower)) {
+  if (!/маршрут|route|путь|лет[еи]|дорог|перелёт|автопилот|построй|проложи/i.test(lower)) {
     return null;
   }
-  // Extract destination: "до <destination>" or "в <destination>" or "to <destination>"
-  const match = text.match(/(?:до|в|to)\s+([a-zA-Zа-яА-ЯёЁ0-9][\w\s\-']{1,30})/i);
-  if (!match) return null;
-  return match[1].trim().replace(/[.,!?]+$/, '');
+
+  try {
+    const { runModelText } = await import('../agent/model.js');
+    const response = await runModelText(
+      `Extract route parameters from the user message. Return ONLY valid JSON, nothing else.
+If this is NOT a route/navigation request, return: {"intent":false}
+If it IS a route request, return: {"intent":true,"destination":"<system name>","origin":"<system or null>","prefer":"<secure|shortest|insecure>"}
+Rules for prefer: if user wants dangerous/pvp/lowsec/insecure → "insecure". If fast/short → "shortest". Otherwise → "secure".
+Destination and origin must be EVE Online system names in English (translate if needed: жита→Jita, амарр→Amarr, додикси→Dodixie, хек→Hek, etc).`,
+      text,
+    );
+    const parsed = JSON.parse(response);
+    if (!parsed.intent || !parsed.destination) return null;
+    return {
+      destination: parsed.destination,
+      origin: parsed.origin || undefined,
+      prefer: parsed.prefer || undefined,
+    };
+  } catch {
+    return null;
+  }
 }
