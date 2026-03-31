@@ -674,8 +674,6 @@ async function runNativeAgentLoop(
       const routeIdx = toolCalls.findIndex((tc) => tc.name === 'plan_route');
       const routeResult = results[routeIdx] as Record<string, unknown> | null;
       const summary = routeResult?.formatted_summary;
-      console.log('[executor] route-shortcircuit check: hasRoute=%s idx=%d summary=%s',
-        hasRouteCall, routeIdx, typeof summary === 'string' ? `${summary.length} chars` : 'missing');
       if (typeof summary === 'string' && summary.length > 50) {
         storeAssistantMessage(db, threadId, summary);
         saveLastResponseId(db, threadId, response.id);
