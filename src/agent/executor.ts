@@ -259,7 +259,8 @@ function stripRedundantFields(data: unknown, requestArgs: Record<string, unknown
 
 export type AgentResult = {
   text: string;
-  totalInputTokens: number;
+  /** Peak input tokens in a single API call — reflects actual context size. */
+  peakInputTokens: number;
 };
 
 export async function handleAgentMessage(
@@ -301,7 +302,7 @@ export async function handleAgentMessage(
     liveContext?.location ?? null,
   );
   if (staticAggregateFastPath) {
-    return { text: staticAggregateFastPath, totalInputTokens: 0 };
+    return { text: staticAggregateFastPath, peakInputTokens: 0 };
   }
 
   const summary = getThreadSummary(db, threadId);
@@ -322,10 +323,12 @@ export async function handleAgentMessage(
 
   const result = await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt);
 
-  // Track cumulative token usage for compaction trigger
+  // Track cumulative token usage for compaction trigger.
+  // Use peakInputTokens (max of single iteration) — reflects actual context size.
+  // Summing across iterations double-counts because each iteration resends instructions+tools.
   db.prepare(
     'UPDATE agent_threads SET total_tokens = COALESCE(total_tokens, 0) + ? WHERE thread_id = ?'
-  ).run(result.totalInputTokens, threadId);
+  ).run(result.peakInputTokens, threadId);
 
   return result;
 }
@@ -483,6 +486,8 @@ async function runNativeAgentLoop(
   let totalOutputTokens = 0;
   let totalCachedTokens = 0;
   let totalReasoningTokens = 0;
+  /** Peak input tokens in a single iteration — reflects actual context size for compaction. */
+  let peakInputTokens = 0;
   let usedToolStateRecovery = false;
   let usedMidTurnCompact = false;
 
@@ -522,6 +527,7 @@ async function runNativeAgentLoop(
       totalOutputTokens += response.usage.output;
       totalCachedTokens += response.usage.cached;
       totalReasoningTokens += response.usage.reasoning;
+      if (response.usage.input > peakInputTokens) peakInputTokens = response.usage.input;
       console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d reasoning=%d',
         iteration, response.usage.input, response.usage.output, response.usage.cached, response.usage.reasoning);
     }
@@ -566,7 +572,7 @@ async function runNativeAgentLoop(
       saveLastResponseId(db, threadId, null);
       console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
         totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
-      return { text: message, totalInputTokens };
+      return { text: message, peakInputTokens };
     }
 
     if (response.toolSearchPaths.length > 0) {
@@ -595,7 +601,7 @@ async function runNativeAgentLoop(
         saveLastResponseId(db, threadId, response.id);
         console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
           iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, response.outputText.length);
-        return { text: response.outputText, totalInputTokens };
+        return { text: response.outputText, peakInputTokens };
       }
       if (response.toolSearchPaths.length > 0 && response.id) {
         previousResponseId = response.id;
@@ -616,7 +622,7 @@ async function runNativeAgentLoop(
       const fallback = 'Не удалось завершить ответ: модель не вернула ни текст, ни tool calls.';
       storeAssistantMessage(db, threadId, fallback);
       saveLastResponseId(db, threadId, null);
-      return { text: fallback, totalInputTokens };
+      return { text: fallback, peakInputTokens };
     }
     emptyResponseRetries = 0;
 
@@ -658,14 +664,14 @@ async function runNativeAgentLoop(
       saveLastResponseId(db, threadId, null);
       console.log('[executor] === DONE (deterministic-count) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
         iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, deterministicAnswer.length);
-      return { text: deterministicAnswer, totalInputTokens };
+      return { text: deterministicAnswer, peakInputTokens };
     }
 
     if (!response.id) {
       const message = 'Не удалось продолжить tool loop: proxy не вернул response id.';
       storeAssistantMessage(db, threadId, message);
       saveLastResponseId(db, threadId, null);
-      return { text: message, totalInputTokens };
+      return { text: message, peakInputTokens };
     }
 
     previousResponseId = response.id;
@@ -688,7 +694,7 @@ async function runNativeAgentLoop(
   saveLastResponseId(db, threadId, null);
   console.log('[executor] === DONE (timeout) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
     MAX_TOOL_ITERATIONS, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
-  return { text: timeout, totalInputTokens };
+  return { text: timeout, peakInputTokens };
 }
 
 async function executeToolCallsSequentially(
