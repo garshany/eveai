@@ -667,6 +667,20 @@ async function runNativeAgentLoop(
       return { text: deterministicAnswer, peakInputTokens };
     }
 
+    // Route shortcircuit: if plan_route returned formatted_summary, output it directly.
+    // Saves one model iteration and guarantees the full danger report is shown.
+    if (toolCalls.length === 1 && toolCalls[0].name === 'plan_route') {
+      const routeResult = results[0] as Record<string, unknown> | null;
+      const summary = routeResult?.formatted_summary;
+      if (typeof summary === 'string' && summary.length > 50) {
+        storeAssistantMessage(db, threadId, summary);
+        saveLastResponseId(db, threadId, response.id);
+        console.log('[executor] === DONE (route-shortcircuit) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
+          iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, summary.length);
+        return { text: summary, peakInputTokens };
+      }
+    }
+
     if (!response.id) {
       const message = 'Не удалось продолжить tool loop: proxy не вернул response id.';
       storeAssistantMessage(db, threadId, message);

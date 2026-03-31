@@ -7,7 +7,6 @@ import { finalizeThreadMessage, splitForTelegram } from '../agent/finalizer.js';
 import { ALL_REQUESTED_SCOPES } from '../eve/scopes.js';
 import { needsCompaction, compactThread } from '../agent/compact.js';
 import { getLinkedCharacter, listLinkedCharacters, setActiveCharacter } from '../eve/sso.js';
-import { planRoute } from '../eve/route-planner.js';
 import { refreshUserProfile, readUserProfile } from '../eve/user-profile.js';
 import { callEsiOperation } from '../eve/esi-client.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
@@ -361,40 +360,6 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     // Store user message
     db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(thread.thread_id, 'user', text);
 
-    // --- Route skill: LLM extracts intent, planRoute() executes directly ---
-    const routeIntent = await detectRouteIntent(text);
-    if (routeIntent && getLinkedCharacter(db, userCtx)) {
-      const thinkingMsg = await ctx.reply('🛸 Строю маршрут...');
-      const stopTyping = startTyping(ctx);
-      try {
-        const result = await planRoute(db, {
-          origin: routeIntent.origin ?? 'current',
-          destination: routeIntent.destination,
-          set_autopilot: true,
-          prefer: routeIntent.prefer ?? 'secure',
-        }, userCtx);
-        await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
-        if (result.ok) {
-          db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(
-            thread.thread_id, 'assistant', result.formatted_summary,
-          );
-          await replyChunks(ctx, result.formatted_summary);
-          console.log('[route-skill] %s → %s prefer=%s routes=%d',
-            result.origin?.name, result.destination?.name, routeIntent.prefer, result.routes.length);
-        } else {
-          await ctx.reply(`Не удалось построить маршрут: ${result.error}`);
-        }
-      } catch (e) {
-        await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
-        console.error('[route-skill] error:', e);
-        await ctx.reply('Ошибка при построении маршрута.');
-      } finally {
-        stopTyping();
-        clearInFlightRequest(chatId, requestToken);
-      }
-      return;
-    }
-
     // Send EVE-flavored "thinking" placeholder
     const thinkingMsg = await ctx.reply(pickThinkingPhrase());
 
@@ -715,40 +680,3 @@ function collectErrorText(err: unknown): string {
   return parts.join(' ');
 }
 
-/**
- * Use a fast LLM call to detect route intent and extract parameters.
- * Returns null if the text is not a route request.
- */
-async function detectRouteIntent(text: string): Promise<{
-  destination: string;
-  origin?: string;
-  prefer?: 'secure' | 'shortest' | 'insecure';
-} | null> {
-  // Quick pre-filter: skip obvious non-route messages (saves an LLM call)
-  if (text.length > 200 || text.length < 5) return null;
-  const lower = text.toLowerCase();
-  if (!/маршрут|route|путь|лет[еи]|дорог|перелёт|автопилот|построй|проложи/i.test(lower)) {
-    return null;
-  }
-
-  try {
-    const { runModelText } = await import('../agent/model.js');
-    const response = await runModelText(
-      `Extract route parameters from the user message. Return ONLY valid JSON, nothing else.
-If this is NOT a route/navigation request, return: {"intent":false}
-If it IS a route request, return: {"intent":true,"destination":"<system name>","origin":"<system or null>","prefer":"<secure|shortest|insecure>"}
-Rules for prefer: if user wants dangerous/pvp/lowsec/insecure → "insecure". If fast/short → "shortest". Otherwise → "secure".
-Destination and origin must be EVE Online system names in English (translate if needed: жита→Jita, амарр→Amarr, додикси→Dodixie, хек→Hek, etc).`,
-      text,
-    );
-    const parsed = JSON.parse(response);
-    if (!parsed.intent || !parsed.destination) return null;
-    return {
-      destination: parsed.destination,
-      origin: parsed.origin || undefined,
-      prefer: parsed.prefer || undefined,
-    };
-  } catch {
-    return null;
-  }
-}
