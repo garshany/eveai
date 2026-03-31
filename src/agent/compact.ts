@@ -15,17 +15,19 @@ export type SummarizerFn = (input: {
 
 const MAX_SUMMARY_CHARS = 4000;
 
-// Codex-style compaction prompt — handoff summary for another LLM
-const COMPACTION_DEVELOPER_PROMPT = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
+// Codex-style compaction prompt — adapted for EVE Online assistant
+const COMPACTION_DEVELOPER_PROMPT = `Ты выполняешь СЖАТИЕ КОНТЕКСТА. Создай краткую передачу для другой языковой модели, которая продолжит диалог.
 
-Include:
-- Current progress and key decisions made
-- Important context, constraints, or user preferences
-- What remains to be done (clear next steps)
-- Any critical data, examples, or references needed to continue (IDs, names, locations, numbers)
+Обязательно сохрани:
+- Имена персонажей, систем, предметов, корпораций и их ID
+- Текущую локацию пользователя, корабль, регион
+- Ключевые данные: цены, маршруты, kills, ассеты, скиллы (числа!)
+- Предпочтения пользователя и стиль общения
+- Что уже сделано и какие данные получены (чтобы не вызывать tools повторно)
+- Открытые вопросы или незавершённые задачи
 
-Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
-Write in Russian if the conversation was in Russian.`;
+Формат — краткий, структурированный. Не выдумывай.
+Максимум 12-15 пунктов.`;
 
 // Prefix injected before the summary when loading into cold context
 export const SUMMARY_PREFIX = 'Другая языковая модель начала решать эту задачу и создала сводку своего процесса. Используй эту информацию, чтобы продолжить работу и не дублировать уже сделанное. Вот сводка:\n\n';

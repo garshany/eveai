@@ -30,7 +30,7 @@ import { callEsiOperation } from '../eve/esi-client.js';
 import { loadEsiCatalog } from '../eve/esi-catalog.js';
 import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
-import { getThreadSummary } from './compact.js';
+import { getThreadSummary, compactThread } from './compact.js';
 import { executeZkillQuery } from '../eve/zkill-query.js';
 import { getLinkedCharacter } from '../eve/sso.js';
 import type { UserContext } from '../auth/user-resolver.js';
@@ -38,6 +38,8 @@ import type { UserContext } from '../auth/user-resolver.js';
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_WEB_SEARCHES_PER_TURN = 2;
 const MAX_ZKILL_CALLS_PER_TURN = 4;
+/** Mid-turn compaction threshold: if a single API response uses this many input tokens, compact. */
+const MID_TURN_COMPACT_THRESHOLD = 80_000;
 const MAX_CONSECUTIVE_SAME_TOOL = 3;
 const MAX_CONTEXT_MESSAGES = 10;
 const MAX_CONTEXT_CHARS = 15000;
@@ -482,6 +484,7 @@ async function runNativeAgentLoop(
   let totalCachedTokens = 0;
   let totalReasoningTokens = 0;
   let usedToolStateRecovery = false;
+  let usedMidTurnCompact = false;
 
   console.log('[executor] === NEW REQUEST chat=%d thread=%s goal="%s" ===', chatId, threadId.slice(0, 12), goal.slice(0, 80));
 
@@ -521,6 +524,29 @@ async function runNativeAgentLoop(
       totalReasoningTokens += response.usage.reasoning;
       console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d reasoning=%d',
         iteration, response.usage.input, response.usage.output, response.usage.cached, response.usage.reasoning);
+    }
+
+    // --- Mid-turn compaction (Level 2) ---
+    // If input tokens are growing dangerously within the tool loop, compact now
+    // to prevent hitting the context window limit on the next iteration.
+    if (response.usage && response.usage.input >= MID_TURN_COMPACT_THRESHOLD && iteration > 0 && !usedMidTurnCompact) {
+      const toolCalls = extractFunctionCalls(response.output);
+      if (toolCalls.length > 0) {
+        // Model wants more tool calls but context is huge — compact first
+        console.log('[executor] mid-turn compaction: input=%d exceeds %d at iteration=%d',
+          response.usage.input, MID_TURN_COMPACT_THRESHOLD, iteration);
+        usedMidTurnCompact = true;
+        await compactThread(db, threadId);
+        previousResponseId = null;
+        pendingItems = buildSmartContext(db, threadId);
+        // Append a system message so model knows to continue the task
+        pendingItems.push({
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку выше. Если нужные данные уже есть в сводке — используй их, не вызывай tools повторно.' }],
+        } as NativeInputItem);
+        continue;
+      }
     }
 
     if (response.error) {
