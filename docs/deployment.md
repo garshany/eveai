@@ -146,7 +146,6 @@ npm run build
 - `EVE_CALLBACK_URL=https://eveonline-ai.ru/auth/eve/callback`
 - `OPENAI_BASE_URL=http://127.0.0.1:8080/v1`
 - `ESI_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)`
-- `ZKILL_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)`
 - `SSO_REQUEST_TIMEOUT_MS=8000`
 - `ESI_REQUEST_TIMEOUT_MS=8000`
 - `ESI_RETRY_MAX_ATTEMPTS=3`

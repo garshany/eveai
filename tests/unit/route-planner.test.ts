@@ -4,15 +4,7 @@ import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 const callEsiOperationMock = vi.fn();
 const getLinkedCharacterMock = vi.fn();
-
-vi.mock('../../src/config.js', () => ({
-  config: {
-    zkill: {
-      baseUrl: 'https://zkillboard.com/api/',
-      timeoutMs: 5000,
-    },
-  },
-}));
+const queryKillmailsMock = vi.fn();
 
 vi.mock('../../src/eve/esi-client.js', () => ({
   callEsiOperation: callEsiOperationMock,
@@ -22,8 +14,11 @@ vi.mock('../../src/eve/sso.js', () => ({
   getLinkedCharacter: getLinkedCharacterMock,
 }));
 
+vi.mock('../../src/eve-kill/client.js', () => ({
+  queryKillmails: queryKillmailsMock,
+}));
+
 let db: Database.Database;
-let fetchMock: ReturnType<typeof vi.fn>;
 let consoleLogSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
@@ -37,34 +32,41 @@ beforeEach(() => {
 
   getLinkedCharacterMock.mockReturnValue({ characterId: 2116626188 });
 
-  fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.includes('systemID/30002660/pastSeconds/3600/')) {
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ([{
-          killmail_id: 134200001,
-          zkb: {
-            hash: 'hash-midpoint',
-            totalValue: 42000000,
-            npc: false,
-          },
-        }]),
-      } as unknown as Response;
-    }
-
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ([]),
-    } as unknown as Response;
+  // Default: single kill in Midpoint (system 30002660)
+  queryKillmailsMock.mockResolvedValue({
+    ok: true,
+    data: [{
+      killmail_id: 134200001,
+      kill_time: '2026-03-22T10:15:00Z',
+      system_id: 30002660,
+      system_name: 'Midpoint',
+      system_security: 0.5,
+      total_value: 42000000,
+      is_npc: false,
+      is_solo: false,
+      victim: {
+        character_id: 9001,
+        character_name: 'Victim One',
+        corporation_id: 9101,
+        corporation_name: 'Victim Corp',
+        ship_type_id: 587,
+        ship_name: 'Victim Ship',
+      },
+      attackers: [{
+        character_id: 9201,
+        character_name: 'Attacker One',
+        corporation_id: 9301,
+        corporation_name: 'Attacker Corp',
+        ship_type_id: 603,
+        ship_name: 'Attacker Ship',
+        final_blow: true,
+      }],
+    }],
   });
-  vi.stubGlobal('fetch', fetchMock as typeof fetch);
 
   consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
-  callEsiOperationMock.mockImplementation(async (_db, operation, args) => {
+  callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string, args: unknown) => {
     if (operation === 'get_route_origin_destination') {
       const flag = String((args as Record<string, unknown>).flag);
       if (flag === 'secure') {
@@ -80,53 +82,12 @@ beforeEach(() => {
       return { ok: true, status: 204, cached: false, headers: {}, data: null };
     }
 
-    if (operation === 'get_killmails_killmail_id_killmail_hash') {
-      return {
-        ok: true,
-        status: 200,
-        cached: false,
-        headers: {},
-        data: {
-          killmail_time: '2026-03-22T10:15:00Z',
-          victim: {
-            character_id: 9001,
-            corporation_id: 9101,
-            ship_type_id: 587,
-          },
-          attackers: [
-            {
-              character_id: 9201,
-              corporation_id: 9301,
-              ship_type_id: 603,
-              final_blow: true,
-            },
-          ],
-        },
-      };
-    }
-
-    if (operation === 'post_universe_names') {
-      return {
-        ok: true,
-        status: 200,
-        cached: false,
-        headers: {},
-        data: [
-          { id: 9001, name: 'Victim One' },
-          { id: 9101, name: 'Victim Corp' },
-          { id: 9201, name: 'Attacker One' },
-          { id: 9301, name: 'Attacker Corp' },
-        ],
-      };
-    }
-
     return { ok: false, status: 404, error: `Unexpected operation: ${operation}` };
   });
 });
 
 afterEach(() => {
   consoleLogSpy.mockRestore();
-  vi.unstubAllGlobals();
   db.close();
 });
 
@@ -183,7 +144,7 @@ describe('route planner', () => {
     expect(result.formatted_summary).toContain('<b>Опасные системы</b>');
     expect(result.formatted_summary).toContain('<b>Midpoint</b>');
     expect(result.formatted_summary).toContain('Victim One');
-    expect(result.formatted_summary).toContain('zkb</a>');
+    expect(result.formatted_summary).toContain('kill</a>');
     expect(result.formatted_summary).not.toContain('{"');
     expect(callEsiOperationMock).toHaveBeenCalledWith(
       db,
@@ -198,56 +159,40 @@ describe('route planner', () => {
   });
 
   it('keeps preferred-route risk metrics separate from merged danger coverage and shows route association', async () => {
-    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('systemID/30002659/pastSeconds/3600/')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ([{
-            killmail_id: 134200010,
-            zkb: {
-              hash: 'hash-dodixie',
-              totalValue: 42000000,
-              npc: false,
-            },
-          }]),
-        } as unknown as Response;
-      }
-      if (url.includes('systemID/30002660/pastSeconds/3600/')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ([{
-            killmail_id: 134200011,
-            zkb: {
-              hash: 'hash-midpoint',
-              totalValue: 42000000,
-              npc: false,
-            },
-          }]),
-        } as unknown as Response;
-      }
-      if (url.includes('systemID/30002661/pastSeconds/3600/')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ([{
-            killmail_id: 134200012,
-            zkb: {
-              hash: 'hash-scout',
-              totalValue: 42000000,
-              npc: false,
-            },
-          }]),
-        } as unknown as Response;
-      }
-
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ([]),
-      } as unknown as Response;
+    queryKillmailsMock.mockResolvedValue({
+      ok: true,
+      data: [
+        {
+          killmail_id: 134200010,
+          kill_time: '2026-03-22T10:15:00Z',
+          system_id: 30002659,
+          system_name: 'Dodixie',
+          total_value: 42000000,
+          is_npc: false,
+          victim: { character_name: 'Victim One', ship_name: 'Victim Ship' },
+          attackers: [{ character_name: 'Attacker One', ship_name: 'Attacker Ship', final_blow: true }],
+        },
+        {
+          killmail_id: 134200011,
+          kill_time: '2026-03-22T10:15:00Z',
+          system_id: 30002660,
+          system_name: 'Midpoint',
+          total_value: 42000000,
+          is_npc: false,
+          victim: { character_name: 'Victim One', ship_name: 'Victim Ship' },
+          attackers: [{ character_name: 'Attacker One', ship_name: 'Attacker Ship', final_blow: true }],
+        },
+        {
+          killmail_id: 134200012,
+          kill_time: '2026-03-22T10:15:00Z',
+          system_id: 30002661,
+          system_name: 'Scout Gate',
+          total_value: 42000000,
+          is_npc: false,
+          victim: { character_name: 'Victim One', ship_name: 'Victim Ship' },
+          attackers: [{ character_name: 'Attacker One', ship_name: 'Attacker Ship', final_blow: true }],
+        },
+      ],
     });
 
     const { planRoute } = await import('../../src/eve/route-planner.js');

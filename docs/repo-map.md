@@ -53,7 +53,7 @@ Use it when you need to find the right file or folder before reading implementat
 - `sso.ts` / `sso-auth.ts`: token refresh and JWT verification
 - `capabilities.ts`: scope-aware private-access gating
 - `sde.ts`, `sde-loader.ts`, `sde-downloader.ts`: static data ingestion and lookup
-- `route-planner.ts`, `killmail.ts`, `zkill.ts`, `zkill-query.ts`: higher-level EVE features
+- `route-planner.ts`, `killmail.ts`: higher-level EVE features
 - `user-profile.ts`: generated user snapshot/profile flow
 - `scopes.ts`, `eve-links.ts`, `http.ts`: support modules
 

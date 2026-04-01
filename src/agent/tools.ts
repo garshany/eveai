@@ -1,6 +1,7 @@
 import type { Db } from '../db/sqlite.js';
 import { loadEsiCatalog, listEsiNamespaces } from '../eve/esi-catalog.js';
-import type { NativeFunctionTool, NativeNamespaceTool, NativeTool } from './native-responses.js';
+import { buildEveKillNamespace, isEveKillToolName } from '../eve-kill/tools.js';
+import type { NativeFunctionTool, NativeTool } from './native-responses.js';
 
 const SDE_SQL_TOOL_NAME = 'sde_sql';
 
@@ -190,60 +191,6 @@ export function isHeartbeatConfigTool(name: string): boolean {
   return name === HEARTBEAT_CONFIG_TOOL_NAME;
 }
 
-const ZKILL_TOOL_NAME = 'zkill';
-
-const ZKILL_API_REF = `zKillboard API (https://zkillboard.com/api/).
-Build path from segments, all ending with /.
-Modifiers: kills/, losses/, solo/, w-space/, finalblow-only/, npc/0|1/, awox/0|1/
-Filters: characterID/#/, corporationID/#/, allianceID/#/, systemID/#/, regionID/#/, shipTypeID/#/, groupID/#/, factionID/#/, warID/#/
-Time: pastSeconds/#/ (max 604800, multiples of 3600), year/Y/ (needs month), month/m/, page/#/
-Value: iskValue/#/ (min ISK threshold)
-Examples: kills/systemID/30002768/pastSeconds/3600/, losses/characterID/268946627/, kills/shipTypeID/17715/solo/pastSeconds/86400/
-Rules: need killID/ OR at least 2 modifiers. Max 1000 results. Use CCP IDs.`;
-
-const ZKILL_RESPONSE_FIELDS = [
-  'killmail_id',
-  'time',
-  'system',
-  'system_sec',
-  'victim_name',
-  'victim_corp',
-  'victim_ship',
-  'attacker_name',
-  'attacker_corp',
-  'attacker_ship',
-  'attacker_weapon',
-  'attackers_count',
-  'value_m',
-  'solo',
-  'npc',
-  'url',
-] as const;
-
-const DEFERRED_ZKILL_TOOLS: NativeFunctionTool[] = [
-  {
-    type: 'function',
-    name: ZKILL_TOOL_NAME,
-    description: `Query zKillboard public kill feed. Top results are enriched with ESI killmail detail (victim, attacker, ship, value, time). Use for PvP activity, kill history, fit research. Response fields: ${ZKILL_RESPONSE_FIELDS.join(', ')}. Use fields to request only the subset you need.\n\n${ZKILL_API_REF}`,
-    strict: true,
-    defer_loading: true,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'zKill API path segments (e.g. "kills/systemID/30002768/pastSeconds/3600/")' },
-        detail_limit: { type: 'integer', description: 'How many killmails to enrich with ESI details (0-10, default 3)' },
-        fields: {
-          type: ['array', 'null'],
-          items: { type: 'string', enum: [...ZKILL_RESPONSE_FIELDS] },
-          description: `Optional response fields to return per killmail. Allowed: ${ZKILL_RESPONSE_FIELDS.join(', ')}. Null returns all fields.`,
-        },
-      },
-      required: ['path', 'detail_limit', 'fields'],
-      additionalProperties: false,
-    },
-  },
-];
-
 const BATCH_MARKET_TOOL_NAME = 'batch_market_prices';
 
 const BATCH_MARKET_TOOL: NativeFunctionTool = {
@@ -275,7 +222,7 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
     ...ALWAYS_ON_FUNCTION_TOOLS,
     HEARTBEAT_CONFIG_TOOL,
     BATCH_MARKET_TOOL,
-    buildZkillNamespace(),
+    buildEveKillNamespace(),
     ...(await listEsiNamespaces()),
   ];
 }
@@ -296,13 +243,11 @@ export function isSdeSqlTool(name: string): boolean {
   return name === SDE_SQL_TOOL_NAME;
 }
 
-export function isZkillToolName(name: string): boolean {
-  return name === ZKILL_TOOL_NAME;
+export function isDeferredLookupToolName(name: string): boolean {
+  return isEveKillToolName(name) || isBatchMarketTool(name);
 }
 
-export function isDeferredLookupToolName(name: string): boolean {
-  return isZkillToolName(name) || isBatchMarketTool(name);
-}
+export { isEveKillToolName } from '../eve-kill/tools.js';
 
 const MAX_SDE_ROWS = 50;
 const SDE_OBJECT_CACHE = new WeakMap<Db, Set<string>>();
@@ -1083,18 +1028,10 @@ export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'u
   if (name === 'update_plan') {
     return 'write';
   }
-  if (getAlwaysOnFunctionToolNames().includes(name) || isZkillToolName(name) || isBatchMarketTool(name)) {
+  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isBatchMarketTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();
   return catalog.get(name)?.toolPolicy ?? null;
 }
 
-function buildZkillNamespace(): NativeNamespaceTool {
-  return {
-    type: 'namespace',
-    name: 'eve_zkill',
-    description: 'zKillboard PvP data: recent kills in a system, player kill history, popular ship fits from real killmails. Use for PvP analysis, fit research, or checking if a system/player is dangerous.',
-    tools: DEFERRED_ZKILL_TOOLS,
-  };
-}

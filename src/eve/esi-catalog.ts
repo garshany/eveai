@@ -829,7 +829,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_killmails_root: {
     name: 'eve_public_killmails',
-    description: 'Fetch full killmail details by ID+hash from ESI. Use to enrich zKill data with victim/attacker/items breakdown.',
+    description: 'Fetch full killmail details by ID+hash from ESI. Use to get victim/attacker/items breakdown for a specific killmail.',
   },
   esi_loyalty_stores: {
     name: 'eve_public_loyalty_stores',

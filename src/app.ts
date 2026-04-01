@@ -7,6 +7,7 @@ import {
   markTelegramBotHealthStarting,
 } from './web/health.js';
 import { startHeartbeat, stopHeartbeat } from './scheduled/heartbeat-worker.js';
+import { eveKillWs } from './eve-kill/ws.js';
 
 async function main() {
   console.log('[app] Starting EVE Agent...');
@@ -48,11 +49,18 @@ async function main() {
   startHeartbeat(bot, db);
   console.log('[app] Heartbeat scheduler started');
 
+  // 6. Start EVE-KILL WebSocket (real-time killmail stream)
+  if (config.eveKill.wsEnabled) {
+    eveKillWs.connect();
+    console.log('[app] EVE-KILL WebSocket started');
+  }
+
   let shuttingDown = false;
   const shutdown = async (exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('[app] Shutting down...');
+    eveKillWs.close();
     stopHeartbeat();
     bot.stop();
     await server.close();

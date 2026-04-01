@@ -32,7 +32,7 @@ describe('agent tools', () => {
     expect(functionNames).not.toContain('zkill_system_recent_kills');
     expect(functionNames).not.toContain('get_characters_character_id_assets');
     expect(functionNames).not.toContain('get_universe_systems_system_id');
-    expect(namespaceNames).toContain('eve_zkill');
+    expect(namespaceNames).toContain('eve_kill');
     expect(namespaceNames).toContain('eve_character_assets');
     expect(namespaceNames).toContain('eve_public_market_orders');
     expect(namespaceNames).toContain('eve_authenticated_market_structures');
@@ -43,8 +43,8 @@ describe('agent tools', () => {
     expect(namespaces.every((tool) => tool.tools.length <= 9)).toBe(true);
     expect(
       namespaces.some((tool) =>
-        tool.name === 'eve_zkill'
-        && tool.tools.some((entry) => entry.name === 'zkill'),
+        tool.name === 'eve_kill'
+        && tool.tools.some((entry) => entry.name === 'kill_feed'),
       ),
     ).toBe(true);
 

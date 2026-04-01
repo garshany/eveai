@@ -98,6 +98,16 @@ export const config = {
     maxPastSeconds: optionalInt('ZKILL_MAX_PAST_SECONDS', 604800),
     userAgent: optional('ZKILL_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://eveonline-ai.ru/; +https://github.com/garshany/eveai)'),
   },
+  eveKill: {
+    baseUrl: optional('EVE_KILL_BASE_URL', 'https://eve-kill.com/api/'),
+    wsUrl: optional('EVE_KILL_WS_URL', 'wss://ws.eve-kill.com/killmails'),
+    timeoutMs: optionalInt('EVE_KILL_TIMEOUT_MS', 8000),
+    cacheTtlSeconds: optionalInt('EVE_KILL_CACHE_TTL_SECONDS', 300),
+    maxQueryLimit: optionalInt('EVE_KILL_MAX_QUERY_LIMIT', 100),
+    userAgent: optional('EVE_KILL_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://eveonline-ai.ru/; +https://github.com/garshany/eveai)'),
+    wsEnabled: optional('EVE_KILL_WS_ENABLED', 'true') === 'true',
+    wsBufferSize: optionalInt('EVE_KILL_WS_BUFFER_SIZE', 200),
+  },
   compact: {
     maxInputChars: optionalInt('COMPACT_MAX_INPUT_CHARS', 20000),
   },

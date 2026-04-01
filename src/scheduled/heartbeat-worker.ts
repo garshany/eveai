@@ -15,6 +15,7 @@ import {
   type HeartbeatState,
 } from './heartbeat-config.js';
 import type { UserContext } from '../auth/user-resolver.js';
+import { eveKillWs } from '../eve-kill/ws.js';
 
 const HEARTBEAT_CRON = '*/5 * * * *'; // every 5 minutes, checks per-user intervals internally
 const WALLET_CHANGE_THRESHOLD = 10_000_000; // 10M ISK minimum change to notify
@@ -78,6 +79,19 @@ async function processUserHeartbeat(
   const checks = parseChecks(row.checks_json);
   const state = parseState(row.state_json);
   const findings: string[] = [];
+
+  // Ensure EVE-KILL WS topics are subscribed for killmail tracking
+  if (checks.includes('killmails') && eveKillWs.isConnected()) {
+    const charTopics = [
+      `victim.${row.character_id}`,
+      `attacker.${row.character_id}`,
+    ];
+    const active = new Set(eveKillWs.getActiveTopics());
+    const missing = charTopics.filter((t) => !active.has(t));
+    if (missing.length > 0) {
+      eveKillWs.subscribe(missing);
+    }
+  }
 
   console.log('[heartbeat] user=%d char=%d: running %d checks: %s', row.user_id, row.character_id, checks.length, checks.join(','));
 
@@ -332,38 +346,64 @@ async function checkContracts(
 async function checkKillmails(
   db: Db, ctx: UserContext, characterId: number, state: HeartbeatState,
 ): Promise<string | null> {
+  const lastId = state.last_killmail_id ?? 0;
+  const details: string[] = [];
+  const seenIds = new Set<number>();
+
+  // 1. Check EVE-KILL WebSocket buffer first (real-time, no API call needed)
+  if (eveKillWs.isConnected()) {
+    const wsKills = eveKillWs.getRecentForCharacter(characterId);
+    for (const km of wsKills) {
+      if (km.killmail_id > lastId && !seenIds.has(km.killmail_id)) {
+        seenIds.add(km.killmail_id);
+        if (details.length < 3) {
+          const isLoss = km.victim?.character_id === characterId;
+          const ship = km.victim?.ship_name ?? sdeName(db, km.victim?.ship_type_id ?? 0);
+          const system = km.system_name ?? '?';
+          const value = km.total_value ? ` (${(km.total_value / 1e6).toFixed(0)}M ISK)` : '';
+          details.push(`${isLoss ? 'Потерян' : 'Уничтожен'} ${ship} в ${system}${value}`);
+        }
+      }
+    }
+  }
+
+  // 2. Also check ESI for killmails the WS might have missed
   const result = await callEsiOperation<Array<{ killmail_id: number; killmail_hash: string }>>(
     db, 'get_characters_character_id_killmails_recent', { character_id: characterId }, ctx,
   );
-  if (!result.ok || !Array.isArray(result.data) || result.data.length === 0) return null;
+  if (result.ok && Array.isArray(result.data)) {
+    const newEsiKills = result.data.filter((k) => k.killmail_id > lastId && !seenIds.has(k.killmail_id));
 
-  const lastId = state.last_killmail_id ?? 0;
-  const newKills = result.data.filter((k) => k.killmail_id > lastId);
-
-  if (newKills.length === 0) return null;
-  state.last_killmail_id = Math.max(...newKills.map((k) => k.killmail_id));
-
-  // Fetch details for up to 3
-  const details: string[] = [];
-  for (const km of newKills.slice(0, 3)) {
-    const detail = await callEsiOperation<{
-      victim: { character_id?: number; ship_type_id: number };
-      solar_system_id: number;
-      killmail_time: string;
-    }>(
-      db, 'get_killmails_killmail_id_killmail_hash',
-      { killmail_id: km.killmail_id, killmail_hash: km.killmail_hash }, ctx,
-    );
-    if (!detail.ok) continue;
-    const isLoss = detail.data.victim?.character_id === characterId;
-    const ship = sdeName(db, detail.data.victim.ship_type_id);
-    const system = db.prepare('SELECT name FROM sde_systems WHERE system_id = ?')
-      .get(detail.data.solar_system_id) as { name: string } | undefined;
-    details.push(`${isLoss ? 'Потерян' : 'Уничтожен'} ${ship} в ${system?.name ?? '?'}`);
+    for (const km of newEsiKills) {
+      seenIds.add(km.killmail_id);
+      if (details.length < 3) {
+        const detail = await callEsiOperation<{
+          victim: { character_id?: number; ship_type_id: number };
+          solar_system_id: number;
+          killmail_time: string;
+        }>(
+          db, 'get_killmails_killmail_id_killmail_hash',
+          { killmail_id: km.killmail_id, killmail_hash: km.killmail_hash }, ctx,
+        );
+        if (!detail.ok) continue;
+        const isLoss = detail.data.victim?.character_id === characterId;
+        const ship = sdeName(db, detail.data.victim.ship_type_id);
+        const system = db.prepare('SELECT name FROM sde_systems WHERE system_id = ?')
+          .get(detail.data.solar_system_id) as { name: string } | undefined;
+        details.push(`${isLoss ? 'Потерян' : 'Уничтожен'} ${ship} в ${system?.name ?? '?'}`);
+      }
+    }
   }
 
-  const extra = newKills.length > 3 ? `\n...и ещё ${newKills.length - 3}` : '';
-  return `[KILLMAILS] ${newKills.length} новых:\n${details.join('\n')}${extra}`;
+  if (seenIds.size === 0) return null;
+
+  // Update state with highest seen killmail_id
+  state.last_killmail_id = Math.max(...seenIds);
+
+  const total = seenIds.size;
+  const extra = total > 3 ? `\n...и ещё ${total - 3}` : '';
+  const source = eveKillWs.isConnected() ? ' (live + ESI)' : '';
+  return `[KILLMAILS] ${total} новых${source}:\n${details.join('\n')}${extra}`;
 }
 
 // ── ORDERS ──

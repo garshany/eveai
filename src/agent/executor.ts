@@ -10,7 +10,7 @@ import {
   getToolPolicy,
   isSdeSqlTool,
   isUniverseCountTool,
-  isZkillToolName,
+  isEveKillToolName,
   isBatchMarketTool,
   isHeartbeatConfigTool,
 } from './tools.js';
@@ -30,7 +30,8 @@ import { loadEsiCatalog } from '../eve/esi-catalog.js';
 import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
 import { getThreadSummary, runPreTurnCompact, needsMidTurnCompaction, runMidTurnCompact } from './compact.js';
-import { executeZkillQuery } from '../eve/zkill-query.js';
+import { executeEveKillTool } from '../eve-kill/executor.js';
+import type { EveKillToolName } from '../eve-kill/tools.js';
 import { executeHeartbeatConfig } from '../scheduled/heartbeat-config.js';
 import type { HeartbeatConfigArgs } from '../scheduled/heartbeat-config.js';
 import { getLinkedCharacter } from '../eve/sso.js';
@@ -38,7 +39,7 @@ import type { UserContext } from '../auth/user-resolver.js';
 
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_WEB_SEARCHES_PER_TURN = 2;
-const MAX_ZKILL_CALLS_PER_TURN = 4;
+const MAX_EVE_KILL_CALLS_PER_TURN = 6;
 const MAX_CONSECUTIVE_SAME_TOOL = 3;
 const MAX_CONTEXT_MESSAGES = 10;
 const MAX_CONTEXT_CHARS = 15000;
@@ -868,27 +869,14 @@ async function executeToolCall(
     };
   }
 
-  if (isZkillToolName(name)) {
-    webSearchState.zkillCallCount += 1;
-    if (webSearchState.zkillCallCount > MAX_ZKILL_CALLS_PER_TURN) {
-      console.log('[zkill] blocked: limit %d reached (call #%d)', MAX_ZKILL_CALLS_PER_TURN, webSearchState.zkillCallCount);
-      return { ok: false, error: `Лимит zkill (${MAX_ZKILL_CALLS_PER_TURN}) на один ответ исчерпан. Анализируй уже собранные данные.`, blocked: true };
+  if (isEveKillToolName(name)) {
+    webSearchState.eveKillCallCount += 1;
+    if (webSearchState.eveKillCallCount > MAX_EVE_KILL_CALLS_PER_TURN) {
+      console.log('[eve-kill] blocked: limit %d reached (call #%d)', MAX_EVE_KILL_CALLS_PER_TURN, webSearchState.eveKillCallCount);
+      return { ok: false, error: `Лимит eve-kill (${MAX_EVE_KILL_CALLS_PER_TURN}) на один ответ исчерпан. Анализируй уже собранные данные.`, blocked: true };
     }
-    const path = String(args.path ?? '');
-    const detailLimit = typeof args.detail_limit === 'number' ? args.detail_limit : 3;
-    const result = await executeZkillQuery(db, path, detailLimit, ctx);
-    const zkillFields = Array.isArray(args.fields) ? args.fields as string[] : null;
-    if (zkillFields && zkillFields.length > 0 && result.detailed.length > 0) {
-      const fieldSet = new Set(zkillFields);
-      result.detailed = result.detailed.map((kill) => {
-        const filtered: Record<string, unknown> = {};
-        for (const key of fieldSet) {
-          if (key in kill) filtered[key] = (kill as Record<string, unknown>)[key];
-        }
-        return filtered;
-      }) as typeof result.detailed;
-      console.log('[zkill] field projection: %d/%d fields kept', zkillFields.length, 16);
-    }
+    const result = await executeEveKillTool(db, name as EveKillToolName, args);
+    console.log('[eve-kill] %s completed (call #%d)', name, webSearchState.eveKillCallCount);
     return result;
   }
 
@@ -960,11 +948,11 @@ const WEB_SEARCH_TIMEOUT_MS = 8000;
 
 export type WebSearchState = {
   normalizedQueries: string[];
-  zkillCallCount: number;
+  eveKillCallCount: number;
 };
 
 export function createWebSearchState(): WebSearchState {
-  return { normalizedQueries: [], zkillCallCount: 0 };
+  return { normalizedQueries: [], eveKillCallCount: 0 };
 }
 
 export function registerWebSearch(

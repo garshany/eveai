@@ -34,7 +34,7 @@ Browser → Fastify → auth callback + dashboard + health → same SQLite
 - `src/agent/` — model runtime: responses loop, tool execution, planning, compaction, prompts
 - `src/auth/` — Telegram login, EVE SSO, sessions, user resolution, encrypted secret storage
 - `src/db/` — SQLite schema (`schema.ts` is source of truth), migrations, helpers
-- `src/eve/` — ESI client, SSO token refresh, SDE lookups, capabilities gating, route planner, zKill
+- `src/eve/` — ESI client, SSO token refresh, SDE lookups, capabilities gating, route planner
 - `src/telegram/` — grammY bot setup, command handlers, access control
 - `src/web/` — Fastify routes, frontend shell, middleware, security headers, health
 - `client/src/` — React + Vite landing page and dashboard (built to `dist/client/`)

@@ -2,7 +2,7 @@ import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from './esi-client.js';
 import { getEveCapabilities } from './capabilities.js';
 import { getLinkedCharacter } from './sso.js';
-import { config } from '../config.js';
+import { queryKillmails } from '../eve-kill/client.js';
 import type { UserContext } from '../auth/user-resolver.js';
 
 type RouteFlag = 'secure' | 'shortest' | 'insecure';
@@ -114,7 +114,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
   // 4. Resolve system info from SDE
   const systemInfoMap = resolveSystemBatch(db, allSystemIds);
 
-  // 5. Danger scan: zKill last hour for ALL unique systems
+  // 5. Danger scan: EVE-KILL last hour for ALL unique systems
   const dangerMap = await scanSystemDanger(db, allSystemIds, systemInfoMap, ctx);
 
   // 6. Build route variants with danger data
@@ -232,7 +232,7 @@ function formatRouteSummary(
         const time = kill.time?.split(' ')[0] ?? '?'; // just HH:MM
         const ship = esc(kill.victim_ship ?? '?');
         const isk = kill.value_m ? ` ${kill.value_m}M` : '';
-        const link = kill.url ? `<a href="${escapeHtmlAttribute(kill.url)}">zkb</a>` : '';
+        const link = kill.url ? `<a href="${escapeHtmlAttribute(kill.url)}">kill</a>` : '';
         const victim = esc(truncateName(kill.victim));
         lines.push(`  ${time} ${ship}${isk} ${victim} ${link}`);
       }
@@ -494,22 +494,12 @@ function buildRouteVariant(
 }
 
 // ---------------------------------------------------------------------------
-// Danger scan: zKill last hour + ESI enrichment for ALL systems on route
+// Danger scan: EVE-KILL Query API (single POST replaces N zKill GETs)
 // ---------------------------------------------------------------------------
 
-type ZkillFeedItem = {
-  killmail_id: number;
-  zkb?: {
-    hash?: string;
-    totalValue?: number;
-    npc?: boolean;
-    solo?: boolean;
-  };
-};
-
 const MAX_KILLS_PER_SYSTEM = 5;
-const DANGER_SCAN_CONCURRENCY = 10;
 const DANGER_SCAN_PAST_SECONDS = 3600;
+const DANGER_SCAN_QUERY_LIMIT = 200;
 
 async function scanSystemDanger(
   db: Db,
@@ -518,82 +508,72 @@ async function scanSystemDanger(
   _ctx: UserContext,
 ): Promise<Map<number, DangerSystem>> {
   const ids = [...systemIds];
-  console.log('[danger_scan] scanning %d systems (pastSeconds=%d, max %d kills each)',
-    ids.length, DANGER_SCAN_PAST_SECONDS, MAX_KILLS_PER_SYSTEM);
+  if (ids.length === 0) return new Map();
 
-  // Step 1: Parallel zKill requests for all systems
-  const feedMap = new Map<number, ZkillFeedItem[]>();
-  await mapWithConcurrency(ids, DANGER_SCAN_CONCURRENCY, async (systemId) => {
-    const feed = await fetchZkillFeed(systemId);
-    if (feed.length > 0) feedMap.set(systemId, feed);
+  console.log('[danger_scan] scanning %d systems via EVE-KILL query (pastSeconds=%d, limit=%d)',
+    ids.length, DANGER_SCAN_PAST_SECONDS, DANGER_SCAN_QUERY_LIMIT);
+
+  // Single query: all systems, last hour, sorted by time descending
+  const cutoff = Math.floor(Date.now() / 1000) - DANGER_SCAN_PAST_SECONDS;
+  const result = await queryKillmails(db, {
+    filter: {
+      system_id: { $in: ids },
+      kill_time: { $gte: cutoff },
+    },
+    options: {
+      limit: DANGER_SCAN_QUERY_LIMIT,
+      sort: { kill_time: -1 },
+    },
   });
 
-  const systemsWithKills = feedMap.size;
-  const totalFeedItems = [...feedMap.values()].reduce((s, f) => s + f.length, 0);
-  console.log('[danger_scan] zKill done: %d/%d systems have kills, %d total feed items',
-    systemsWithKills, ids.length, totalFeedItems);
-
-  if (feedMap.size === 0) return new Map();
-
-  // Step 2: Collect all killmails that need ESI enrichment (top N per system)
-  const enrichList: Array<{ systemId: number; item: ZkillFeedItem }> = [];
-  for (const [systemId, feed] of feedMap) {
-    const toEnrich = feed.slice(0, MAX_KILLS_PER_SYSTEM).filter((item) => item.zkb?.hash);
-    for (const item of toEnrich) {
-      enrichList.push({ systemId, item });
-    }
+  if (!result.ok) {
+    console.log('[danger_scan] EVE-KILL query failed: %s', result.error);
+    return new Map();
   }
 
-  // Step 3: Parallel ESI killmail enrichment
-  type RawKill = {
-    systemId: number;
-    killmailId: number;
-    time: string | null;
-    victimCharId: number | null;
-    victimCorpId: number | null;
-    victimShipTypeId: number | null;
-    attackerCharId: number | null;
-    attackerCorpId: number | null;
-    attackerShipTypeId: number | null;
-    valueM: number;
-    npc: boolean;
-  };
+  const killmails = result.data;
+  console.log('[danger_scan] EVE-KILL returned %d killmails', killmails.length);
+  if (killmails.length === 0) return new Map();
 
-  const rawKills: RawKill[] = [];
-  await mapWithConcurrency(enrichList, DANGER_SCAN_CONCURRENCY, async ({ systemId, item }) => {
-    const raw = await fetchKillmailForDanger(db, systemId, item);
-    if (raw) rawKills.push(raw);
-  });
-
-  console.log('[danger_scan] ESI enriched %d/%d killmails', rawKills.length, enrichList.length);
-
-  // Step 4: Batch resolve character/corp names
-  const idsToResolve = new Set<number>();
-  for (const raw of rawKills) {
-    for (const id of [raw.victimCharId, raw.victimCorpId, raw.attackerCharId, raw.attackerCorpId]) {
-      if (id !== null) idsToResolve.add(id);
+  // Group killmails by system_id
+  const grouped = new Map<number, typeof killmails>();
+  for (const km of killmails) {
+    const sysId = km.system_id;
+    if (sysId === undefined) continue;
+    let list = grouped.get(sysId);
+    if (!list) {
+      list = [];
+      grouped.set(sysId, list);
     }
+    list.push(km);
   }
-  const nameMap = await resolveNamesBatch(db, idsToResolve);
 
-  // Step 5: Build DangerSystem entries
+  console.log('[danger_scan] %d/%d systems have kills', grouped.size, ids.length);
+
+  // Build DangerSystem entries from grouped results
   const dangerMap = new Map<number, DangerSystem>();
-  for (const [systemId, feed] of feedMap) {
+  for (const [systemId, feed] of grouped) {
     const info = systemInfoMap.get(systemId);
-    const systemKills = rawKills.filter((k) => k.systemId === systemId);
-    const npcCount = feed.filter((item) => item.zkb?.npc).length;
+    const npcCount = feed.filter((km) => km.is_npc === true).length;
     const pvpCount = feed.length - npcCount;
-    const totalValueM = feed.reduce((s, item) => s + Math.round((item.zkb?.totalValue ?? 0) / 1_000_000), 0);
+    const totalValueM = feed.reduce((s, km) => s + Math.round((km.total_value ?? 0) / 1_000_000), 0);
 
-    const kills: RecentKill[] = systemKills.map((raw) => ({
-      time: raw.time ? toMSK(raw.time) : null,
-      victim: nameMap.get(raw.victimCharId ?? 0) ?? nameMap.get(raw.victimCorpId ?? 0) ?? null,
-      victim_ship: resolveTypeName(db, raw.victimShipTypeId),
-      attacker: nameMap.get(raw.attackerCharId ?? 0) ?? nameMap.get(raw.attackerCorpId ?? 0) ?? null,
-      attacker_ship: resolveTypeName(db, raw.attackerShipTypeId),
-      value_m: raw.valueM,
-      url: `https://zkillboard.com/kill/${raw.killmailId}/`,
-    }));
+    // Build RecentKill entries from pre-enriched EVE-KILL data (top N per system)
+    const kills: RecentKill[] = feed.slice(0, MAX_KILLS_PER_SYSTEM).map((km) => {
+      const victim = km.victim;
+      const attackers = km.attackers ?? [];
+      const finalBlow = attackers.find((a) => a.final_blow === true) ?? attackers[0];
+
+      return {
+        time: km.kill_time ? toMSK(km.kill_time) : null,
+        victim: victim?.character_name ?? victim?.corporation_name ?? null,
+        victim_ship: victim?.ship_name ?? null,
+        attacker: finalBlow?.character_name ?? finalBlow?.corporation_name ?? null,
+        attacker_ship: finalBlow?.ship_name ?? null,
+        value_m: Math.round((km.total_value ?? 0) / 1_000_000),
+        url: `https://eve-kill.com/kill/${km.killmail_id}`,
+      };
+    });
 
     dangerMap.set(systemId, {
       name: info?.name ?? `ID:${systemId}`,
@@ -606,99 +586,10 @@ async function scanSystemDanger(
     });
   }
 
-  console.log('[danger_scan] result: %d danger systems, %d enriched kills, %d names resolved',
-    dangerMap.size, rawKills.length, nameMap.size);
+  const totalEnriched = [...dangerMap.values()].reduce((s, d) => s + d.kills.length, 0);
+  console.log('[danger_scan] result: %d danger systems, %d displayed kills', dangerMap.size, totalEnriched);
 
   return dangerMap;
-}
-
-const zkillFeedCache = new Map<number, { data: ZkillFeedItem[]; fetchedAt: number }>();
-const ZKILL_FEED_CACHE_TTL_MS = 5 * 60 * 1000;
-
-async function fetchZkillFeed(systemId: number): Promise<ZkillFeedItem[]> {
-  const now = Date.now();
-  const cached = zkillFeedCache.get(systemId);
-  if (cached && now - cached.fetchedAt < ZKILL_FEED_CACHE_TTL_MS) {
-    return cached.data;
-  }
-
-  const baseUrl = config.zkill.baseUrl.endsWith('/') ? config.zkill.baseUrl : `${config.zkill.baseUrl}/`;
-  const url = `${baseUrl}kills/systemID/${systemId}/pastSeconds/${DANGER_SCAN_PAST_SECONDS}/`;
-  try {
-    const res = await fetch(url, {
-      headers: {
-        Accept: 'application/json',
-        'Accept-Encoding': 'gzip',
-        'User-Agent': config.zkill.userAgent,
-      },
-      signal: AbortSignal.timeout(config.zkill.timeoutMs),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    if (!Array.isArray(data)) return [];
-    const feed = data.filter((item: unknown): item is ZkillFeedItem =>
-      !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).killmail_id === 'number',
-    );
-    zkillFeedCache.set(systemId, { data: feed, fetchedAt: now });
-    return feed;
-  } catch {
-    return [];
-  }
-}
-
-async function fetchKillmailForDanger(
-  db: Db, systemId: number, item: ZkillFeedItem,
-): Promise<{
-  systemId: number; killmailId: number; time: string | null;
-  victimCharId: number | null; victimCorpId: number | null; victimShipTypeId: number | null;
-  attackerCharId: number | null; attackerCorpId: number | null; attackerShipTypeId: number | null;
-  valueM: number; npc: boolean;
-} | null> {
-  const hash = item.zkb?.hash;
-  if (!hash) return null;
-  try {
-    const result = await callEsiOperation<Record<string, unknown>>(
-      db, 'get_killmails_killmail_id_killmail_hash',
-      { killmail_id: item.killmail_id, killmail_hash: hash },
-    );
-    if (!result.ok || !result.data) return null;
-    const km = result.data;
-    const victim = (km.victim && typeof km.victim === 'object') ? km.victim as Record<string, unknown> : {};
-    const attackers = Array.isArray(km.attackers) ? km.attackers as Record<string, unknown>[] : [];
-    const finalBlow = attackers.find((a) => a.final_blow === true) ?? attackers[0] ?? {};
-    return {
-      systemId,
-      killmailId: item.killmail_id,
-      time: typeof km.killmail_time === 'string' ? km.killmail_time : null,
-      victimCharId: numOrNull(victim.character_id),
-      victimCorpId: numOrNull(victim.corporation_id),
-      victimShipTypeId: numOrNull(victim.ship_type_id),
-      attackerCharId: numOrNull(finalBlow.character_id),
-      attackerCorpId: numOrNull(finalBlow.corporation_id),
-      attackerShipTypeId: numOrNull(finalBlow.ship_type_id),
-      valueM: Math.round((item.zkb?.totalValue ?? 0) / 1_000_000),
-      npc: item.zkb?.npc ?? false,
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function resolveNamesBatch(db: Db, ids: Set<number>): Promise<Map<number, string>> {
-  const map = new Map<number, string>();
-  if (ids.size === 0) return map;
-  const idArray = [...ids].slice(0, 500);
-  try {
-    const result = await callEsiOperation<Array<{ id: number; name: string }>>(
-      db, 'post_universe_names', { ids: JSON.stringify(idArray) },
-    );
-    if (result.ok && Array.isArray(result.data)) {
-      for (const entry of result.data) {
-        if (entry.id && entry.name) map.set(entry.id, entry.name);
-      }
-    }
-  } catch { /* no names */ }
-  return map;
 }
 
 function toMSK(utcTime: string): string {
@@ -708,21 +599,6 @@ function toMSK(utcTime: string): string {
   } catch {
     return utcTime;
   }
-}
-
-const typeNameCache = new Map<number, string | null>();
-
-function resolveTypeName(db: Db, typeId: number | null): string | null {
-  if (typeId === null) return null;
-  if (typeNameCache.has(typeId)) return typeNameCache.get(typeId)!;
-  const row = db.prepare('SELECT name FROM sde_types WHERE type_id = ?').get(typeId) as { name: string } | undefined;
-  const name = row?.name ?? null;
-  typeNameCache.set(typeId, name);
-  return name;
-}
-
-function numOrNull(v: unknown): number | null {
-  return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
 function describeAutopilotMode(mode: AutopilotMode): string {
@@ -755,19 +631,4 @@ function mergeDangerSystems(routes: RouteVariant[]): Array<DangerSystem & { rout
     || left.sec - right.sec
     || left.name.localeCompare(right.name)
   ));
-}
-
-async function mapWithConcurrency<T>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T) => Promise<void>,
-): Promise<void> {
-  let index = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (index < items.length) {
-      const i = index++;
-      await fn(items[i]);
-    }
-  });
-  await Promise.all(workers);
 }
