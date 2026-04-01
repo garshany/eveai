@@ -10,31 +10,42 @@ describe('buildDeveloperPrompt', () => {
       grantedScopes: [],
     });
 
+    // Structure: output_contract first, personality last (GPT-5.4 recommended order)
+    const outputContractPos = prompt.indexOf('<output_contract>');
+    const personalityPos = prompt.indexOf('<personality_and_writing_controls>');
+    expect(outputContractPos).toBeLessThan(personalityPos);
+
+    // Core content assertions
     expect(prompt).toContain('Всегда отвечай по-русски');
-    expect(prompt).toContain('Не раскрывай внутреннюю кухню');
     expect(prompt).toContain('1-2 фразы');
-    expect(prompt).toContain('не teaser');
-    expect(prompt).toContain('Не выдавай предположение');
-    expect(prompt).toContain('ТОЛЬКО sde_sql');
-    expect(prompt).toContain('НЕ вызывай ESI для статики');
+    expect(prompt).toContain('ТОЛЬКО из sde_sql');
     expect(prompt).toContain('web_search');
     expect(prompt).toContain('tool_search');
     expect(prompt).toContain('batch_market_prices');
     expect(prompt).toContain('Backend управляет auth, tokens, pagination, retries, rate limits');
-    expect(prompt).toContain('Не спрашивай character_id');
-    expect(prompt).toContain('Не повторяй один и тот же вызов');
-    expect(prompt).toContain('ВНИМАТЕЛЬНО изучай `enum` в schema каждого tool');
+    expect(prompt).toContain('character_id уже известен');
     expect(prompt).toContain('ДУМАЙ → ПЛАНИРУЙ → ВЫЗЫВАЙ');
-    expect(prompt).toContain('batch_market_prices');
     expect(prompt).toContain('post_universe_names');
     expect(prompt).toContain('обычно достаточно 1 вызова');
-    expect(prompt).toContain('Не делай 3 и более `web_search`');
+    expect(prompt).toContain('Максимум 2 за ответ');
     expect(prompt).toContain('Персонаж не привязан');
     expect(prompt).toContain('EFT');
     expect(prompt).toContain('ломают импорт');
     expect(prompt).not.toContain('ОБЯЗАТЕЛЬНО вызывай для поиска ESI');
     expect(prompt).toContain('<sde_schema>');
-    expect(prompt.length).toBeLessThan(17500);
+
+    // Merged sections: no duplicate tool_map + tool_routing
+    expect(prompt).not.toContain('<tool_map>');
+    expect(prompt).not.toContain('<tool_routing>');
+    expect(prompt).toContain('<tool_source_hierarchy>');
+
+    // New GPT-5.4 sections present
+    expect(prompt).toContain('<verbosity_controls>');
+    expect(prompt).toContain('<completeness_contract>');
+    expect(prompt).toContain('<missing_context_gating>');
+
+    // Prompt should be smaller than pre-optimization (was ~17K with capabilities bloat)
+    expect(prompt.length).toBeLessThan(14000);
   });
 
   it('appends profile and summary when provided', () => {
