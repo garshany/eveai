@@ -335,7 +335,15 @@ export class EveKillWS {
     this.bufferKillmail(km);
   }
 
+  private wsKillCount = 0;
+
   private bufferKillmail(km: EveKillKillmail): void {
+    this.wsKillCount++;
+    // Log first kill and then every 100
+    if (this.wsKillCount === 1 || this.wsKillCount % 100 === 0) {
+      console.log(`${LOG} buffered ${this.wsKillCount} killmails (latest: ${km.killmail_id})`);
+    }
+
     // Add to global buffer
     this.globalBuffer.push(km);
 
@@ -368,7 +376,9 @@ export class EveKillWS {
   private sendSubscribe(topics: string[]): void {
     if (!this.ws || !this.connected) return;
     try {
-      this.ws.send(JSON.stringify({ action: 'subscribe', topics }));
+      const msg = JSON.stringify({ action: 'subscribe', topics });
+      console.log(`${LOG} sending subscribe: ${topics.join(', ')}`);
+      this.ws.send(msg);
     } catch (err) {
       console.error(`${LOG} failed to send subscribe:`, err);
     }
