@@ -7,8 +7,6 @@ import {
   markTelegramBotHealthStarting,
 } from './web/health.js';
 import { startHeartbeat, stopHeartbeat } from './scheduled/heartbeat-worker.js';
-import { eveKillWs } from './eve-kill/ws.js';
-import { initWatchNotifications } from './eve-kill/watch.js';
 import { startKillPoller, stopKillPoller } from './eve-kill/poll.js';
 
 async function main() {
@@ -58,15 +56,8 @@ async function main() {
     });
   };
 
-  // Primary: REST polling every 60s (reliable, 1-3 min delay)
+  // Kill watch: REST polling every 60s (reliable, 1-3 min delay)
   startKillPoller(db, sendKillAlert);
-
-  // Secondary: WebSocket for buffer/real-time when WS is healthy
-  if (config.eveKill.wsEnabled) {
-    eveKillWs.connect();
-    initWatchNotifications(db, sendKillAlert);
-    console.log('[app] EVE-KILL WebSocket started');
-  }
 
   let shuttingDown = false;
   const shutdown = async (exitCode = 0) => {
@@ -74,7 +65,6 @@ async function main() {
     shuttingDown = true;
     console.log('[app] Shutting down...');
     stopKillPoller();
-    eveKillWs.close();
     stopHeartbeat();
     bot.stop();
     await server.close();
