@@ -536,6 +536,28 @@ async function runNativeAgentLoop(
         iteration, response.usage.input, response.usage.output, response.usage.cached, response.usage.reasoning);
     }
 
+    // Silent context loss detection: if we are in warm mode (prevId set) on the first
+    // iteration and the API returns cached=0, the previous response chain is gone.
+    // Fall back to cold mode so the model sees full message history from DB.
+    if (
+      iteration === 0 &&
+      previousResponseId &&
+      response.usage &&
+      response.usage.cached === 0 &&
+      !response.error
+    ) {
+      console.warn('[executor] silent context loss detected: warm mode with cached=0, falling back to cold recovery');
+      totalInputTokens = 0;
+      totalOutputTokens = 0;
+      totalCachedTokens = 0;
+      totalReasoningTokens = 0;
+      peakInputTokens = 0;
+      previousResponseId = null;
+      pendingItems = buildSmartContext(db, threadId);
+      saveLastResponseId(db, threadId, null);
+      continue;
+    }
+
     // --- Codex-style mid-turn compaction ---
     // After each sampling request, if input tokens >= autoCompactLimit AND model
     // needs follow-up (tool calls), compact and continue the loop.
