@@ -2,12 +2,29 @@ import type { Db } from '../db/sqlite.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { getLinkedCharacter } from '../eve/sso.js';
 
-export type HeartbeatCheckType = 'mail' | 'skills' | 'wallet' | 'contracts' | 'killmails';
+export type HeartbeatCheckType =
+  | 'mail' | 'skills' | 'wallet' | 'industry'
+  | 'contracts' | 'killmails' | 'orders' | 'notifications' | 'pi';
 
-const VALID_CHECKS = new Set<HeartbeatCheckType>(['mail', 'skills', 'wallet', 'contracts', 'killmails']);
+const VALID_CHECKS = new Set<HeartbeatCheckType>([
+  'mail', 'skills', 'wallet', 'industry',
+  'contracts', 'killmails', 'orders', 'notifications', 'pi',
+]);
+
 const MIN_INTERVAL = 300;      // 5 minutes
 const MAX_INTERVAL = 86400 * 7; // 7 days
 const DEFAULT_INTERVAL = 3600;  // 1 hour
+
+export interface HeartbeatState {
+  last_mail_id?: number;
+  last_wallet_balance?: number;
+  last_skillqueue_ids?: number[];
+  last_killmail_id?: number;
+  last_contract_id?: number;
+  last_notification_id?: number;
+  last_order_ids?: number[];
+  last_industry_job_ids?: number[];
+}
 
 export interface HeartbeatConfigRow {
   user_id: number;
@@ -17,6 +34,7 @@ export interface HeartbeatConfigRow {
   checks_json: string;
   last_run_at: string | null;
   last_mail_id: number | null;
+  state_json: string;
 }
 
 export type HeartbeatAction =
@@ -41,8 +59,8 @@ function getOrCreateConfig(db: Db, userId: number, characterId: number): Heartbe
   if (row) return row;
 
   db.prepare(
-    `INSERT INTO heartbeat_config (user_id, character_id, enabled, interval_seconds, checks_json)
-     VALUES (?, ?, 0, ?, '["mail"]')`,
+    `INSERT INTO heartbeat_config (user_id, character_id, enabled, interval_seconds, checks_json, state_json)
+     VALUES (?, ?, 0, ?, '["mail"]', '{}')`,
   ).run(userId, characterId, DEFAULT_INTERVAL);
 
   return db.prepare(
@@ -50,7 +68,7 @@ function getOrCreateConfig(db: Db, userId: number, characterId: number): Heartbe
   ).get(userId, characterId) as HeartbeatConfigRow;
 }
 
-function parseChecks(json: string): HeartbeatCheckType[] {
+export function parseChecks(json: string): HeartbeatCheckType[] {
   try {
     const arr = JSON.parse(json);
     if (!Array.isArray(arr)) return ['mail'];
@@ -58,6 +76,20 @@ function parseChecks(json: string): HeartbeatCheckType[] {
   } catch {
     return ['mail'];
   }
+}
+
+export function parseState(json: string): HeartbeatState {
+  try {
+    return JSON.parse(json) as HeartbeatState;
+  } catch {
+    return {};
+  }
+}
+
+export function saveState(db: Db, userId: number, characterId: number, state: HeartbeatState): void {
+  db.prepare(
+    "UPDATE heartbeat_config SET state_json = ?, updated_at = datetime('now') WHERE user_id = ? AND character_id = ?",
+  ).run(JSON.stringify(state), userId, characterId);
 }
 
 function formatInterval(seconds: number): string {
@@ -139,7 +171,6 @@ export function executeHeartbeatConfig(
           "UPDATE heartbeat_config SET checks_json = ?, updated_at = datetime('now') WHERE user_id = ? AND character_id = ?",
         ).run(JSON.stringify(checks), userId, linked.characterId);
       }
-      // Auto-enable heartbeat when adding a check
       if (!config.enabled) {
         db.prepare(
           "UPDATE heartbeat_config SET enabled = 1, updated_at = datetime('now') WHERE user_id = ? AND character_id = ?",

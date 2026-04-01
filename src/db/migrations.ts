@@ -23,6 +23,7 @@ export function runMigrations(db: Db): void {
     addColumnIfMissing(db, 'agent_threads', 'total_tokens', 'INTEGER DEFAULT 0');
     createIndexIfMissing(db, 'idx_messages_thread', 'messages', 'thread_id');
     ensureHeartbeatConfig(db);
+    addColumnIfMissing(db, 'heartbeat_config', 'state_json', "TEXT NOT NULL DEFAULT '{}'");
   });
 
   migrate();

@@ -320,6 +320,7 @@ CREATE TABLE IF NOT EXISTS heartbeat_config (
   checks_json      TEXT NOT NULL DEFAULT '["mail"]',
   last_run_at      TEXT,
   last_mail_id     INTEGER,
+  state_json       TEXT NOT NULL DEFAULT '{}',
   created_at       TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, character_id)

@@ -165,8 +165,8 @@ const HEARTBEAT_CONFIG_TOOL: NativeFunctionTool = {
       },
       check: {
         type: ['string', 'null'],
-        enum: ['mail', 'skills', 'wallet', 'contracts', 'killmails', null],
-        description: 'Check type for enable_check/disable_check actions.',
+        enum: ['mail', 'skills', 'wallet', 'industry', 'contracts', 'killmails', 'orders', 'notifications', 'pi', null],
+        description: 'Check type for enable_check/disable_check. mail=new messages, skills=queue empty/completed, wallet=balance changes >10M, industry=jobs completed, contracts=new incoming, killmails=kills/losses, orders=filled/expired, notifications=wars/structure alerts, pi=stale extractors.',
       },
     },
     required: ['action', 'interval_seconds', 'check'],
