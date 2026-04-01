@@ -349,11 +349,14 @@ export class EveKillWS {
     if (this.reconnectTimer) return;
 
     const delay = this.reconnectDelay;
-    console.log(`${LOG} reconnecting in ${delay}ms`);
+    // Only log at increasing intervals to avoid spamming
+    if (delay <= 4_000 || delay >= 300_000) {
+      console.log(`${LOG} reconnecting in ${Math.round(delay / 1000)}s`);
+    }
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 60_000);
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 300_000); // max 5 min
       this.connect();
     }, delay);
   }
