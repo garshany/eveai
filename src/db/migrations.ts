@@ -25,6 +25,7 @@ export function runMigrations(db: Db): void {
     ensureHeartbeatConfig(db);
     addColumnIfMissing(db, 'heartbeat_config', 'state_json', "TEXT NOT NULL DEFAULT '{}'");
     ensureKillWatches(db);
+    ensureRouteMonitors(db);
   });
 
   migrate();
@@ -151,6 +152,49 @@ function ensureKillWatches(db: Db): void {
       )
     `);
     db.exec('CREATE INDEX idx_kill_watches_chat ON kill_watches(chat_id)');
+  }
+}
+
+function ensureRouteMonitors(db: Db): void {
+  const hasMonitors = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='route_monitors'",
+  ).get();
+  if (!hasMonitors) {
+    db.exec(`
+      CREATE TABLE route_monitors (
+        chat_id            INTEGER PRIMARY KEY,
+        character_id       INTEGER NOT NULL,
+        origin_id          INTEGER NOT NULL,
+        destination_id     INTEGER NOT NULL,
+        route_systems      TEXT NOT NULL DEFAULT '[]',
+        current_system_id  INTEGER,
+        ship_type_id       INTEGER,
+        ship_name          TEXT DEFAULT '',
+        ship_ehp           REAL DEFAULT 0,
+        started_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        last_location_check TEXT,
+        last_online_check  TEXT,
+        stats_json         TEXT NOT NULL DEFAULT '{}',
+        created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+  }
+
+  const hasGankerCache = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='route_ganker_cache'",
+  ).get();
+  if (!hasGankerCache) {
+    db.exec(`
+      CREATE TABLE route_ganker_cache (
+        character_id     INTEGER NOT NULL,
+        system_id        INTEGER NOT NULL,
+        character_name   TEXT DEFAULT '',
+        kill_count       INTEGER DEFAULT 1,
+        last_seen        TEXT NOT NULL DEFAULT (datetime('now')),
+        ship_type_id     INTEGER,
+        PRIMARY KEY (character_id, system_id)
+      )
+    `);
   }
 }
 

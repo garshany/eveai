@@ -8,6 +8,7 @@ import {
 } from './web/health.js';
 import { startHeartbeat, stopHeartbeat } from './scheduled/heartbeat-worker.js';
 import { startKillPoller, stopKillPoller } from './eve-kill/poll.js';
+import { setRouteMonitorSender } from './eve/route-planner.js';
 
 async function main() {
   console.log('[app] Starting EVE Agent...');
@@ -31,6 +32,14 @@ async function main() {
       console.warn('[app] Failed to resolve bot username:', err);
     }
   }
+
+  // 2b. Set up route monitor sender (must be set before any route is planned)
+  setRouteMonitorSender((chatId, text) => {
+    bot.api.sendMessage(chatId, text, { parse_mode: undefined }).catch((err) => {
+      console.error('[route-monitor] Telegram send failed:', err);
+    });
+  });
+  console.log('[app] Route monitor sender configured');
 
   // 3. Start Fastify server (EVE SSO callback + health + web dashboard)
   markTelegramBotHealthStarting();

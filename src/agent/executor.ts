@@ -13,10 +13,12 @@ import {
   isEveKillToolName,
   isBatchMarketTool,
   isHeartbeatConfigTool,
+  isRouteMonitorTool,
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
 import { updatePlan } from './planner.js';
 import { BULK_FILTER_OPERATIONS } from '../eve/esi-catalog.js';
+import { getActiveMonitor, stopRouteMonitor } from '../eve-board/monitor.js';
 import {
   buildFunctionCallOutputs,
   createNativeResponse,
@@ -821,6 +823,39 @@ async function executeToolCall(
       interval_seconds: typeof args.interval_seconds === 'number' ? args.interval_seconds : undefined,
       check: typeof args.check === 'string' ? args.check : undefined,
     } as HeartbeatConfigArgs);
+  }
+
+  if (isRouteMonitorTool(name)) {
+    const action = String(args.action ?? 'status');
+    const chatId = ctx.chatId ?? ctx.userId;
+
+    if (action === 'stop') {
+      stopRouteMonitor(chatId, 'manual');
+      return { ok: true, stopped: true, message: 'Мониторинг маршрута остановлен.' };
+    }
+
+    // Default: status
+    const monitor = getActiveMonitor(chatId);
+    if (!monitor) {
+      return { ok: true, active: false, message: 'Нет активного мониторинга маршрута.' };
+    }
+
+    const elapsed = Date.now() - new Date(monitor.startedAt).getTime();
+    const minutes = Math.round(elapsed / 60_000);
+    return {
+      ok: true,
+      active: true,
+      chatId: monitor.chatId,
+      characterId: monitor.characterId,
+      ship: monitor.shipName,
+      shipEhp: monitor.shipEhp,
+      currentSystemId: monitor.currentSystemId,
+      routeLength: monitor.routeSystems.length,
+      jumpsCompleted: monitor.stats.jumpsCompleted,
+      killsSeen: monitor.stats.killsSeen,
+      dangerEvents: monitor.stats.dangerEvents.length,
+      elapsedMinutes: minutes,
+    };
   }
 
   if (name === 'plan_route') {

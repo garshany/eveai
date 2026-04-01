@@ -157,6 +157,31 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   },
 ];
 
+const ROUTE_MONITOR_TOOL_NAME = 'route_monitor';
+
+const ROUTE_MONITOR_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: ROUTE_MONITOR_TOOL_NAME,
+  description: 'Control real-time route monitoring. Auto-starts when autopilot is set via plan_route. Use to check monitoring status or stop active monitoring.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['status', 'stop'],
+        description: 'status = show current monitoring state, stop = disable monitoring.',
+      },
+    },
+    required: ['action'],
+    additionalProperties: false,
+  },
+};
+
+export function isRouteMonitorTool(name: string): boolean {
+  return name === ROUTE_MONITOR_TOOL_NAME;
+}
+
 const HEARTBEAT_CONFIG_TOOL_NAME = 'heartbeat_config';
 
 const HEARTBEAT_CONFIG_TOOL: NativeFunctionTool = {
@@ -220,6 +245,7 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
   return [
     { type: 'tool_search' },
     ...ALWAYS_ON_FUNCTION_TOOLS,
+    ROUTE_MONITOR_TOOL,
     HEARTBEAT_CONFIG_TOOL,
     BATCH_MARKET_TOOL,
     buildEveKillNamespace(),

@@ -5,8 +5,20 @@ import { getLinkedCharacter } from './sso.js';
 import { getKilllist } from '../eve-kill/client.js';
 import type { KilllistItem } from '../eve-kill/client.js';
 import type { UserContext } from '../auth/user-resolver.js';
+import { startRouteMonitor } from '../eve-board/monitor.js';
+import { generateBriefing } from '../eve-board/briefing.js';
 
 type RouteFlag = 'secure' | 'shortest' | 'insecure';
+
+// ---------------------------------------------------------------------------
+// Route monitor sender — set once from app.ts at boot time
+// ---------------------------------------------------------------------------
+
+let routeMonitorSender: ((chatId: number, text: string) => void) | null = null;
+
+export function setRouteMonitorSender(sender: (chatId: number, text: string) => void): void {
+  routeMonitorSender = sender;
+}
 
 type SystemInfo = {
   id: number;
@@ -149,6 +161,57 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     }
   }
 
+  let formattedSummary = formatRouteSummary(originInfo, destInfo, routes, autopilotMode, args.prefer);
+
+  // Auto-start route monitor and generate briefing when autopilot is set
+  if (autopilotSet && routeMonitorSender) {
+    const linked = getLinkedCharacter(db, ctx);
+    const characterId = linked?.characterId ?? 0;
+    const chatId = ctx.chatId ?? ctx.userId;
+
+    // Get the preferred route's system IDs for the monitor
+    const preferred = args.prefer
+      ? routes.find((r) => r.flag === args.prefer) ?? routes[0]
+      : routes.find((r) => r.flag === 'secure') ?? routes[0];
+    const prefIndex = flags.indexOf(preferred.flag);
+    const monitorSystemIds = routeResults[prefIndex] ?? [];
+
+    if (characterId > 0 && monitorSystemIds.length > 0) {
+      // Fetch current ship info for threat assessment
+      let shipTypeId = 0;
+      let shipName = 'Unknown';
+      try {
+        const shipInfo = await callEsiOperation<{ ship_type_id?: number; ship_name?: string }>(
+          db,
+          'get_characters_character_id_ship',
+          { character_id: characterId },
+          ctx,
+        );
+        if (shipInfo.ok && shipInfo.data) {
+          shipTypeId = shipInfo.data.ship_type_id ?? 0;
+          shipName = shipInfo.data.ship_name ?? 'Unknown';
+        }
+      } catch (err) {
+        console.log('[plan_route] ship fetch failed: %s', err instanceof Error ? err.message : String(err));
+      }
+
+      // Start the route monitor
+      startRouteMonitor(db, chatId, characterId, monitorSystemIds, shipTypeId, shipName, routeMonitorSender);
+
+      // Generate pre-flight briefing and append to summary
+      try {
+        const briefing = await generateBriefing(
+          db, monitorSystemIds, originInfo.name, destInfo.name, characterId, shipTypeId,
+        );
+        if (briefing) {
+          formattedSummary += '\n\n' + briefing;
+        }
+      } catch (err) {
+        console.log('[plan_route] briefing generation failed: %s', err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
+
   return {
     ok: true,
     origin: originInfo,
@@ -157,7 +220,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     autopilot_set: autopilotSet,
     autopilot_mode: autopilotMode,
     error: null,
-    formatted_summary: formatRouteSummary(originInfo, destInfo, routes, autopilotMode, args.prefer),
+    formatted_summary: formattedSummary,
   };
 }
 
