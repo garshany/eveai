@@ -102,6 +102,6 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).not.toContain('<user_profile_data>');
     expect(prompt).not.toContain('<conversation_summary>');
     expect(prompt).toContain('<sde_schema>');
-    expect(prompt.length).toBeLessThan(4000);
+    expect(prompt.length).toBeLessThan(5000);
   });
 });

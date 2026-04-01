@@ -17,16 +17,26 @@ sde_stargates (stargate_id INT, system_id INT, destination_system_id INT, destin
 sde_blueprints (blueprint_type_id INT, name TEXT, data_json TEXT)
 sde_factions (faction_id INT, name TEXT, data_json TEXT)
 sde_npc_corporations (corporation_id INT, name TEXT, station_id INT, data_json TEXT)
-sde_type_dogma (type_id INT, data_json TEXT)
+sde_type_dogma (type_id INT, data_json TEXT) — dogma attributes per type, data_json has {dogmaAttributes: [{attributeID, value}]}
 sde_type_bonus (type_id INT, data_json TEXT)
 sde_type_materials (type_id INT, name TEXT, data_json TEXT)
+sde_dogma_attributes (attribute_id INT, name TEXT, data_json TEXT) — 2825 attr definitions, JOIN with sde_type_dogma to resolve attributeID→name
+sde_dogma_effects (effect_id INT, name TEXT, data_json TEXT)
+sde_dogma_units (unit_id INT, name TEXT, data_json TEXT)
 sde_raw_records (dataset_name TEXT, record_id TEXT, name TEXT, data_json TEXT) — raw SDE datasets like mapPlanets
 
 data_json fields accessed via json_extract():
   sde_systems.data_json: security (float), securityClass (text)
   sde_types.data_json: mass, volume, capacity, basePrice, published (bool), marketGroupID, metaGroupID, portionSize
   sde_blueprints.data_json: activities.manufacturing.materials[], activities.manufacturing.products[]
-  sde_raw_records.data_json for dataset_name='mapPlanets': solarSystemID, planetIndex, moonIDs[]`;
+  sde_raw_records.data_json for dataset_name='mapPlanets': solarSystemID, planetIndex, moonIDs[]
+
+Dogma lookup (resolve attributeID to name+value for a type):
+  SELECT a.name, json_extract(j.value,'$.value') AS val
+  FROM sde_type_dogma d, json_each(d.data_json,'$.dogmaAttributes') j
+  JOIN sde_dogma_attributes a ON a.attribute_id=json_extract(j.value,'$.attributeID')
+  WHERE d.type_id=<ID> AND a.name IN ('shieldCapacity','shieldRechargeRate','shieldEmDamageResonance','shieldThermalDamageResonance','shieldKineticDamageResonance','shieldExplosiveDamageResonance','armorHP','armorEmDamageResonance','armorThermalDamageResonance','armorKineticDamageResonance','armorExplosiveDamageResonance','maxVelocity','agility','signatureRadius','droneCapacity','droneBandwidth','maxRange','falloff','trackingSpeed','capacitorCapacity','rechargeRate','cpuOutput','powerOutput','hp')
+Resonance 0-1: resist = 1 - resonance. rechargeRate is in ms.`;
 
 const UNIVERSE_COUNT_TOOL_NAME = 'count_universe_objects';
 type UniverseTargetKind = 'system' | 'constellation' | 'region';
