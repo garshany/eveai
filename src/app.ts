@@ -8,6 +8,7 @@ import {
 } from './web/health.js';
 import { startHeartbeat, stopHeartbeat } from './scheduled/heartbeat-worker.js';
 import { eveKillWs } from './eve-kill/ws.js';
+import { initWatchNotifications } from './eve-kill/watch.js';
 
 async function main() {
   console.log('[app] Starting EVE Agent...');
@@ -52,6 +53,11 @@ async function main() {
   // 6. Start EVE-KILL WebSocket (real-time killmail stream)
   if (config.eveKill.wsEnabled) {
     eveKillWs.connect();
+    initWatchNotifications(db, (chatId, text) => {
+      bot.api.sendMessage(chatId, text, { parse_mode: undefined }).catch((err) => {
+        console.error('[kill-watch] Telegram send failed:', err);
+      });
+    });
     console.log('[app] EVE-KILL WebSocket started');
   }
 

@@ -24,6 +24,7 @@ export function runMigrations(db: Db): void {
     createIndexIfMissing(db, 'idx_messages_thread', 'messages', 'thread_id');
     ensureHeartbeatConfig(db);
     addColumnIfMissing(db, 'heartbeat_config', 'state_json', "TEXT NOT NULL DEFAULT '{}'");
+    ensureKillWatches(db);
   });
 
   migrate();
@@ -131,6 +132,25 @@ function ensureHeartbeatConfig(db: Db): void {
         PRIMARY KEY (user_id, character_id)
       )
     `);
+  }
+}
+
+function ensureKillWatches(db: Db): void {
+  const exists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='kill_watches'",
+  ).get();
+  if (!exists) {
+    db.exec(`
+      CREATE TABLE kill_watches (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id     INTEGER NOT NULL,
+        topic       TEXT NOT NULL,
+        label       TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(chat_id, topic)
+      )
+    `);
+    db.exec('CREATE INDEX idx_kill_watches_chat ON kill_watches(chat_id)');
   }
 }
 

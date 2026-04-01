@@ -875,7 +875,7 @@ async function executeToolCall(
       console.log('[eve-kill] blocked: limit %d reached (call #%d)', MAX_EVE_KILL_CALLS_PER_TURN, webSearchState.eveKillCallCount);
       return { ok: false, error: `Лимит eve-kill (${MAX_EVE_KILL_CALLS_PER_TURN}) на один ответ исчерпан. Анализируй уже собранные данные.`, blocked: true };
     }
-    const result = await executeEveKillTool(db, name as EveKillToolName, args);
+    const result = await executeEveKillTool(db, name as EveKillToolName, args, ctx.chatId ?? ctx.userId);
     console.log('[eve-kill] %s completed (call #%d)', name, webSearchState.eveKillCallCount);
     return result;
   }

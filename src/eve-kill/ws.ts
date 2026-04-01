@@ -139,11 +139,6 @@ export class EveKillWS {
       this.connected = true;
       this.reconnectDelay = 1_000;
 
-      // Always subscribe to "all" for global killmail feed
-      if (!this.activeTopics.has('all')) {
-        this.activeTopics.add('all');
-      }
-
       // Re-subscribe active topics after reconnect
       if (this.activeTopics.size > 0) {
         this.sendSubscribe([...this.activeTopics]);
@@ -427,7 +422,24 @@ export class EveKillWS {
 }
 
 // ---------------------------------------------------------------------------
-// Singleton instance — created on import, connect() called by app.ts
+// Singleton instance — lazy-created on first access to avoid config read at import time
 // ---------------------------------------------------------------------------
 
-export const eveKillWs = new EveKillWS();
+let _instance: EveKillWS | null = null;
+
+export const eveKillWs = {
+  connect(): void { getInstance().connect(); },
+  close(): void { _instance?.close(); },
+  subscribe(topics: string[]): void { getInstance().subscribe(topics); },
+  unsubscribe(topics: string[]): void { getInstance().unsubscribe(topics); },
+  getActiveTopics(): string[] { return _instance?.getActiveTopics() ?? []; },
+  onKillmail(handler: KillmailHandler): void { getInstance().onKillmail(handler); },
+  getRecentForSystem(systemId: number): EveKillKillmail[] { return _instance?.getRecentForSystem(systemId) ?? []; },
+  getRecentForCharacter(characterId: number): EveKillKillmail[] { return _instance?.getRecentForCharacter(characterId) ?? []; },
+  isConnected(): boolean { return _instance?.isConnected() ?? false; },
+};
+
+function getInstance(): EveKillWS {
+  if (!_instance) _instance = new EveKillWS();
+  return _instance;
+}

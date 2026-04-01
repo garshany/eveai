@@ -16,6 +16,7 @@ export const EVE_KILL_TOOL_NAMES = [
   'kill_feed', 'kill_query',
   'kill_stats', 'kill_battles', 'kill_entity',
   'kill_lookup', 'kill_spatial', 'kill_prices',
+  'kill_watch',
 ] as const;
 
 export type EveKillToolName = typeof EVE_KILL_TOOL_NAMES[number];
@@ -286,6 +287,43 @@ const DEFERRED_EVE_KILL_TOOLS: NativeFunctionTool[] = [
         days: { type: ['integer', 'null'], description: 'Price data window in days (default 7).' },
       },
       required: ['action', 'type_id', 'days'],
+      additionalProperties: false,
+    },
+  },
+
+  // ── kill_watch ────────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    name: 'kill_watch',
+    description:
+      'Subscribe to real-time kill notifications via WebSocket. Watch a specific player, system, or region — ' +
+      'bot will send a Telegram alert when a matching kill happens. ' +
+      'Use when user asks "follow player X", "watch system Uedama", "alert me about kills in Delve".',
+    strict: true,
+    defer_loading: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['watch', 'unwatch', 'list'],
+          description: 'watch=subscribe to kill alerts, unwatch=remove subscription, list=show active watches.',
+        },
+        topic_type: {
+          type: ['string', 'null'],
+          enum: ['victim', 'attacker', 'system', 'region', null],
+          description: 'What to watch. victim=when player dies, attacker=when player kills, system/region=all kills in area.',
+        },
+        topic_id: {
+          type: ['integer', 'null'],
+          description: 'CCP ID: character_id, system_id, or region_id. Resolve via sde_sql or kill_lookup search.',
+        },
+        label: {
+          type: ['string', 'null'],
+          description: 'Human-readable label for the watch (e.g. player/system name).',
+        },
+      },
+      required: ['action', 'topic_type', 'topic_id', 'label'],
       additionalProperties: false,
     },
   },
