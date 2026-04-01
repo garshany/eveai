@@ -1066,7 +1066,7 @@ async function fetchEveUni(query: string): Promise<Array<{ title: string; url: s
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WEB_SEARCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url.toString(), { signal: controller.signal, headers: { 'User-Agent': 'eve-agent/0.1' } });
+    const res = await fetch(url.toString(), { signal: controller.signal, headers: { 'User-Agent': 'EVEAIBOT/1.0 (+https://eveonline-ai.ru/)' } });
     if (!res.ok) return [];
     const data = await res.json() as { query?: { search?: Array<{ title?: string; snippet?: string }> } };
     return (data?.query?.search ?? [])

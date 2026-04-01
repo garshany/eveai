@@ -59,7 +59,7 @@ export const config = {
     specUrl: optional('ESI_SPEC_URL', 'https://esi.evetech.net/latest/swagger.json'),
     catalogCachePath: optional('ESI_CATALOG_CACHE_PATH', './data/cache/esi-swagger.json'),
     compatibilityDate: optional('ESI_COMPATIBILITY_DATE', '2026-03-15'),
-    userAgent: optional('ESI_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)'),
+    userAgent: optional('ESI_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://eveonline-ai.ru/; +https://github.com/garshany/eveai)'),
     maxPages: optionalInt('ESI_MAX_PAGES', 5),
     backoffMaxSeconds: optionalInt('ESI_BACKOFF_MAX_SECONDS', 10),
     requestTimeoutMs: optionalInt('ESI_REQUEST_TIMEOUT_MS', 8000),
@@ -96,7 +96,7 @@ export const config = {
     timeoutMs: optionalInt('ZKILL_TIMEOUT_MS', 8000),
     cacheTtlSeconds: optionalInt('ZKILL_CACHE_TTL_SECONDS', 300),
     maxPastSeconds: optionalInt('ZKILL_MAX_PAST_SECONDS', 604800),
-    userAgent: optional('ZKILL_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)'),
+    userAgent: optional('ZKILL_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://eveonline-ai.ru/; +https://github.com/garshany/eveai)'),
   },
   compact: {
     maxInputChars: optionalInt('COMPACT_MAX_INPUT_CHARS', 20000),
