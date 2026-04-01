@@ -234,6 +234,7 @@ async function enrichKills(db: Db, items: ZkbFeedItem[]): Promise<EnrichedKill[]
         { killmail_id: item.killmail_id, killmail_hash: hash },
       );
       if (!r.ok || !r.data) {
+        console.log(`${LOG} ESI enrich failed for ${item.killmail_id}: ${r.ok ? 'no data' : ('error' in r ? String(r.error) : 'unknown')}`);
         results.push(basicKill(item));
         continue;
       }
@@ -317,9 +318,10 @@ function resolveType(db: Db, typeId: number | null): string | null {
 }
 
 function resolveSystem(db: Db, systemId: number): { name: string; sec: number } | null {
-  const row = db.prepare("SELECT name, json_extract(data_json, '$.security') as sec FROM sde_systems WHERE system_id = ?")
-    .get(systemId) as { name: string; sec: number } | undefined;
-  return row ? { name: row.name, sec: Math.round(row.sec * 10) / 10 } : null;
+  const row = db.prepare(
+    "SELECT name, COALESCE(json_extract(data_json, '$.securityStatus'), json_extract(data_json, '$.security')) as sec FROM sde_systems WHERE system_id = ?",
+  ).get(systemId) as { name: string; sec: number | null } | undefined;
+  return row ? { name: row.name, sec: row.sec != null ? Math.round(row.sec * 10) / 10 : 0 } : null;
 }
 
 async function resolveNames(db: Db, ids: Set<number>): Promise<Map<number, string>> {

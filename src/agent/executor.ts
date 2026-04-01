@@ -432,7 +432,7 @@ function resolveSystemLocationContext(db: Db, systemId: number): SystemLocationC
   const row = db.prepare(`
     SELECT
       s.name AS system_name,
-      json_extract(s.data_json, '$.security') AS security,
+      COALESCE(json_extract(s.data_json, '$.securityStatus'), json_extract(s.data_json, '$.security')) AS security,
       c.name AS constellation_name,
       r.name AS region_name
     FROM sde_systems s
