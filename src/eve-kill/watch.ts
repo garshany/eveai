@@ -73,6 +73,10 @@ type NotifySender = (chatId: number, text: string) => void;
 let notifySender: NotifySender | null = null;
 let watchDb: Db | null = null;
 
+// Dedup: track recently notified killmail IDs to avoid double-send (killmail + killlist channels)
+const recentNotifications = new Map<string, number>(); // key: `${chatId}:${killmailId}` → timestamp
+const DEDUP_TTL_MS = 60_000;
+
 export function initWatchNotifications(db: Db, sender: NotifySender): void {
   watchDb = db;
   notifySender = sender;
@@ -123,11 +127,22 @@ function handleKillmailForWatches(km: EveKillKillmail): void {
 
   const text = `🔴 Kill Alert!\n${victimName} lost ${shipName} in ${systemName}\nValue: ${value}\n${url}`;
 
-  // Send to each unique chat
+  // Send to each unique chat (with dedup)
+  const now = Date.now();
+  // Prune old dedup entries periodically
+  if (recentNotifications.size > 1000) {
+    for (const [key, ts] of recentNotifications) {
+      if (now - ts > DEDUP_TTL_MS) recentNotifications.delete(key);
+    }
+  }
+
   const sentChats = new Set<number>();
   for (const w of watchers) {
     if (sentChats.has(w.chat_id)) continue;
+    const dedupKey = `${w.chat_id}:${km.killmail_id}`;
+    if (recentNotifications.has(dedupKey)) continue;
     sentChats.add(w.chat_id);
+    recentNotifications.set(dedupKey, now);
     try {
       notifySender(w.chat_id, text);
     } catch (err) {

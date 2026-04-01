@@ -47,9 +47,13 @@ type KilllistWsItem = {
   is_solo?: boolean;
   attacker_count?: number;
   ship_name?: string;
+  victim_character_id?: number;
   victim_character_name?: string;
+  victim_corporation_id?: number;
   victim_corporation_name?: string;
   victim_alliance_name?: string;
+  final_blow_character_id?: number;
+  final_blow_character_name?: string;
   [key: string]: unknown;
 };
 
@@ -308,7 +312,9 @@ export class EveKillWS {
       is_npc: km.is_npc,
       is_solo: km.is_solo,
       victim: {
+        character_id: km.victim_character_id as number | undefined,
         character_name: km.victim_character_name,
+        corporation_id: km.victim_corporation_id as number | undefined,
         corporation_name: km.victim_corporation_name,
         alliance_name: km.victim_alliance_name,
         ship_name: km.ship_name,
@@ -319,12 +325,20 @@ export class EveKillWS {
   }
 
   private handleCompactKillmail(data: NonNullable<ServerMessage['data']>): void {
+    const victim = data.victim as Record<string, unknown> | undefined;
     const km: EveKillKillmail = {
       killmail_id: data.killmail_id!,
       system_id: data.solar_system_id as number | undefined,
+      region_id: data.region_id as number | undefined,
       total_value: data.total_value,
       is_npc: data.is_npc,
       is_solo: data.is_solo,
+      victim: victim ? {
+        character_id: victim.character_id as number | undefined,
+        corporation_id: victim.corporation_id as number | undefined,
+        alliance_id: victim.alliance_id as number | undefined,
+        ship_type_id: victim.ship_type_id as number | undefined,
+      } : undefined,
     };
 
     this.bufferKillmail(km);
