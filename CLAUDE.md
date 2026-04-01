@@ -66,6 +66,21 @@ Browser → Fastify → auth callback + dashboard + health → same SQLite
 - X-Pages collections fail closed (no silent truncation)
 - ESI field whitelisting in `src/agent/executor.ts`
 
+## Production Server
+
+SSH доступ для проверок и деплоя:
+
+```bash
+sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134
+```
+
+- host: `144.31.223.134`, user: `root`, app dir: `/opt/eveai`
+- Process manager: `pm2` (app), `systemd` (codex proxy, nginx)
+- Логи: `pm2 logs eveai --lines 50 --nostream`
+- Рестарт: `pm2 restart eveai`
+- Деплой: `cd /opt/eveai && git pull origin BRANCH && npm run build:server && pm2 restart eveai`
+- Подробный runbook: `docs/deployment.md`
+
 ## Documentation
 
 `docs/` is the system of record. Key docs:

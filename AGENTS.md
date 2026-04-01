@@ -16,6 +16,13 @@ Repository knowledge lives in versioned docs under `docs/`. Read only the next d
 - TypeScript strict mode is required across the repo.
 - Use `gh` for GitHub-aware workflows when repo operations are needed.
 
+## Production Server
+
+- host: `144.31.223.134`, user: `root`, password: `AA1Ctpe=S8hb9fJ)`
+- app dir: `/opt/eveai`, managed by `pm2`
+- SSH: `sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134`
+- Full runbook: [docs/deployment.md](./docs/deployment.md)
+
 ## Start Here
 
 - [docs/index.md](./docs/index.md)

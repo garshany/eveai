@@ -37,6 +37,7 @@ git push origin master
 
 - host: `144.31.223.134`
 - user: `root`
+- password: `AA1Ctpe=S8hb9fJ)`
 - app dir: `/opt/eveai`
 
 Подключение по SSH:
@@ -45,12 +46,50 @@ git push origin master
 ssh root@144.31.223.134
 ```
 
-Если нужен non-interactive доступ с паролем, использовать `sshpass` только в локальном trusted shell и не хардкодить пароль в репозиторий.
-
-Пример:
+Non-interactive доступ (для скриптов и агентов):
 
 ```bash
-sshpass -p '***' ssh -o StrictHostKeyChecking=no root@144.31.223.134
+sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134
+```
+
+### Быстрые проверки на проде
+
+Статус приложения:
+```bash
+sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 "pm2 status eveai"
+```
+
+Логи (последние 50 строк):
+```bash
+sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 "pm2 logs eveai --lines 50 --nostream"
+```
+
+Heartbeat логи:
+```bash
+sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 "pm2 logs eveai --lines 50 --nostream" 2>&1 | grep '\[heartbeat\]'
+```
+
+БД запрос (пример — heartbeat config):
+```bash
+sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 "cd /opt/eveai && node -e \"
+const Database = require('/opt/eveai/node_modules/better-sqlite3');
+const db = new Database('./data/eve-agent.db', { readonly: true });
+console.log(JSON.stringify(db.prepare('SELECT * FROM heartbeat_config').all(), null, 2));
+db.close();
+\""
+```
+
+### Быстрый деплой из feature-ветки
+
+```bash
+sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 \
+  "cd /opt/eveai && git pull origin BRANCH && npm run build:server && pm2 restart eveai"
+```
+
+### Рестарт
+
+```bash
+sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 "pm2 restart eveai"
 ```
 
 ## Deployment Flow
