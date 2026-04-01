@@ -88,6 +88,7 @@ export async function createNativeResponse(input: {
   parallelToolCalls?: boolean;
   truncation?: string;
   contextManagement?: Array<{ type: string; compact_threshold: number }>;
+  chatId?: number;
 }): Promise<NativeResponseResult> {
   const baseUrl = normalizeBaseUrl(config.openai.baseUrl);
   const bodyPayload: Record<string, unknown> = {
@@ -126,6 +127,7 @@ export async function createNativeResponse(input: {
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${config.openai.apiKey}`,
+        ...(input.chatId ? { 'x-chat-id': String(input.chatId) } : {}),
       },
       body: bodyJson,
     });

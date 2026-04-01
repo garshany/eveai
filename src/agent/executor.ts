@@ -509,6 +509,7 @@ async function runNativeAgentLoop(
         parallelToolCalls: true,
         truncation: 'auto',
         contextManagement,
+        chatId,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
