@@ -3,6 +3,7 @@ import type { Bot } from 'grammy';
 import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from '../eve/esi-client.js';
 import { getAccessToken } from '../eve/sso.js';
+import { getEveCapabilities } from '../eve/capabilities.js';
 import { getUserTelegramChatId } from '../auth/user-resolver.js';
 import { runModelText } from '../agent/model.js';
 import {
@@ -70,6 +71,9 @@ async function processUserHeartbeat(
 
   const tokenResult = await getAccessToken(db, ctx);
   if (!tokenResult) return;
+
+  // Record capability snapshot so callEsiOperation doesn't reject with 428
+  await getEveCapabilities(db, 'heartbeat', ctx);
 
   const checks = parseChecks(row.checks_json);
   const state = parseState(row.state_json);
