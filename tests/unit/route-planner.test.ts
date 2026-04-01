@@ -183,7 +183,7 @@ describe('route planner', () => {
     expect(result.formatted_summary).toContain('<b>Опасные системы</b>');
     expect(result.formatted_summary).toContain('<b>Midpoint</b>');
     expect(result.formatted_summary).toContain('Victim One');
-    expect(result.formatted_summary).toContain('km</a>');
+    expect(result.formatted_summary).toContain('zkb</a>');
     expect(result.formatted_summary).not.toContain('{"');
     expect(callEsiOperationMock).toHaveBeenCalledWith(
       db,

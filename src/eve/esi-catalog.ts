@@ -577,27 +577,27 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_agents_research: {
     name: 'eve_character_research_activity',
-    description: 'Bound character research, loyalty, mining, and related activity tools from live EVE ESI.',
+    description: 'Agent research, LP balance, personal mining ledger, and NPC standings. Use when user asks about loyalty points, research agents, mining history, or faction standings.',
   },
   esi_characters_assets: {
     name: 'eve_character_assets',
-    description: 'Bound character asset listing, asset names, and asset location tools from live EVE ESI.',
+    description: 'Find where character items are stored: list assets across stations and ships, search by name, get item locations. Use when user asks "where is my X" or "what do I have in Jita".',
   },
   esi_characters_attributes: {
     name: 'eve_character_skills',
-    description: 'Bound character skills, attributes, implants, and fatigue tools from live EVE ESI.',
+    description: 'Check trained skills, skill queue, attributes, implants, and jump fatigue. Use when user asks about their skills, training, or what they can fly.',
   },
   esi_characters_blueprints: {
     name: 'eve_character_industry',
-    description: 'Bound character industry, blueprint, and related production tools from live EVE ESI.',
+    description: 'Character blueprints and manufacturing/research jobs. Use when user asks about their BPOs, BPCs, production status, or running jobs.',
   },
   esi_characters_clones: {
     name: 'eve_character_location',
-    description: 'Bound character location, ship, clone, and home-station tools from live EVE ESI.',
+    description: 'Current location, active ship, jump clones, and home station. Use when user asks "where am I", "what ship", or about their clones.',
   },
   esi_characters_contracts: {
     name: 'eve_character_orders_contracts',
-    description: 'Bound character market order and contract tools from live EVE ESI.',
+    description: 'Check active/expired market orders and contracts (item exchange, courier, auction). Use when user asks about their sell/buy orders or incoming contracts.',
   },
   esi_characters_corporationhistory: {
     name: 'eve_character_profile',
@@ -605,11 +605,11 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_fatigue: {
     name: 'eve_character_skills',
-    description: 'Bound character skills, attributes, implants, and fatigue tools from live EVE ESI.',
+    description: 'Check trained skills, skill queue, attributes, implants, and jump fatigue. Use when user asks about their skills, training, or what they can fly.',
   },
   esi_characters_fittings: {
     name: 'eve_character_fittings',
-    description: 'Bound character fitting tools from live EVE ESI.',
+    description: 'Saved ship fittings: list, create, delete. Use when user asks about their saved fits or wants to save/manage fittings.',
   },
   esi_characters_fleet: {
     name: 'eve_character_profile',
@@ -621,27 +621,27 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_implants: {
     name: 'eve_character_skills',
-    description: 'Bound character skills, attributes, implants, and fatigue tools from live EVE ESI.',
+    description: 'Check trained skills, skill queue, attributes, implants, and jump fatigue. Use when user asks about their skills, training, or what they can fly.',
   },
   esi_characters_industry: {
     name: 'eve_character_industry',
-    description: 'Bound character industry, blueprint, and related production tools from live EVE ESI.',
+    description: 'Character blueprints and manufacturing/research jobs. Use when user asks about their BPOs, BPCs, production status, or running jobs.',
   },
   esi_characters_killmails: {
     name: 'eve_character_killmails',
-    description: 'Bound character killmail index and killmail detail tools from live EVE ESI.',
+    description: 'Recent kills and losses for the character. Use when user asks about their killboard, PvP history, or recent deaths.',
   },
   esi_characters_location: {
     name: 'eve_character_location',
-    description: 'Bound character location, ship, clone, and home-station tools from live EVE ESI.',
+    description: 'Current location, active ship, jump clones, and home station. Use when user asks "where am I", "what ship", or about their clones.',
   },
   esi_characters_loyalty: {
     name: 'eve_character_research_activity',
-    description: 'Bound character research, loyalty, mining, and related activity tools from live EVE ESI.',
+    description: 'Agent research, LP balance, personal mining ledger, and NPC standings. Use when user asks about loyalty points, research agents, mining history, or faction standings.',
   },
   esi_characters_mail: {
     name: 'eve_character_mail',
-    description: 'Bound character mail and messaging tools from live EVE ESI.',
+    description: 'Read, send, and manage EVE mail: inbox, labels, mailing lists. Use when user asks about messages, mail, or wants to send a letter.',
   },
   esi_characters_medals: {
     name: 'eve_character_profile',
@@ -649,7 +649,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_mining: {
     name: 'eve_character_research_activity',
-    description: 'Bound character research, loyalty, mining, and related activity tools from live EVE ESI.',
+    description: 'Agent research, LP balance, personal mining ledger, and NPC standings. Use when user asks about loyalty points, research agents, mining history, or faction standings.',
   },
   esi_characters_online: {
     name: 'eve_character_profile',
@@ -657,11 +657,11 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_orders: {
     name: 'eve_character_orders_contracts',
-    description: 'Bound character market order and contract tools from live EVE ESI.',
+    description: 'Check active/expired market orders and contracts (item exchange, courier, auction). Use when user asks about their sell/buy orders or incoming contracts.',
   },
   esi_characters_planets: {
     name: 'eve_character_planets',
-    description: 'Bound character planetary interaction tools from live EVE ESI.',
+    description: 'Planetary Interaction colonies: list planets, view extractors, factories, routes. Use when user asks about PI, extractors, or colony status.',
   },
   esi_characters_portrait: {
     name: 'eve_character_profile',
@@ -681,19 +681,19 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_ship: {
     name: 'eve_character_location',
-    description: 'Bound character location, ship, clone, and home-station tools from live EVE ESI.',
+    description: 'Current location, active ship, jump clones, and home station. Use when user asks "where am I", "what ship", or about their clones.',
   },
   esi_characters_skillqueue: {
     name: 'eve_character_skills',
-    description: 'Bound character skills, attributes, implants, and fatigue tools from live EVE ESI.',
+    description: 'Check trained skills, skill queue, attributes, implants, and jump fatigue. Use when user asks about their skills, training, or what they can fly.',
   },
   esi_characters_skills: {
     name: 'eve_character_skills',
-    description: 'Bound character skills, attributes, implants, and fatigue tools from live EVE ESI.',
+    description: 'Check trained skills, skill queue, attributes, implants, and jump fatigue. Use when user asks about their skills, training, or what they can fly.',
   },
   esi_characters_standings: {
     name: 'eve_character_research_activity',
-    description: 'Bound character research, loyalty, mining, and related activity tools from live EVE ESI.',
+    description: 'Agent research, LP balance, personal mining ledger, and NPC standings. Use when user asks about loyalty points, research agents, mining history, or faction standings.',
   },
   esi_characters_titles: {
     name: 'eve_character_profile',
@@ -701,7 +701,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_wallet: {
     name: 'eve_character_wallet',
-    description: 'Bound character wallet balance, journal, and transaction tools from live EVE ESI.',
+    description: 'Check wallet balance, income/expense journal, and transaction history. Use when user asks about ISK, balance, or recent purchases.',
   },
   esi_contracts_public: {
     name: 'eve_public_contracts',
@@ -709,7 +709,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_corporation_mining: {
     name: 'eve_corporation_industry_contracts',
-    description: 'Corporation blueprints, industry, mining observer, and contract tools from live EVE ESI.',
+    description: 'Corporation blueprints, industry jobs, mining observers, and contracts. Use for corp production status, moon mining, or corp contracts.',
   },
   esi_corporations_alliancehistory: {
     name: 'eve_corporation_profile',
@@ -717,23 +717,23 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_corporations_assets: {
     name: 'eve_corporation_assets',
-    description: 'Corporation asset listing, asset names, and asset location tools from live EVE ESI.',
+    description: 'Corporation hangars, asset search, container logs. Use when user asks about corp assets or container access history.',
   },
   esi_corporations_blueprints: {
     name: 'eve_corporation_industry_contracts',
-    description: 'Corporation blueprints, industry, mining observer, and contract tools from live EVE ESI.',
+    description: 'Corporation blueprints, industry jobs, mining observers, and contracts. Use for corp production status, moon mining, or corp contracts.',
   },
   esi_corporations_containers: {
     name: 'eve_corporation_assets',
-    description: 'Corporation asset listing, asset names, and asset location tools from live EVE ESI.',
+    description: 'Corporation hangars, asset search, container logs. Use when user asks about corp assets or container access history.',
   },
   esi_corporations_contracts: {
     name: 'eve_corporation_industry_contracts',
-    description: 'Corporation blueprints, industry, mining observer, and contract tools from live EVE ESI.',
+    description: 'Corporation blueprints, industry jobs, mining observers, and contracts. Use for corp production status, moon mining, or corp contracts.',
   },
   esi_corporations_customs_offices: {
     name: 'eve_corporation_structures',
-    description: 'Corporation structures, customs offices, facilities, and starbase tools from live EVE ESI.',
+    description: 'Corporation structures (citadels, refineries), customs offices, POSes. Use when user asks about structure status, fuel, reinforcement timers.',
   },
   esi_corporations_divisions: {
     name: 'eve_corporation_profile',
@@ -741,7 +741,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_corporations_facilities: {
     name: 'eve_corporation_structures',
-    description: 'Corporation structures, customs offices, facilities, and starbase tools from live EVE ESI.',
+    description: 'Corporation structures (citadels, refineries), customs offices, POSes. Use when user asks about structure status, fuel, reinforcement timers.',
   },
   esi_corporations_fw: {
     name: 'eve_corporation_profile',
@@ -753,7 +753,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_corporations_industry: {
     name: 'eve_corporation_industry_contracts',
-    description: 'Corporation blueprints, industry, mining observer, and contract tools from live EVE ESI.',
+    description: 'Corporation blueprints, industry jobs, mining observers, and contracts. Use for corp production status, moon mining, or corp contracts.',
   },
   esi_corporations_killmails: {
     name: 'eve_corporation_killmails',
@@ -765,7 +765,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_corporations_orders: {
     name: 'eve_corporation_wallet',
-    description: 'Corporation wallet, order, and finance tools from live EVE ESI.',
+    description: 'Corporation wallet divisions, market orders, journal, transactions. Use for corp finances, division balances, or corp order history.',
   },
   esi_corporations_shareholders: {
     name: 'eve_corporation_profile',
@@ -773,15 +773,15 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_corporations_starbases: {
     name: 'eve_corporation_structures',
-    description: 'Corporation structures, customs offices, facilities, and starbase tools from live EVE ESI.',
+    description: 'Corporation structures (citadels, refineries), customs offices, POSes. Use when user asks about structure status, fuel, reinforcement timers.',
   },
   esi_corporations_structures: {
     name: 'eve_corporation_structures',
-    description: 'Corporation structures, customs offices, facilities, and starbase tools from live EVE ESI.',
+    description: 'Corporation structures (citadels, refineries), customs offices, POSes. Use when user asks about structure status, fuel, reinforcement timers.',
   },
   esi_corporations_wallets: {
     name: 'eve_corporation_wallet',
-    description: 'Corporation wallet, order, and finance tools from live EVE ESI.',
+    description: 'Corporation wallet divisions, market orders, journal, transactions. Use for corp finances, division balances, or corp order history.',
   },
   esi_dogma_attributes: {
     name: 'eve_public_dogma',
@@ -881,11 +881,11 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_ui_autopilot: {
     name: 'eve_ui',
-    description: 'In-client UI actions such as autopilot and window control from live EVE ESI.',
+    description: 'Open windows in EVE client: set autopilot, open market, contracts, info, or compose mail. Use when user wants to interact with the game UI directly.',
   },
   esi_ui_openwindow: {
     name: 'eve_ui',
-    description: 'In-client UI actions such as autopilot and window control from live EVE ESI.',
+    description: 'Open windows in EVE client: set autopilot, open market, contracts, info, or compose mail. Use when user wants to interact with the game UI directly.',
   },
   esi_universe_system_jumps: {
     name: 'eve_public_routes_status',
