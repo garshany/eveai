@@ -9,6 +9,7 @@ import {
 import { startHeartbeat, stopHeartbeat } from './scheduled/heartbeat-worker.js';
 import { eveKillWs } from './eve-kill/ws.js';
 import { initWatchNotifications } from './eve-kill/watch.js';
+import { startKillPoller, stopKillPoller } from './eve-kill/poll.js';
 
 async function main() {
   console.log('[app] Starting EVE Agent...');
@@ -50,14 +51,20 @@ async function main() {
   startHeartbeat(bot, db);
   console.log('[app] Heartbeat scheduler started');
 
-  // 6. Start EVE-KILL WebSocket (real-time killmail stream)
+  // 6. Start EVE-KILL kill tracking
+  const sendKillAlert = (chatId: number, text: string) => {
+    bot.api.sendMessage(chatId, text, { parse_mode: undefined }).catch((err) => {
+      console.error('[kill-watch] Telegram send failed:', err);
+    });
+  };
+
+  // Primary: REST polling every 60s (reliable, 1-3 min delay)
+  startKillPoller(db, sendKillAlert);
+
+  // Secondary: WebSocket for buffer/real-time when WS is healthy
   if (config.eveKill.wsEnabled) {
     eveKillWs.connect();
-    initWatchNotifications(db, (chatId, text) => {
-      bot.api.sendMessage(chatId, text, { parse_mode: undefined }).catch((err) => {
-        console.error('[kill-watch] Telegram send failed:', err);
-      });
-    });
+    initWatchNotifications(db, sendKillAlert);
     console.log('[app] EVE-KILL WebSocket started');
   }
 
@@ -66,6 +73,7 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('[app] Shutting down...');
+    stopKillPoller();
     eveKillWs.close();
     stopHeartbeat();
     bot.stop();
