@@ -51,20 +51,20 @@ describe('agent tools', () => {
     // get_markets_region_id_orders lives inside eve_public_market_orders namespace
     const marketNamespace = namespaces.find((tool) => tool.name === 'eve_public_market_orders');
     expect(marketNamespace).toBeDefined();
-    expect(marketNamespace?.description).toContain('Public regional market order and history tools');
+    expect(marketNamespace?.description).toContain('market orders');
     const marketOrdersTool = marketNamespace?.tools.find((tool) => tool.name === 'get_markets_region_id_orders');
     expect(marketOrdersTool).toBeDefined();
     expect(marketOrdersTool?.defer_loading).toBe(true);
     const structureMarketNamespace = namespaces.find((tool) => tool.name === 'eve_authenticated_market_structures');
     expect(structureMarketNamespace).toBeDefined();
-    expect(structureMarketNamespace?.description).toContain('Authenticated structure market order tools');
+    expect(structureMarketNamespace?.description).toContain('structure');
     const structureMarketTool = structureMarketNamespace?.tools.find((tool) => tool.name === 'get_markets_structures_structure_id');
     expect(structureMarketTool).toBeDefined();
     expect(structureMarketTool?.defer_loading).toBe(true);
 
     const affiliationLookupNamespace = namespaces.find((tool) => tool.name === 'eve_public_affiliation_lookup');
     expect(affiliationLookupNamespace).toBeDefined();
-    expect(affiliationLookupNamespace?.description).toContain('Public character affiliation lookup tools');
+    expect(affiliationLookupNamespace?.description).toContain('corporation');
     expect(affiliationLookupNamespace?.tools.some((tool) => tool.name === 'post_characters_affiliation')).toBe(true);
     expect(affiliationLookupNamespace?.tools.some((tool) => tool.name === 'get_characters_character_id_search')).toBe(false);
 

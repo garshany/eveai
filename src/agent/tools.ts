@@ -1094,7 +1094,7 @@ function buildZkillNamespace(): NativeNamespaceTool {
   return {
     type: 'namespace',
     name: 'eve_zkill',
-    description: 'Public zKillboard-derived activity, system kill, and fit-meta tools.',
+    description: 'zKillboard PvP data: recent kills in a system, player kill history, popular ship fits from real killmails. Use for PvP analysis, fit research, or checking if a system/player is dangerous.',
     tools: DEFERRED_ZKILL_TOOLS,
   };
 }

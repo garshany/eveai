@@ -438,23 +438,23 @@ const UNIVERSE_CONSOLIDATED: Record<string, { name: string; description: string 
   esi_universe_constellations: { name: 'eve_universe_geography', description: 'Public universe geography: systems, constellations, regions, stargates from live EVE ESI.' },
   esi_universe_regions: { name: 'eve_universe_geography', description: 'Public universe geography: systems, constellations, regions, stargates from live EVE ESI.' },
   esi_universe_stargates: { name: 'eve_universe_geography', description: 'Public universe geography: systems, constellations, regions, stargates from live EVE ESI.' },
-  esi_universe_stars: { name: 'eve_universe_celestials', description: 'Public universe celestials: stars, planets, moons, belts, stations, structures from live EVE ESI.' },
-  esi_universe_planets: { name: 'eve_universe_celestials', description: 'Public universe celestials: stars, planets, moons, belts, stations, structures from live EVE ESI.' },
-  esi_universe_moons: { name: 'eve_universe_celestials', description: 'Public universe celestials: stars, planets, moons, belts, stations, structures from live EVE ESI.' },
-  esi_universe_asteroid_belts: { name: 'eve_universe_celestials', description: 'Public universe celestials: stars, planets, moons, belts, stations, structures from live EVE ESI.' },
-  esi_universe_stations: { name: 'eve_universe_celestials', description: 'Public universe celestials: stars, planets, moons, belts, stations, structures from live EVE ESI.' },
-  esi_universe_structures: { name: 'eve_universe_celestials', description: 'Public universe celestials: stars, planets, moons, belts, stations, structures from live EVE ESI.' },
-  esi_universe_types: { name: 'eve_universe_types', description: 'Public universe type reference: types, groups, categories, graphics, schematics from live EVE ESI.' },
-  esi_universe_groups: { name: 'eve_universe_types', description: 'Public universe type reference: types, groups, categories, graphics, schematics from live EVE ESI.' },
-  esi_universe_categories: { name: 'eve_universe_types', description: 'Public universe type reference: types, groups, categories, graphics, schematics from live EVE ESI.' },
-  esi_universe_graphics: { name: 'eve_universe_types', description: 'Public universe type reference: types, groups, categories, graphics, schematics from live EVE ESI.' },
-  esi_universe_schematics: { name: 'eve_universe_types', description: 'Public universe type reference: types, groups, categories, graphics, schematics from live EVE ESI.' },
-  esi_universe_ancestries: { name: 'eve_universe_reference', description: 'Public universe reference: ancestries, bloodlines, factions, races, name/ID resolution from live EVE ESI.' },
-  esi_universe_bloodlines: { name: 'eve_universe_reference', description: 'Public universe reference: ancestries, bloodlines, factions, races, name/ID resolution from live EVE ESI.' },
-  esi_universe_factions: { name: 'eve_universe_reference', description: 'Public universe reference: ancestries, bloodlines, factions, races, name/ID resolution from live EVE ESI.' },
-  esi_universe_races: { name: 'eve_universe_reference', description: 'Public universe reference: ancestries, bloodlines, factions, races, name/ID resolution from live EVE ESI.' },
-  esi_universe_names: { name: 'eve_universe_reference', description: 'Public universe reference: ancestries, bloodlines, factions, races, name/ID resolution from live EVE ESI.' },
-  esi_universe_ids: { name: 'eve_universe_reference', description: 'Public universe reference: ancestries, bloodlines, factions, races, name/ID resolution from live EVE ESI.' },
+  esi_universe_stars: { name: 'eve_universe_celestials', description: 'Detailed info on celestial objects: star luminosity, planet type, moon orbit, station services, structure info. Use for live celestial data not in SDE.' },
+  esi_universe_planets: { name: 'eve_universe_celestials', description: 'Detailed info on celestial objects: star luminosity, planet type, moon orbit, station services, structure info. Use for live celestial data not in SDE.' },
+  esi_universe_moons: { name: 'eve_universe_celestials', description: 'Detailed info on celestial objects: star luminosity, planet type, moon orbit, station services, structure info. Use for live celestial data not in SDE.' },
+  esi_universe_asteroid_belts: { name: 'eve_universe_celestials', description: 'Detailed info on celestial objects: star luminosity, planet type, moon orbit, station services, structure info. Use for live celestial data not in SDE.' },
+  esi_universe_stations: { name: 'eve_universe_celestials', description: 'Detailed info on celestial objects: star luminosity, planet type, moon orbit, station services, structure info. Use for live celestial data not in SDE.' },
+  esi_universe_structures: { name: 'eve_universe_celestials', description: 'Detailed info on celestial objects: star luminosity, planet type, moon orbit, station services, structure info. Use for live celestial data not in SDE.' },
+  esi_universe_types: { name: 'eve_universe_types', description: 'Live type/group/category lookups and PI schematics. Prefer sde_sql for static data; use this only for schematics or data not in SDE.' },
+  esi_universe_groups: { name: 'eve_universe_types', description: 'Live type/group/category lookups and PI schematics. Prefer sde_sql for static data; use this only for schematics or data not in SDE.' },
+  esi_universe_categories: { name: 'eve_universe_types', description: 'Live type/group/category lookups and PI schematics. Prefer sde_sql for static data; use this only for schematics or data not in SDE.' },
+  esi_universe_graphics: { name: 'eve_universe_types', description: 'Live type/group/category lookups and PI schematics. Prefer sde_sql for static data; use this only for schematics or data not in SDE.' },
+  esi_universe_schematics: { name: 'eve_universe_types', description: 'Live type/group/category lookups and PI schematics. Prefer sde_sql for static data; use this only for schematics or data not in SDE.' },
+  esi_universe_ancestries: { name: 'eve_universe_reference', description: 'Resolve EVE names↔IDs (characters, corps, alliances, systems). Also ancestries, bloodlines, factions. Use post_universe_names for bulk ID→name.' },
+  esi_universe_bloodlines: { name: 'eve_universe_reference', description: 'Resolve EVE names↔IDs (characters, corps, alliances, systems). Also ancestries, bloodlines, factions. Use post_universe_names for bulk ID→name.' },
+  esi_universe_factions: { name: 'eve_universe_reference', description: 'Resolve EVE names↔IDs (characters, corps, alliances, systems). Also ancestries, bloodlines, factions. Use post_universe_names for bulk ID→name.' },
+  esi_universe_races: { name: 'eve_universe_reference', description: 'Resolve EVE names↔IDs (characters, corps, alliances, systems). Also ancestries, bloodlines, factions. Use post_universe_names for bulk ID→name.' },
+  esi_universe_names: { name: 'eve_universe_reference', description: 'Resolve EVE names↔IDs (characters, corps, alliances, systems). Also ancestries, bloodlines, factions. Use post_universe_names for bulk ID→name.' },
+  esi_universe_ids: { name: 'eve_universe_reference', description: 'Resolve EVE names↔IDs (characters, corps, alliances, systems). Also ancestries, bloodlines, factions. Use post_universe_names for bulk ID→name.' },
 };
 
 function planSpecialHostedNamespace(
@@ -467,38 +467,38 @@ function planSpecialHostedNamespace(
   if (key === 'esi_characters_contacts') {
     return {
       name: 'eve_character_contacts',
-      description: 'Bound character contact and contact label tools from live EVE ESI.',
+      description: 'Character contacts and labels (friends, enemies, standings). Use when user asks about their contact list or wants to add/remove contacts.',
     };
   }
   if (key === 'esi_characters_notifications') {
     return {
       name: 'eve_character_notifications',
-      description: 'Bound character notification tools from live EVE ESI.',
+      description: 'In-game notifications: war declarations, structure alerts, sovereignty changes, corp actions. Use when user asks about alerts or notifications.',
     };
   }
   if (key === 'esi_characters_calendar') {
     return {
       name: 'eve_character_calendar',
-      description: 'Bound character calendar and calendar event tools from live EVE ESI.',
+      description: 'Character calendar events and RSVP. Use when user asks about upcoming events, fleet ops, or calendar entries.',
     };
   }
   if (key === 'esi_characters_cspa') {
     return {
       name: 'eve_character_messaging',
-      description: 'Bound character messaging and communication setting tools from live EVE ESI.',
+      description: 'CSPA charge check for messaging. Use when user asks about communication cost to another character.',
     };
   }
 
   if (key === 'esi_fleets_root' || key === 'esi_fleets_members') {
     return {
       name: 'eve_fleet_roster',
-      description: 'Fleet details and fleet member roster tools from live EVE ESI.',
+      description: 'Fleet info: members, ships, solar systems, roles. Add/remove/move fleet members. Use when user asks about their fleet composition.',
     };
   }
   if (key === 'esi_fleets_wings' || key === 'esi_fleets_squads') {
     return {
       name: 'eve_fleet_structure',
-      description: 'Fleet wing and squad structure tools from live EVE ESI.',
+      description: 'Fleet wings and squads: create, delete, rename, restructure. Use for fleet organization management.',
     };
   }
 
@@ -509,7 +509,7 @@ function planSpecialHostedNamespace(
   ].includes(key)) {
     return {
       name: 'eve_corporation_membership',
-      description: 'Corporation membership, roster, and member-tracking tools from live EVE ESI.',
+      description: 'Corporation member list, member count limit, titles per member, and member tracking (last login, location). Use when user asks about corp members or activity.',
     };
   }
   if ([
@@ -519,7 +519,7 @@ function planSpecialHostedNamespace(
   ].includes(key)) {
     return {
       name: 'eve_corporation_roles_titles',
-      description: 'Corporation roles, titles, and medal management tools from live EVE ESI.',
+      description: 'Corporation roles, titles, medals, and role change history. Use when user asks about corp permissions or who has director/CEO roles.',
     };
   }
   if ([
@@ -528,7 +528,7 @@ function planSpecialHostedNamespace(
   ].includes(key)) {
     return {
       name: 'eve_corporation_contacts_standings',
-      description: 'Corporation contacts and standings tools from live EVE ESI.',
+      description: 'Corporation contact list and NPC standings. Use when user asks about corp diplomacy, standings, or contact management.',
     };
   }
 
@@ -557,23 +557,23 @@ function describeGenericNamespace(key: string, _operation: EsiOperationMeta): st
 const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: string }> = {
   esi_alliances_contacts: {
     name: 'eve_public_alliances_contacts',
-    description: 'Public alliance contacts and standings tools from live EVE ESI.',
+    description: 'Alliance contact list and standings. Use when user asks about alliance diplomacy.',
   },
   esi_alliances_corporations: {
     name: 'eve_public_alliances_corporations',
-    description: 'Public alliance corporation membership tools from live EVE ESI.',
+    description: 'List corporations in an alliance. Use when user asks which corps are in a specific alliance.',
   },
   esi_alliances_icons: {
     name: 'eve_public_alliances_lookup',
-    description: 'Public alliance identity and icon lookup tools from live EVE ESI.',
+    description: 'Alliance info: name, ticker, founder, icon. Use when user asks about an alliance or needs alliance details.',
   },
   esi_alliances_root: {
     name: 'eve_public_alliances_lookup',
-    description: 'Public alliance identity and icon lookup tools from live EVE ESI.',
+    description: 'Alliance info: name, ticker, founder, icon. Use when user asks about an alliance or needs alliance details.',
   },
   esi_characters_affiliation: {
     name: 'eve_public_affiliation_lookup',
-    description: 'Public character affiliation lookup tools from live EVE ESI.',
+    description: 'Bulk character→corporation→alliance lookup. Use to find what corp/alliance a character belongs to.',
   },
   esi_characters_agents_research: {
     name: 'eve_character_research_activity',
@@ -601,7 +601,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_corporationhistory: {
     name: 'eve_character_profile',
-    description: 'Bound character identity, profile, and affiliation history tools from live EVE ESI.',
+    description: 'Character public info, corp history, portrait, online status, fleet membership, FW stats, roles, titles, medals. Use for profile lookups or identifying a character.',
   },
   esi_characters_fatigue: {
     name: 'eve_character_skills',
@@ -613,11 +613,11 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_fleet: {
     name: 'eve_character_profile',
-    description: 'Bound character identity, profile, and fleet-affiliation tools from live EVE ESI.',
+    description: 'Character public info, corp history, portrait, online status, fleet membership, FW stats, roles, titles, medals. Use for profile lookups or identifying a character.',
   },
   esi_characters_fw: {
     name: 'eve_character_profile',
-    description: 'Bound character identity, profile, and faction warfare tools from live EVE ESI.',
+    description: 'Character public info, corp history, portrait, online status, fleet membership, FW stats, roles, titles, medals. Use for profile lookups or identifying a character.',
   },
   esi_characters_implants: {
     name: 'eve_character_skills',
@@ -645,7 +645,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_medals: {
     name: 'eve_character_profile',
-    description: 'Bound character identity, profile, and award tools from live EVE ESI.',
+    description: 'Character public info, corp history, portrait, online status, fleet membership, FW stats, roles, titles, medals. Use for profile lookups or identifying a character.',
   },
   esi_characters_mining: {
     name: 'eve_character_research_activity',
@@ -653,7 +653,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_online: {
     name: 'eve_character_profile',
-    description: 'Bound character identity, profile, and online status tools from live EVE ESI.',
+    description: 'Character public info, corp history, portrait, online status, fleet membership, FW stats, roles, titles, medals. Use for profile lookups or identifying a character.',
   },
   esi_characters_orders: {
     name: 'eve_character_orders_contracts',
@@ -665,19 +665,19 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_portrait: {
     name: 'eve_character_profile',
-    description: 'Bound character identity, profile, and portrait tools from live EVE ESI.',
+    description: 'Character public info, corp history, portrait, online status, fleet membership, FW stats, roles, titles, medals. Use for profile lookups or identifying a character.',
   },
   esi_characters_roles: {
     name: 'eve_character_profile',
-    description: 'Bound character identity, profile, and role tools from live EVE ESI.',
+    description: 'Character public info, corp history, portrait, online status, fleet membership, FW stats, roles, titles, medals. Use for profile lookups or identifying a character.',
   },
   esi_characters_root: {
     name: 'eve_character_profile',
-    description: 'Bound character identity, profile, and affiliation history tools from live EVE ESI.',
+    description: 'Character public info, corp history, portrait, online status, fleet membership, FW stats, roles, titles, medals. Use for profile lookups or identifying a character.',
   },
   esi_characters_search: {
     name: 'eve_character_search',
-    description: 'Bound character directory and structure-aware search tools from live EVE ESI.',
+    description: 'Search EVE universe by name: characters, corps, alliances, systems, stations, structures. Use when user asks to find someone or something by name.',
   },
   esi_characters_ship: {
     name: 'eve_character_location',
@@ -697,7 +697,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_characters_titles: {
     name: 'eve_character_profile',
-    description: 'Bound character identity, profile, and award tools from live EVE ESI.',
+    description: 'Character public info, corp history, portrait, online status, fleet membership, FW stats, roles, titles, medals. Use for profile lookups or identifying a character.',
   },
   esi_characters_wallet: {
     name: 'eve_character_wallet',
@@ -705,7 +705,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_contracts_public: {
     name: 'eve_public_contracts',
-    description: 'Public contract listing, bids, and contract item tools from live EVE ESI.',
+    description: 'Public contracts in a region: item exchange, courier, auction. Browse items and bids. Use when user asks about public contracts or wants to find deals.',
   },
   esi_corporation_mining: {
     name: 'eve_corporation_industry_contracts',
@@ -713,7 +713,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_corporations_alliancehistory: {
     name: 'eve_corporation_profile',
-    description: 'Corporation profile, affiliation, and reference tools from live EVE ESI.',
+    description: 'Corporation public info: alliance history, divisions, FW stats, icons, shareholders, NPC corps list. Use for corp profile or identifying a corporation.',
   },
   esi_corporations_assets: {
     name: 'eve_corporation_assets',
@@ -737,7 +737,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_corporations_divisions: {
     name: 'eve_corporation_profile',
-    description: 'Corporation profile, affiliation, and reference tools from live EVE ESI.',
+    description: 'Corporation public info: alliance history, divisions, FW stats, icons, shareholders, NPC corps list. Use for corp profile or identifying a corporation.',
   },
   esi_corporations_facilities: {
     name: 'eve_corporation_structures',
@@ -745,11 +745,11 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_corporations_fw: {
     name: 'eve_corporation_profile',
-    description: 'Corporation profile, affiliation, and faction warfare tools from live EVE ESI.',
+    description: 'Corporation public info: alliance history, divisions, FW stats, icons, shareholders, NPC corps list. Use for corp profile or identifying a corporation.',
   },
   esi_corporations_icons: {
     name: 'eve_corporation_profile',
-    description: 'Corporation profile, affiliation, and reference tools from live EVE ESI.',
+    description: 'Corporation public info: alliance history, divisions, FW stats, icons, shareholders, NPC corps list. Use for corp profile or identifying a corporation.',
   },
   esi_corporations_industry: {
     name: 'eve_corporation_industry_contracts',
@@ -757,11 +757,11 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_corporations_killmails: {
     name: 'eve_corporation_killmails',
-    description: 'Corporation killmail index and killmail detail tools from live EVE ESI.',
+    description: 'Recent corporation kills and losses. Use when user asks about corp killboard or PvP activity.',
   },
   esi_corporations_npccorps: {
     name: 'eve_corporation_profile',
-    description: 'Corporation profile, affiliation, and reference tools from live EVE ESI.',
+    description: 'Corporation public info: alliance history, divisions, FW stats, icons, shareholders, NPC corps list. Use for corp profile or identifying a corporation.',
   },
   esi_corporations_orders: {
     name: 'eve_corporation_wallet',
@@ -769,7 +769,7 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_corporations_shareholders: {
     name: 'eve_corporation_profile',
-    description: 'Corporation profile, affiliation, and reference tools from live EVE ESI.',
+    description: 'Corporation public info: alliance history, divisions, FW stats, icons, shareholders, NPC corps list. Use for corp profile or identifying a corporation.',
   },
   esi_corporations_starbases: {
     name: 'eve_corporation_structures',
@@ -785,99 +785,99 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_dogma_attributes: {
     name: 'eve_public_dogma',
-    description: 'Public live EVE ESI dogma and dynamic attribute reference tools.',
+    description: 'Live dogma attribute/effect definitions and Abyssal item stats. Prefer sde_sql + sde_dogma_attributes for static lookups; use this for dynamic/mutated items.',
   },
   esi_dogma_dynamic: {
     name: 'eve_public_dogma',
-    description: 'Public live EVE ESI dogma and dynamic attribute reference tools.',
+    description: 'Live dogma attribute/effect definitions and Abyssal item stats. Prefer sde_sql + sde_dogma_attributes for static lookups; use this for dynamic/mutated items.',
   },
   esi_dogma_effects: {
     name: 'eve_public_dogma',
-    description: 'Public live EVE ESI dogma and dynamic attribute reference tools.',
+    description: 'Live dogma attribute/effect definitions and Abyssal item stats. Prefer sde_sql + sde_dogma_attributes for static lookups; use this for dynamic/mutated items.',
   },
   esi_fw_leaderboards: {
     name: 'eve_public_faction_warfare',
-    description: 'Public faction warfare stats, systems, and leaderboard tools from live EVE ESI.',
+    description: 'Faction Warfare: system control, leaderboards, faction stats, active wars. Use when user asks about FW status or which faction controls a system.',
   },
   esi_fw_stats: {
     name: 'eve_public_faction_warfare',
-    description: 'Public faction warfare stats, systems, and leaderboard tools from live EVE ESI.',
+    description: 'Faction Warfare: system control, leaderboards, faction stats, active wars. Use when user asks about FW status or which faction controls a system.',
   },
   esi_fw_systems: {
     name: 'eve_public_faction_warfare',
-    description: 'Public faction warfare stats, systems, and leaderboard tools from live EVE ESI.',
+    description: 'Faction Warfare: system control, leaderboards, faction stats, active wars. Use when user asks about FW status or which faction controls a system.',
   },
   esi_fw_wars: {
     name: 'eve_public_faction_warfare',
-    description: 'Public faction warfare stats, systems, and leaderboard tools from live EVE ESI.',
+    description: 'Faction Warfare: system control, leaderboards, faction stats, active wars. Use when user asks about FW status or which faction controls a system.',
   },
   esi_incursions_root: {
     name: 'eve_public_incursions',
-    description: 'Public incursion status tools from live EVE ESI.',
+    description: 'Active Sansha incursions: constellation, staging system, influence. Use when user asks about current incursions.',
   },
   esi_industry_facilities: {
     name: 'eve_public_industry',
-    description: 'Public live EVE ESI industry systems and facility reference tools.',
+    description: 'Industry cost indices per system and NPC station manufacturing slots. Use when user asks where to build cheaply or about system industry activity.',
   },
   esi_industry_systems: {
     name: 'eve_public_industry',
-    description: 'Public live EVE ESI industry systems and facility reference tools.',
+    description: 'Industry cost indices per system and NPC station manufacturing slots. Use when user asks where to build cheaply or about system industry activity.',
   },
   esi_insurance_prices: {
     name: 'eve_public_market_reference',
-    description: 'Public market prices, insurance, and market reference tools from live EVE ESI.',
+    description: 'Global average prices, insurance costs, market group tree, regional type list. Use for price estimates, insurance payouts, or market structure.',
   },
   esi_killmails_root: {
     name: 'eve_public_killmails',
-    description: 'Public killmail detail lookup tools from live EVE ESI.',
+    description: 'Fetch full killmail details by ID+hash from ESI. Use to enrich zKill data with victim/attacker/items breakdown.',
   },
   esi_loyalty_stores: {
     name: 'eve_public_loyalty_stores',
-    description: 'Public loyalty store offer and reference tools from live EVE ESI.',
+    description: 'LP store offers for NPC corporations. Use when user asks what they can buy with loyalty points.',
   },
   esi_markets_groups: {
     name: 'eve_public_market_reference',
-    description: 'Public market prices, insurance, and market reference tools from live EVE ESI.',
+    description: 'Global average prices, insurance costs, market group tree, regional type list. Use for price estimates, insurance payouts, or market structure.',
   },
   esi_markets_history: {
     name: 'eve_public_market_orders',
-    description: 'Public regional market order and history tools from live EVE ESI.',
+    description: 'Live market orders and price history in a region. Use for current buy/sell orders or price trends over time.',
   },
   esi_markets_orders: {
     name: 'eve_public_market_orders',
-    description: 'Public regional market order and history tools from live EVE ESI.',
+    description: 'Live market orders and price history in a region. Use for current buy/sell orders or price trends over time.',
   },
   esi_markets_prices: {
     name: 'eve_public_market_reference',
-    description: 'Public market prices, insurance, and market reference tools from live EVE ESI.',
+    description: 'Global average prices, insurance costs, market group tree, regional type list. Use for price estimates, insurance payouts, or market structure.',
   },
   esi_markets_structures: {
     name: 'eve_authenticated_market_structures',
-    description: 'Authenticated structure market order tools from live EVE ESI.',
+    description: 'Browse market orders inside player-owned structures (citadels, engineering complexes). Use when user asks about structure market or Perimeter trade hub orders.',
   },
   esi_markets_types: {
     name: 'eve_public_market_reference',
-    description: 'Public market prices, insurance, and market reference tools from live EVE ESI.',
+    description: 'Global average prices, insurance costs, market group tree, regional type list. Use for price estimates, insurance payouts, or market structure.',
   },
   esi_route_root: {
     name: 'eve_public_routes_status',
-    description: 'Public route planning, cluster status, and system traffic tools from live EVE ESI.',
+    description: 'ESI route between systems, TQ server status, system jump/kill stats. Use for raw route data or cluster health check.',
   },
   esi_sovereignty_campaigns: {
     name: 'eve_public_sovereignty',
-    description: 'Public sovereignty campaign, structure, and map tools from live EVE ESI.',
+    description: 'Nullsec sovereignty: who owns what, active ADM campaigns, ihub/TCU timers. Use when user asks about sov ownership or vulnerability windows.',
   },
   esi_sovereignty_map: {
     name: 'eve_public_sovereignty',
-    description: 'Public sovereignty campaign, structure, and map tools from live EVE ESI.',
+    description: 'Nullsec sovereignty: who owns what, active ADM campaigns, ihub/TCU timers. Use when user asks about sov ownership or vulnerability windows.',
   },
   esi_sovereignty_structures: {
     name: 'eve_public_sovereignty',
-    description: 'Public sovereignty campaign, structure, and map tools from live EVE ESI.',
+    description: 'Nullsec sovereignty: who owns what, active ADM campaigns, ihub/TCU timers. Use when user asks about sov ownership or vulnerability windows.',
   },
   esi_status_root: {
     name: 'eve_public_routes_status',
-    description: 'Public route planning, cluster status, and system traffic tools from live EVE ESI.',
+    description: 'ESI route between systems, TQ server status, system jump/kill stats. Use for raw route data or cluster health check.',
   },
   esi_ui_autopilot: {
     name: 'eve_ui',
@@ -889,19 +889,19 @@ const HOSTED_NAMESPACE_OVERRIDES: Record<string, { name: string; description: st
   },
   esi_universe_system_jumps: {
     name: 'eve_public_routes_status',
-    description: 'Public route planning, cluster status, and system traffic tools from live EVE ESI.',
+    description: 'ESI route between systems, TQ server status, system jump/kill stats. Use for raw route data or cluster health check.',
   },
   esi_universe_system_kills: {
     name: 'eve_public_routes_status',
-    description: 'Public route planning, cluster status, and system traffic tools from live EVE ESI.',
+    description: 'ESI route between systems, TQ server status, system jump/kill stats. Use for raw route data or cluster health check.',
   },
   esi_wars_killmails: {
     name: 'eve_public_wars',
-    description: 'Public war list, war detail, and war killmail tools from live EVE ESI.',
+    description: 'Active and past wars: aggressors, defenders, allies, war kills. Use when user asks about wars or mutual war targets.',
   },
   esi_wars_root: {
     name: 'eve_public_wars',
-    description: 'Public war list, war detail, and war killmail tools from live EVE ESI.',
+    description: 'Active and past wars: aggressors, defenders, allies, war kills. Use when user asks about wars or mutual war targets.',
   },
 };
 
