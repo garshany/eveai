@@ -57,6 +57,20 @@ Use it when you need to find the right file or folder before reading implementat
 - `user-profile.ts`: generated user snapshot/profile flow
 - `scopes.ts`, `eve-links.ts`, `http.ts`: support modules
 
+### `src/eve-kill/`
+
+PvP killboard integration (EVE-KILL, replaces zKillboard). See `docs/eve-kill.md`.
+
+- `client.ts`: HTTP client with caching (getKilllist, getKillmail, etc.)
+- `tools.ts`: 8 deferred tools in `eve_kill` namespace
+- `executor.ts`: tool call router
+- `feed.ts`: kill_feed handler (recent kills via /api/killlist)
+- `kill-query.ts`: kill_query handler (MongoDB-style, pending API deployment)
+- `intel.ts`: kill_stats/battles/entity/lookup/spatial/prices handlers
+- `query.ts`: MongoDB filter builder and sanitizer
+- `types.ts`: shared TypeScript types
+- `ws.ts`: WebSocket client for real-time killmail streaming
+
 ### `src/telegram/`
 
 - `bot.ts`: grammY bot bootstrap
