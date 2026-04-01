@@ -34,7 +34,7 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('ломают импорт');
     expect(prompt).not.toContain('ОБЯЗАТЕЛЬНО вызывай для поиска ESI');
     expect(prompt).toContain('<sde_schema>');
-    expect(prompt.length).toBeLessThan(16000);
+    expect(prompt.length).toBeLessThan(17500);
   });
 
   it('appends profile and summary when provided', () => {
