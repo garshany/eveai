@@ -252,7 +252,55 @@ export async function getAllianceCorporations(
 }
 
 // ---------------------------------------------------------------------------
-// Public API: Query
+// Public API: Killlist (the WORKING endpoint — replaces /api/query which is 404)
+// Supports: system_id, character_id, corporation_id, alliance_id,
+//           ship_type_id, region_id, limit, page
+// ---------------------------------------------------------------------------
+
+export type KilllistItem = {
+  killmail_id: number;
+  killmail_time?: string;
+  total_value?: number;
+  attacker_count?: number;
+  is_npc?: boolean;
+  is_solo?: boolean;
+  ship_type_id?: number;
+  ship_name?: string;
+  ship_group_name?: string;
+  victim_character_id?: number;
+  victim_character_name?: string;
+  victim_corporation_id?: number;
+  victim_corporation_name?: string;
+  victim_alliance_id?: number | null;
+  victim_alliance_name?: string | null;
+  final_blow_character_id?: number;
+  final_blow_character_name?: string;
+  final_blow_corporation_id?: number;
+  final_blow_corporation_name?: string;
+  final_blow_alliance_id?: number | null;
+  final_blow_alliance_name?: string | null;
+  solar_system_id?: number;
+  solar_system_name?: string;
+  solar_system_security?: number;
+  region_id?: number;
+  region_name?: string;
+  [key: string]: unknown;
+};
+
+export type KilllistResponse = { kills: KilllistItem[] };
+
+export async function getKilllist(
+  db: Db,
+  params: Record<string, string | number>,
+  ttlSeconds?: number,
+): Promise<ApiResult<KilllistItem[]>> {
+  const result = await cachedGet<KilllistResponse>(db, 'killlist', 'killlist', params, ttlSeconds ?? 120);
+  if (!result.ok) return result;
+  return { ok: true, data: result.data.kills ?? [] };
+}
+
+// ---------------------------------------------------------------------------
+// Public API: Query (MongoDB-style — currently 404 on live API, kept as fallback)
 // ---------------------------------------------------------------------------
 
 export async function queryKillmails(db: Db, req: QueryRequest): Promise<ApiResult<QueryResponse>> {

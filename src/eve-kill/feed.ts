@@ -6,11 +6,10 @@ import type { Db } from '../db/sqlite.js';
 import type {
   KillFeedArgs,
   CompactKill,
-  EveKillKillmail,
   ActivityFilter,
 } from './types.js';
-import { queryKillmails } from './client.js';
-import { buildFeedQuery } from './query.js';
+import { getKilllist } from './client.js';
+import type { KilllistItem } from './client.js';
 
 // ---------------------------------------------------------------------------
 // Defaults & limits
@@ -76,15 +75,9 @@ export type KillFeedResult = {
 export async function executeKillFeed(db: Db, rawArgs: Record<string, unknown>): Promise<KillFeedResult> {
   const args = normalizeArgs(rawArgs);
 
-  const queryReq = buildFeedQuery(
-    args.scope,
-    args.id,
-    args.activity ?? 'all',
-    args.past_seconds ?? DEFAULT_PAST_SECONDS[args.scope] ?? 86400,
-    args.limit ?? 10,
-  );
-
-  const result = await queryKillmails(db, queryReq);
+  // Build killlist params from scope
+  const params = buildKilllistParams(args);
+  const result = await getKilllist(db, params, cacheTtlForScope(args));
 
   if (!result.ok) {
     return {
@@ -98,7 +91,7 @@ export async function executeKillFeed(db: Db, rawArgs: Record<string, unknown>):
   }
 
   const killmails = result.data.slice(0, args.detail_limit ?? 10);
-  const compact = killmails.map(compactKillmail);
+  const compact = killmails.map(compactKilllistItem);
 
   // Apply field projection
   const projected = applyFieldProjection(compact, args.fields);
@@ -130,29 +123,58 @@ function normalizeArgs(raw: Record<string, unknown>): KillFeedArgs {
 }
 
 // ---------------------------------------------------------------------------
-// Compact killmail — token-efficient format for the model
+// Build /killlist query params from tool args
 // ---------------------------------------------------------------------------
 
-function compactKillmail(km: EveKillKillmail): CompactKill {
-  const victim = km.victim ?? {};
-  const attackers = km.attackers ?? [];
-  const finalBlow = attackers.find((a) => a.final_blow) ?? attackers[0];
+function buildKilllistParams(args: KillFeedArgs): Record<string, string | number> {
+  const params: Record<string, string | number> = { limit: args.limit ?? 10 };
 
+  switch (args.scope) {
+    case 'system':
+      params.system_id = args.id;
+      break;
+    case 'character':
+      params.character_id = args.id;
+      break;
+    case 'corporation':
+      params.corporation_id = args.id;
+      break;
+    case 'alliance':
+      params.alliance_id = args.id;
+      break;
+    case 'ship_type':
+      params.ship_type_id = args.id;
+      break;
+  }
+
+  return params;
+}
+
+function cacheTtlForScope(args: KillFeedArgs): number {
+  const pastSeconds = args.past_seconds ?? DEFAULT_PAST_SECONDS[args.scope] ?? 86400;
+  return Math.max(60, Math.min(300, Math.floor(pastSeconds / 4)));
+}
+
+// ---------------------------------------------------------------------------
+// Compact killlist item — token-efficient format for the model
+// ---------------------------------------------------------------------------
+
+function compactKilllistItem(km: KilllistItem): CompactKill {
   return {
     killmail_id: km.killmail_id,
-    time: km.kill_time ?? null,
-    system: km.system_name ?? null,
-    system_sec: km.system_security != null ? Math.round(km.system_security * 10) / 10 : null,
+    time: km.killmail_time ?? null,
+    system: km.solar_system_name ?? null,
+    system_sec: km.solar_system_security != null ? Math.round(km.solar_system_security * 10) / 10 : null,
     region: km.region_name ?? null,
-    victim_name: victim.character_name ?? null,
-    victim_corp: victim.corporation_name ?? null,
-    victim_alliance: victim.alliance_name ?? null,
-    victim_ship: victim.ship_name ?? null,
-    attacker_name: finalBlow?.character_name ?? null,
-    attacker_corp: finalBlow?.corporation_name ?? null,
-    attacker_ship: finalBlow?.ship_name ?? null,
-    attacker_weapon: finalBlow?.weapon_name ?? null,
-    attackers_count: attackers.length,
+    victim_name: km.victim_character_name ?? null,
+    victim_corp: km.victim_corporation_name ?? null,
+    victim_alliance: km.victim_alliance_name ?? null,
+    victim_ship: km.ship_name ?? null,
+    attacker_name: km.final_blow_character_name ?? null,
+    attacker_corp: km.final_blow_corporation_name ?? null,
+    attacker_ship: null, // killlist flat format doesn't include attacker ship
+    attacker_weapon: null,
+    attackers_count: km.attacker_count ?? 1,
     value_m: km.total_value ? Math.round(km.total_value / 1_000_000) : 0,
     solo: km.is_solo ?? false,
     npc: km.is_npc ?? false,

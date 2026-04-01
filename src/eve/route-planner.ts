@@ -2,7 +2,8 @@ import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from './esi-client.js';
 import { getEveCapabilities } from './capabilities.js';
 import { getLinkedCharacter } from './sso.js';
-import { queryKillmails } from '../eve-kill/client.js';
+import { getKilllist } from '../eve-kill/client.js';
+import type { KilllistItem } from '../eve-kill/client.js';
 import type { UserContext } from '../auth/user-resolver.js';
 
 type RouteFlag = 'secure' | 'shortest' | 'insecure';
@@ -498,8 +499,7 @@ function buildRouteVariant(
 // ---------------------------------------------------------------------------
 
 const MAX_KILLS_PER_SYSTEM = 5;
-const DANGER_SCAN_PAST_SECONDS = 3600;
-const DANGER_SCAN_QUERY_LIMIT = 200;
+const DANGER_SCAN_CONCURRENCY = 10;
 
 async function scanSystemDanger(
   db: Db,
@@ -510,70 +510,46 @@ async function scanSystemDanger(
   const ids = [...systemIds];
   if (ids.length === 0) return new Map();
 
-  console.log('[danger_scan] scanning %d systems via EVE-KILL query (pastSeconds=%d, limit=%d)',
-    ids.length, DANGER_SCAN_PAST_SECONDS, DANGER_SCAN_QUERY_LIMIT);
+  console.log('[danger_scan] scanning %d systems via EVE-KILL /killlist', ids.length);
 
-  // Single query: all systems, last hour, sorted by time descending
-  const cutoff = Math.floor(Date.now() / 1000) - DANGER_SCAN_PAST_SECONDS;
-  const result = await queryKillmails(db, {
-    filter: {
-      system_id: { $in: ids },
-      kill_time: { $gte: cutoff },
-    },
-    options: {
-      limit: DANGER_SCAN_QUERY_LIMIT,
-      sort: { kill_time: -1 },
-    },
-  });
+  // Parallel EVE-KILL /killlist requests per system (pre-enriched, no ESI needed)
+  const feedMap = new Map<number, KilllistItem[]>();
+  let idx = 0;
+  const next = async (): Promise<void> => {
+    while (idx < ids.length) {
+      const systemId = ids[idx++];
+      const result = await getKilllist(db, { system_id: systemId, limit: 10 }, 60);
+      if (result.ok && result.data.length > 0) {
+        feedMap.set(systemId, result.data);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(DANGER_SCAN_CONCURRENCY, ids.length) }, () => next()));
 
-  if (!result.ok) {
-    console.log('[danger_scan] EVE-KILL query failed: %s', result.error);
+  if (feedMap.size === 0) {
+    console.log('[danger_scan] no kills found');
     return new Map();
   }
 
-  const killmails = result.data;
-  console.log('[danger_scan] EVE-KILL returned %d killmails', killmails.length);
-  if (killmails.length === 0) return new Map();
+  console.log('[danger_scan] %d/%d systems have kills', feedMap.size, ids.length);
 
-  // Group killmails by system_id
-  const grouped = new Map<number, typeof killmails>();
-  for (const km of killmails) {
-    const sysId = km.system_id;
-    if (sysId === undefined) continue;
-    let list = grouped.get(sysId);
-    if (!list) {
-      list = [];
-      grouped.set(sysId, list);
-    }
-    list.push(km);
-  }
-
-  console.log('[danger_scan] %d/%d systems have kills', grouped.size, ids.length);
-
-  // Build DangerSystem entries from grouped results
+  // Build DangerSystem entries from pre-enriched EVE-KILL data
   const dangerMap = new Map<number, DangerSystem>();
-  for (const [systemId, feed] of grouped) {
+  for (const [systemId, feed] of feedMap) {
     const info = systemInfoMap.get(systemId);
     const npcCount = feed.filter((km) => km.is_npc === true).length;
     const pvpCount = feed.length - npcCount;
     const totalValueM = feed.reduce((s, km) => s + Math.round((km.total_value ?? 0) / 1_000_000), 0);
 
-    // Build RecentKill entries from pre-enriched EVE-KILL data (top N per system)
-    const kills: RecentKill[] = feed.slice(0, MAX_KILLS_PER_SYSTEM).map((km) => {
-      const victim = km.victim;
-      const attackers = km.attackers ?? [];
-      const finalBlow = attackers.find((a) => a.final_blow === true) ?? attackers[0];
-
-      return {
-        time: km.kill_time ? toMSK(km.kill_time) : null,
-        victim: victim?.character_name ?? victim?.corporation_name ?? null,
-        victim_ship: victim?.ship_name ?? null,
-        attacker: finalBlow?.character_name ?? finalBlow?.corporation_name ?? null,
-        attacker_ship: finalBlow?.ship_name ?? null,
-        value_m: Math.round((km.total_value ?? 0) / 1_000_000),
-        url: `https://eve-kill.com/kill/${km.killmail_id}`,
-      };
-    });
+    const kills: RecentKill[] = feed.slice(0, MAX_KILLS_PER_SYSTEM).map((km) => ({
+      time: km.killmail_time ? toMSK(km.killmail_time) : null,
+      victim: km.victim_character_name ?? km.victim_corporation_name ?? null,
+      victim_ship: km.ship_name ?? null,
+      attacker: km.final_blow_character_name ?? km.final_blow_corporation_name ?? null,
+      attacker_ship: null, // killlist doesn't include attacker ship
+      value_m: Math.round((km.total_value ?? 0) / 1_000_000),
+      url: `https://eve-kill.com/kill/${km.killmail_id}`,
+    }));
 
     dangerMap.set(systemId, {
       name: info?.name ?? `ID:${systemId}`,
