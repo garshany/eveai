@@ -232,7 +232,7 @@ function formatRouteSummary(
         const time = kill.time?.split(' ')[0] ?? '?'; // just HH:MM
         const ship = esc(kill.victim_ship ?? '?');
         const isk = kill.value_m ? ` ${kill.value_m}M` : '';
-        const link = kill.url ? `<a href="${escapeHtmlAttribute(kill.url)}">km</a>` : '';
+        const link = kill.url ? `<a href="${escapeHtmlAttribute(kill.url)}">zkb</a>` : '';
         const victim = esc(truncateName(kill.victim));
         lines.push(`  ${time} ${ship}${isk} ${victim} ${link}`);
       }
