@@ -123,11 +123,11 @@ export class EveKillWS {
       }
     };
 
-    this.ws.onmessage = (event: MessageEvent) => {
-      this.handleMessage(event);
+    this.ws.onmessage = (event) => {
+      this.handleRawMessage(event.data);
     };
 
-    this.ws.onclose = (event: CloseEvent) => {
+    this.ws.onclose = (event) => {
       this.connected = false;
       this.ws = null;
       const reason = event.reason || 'no reason';
@@ -144,9 +144,9 @@ export class EveKillWS {
       }
     };
 
-    this.ws.onerror = (event: Event) => {
+    this.ws.onerror = () => {
       // The close event will follow; just log here
-      console.error(`${LOG} WebSocket error:`, (event as ErrorEvent).message ?? 'unknown');
+      console.error(`${LOG} WebSocket error`);
     };
   }
 
@@ -244,10 +244,10 @@ export class EveKillWS {
 
   // ── Internal ──
 
-  private handleMessage(event: MessageEvent): void {
+  private handleRawMessage(data: string | ArrayBuffer | Blob): void {
     let msg: ServerMessage;
     try {
-      const raw = typeof event.data === 'string' ? event.data : String(event.data);
+      const raw = typeof data === 'string' ? data : String(data);
       msg = JSON.parse(raw) as ServerMessage;
     } catch {
       console.warn(`${LOG} failed to parse message`);
