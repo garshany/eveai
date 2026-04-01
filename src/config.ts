@@ -100,7 +100,7 @@ export const config = {
   },
   eveKill: {
     baseUrl: optional('EVE_KILL_BASE_URL', 'https://eve-kill.com/api/'),
-    wsUrl: optional('EVE_KILL_WS_URL', 'wss://ws.eve-kill.com/killmails'),
+    wsUrl: optional('EVE_KILL_WS_URL', 'wss://ws.eve-kill.com/ws'),
     timeoutMs: optionalInt('EVE_KILL_TIMEOUT_MS', 8000),
     cacheTtlSeconds: optionalInt('EVE_KILL_CACHE_TTL_SECONDS', 300),
     maxQueryLimit: optionalInt('EVE_KILL_MAX_QUERY_LIMIT', 100),

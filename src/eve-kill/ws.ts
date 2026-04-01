@@ -18,13 +18,40 @@ const MAX_TOPICS = 50;
 // Types
 // ---------------------------------------------------------------------------
 
-type ServerMessage =
-  | { type: 'info'; validTopics: string[] }
-  | { type: 'subscribed'; topics: string[] }
-  | { type: 'unsubscribed'; topics: string[] }
-  | { type: 'killmail'; data: EveKillKillmail }
-  | { type: 'ping'; timestamp: number }
-  | { type: 'error'; message?: string };
+/** Actual wire format: { channel: "killmail"|"killlist"|"status", data: { event, ... } } */
+type ServerMessage = {
+  channel?: string;
+  data?: {
+    event?: string;
+    killmail_id?: number;
+    solar_system_id?: number;
+    total_value?: number;
+    is_npc?: boolean;
+    is_solo?: boolean;
+    killmail?: KilllistWsItem;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
+type KilllistWsItem = {
+  killmail_id: number;
+  killmail_time?: string;
+  solar_system_id?: number;
+  solar_system_name?: string;
+  solar_system_security?: number;
+  region_id?: number;
+  region_name?: string;
+  total_value?: number;
+  is_npc?: boolean;
+  is_solo?: boolean;
+  attacker_count?: number;
+  ship_name?: string;
+  victim_character_name?: string;
+  victim_corporation_name?: string;
+  victim_alliance_name?: string;
+  [key: string]: unknown;
+};
 
 type KillmailHandler = (kill: EveKillKillmail) => void;
 
@@ -254,59 +281,66 @@ export class EveKillWS {
       return;
     }
 
-    switch (msg.type) {
-      case 'info':
-        console.log(`${LOG} server info: ${msg.validTopics?.length ?? 0} valid topics`);
-        break;
+    const channel = msg.channel;
+    const payload = msg.data;
 
-      case 'subscribed':
-        console.log(`${LOG} subscribed: ${msg.topics?.join(', ') ?? '?'}`);
-        break;
-
-      case 'unsubscribed':
-        console.log(`${LOG} unsubscribed: ${msg.topics?.join(', ') ?? '?'}`);
-        break;
-
-      case 'ping':
-        this.handlePing(msg.timestamp);
-        break;
-
-      case 'killmail':
-        this.handleKillmail(msg.data);
-        break;
-
-      case 'error':
-        console.error(`${LOG} server error: ${msg.message ?? 'unknown'}`);
-        break;
-
-      default:
-        // Unknown message type — ignore
-        break;
+    if (channel === 'killlist' && payload?.killmail) {
+      this.handleKilllistItem(payload.killmail);
+    } else if (channel === 'killmail' && payload?.killmail_id) {
+      this.handleCompactKillmail(payload);
     }
+    // channel === 'status' — ignore silently
   }
 
-  private handlePing(timestamp: number): void {
-    if (!this.ws || !this.connected) return;
-
-    try {
-      this.ws.send(JSON.stringify({ type: 'pong', timestamp }));
-    } catch (err) {
-      console.error(`${LOG} failed to send pong:`, err);
-    }
-  }
-
-  private handleKillmail(km: EveKillKillmail): void {
+  private handleKilllistItem(km: KilllistWsItem): void {
     if (!km || !km.killmail_id) return;
 
+    // Convert to EveKillKillmail shape for buffer
+    const normalized: EveKillKillmail = {
+      killmail_id: km.killmail_id,
+      kill_time: km.killmail_time,
+      system_id: km.solar_system_id,
+      system_name: km.solar_system_name,
+      system_security: km.solar_system_security,
+      region_id: km.region_id,
+      region_name: km.region_name,
+      total_value: km.total_value,
+      is_npc: km.is_npc,
+      is_solo: km.is_solo,
+      victim: {
+        character_name: km.victim_character_name,
+        corporation_name: km.victim_corporation_name,
+        alliance_name: km.victim_alliance_name,
+        ship_name: km.ship_name,
+      },
+    };
+
+    this.bufferKillmail(normalized);
+  }
+
+  private handleCompactKillmail(data: NonNullable<ServerMessage['data']>): void {
+    const km: EveKillKillmail = {
+      killmail_id: data.killmail_id!,
+      system_id: data.solar_system_id as number | undefined,
+      total_value: data.total_value,
+      is_npc: data.is_npc,
+      is_solo: data.is_solo,
+    };
+
+    this.bufferKillmail(km);
+  }
+
+  private bufferKillmail(km: EveKillKillmail): void {
     // Add to global buffer
     this.globalBuffer.push(km);
 
     // Index by system_id
-    if (km.system_id) {
-      let buf = this.systemIndex.get(km.system_id);
+    const systemId = km.system_id;
+    if (systemId) {
+      let buf = this.systemIndex.get(systemId);
       if (!buf) {
         buf = new RingBuffer(this.bufferSize);
-        this.systemIndex.set(km.system_id, buf);
+        this.systemIndex.set(systemId, buf);
       }
       buf.push(km);
     }
@@ -329,7 +363,7 @@ export class EveKillWS {
   private sendSubscribe(topics: string[]): void {
     if (!this.ws || !this.connected) return;
     try {
-      this.ws.send(JSON.stringify({ type: 'subscribe', topics }));
+      this.ws.send(JSON.stringify({ action: 'subscribe', topics }));
     } catch (err) {
       console.error(`${LOG} failed to send subscribe:`, err);
     }
@@ -338,7 +372,7 @@ export class EveKillWS {
   private sendUnsubscribe(topics: string[]): void {
     if (!this.ws || !this.connected) return;
     try {
-      this.ws.send(JSON.stringify({ type: 'unsubscribe', topics }));
+      this.ws.send(JSON.stringify({ action: 'unsubscribe', topics }));
     } catch (err) {
       console.error(`${LOG} failed to send unsubscribe:`, err);
     }
