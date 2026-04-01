@@ -22,6 +22,7 @@ export function runMigrations(db: Db): void {
     clearLegacyOauthStates(db);
     addColumnIfMissing(db, 'agent_threads', 'total_tokens', 'INTEGER DEFAULT 0');
     createIndexIfMissing(db, 'idx_messages_thread', 'messages', 'thread_id');
+    ensureHeartbeatConfig(db);
   });
 
   migrate();
@@ -108,6 +109,28 @@ function backfillUsers(db: Db): void {
       LIMIT 1
     ) WHERE user_id IS NULL
   `).run();
+}
+
+function ensureHeartbeatConfig(db: Db): void {
+  const exists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='heartbeat_config'"
+  ).get();
+  if (!exists) {
+    db.exec(`
+      CREATE TABLE heartbeat_config (
+        user_id          INTEGER NOT NULL,
+        character_id     INTEGER NOT NULL,
+        enabled          INTEGER NOT NULL DEFAULT 0,
+        interval_seconds INTEGER NOT NULL DEFAULT 3600,
+        checks_json      TEXT NOT NULL DEFAULT '["mail"]',
+        last_run_at      TEXT,
+        last_mail_id     INTEGER,
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (user_id, character_id)
+      )
+    `);
+  }
 }
 
 function clearLegacyOauthStates(db: Db): void {

@@ -12,6 +12,7 @@ import {
   isUniverseCountTool,
   isZkillToolName,
   isBatchMarketTool,
+  isHeartbeatConfigTool,
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
 import { updatePlan } from './planner.js';
@@ -30,6 +31,8 @@ import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
 import { getThreadSummary, runPreTurnCompact, needsMidTurnCompaction, runMidTurnCompact } from './compact.js';
 import { executeZkillQuery } from '../eve/zkill-query.js';
+import { executeHeartbeatConfig } from '../scheduled/heartbeat-config.js';
+import type { HeartbeatConfigArgs } from '../scheduled/heartbeat-config.js';
 import { getLinkedCharacter } from '../eve/sso.js';
 import type { UserContext } from '../auth/user-resolver.js';
 
@@ -784,6 +787,14 @@ async function executeToolCall(
 
   if (isBatchMarketTool(name)) {
     return await executeBatchMarketPrices(db, args, ctx);
+  }
+
+  if (isHeartbeatConfigTool(name)) {
+    return executeHeartbeatConfig(db, ctx, {
+      action: String(args.action ?? 'list'),
+      interval_seconds: typeof args.interval_seconds === 'number' ? args.interval_seconds : undefined,
+      check: typeof args.check === 'string' ? args.check : undefined,
+    } as HeartbeatConfigArgs);
   }
 
   if (name === 'plan_route') {

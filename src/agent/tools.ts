@@ -144,6 +144,40 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   },
 ];
 
+const HEARTBEAT_CONFIG_TOOL_NAME = 'heartbeat_config';
+
+const HEARTBEAT_CONFIG_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: HEARTBEAT_CONFIG_TOOL_NAME,
+  description: 'Configure periodic background checks for the player (mail, skills, wallet, etc.). The heartbeat runs on a schedule and proactively notifies the user in Telegram when something new happens. Use when the user asks to set up notifications, periodic checks, or monitoring of their EVE character.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['enable', 'disable', 'set_interval', 'enable_check', 'disable_check', 'list'],
+        description: 'enable/disable heartbeat, set_interval to change frequency, enable_check/disable_check to toggle specific checks, list to show current config.',
+      },
+      interval_seconds: {
+        type: ['integer', 'null'],
+        description: 'Interval in seconds for set_interval action. Min 300 (5min), max 604800 (7d). Common: 3600=1h, 86400=1d.',
+      },
+      check: {
+        type: ['string', 'null'],
+        enum: ['mail', 'skills', 'wallet', 'contracts', 'killmails', null],
+        description: 'Check type for enable_check/disable_check actions.',
+      },
+    },
+    required: ['action', 'interval_seconds', 'check'],
+    additionalProperties: false,
+  },
+};
+
+export function isHeartbeatConfigTool(name: string): boolean {
+  return name === HEARTBEAT_CONFIG_TOOL_NAME;
+}
+
 const ZKILL_TOOL_NAME = 'zkill';
 
 const ZKILL_API_REF = `zKillboard API (https://zkillboard.com/api/).
@@ -227,6 +261,7 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
   return [
     { type: 'tool_search' },
     ...ALWAYS_ON_FUNCTION_TOOLS,
+    HEARTBEAT_CONFIG_TOOL,
     BATCH_MARKET_TOOL,
     buildZkillNamespace(),
     ...(await listEsiNamespaces()),

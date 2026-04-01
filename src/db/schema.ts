@@ -311,4 +311,17 @@ CREATE TABLE IF NOT EXISTS sde_blueprints (
   data_json         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sde_blueprints_name ON sde_blueprints(name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS heartbeat_config (
+  user_id          INTEGER NOT NULL,
+  character_id     INTEGER NOT NULL,
+  enabled          INTEGER NOT NULL DEFAULT 0,
+  interval_seconds INTEGER NOT NULL DEFAULT 3600,
+  checks_json      TEXT NOT NULL DEFAULT '["mail"]',
+  last_run_at      TEXT,
+  last_mail_id     INTEGER,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, character_id)
+);
 `;

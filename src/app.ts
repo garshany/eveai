@@ -6,6 +6,7 @@ import {
   markTelegramBotHealthReady,
   markTelegramBotHealthStarting,
 } from './web/health.js';
+import { startHeartbeat, stopHeartbeat } from './scheduled/heartbeat-worker.js';
 
 async function main() {
   console.log('[app] Starting EVE Agent...');
@@ -43,11 +44,16 @@ async function main() {
   } catch (err) {
     console.warn('[app] Telegram deleteWebhook failed:', err);
   }
+  // 5. Start heartbeat scheduler
+  startHeartbeat(bot, db);
+  console.log('[app] Heartbeat scheduler started');
+
   let shuttingDown = false;
   const shutdown = async (exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('[app] Shutting down...');
+    stopHeartbeat();
     bot.stop();
     await server.close();
     db.close();
