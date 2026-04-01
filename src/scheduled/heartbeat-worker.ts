@@ -75,16 +75,22 @@ async function processUserHeartbeat(
   const state = parseState(row.state_json);
   const findings: string[] = [];
 
+  console.log('[heartbeat] user=%d char=%d: running %d checks: %s', row.user_id, row.character_id, checks.length, checks.join(','));
+
   for (const check of checks) {
     try {
       const result = await runCheck(db, ctx, row.character_id, check, state);
-      if (result) findings.push(result);
+      if (result) {
+        findings.push(result);
+        console.log('[heartbeat] check=%s: found something', check);
+      }
     } catch (err) {
       console.error('[heartbeat] check=%s user=%d error:', check, row.user_id, err);
     }
   }
 
   // Save state and last_run_at
+  console.log('[heartbeat] saving state: %s', JSON.stringify(Object.keys(state)));
   saveState(db, row.user_id, row.character_id, state);
   db.prepare(
     "UPDATE heartbeat_config SET last_run_at = ? WHERE user_id = ? AND character_id = ?",
