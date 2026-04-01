@@ -8,7 +8,7 @@ import { runModelText } from '../agent/model.js';
 import type { HeartbeatConfigRow, HeartbeatCheckType } from './heartbeat-config.js';
 import type { UserContext } from '../auth/user-resolver.js';
 
-const HEARTBEAT_CRON = '* * * * *'; // every minute, checks per-user intervals internally
+const HEARTBEAT_CRON = '*/5 * * * *'; // every 5 minutes, checks per-user intervals internally
 
 let cronJob: Cron | null = null;
 
