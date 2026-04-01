@@ -95,7 +95,7 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   {
     type: 'function',
     name: 'get_eve_capabilities',
-    description: 'Inspect the currently available ESI namespaces, granted scopes, and accessible operations for the active Telegram user/chat. Use this before private ESI access when the current capability set is not already known.',
+    description: 'Inspect the currently available ESI namespaces, granted scopes, and accessible operations for the active Telegram user/chat. Call ONLY when you need private ESI access and the granted scopes are not already listed in the prompt context. Do NOT call if scopes are already shown above or if you only need public/SDE data.',
     strict: true,
     defer_loading: true,
     parameters: {
@@ -110,7 +110,7 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   {
     type: 'function',
     name: 'plan_route',
-    description: 'Plan a route between two EVE systems. Returns up to 3 variants (secure/shortest/insecure) with jump count, security, recent kill stats, and hotspots. When requested, sets exact autopilot waypoints for the preferred route. Accepts system names or IDs.',
+    description: 'Plan a route between two EVE systems. Returns up to 3 variants (secure/shortest/insecure) with jump count, security, recent kill stats, danger systems with detailed killmails, and formatted_summary ready for output. Includes built-in danger scan — do NOT call zKill or ESI killmails separately. Sets autopilot waypoints when requested. Accepts system names or IDs.',
     strict: true,
     parameters: {
       type: 'object',
@@ -143,12 +143,12 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   {
     type: 'function',
     name: SDE_SQL_TOOL_NAME,
-    description: 'Run a read-only SQL query against the local EVE SDE SQLite. See <sde_schema> in the developer prompt for available tables and fields. Batch multiple lookups using WHERE IN (...).',
+    description: 'Query the local EVE Static Data Export (SDE) via SQL. Use this tool for: resolving item/ship/module names↔IDs, ship and module stats (dogma attributes: DPS, range, speed, tank, cap, fitting), ship role bonuses (sde_type_bonus), blueprint materials and manufacturing time, system/region/constellation lookups, security status, stargate destinations, meta group (Tech I/II/Faction/Officer), group/category classification. JOIN sde_type_dogma with sde_dogma_attributes to get human-readable attribute names. See <sde_schema> for tables, columns, JSON fields, and ready-to-use dogma query pattern. Batch multiple lookups: WHERE name IN (...) or WHERE type_id IN (...). Always prefer this over ESI for static data.',
     strict: true,
     parameters: {
       type: 'object',
       properties: {
-        sql: { type: 'string' },
+        sql: { type: 'string', description: 'Read-only SQL query. Use json_extract() for data_json fields, json_each() for arrays. Max 50 rows returned.' },
       },
       required: ['sql'],
       additionalProperties: false,
