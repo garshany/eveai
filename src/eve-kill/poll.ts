@@ -95,8 +95,31 @@ async function pollTopic(db: Db, topic: string): Promise<void> {
   const feed = await fetchZkbFeed(zkbPath);
   if (feed.length === 0) return;
 
-  // Find new kills
   const prev = lastSeen.get(topic) ?? 0;
+  const isFirstPoll = prev === 0;
+
+  if (isFirstPoll) {
+    // First poll: seed last_seen, send the most recent kill as confirmation
+    const maxId = Math.max(...feed.map((km) => km.killmail_id));
+    lastSeen.set(topic, maxId);
+    saveLastSeen(db, topic, maxId);
+
+    // Send only the latest kill as "subscription active" confirmation
+    const latest = feed.find((km) => km.killmail_id === maxId);
+    if (latest) {
+      const enriched = await enrichKills(db, [latest]);
+      if (enriched.length > 0) {
+        const chatIds = (db.prepare('SELECT DISTINCT chat_id FROM kill_watches WHERE topic = ?').all(topic) as Array<{ chat_id: number }>).map((r) => r.chat_id);
+        for (const chatId of chatIds) {
+          try { pollSender!(chatId, `✅ Watch active! Latest kill:\n${formatAlert(enriched[0])}`); } catch { /* */ }
+        }
+        console.log(`${LOG} ${topic}: seeded last_seen=${maxId}, sent confirmation`);
+      }
+    }
+    return;
+  }
+
+  // Find new kills since last poll
   const newKills = feed.filter((km) => km.killmail_id > prev);
   if (newKills.length === 0) return;
 
@@ -105,7 +128,7 @@ async function pollTopic(db: Db, topic: string): Promise<void> {
   lastSeen.set(topic, maxId);
   saveLastSeen(db, topic, maxId);
 
-  // Enrich with ESI (names, ship, system)
+  // Enrich with ESI
   const enriched = await enrichKills(db, newKills);
   const fresh = enriched.filter((km) => {
     if (!km.time) return true;
