@@ -23,6 +23,7 @@ Read the smallest document that answers the current question. Start here, then d
 - [RELIABILITY.md](./RELIABILITY.md): runtime failure model and operational checks
 - [SECURITY.md](./SECURITY.md): auth, secret, and web protection rules
 - [deployment.md](./deployment.md): production server runbook
+- [heartbeat.md](./heartbeat.md): periodic background checks and notifications system
 
 ## Indexed Subtrees
 
@@ -46,3 +47,4 @@ Read the smallest document that answers the current question. Start here, then d
 - "What is the product supposed to do?" -> [PRODUCT_SENSE.md](./PRODUCT_SENSE.md)
 - "What are the hard safety or transport rules?" -> [SECURITY.md](./SECURITY.md), [RELIABILITY.md](./RELIABILITY.md)
 - "How should new work be planned and recorded?" -> [PLANS.md](./PLANS.md), [exec-plans/active/index.md](./exec-plans/active/index.md)
+- "How do background notifications work?" -> [heartbeat.md](./heartbeat.md)
