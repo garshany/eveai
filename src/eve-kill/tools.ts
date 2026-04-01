@@ -340,7 +340,8 @@ export function buildEveKillNamespace(): NativeNamespaceTool {
     description:
       'PvP killboard data and intelligence from EVE-KILL. ' +
       'Use when user asks about: kills in a system, player/corp killboard, ship fits from losses, ' +
-      'expensive kills, battle reports, who is dangerous, coalition partners, build costs, PvP rankings.',
+      'expensive kills, battle reports, who is dangerous, coalition partners, build costs, PvP rankings, ' +
+      'OR when user wants real-time kill alerts/notifications ("follow player", "watch system", "alert me about kills").',
     tools: DEFERRED_EVE_KILL_TOOLS,
   };
 }
