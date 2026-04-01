@@ -139,6 +139,11 @@ export class EveKillWS {
       this.connected = true;
       this.reconnectDelay = 1_000;
 
+      // Always subscribe to "all" for global killmail feed
+      if (!this.activeTopics.has('all')) {
+        this.activeTopics.add('all');
+      }
+
       // Re-subscribe active topics after reconnect
       if (this.activeTopics.size > 0) {
         this.sendSubscribe([...this.activeTopics]);
