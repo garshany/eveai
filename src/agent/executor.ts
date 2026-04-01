@@ -686,7 +686,9 @@ async function runNativeAgentLoop(
       const summary = routeResult?.formatted_summary;
       if (typeof summary === 'string' && summary.length > 50) {
         storeAssistantMessage(db, threadId, summary);
-        saveLastResponseId(db, threadId, response.id);
+        // Save null — the response has a dangling function_call (plan_route) without tool output,
+        // so continuing from this prevId would cause "No tool output found" API error.
+        saveLastResponseId(db, threadId, null);
         console.log('[executor] === DONE (route-shortcircuit) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
           iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, summary.length);
         return { text: summary, peakInputTokens };
