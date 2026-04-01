@@ -345,12 +345,24 @@ export class EveKillWS {
   }
 
   private wsKillCount = 0;
+  private wsFreshCount = 0;
 
   private bufferKillmail(km: EveKillKillmail): void {
     this.wsKillCount++;
-    // Log first kill and then every 100
-    if (this.wsKillCount === 1 || this.wsKillCount % 100 === 0) {
-      console.log(`${LOG} buffered ${this.wsKillCount} killmails (latest: ${km.killmail_id})`);
+
+    // Only buffer recent kills (< 1 hour) — EVE-KILL WS sometimes replays historical backlog
+    const isFresh = !km.kill_time || (Date.now() - new Date(km.kill_time).getTime()) < 3600_000;
+    if (!isFresh) {
+      // Still notify handlers (watch.ts has its own age filter) but don't pollute buffers
+      for (const handler of this.handlers) {
+        try { handler(km); } catch { /* */ }
+      }
+      return;
+    }
+
+    this.wsFreshCount++;
+    if (this.wsFreshCount === 1 || this.wsFreshCount % 100 === 0) {
+      console.log(`${LOG} buffered ${this.wsFreshCount} fresh killmails (${this.wsKillCount} total, latest: ${km.killmail_id})`);
     }
 
     // Add to global buffer

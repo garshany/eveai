@@ -89,8 +89,16 @@ export function initWatchNotifications(db: Db, sender: NotifySender): void {
   console.log(`${LOG} notification dispatcher initialized`);
 }
 
+const MAX_KILL_AGE_MS = 10 * 60 * 1000; // Only notify for kills < 10 minutes old
+
 function handleKillmailForWatches(km: EveKillKillmail): void {
   if (!watchDb || !notifySender) return;
+
+  // Skip old kills (EVE-KILL WS sometimes replays historical backlog)
+  if (km.kill_time) {
+    const killAge = Date.now() - new Date(km.kill_time).getTime();
+    if (killAge > MAX_KILL_AGE_MS || killAge < -60_000) return; // >10min old or future = skip
+  }
 
   // Check which topics this killmail matches
   const matchingTopics: string[] = [];
