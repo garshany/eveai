@@ -123,26 +123,21 @@ Telegram Chat                          Browser
 
 ---
 
-## Agent Tools (59 total)
+## Agent Tools (8 active + 176 deferred)
 
-The AI model has access to 59 tools organized by category:
+The model sees **8 full tools** with complete schemas. 176 ESI/zKill functions are hidden behind **50 namespace stubs** (name + description only) and loaded on demand via `tool_search` — matching OpenAI's recommendation to keep the active tool set small.
 
-**Always available (8):**
+**Always available (full schema):**
 `sde_sql` `count_universe_objects` `plan_route` `batch_market_prices` `web_search` `update_plan` `get_eve_capabilities` `heartbeat_config`
 
-**ESI — Character (17 namespaces):**
-`eve_character_profile` `eve_character_skills` `eve_character_assets` `eve_character_wallet` `eve_character_mail` `eve_character_messaging` `eve_character_industry` `eve_character_orders_contracts` `eve_character_location` `eve_character_killmails` `eve_character_contacts` `eve_character_calendar` `eve_character_fittings` `eve_character_notifications` `eve_character_planets` `eve_character_research_activity` `eve_character_search`
+**Deferred namespaces (50, resolved via `tool_search`):**
 
-**ESI — Corporation (10 namespaces):**
-`eve_corporation_profile` `eve_corporation_membership` `eve_corporation_wallet` `eve_corporation_assets` `eve_corporation_industry_contracts` `eve_corporation_killmails` `eve_corporation_structures` `eve_corporation_contacts_standings` `eve_corporation_roles_titles` `eve_authenticated_market_structures`
-
-**ESI — Universe & Public (12 namespaces):**
-`eve_universe_types` `eve_universe_celestials` `eve_universe_reference` `eve_public_market_orders` `eve_public_market_reference` `eve_public_contracts` `eve_public_killmails` `eve_public_wars` `eve_public_incursions` `eve_public_sovereignty` `eve_public_faction_warfare` `eve_public_dogma`
-
-**PvP & Fleet:**
-`eve_zkill` `eve_fleet_roster` `eve_fleet_structure` `eve_ui`
-
-**Dynamic discovery:** `tool_search` resolves deferred ESI endpoints on demand
+| Category | Namespaces | Endpoints |
+|----------|-----------|-----------|
+| Character | `eve_character_profile` `skills` `assets` `wallet` `mail` `messaging` `industry` `orders_contracts` `location` `killmails` `contacts` `calendar` `fittings` `notifications` `planets` `research_activity` `search` | 54 |
+| Corporation | `eve_corporation_profile` `membership` `wallet` `assets` `industry_contracts` `killmails` `structures` `contacts_standings` `roles_titles` `authenticated_market_structures` | 38 |
+| Universe & Public | `eve_universe_types` `celestials` `reference` `eve_public_market_orders` `market_reference` `contracts` `killmails` `wars` `incursions` `sovereignty` `faction_warfare` `dogma` | 62 |
+| PvP & Fleet | `eve_zkill` `fleet_roster` `fleet_structure` `eve_ui` | 22 |
 
 ---
 
