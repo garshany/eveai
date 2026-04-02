@@ -1,40 +1,51 @@
 /**
- * zKillboard WebSocket client for real-time kill notifications.
+ * zKillboard R2Z2 kill stream — real-time kill feed via HTTP sequence polling.
  *
- * URL: wss://zkillboard.com/websocket/
- * Protocol: JSON frames, requires Origin header
- * Channels: system:{id}, character:{id}, region:{id}, killstream, public
+ * How it works:
+ *   GET /ephemeral/sequence.json → current sequence number
+ *   GET /ephemeral/{seq}.json → killmail at that sequence (full ESI + zkb data)
+ *   Increment seq, repeat. 2s poll when catching up, 10s when idle.
  *
- * Used by kill_watch subscriptions for instant alerts.
+ * Matches kills against kill_watches DB and sends Telegram notifications.
  */
 
-import WebSocket from 'ws';
 import type { Db } from '../db/sqlite.js';
+import { config } from '../config.js';
 
-const LOG = '[zkb-ws]';
-const WS_URL = 'wss://zkillboard.com/websocket/';
-const WS_HEADERS = {
-  'User-Agent': 'EVEAIBOT/1.0 garshany80@gmail.com',
-  'Origin': 'https://zkillboard.com',
-};
-const MAX_RECONNECT_MS = 300_000; // 5 min max backoff
+const LOG = '[zkb-r2z2]';
+const BASE_URL = 'https://r2z2.zkillboard.com/ephemeral';
+const POLL_ACTIVE_MS = 2_000;    // 2s when catching up
+const POLL_IDLE_MS = 10_000;     // 10s when no new kills
+const MAX_CATCH_UP = 30;         // Max kills per cycle
+const MAX_KILL_AGE_MS = 10 * 60 * 1000;
+const DEDUP_TTL_MS = 120_000;
 
 type NotifySender = (chatId: number, text: string) => void;
 
-type ZkbKillMessage = {
+// ---------------------------------------------------------------------------
+// R2Z2 kill format
+// ---------------------------------------------------------------------------
+
+type R2Z2Kill = {
   killmail_id: number;
-  solar_system_id?: number;
-  killmail_time?: string;
-  victim?: {
-    character_id?: number;
-    corporation_id?: number;
-    alliance_id?: number;
-    ship_type_id?: number;
+  hash?: string;
+  esi?: {
+    killmail_id?: number;
+    killmail_time?: string;
+    solar_system_id?: number;
+    victim?: {
+      character_id?: number;
+      corporation_id?: number;
+      alliance_id?: number;
+      ship_type_id?: number;
+    };
+    attackers?: Array<{
+      character_id?: number;
+      corporation_id?: number;
+      alliance_id?: number;
+      final_blow?: boolean;
+    }>;
   };
-  attackers?: Array<{
-    character_id?: number;
-    final_blow?: boolean;
-  }>;
   zkb?: {
     totalValue?: number;
     npc?: boolean;
@@ -46,184 +57,120 @@ type ZkbKillMessage = {
 // State
 // ---------------------------------------------------------------------------
 
-let ws: WebSocket | null = null;
-let reconnectDelay = 1000;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let closed = false;
-let connected = false;
+let currentSeq = 0;
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let streamDb: Db | null = null;
+let streamSender: NotifySender | null = null;
+let running = false;
 
-let watchDb: Db | null = null;
-let sender: NotifySender | null = null;
-
-// Active channels subscribed on zKB side
-const activeChannels = new Set<string>();
-
-// Dedup
 const recentNotifs = new Map<string, number>();
-const DEDUP_TTL_MS = 120_000;
 
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-export function startZkbWs(db: Db, notifySender: NotifySender): void {
-  watchDb = db;
-  sender = notifySender;
-  closed = false;
-  connect();
+export async function startZkbWs(db: Db, sender: NotifySender): Promise<void> {
+  streamDb = db;
+  streamSender = sender;
+  running = true;
 
-  // Load existing watches from DB and subscribe channels
-  const rows = db.prepare('SELECT DISTINCT topic FROM kill_watches').all() as Array<{ topic: string }>;
-  for (const { topic } of rows) {
-    const channel = topicToChannel(topic);
-    if (channel) activeChannels.add(channel);
+  try {
+    const res = await fetch(`${BASE_URL}/sequence.json`, {
+      headers: { 'User-Agent': config.zkill.userAgent },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      const data = await res.json() as { sequence: number };
+      currentSeq = data.sequence;
+    }
+  } catch (err) {
+    console.error(`${LOG} failed to get initial sequence:`, (err as Error).message);
   }
-  console.log(`${LOG} initialized with ${activeChannels.size} channels from DB`);
+
+  const watchCount = (db.prepare('SELECT COUNT(DISTINCT topic) as c FROM kill_watches').get() as { c: number }).c;
+  console.log(`${LOG} started at seq=${currentSeq}, ${watchCount} watched topics`);
+
+  schedulePoll(POLL_ACTIVE_MS);
 }
 
 export function stopZkbWs(): void {
-  closed = true;
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
+  running = false;
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
   }
-  if (ws) {
-    try { ws.close(1000); } catch { /* */ }
-    ws = null;
-  }
-  connected = false;
   console.log(`${LOG} stopped`);
 }
 
+// For compatibility with watch.ts subscribe/unsubscribe (no-op, R2Z2 is global stream)
+export function subscribeTopics(_topics: string[]): void { /* R2Z2 receives all kills, filters locally */ }
+export function unsubscribeTopics(_topics: string[]): void { /* no-op */ }
+
 // ---------------------------------------------------------------------------
-// Topic ↔ Channel mapping
+// Poll loop
 // ---------------------------------------------------------------------------
 
-// Our topics: system.30000142, victim.268946627, attacker.268946627, region.10000002
-// zKB channels: system:30000142, character:268946627, region:10000002
+function schedulePoll(delay: number): void {
+  if (!running) return;
+  pollTimer = setTimeout(() => void pollNext(), delay);
+}
 
-function topicToChannel(topic: string): string | null {
-  const [type, id] = topic.split('.');
-  if (!type || !id) return null;
-  switch (type) {
-    case 'system': return `system:${id}`;
-    case 'region': return `region:${id}`;
-    case 'victim': return `character:${id}`;   // zKB character channel covers both kills and losses
-    case 'attacker': return `character:${id}`;
-    default: return null;
+async function pollNext(): Promise<void> {
+  if (!running || !streamDb || !streamSender) return;
+
+  let fetched = 0;
+  let hadKill = false;
+
+  while (fetched < MAX_CATCH_UP) {
+    const kill = await fetchKill(currentSeq + 1);
+    if (!kill) break;
+
+    currentSeq++;
+    fetched++;
+    hadKill = true;
+
+    if (kill.zkb?.npc) continue;
+    matchAndNotify(streamDb, kill);
   }
-}
 
-export function subscribeTopics(topics: string[]): void {
-  for (const topic of topics) {
-    const channel = topicToChannel(topic);
-    if (!channel || activeChannels.has(channel)) continue;
-    activeChannels.add(channel);
-    if (connected && ws) {
-      ws.send(JSON.stringify({ action: 'sub', channel }));
-      console.log(`${LOG} sub ${channel}`);
-    }
+  if (fetched > 0 && fetched % 100 === 0) {
+    console.log(`${LOG} processed ${fetched} kills, seq=${currentSeq}`);
   }
+
+  schedulePoll(hadKill ? POLL_ACTIVE_MS : POLL_IDLE_MS);
 }
 
-export function unsubscribeTopics(topics: string[]): void {
-  for (const topic of topics) {
-    const channel = topicToChannel(topic);
-    if (!channel || !activeChannels.has(channel)) continue;
-    activeChannels.delete(channel);
-    if (connected && ws) {
-      ws.send(JSON.stringify({ action: 'unsub', channel }));
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// WebSocket connection
-// ---------------------------------------------------------------------------
-
-function connect(): void {
-  if (closed || ws) return;
-
-  console.log(`${LOG} connecting...`);
-  ws = new WebSocket(WS_URL, { headers: WS_HEADERS });
-
-  ws.on('open', () => {
-    console.log(`${LOG} connected`);
-    connected = true;
-    reconnectDelay = 1000;
-
-    // Subscribe all active channels
-    for (const channel of activeChannels) {
-      ws!.send(JSON.stringify({ action: 'sub', channel }));
-    }
-    if (activeChannels.size > 0) {
-      console.log(`${LOG} subscribed ${activeChannels.size} channels`);
-    }
-  });
-
-  ws.on('message', (data) => {
-    handleMessage(data.toString());
-  });
-
-  ws.on('close', (code) => {
-    connected = false;
-    ws = null;
-    if (!closed) {
-      console.log(`${LOG} disconnected (${code}), reconnecting in ${Math.round(reconnectDelay / 1000)}s`);
-      scheduleReconnect();
-    }
-  });
-
-  ws.on('error', (err) => {
-    console.error(`${LOG} error: ${err.message}`);
-  });
-}
-
-function scheduleReconnect(): void {
-  if (closed || reconnectTimer) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_MS);
-    connect();
-  }, reconnectDelay);
-}
-
-// ---------------------------------------------------------------------------
-// Message handling
-// ---------------------------------------------------------------------------
-
-function handleMessage(raw: string): void {
-  if (!watchDb || !sender) return;
-
-  let msg: Record<string, unknown>;
+async function fetchKill(seq: number): Promise<R2Z2Kill | null> {
   try {
-    msg = JSON.parse(raw) as Record<string, unknown>;
-  } catch { return; }
-
-  // Skip non-kill messages (tqStatus, etc.)
-  if (!msg.killmail_id) return;
-
-  const kill = msg as unknown as ZkbKillMessage;
-
-  // Skip NPC
-  if (kill.zkb?.npc) return;
-
-  // Skip old kills
-  if (kill.killmail_time) {
-    const age = Date.now() - new Date(kill.killmail_time).getTime();
-    if (age > 600_000 || age < -60_000) return; // >10min old or future
+    const res = await fetch(`${BASE_URL}/${seq}.json`, {
+      headers: { 'User-Agent': config.zkill.userAgent },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    return await res.json() as R2Z2Kill;
+  } catch {
+    return null;
   }
-
-  // Match against watches
-  notifyWatchers(watchDb, kill);
 }
 
-function notifyWatchers(db: Db, kill: ZkbKillMessage): void {
+// ---------------------------------------------------------------------------
+// Match kill against watches → notify
+// ---------------------------------------------------------------------------
+
+function matchAndNotify(db: Db, kill: R2Z2Kill): void {
+  const esi = kill.esi;
+  if (!esi) return;
+
+  if (esi.killmail_time) {
+    const age = Date.now() - new Date(esi.killmail_time).getTime();
+    if (age > MAX_KILL_AGE_MS || age < -60_000) return;
+  }
+
   // Build matching topics
   const topics: string[] = [];
-  if (kill.solar_system_id) topics.push(`system.${kill.solar_system_id}`);
-  if (kill.victim?.character_id) topics.push(`victim.${kill.victim.character_id}`);
-  for (const atk of kill.attackers ?? []) {
+  if (esi.solar_system_id) topics.push(`system.${esi.solar_system_id}`);
+  if (esi.victim?.character_id) topics.push(`victim.${esi.victim.character_id}`);
+  for (const atk of esi.attackers ?? []) {
     if (atk.character_id) topics.push(`attacker.${atk.character_id}`);
   }
   if (topics.length === 0) return;
@@ -237,10 +184,10 @@ function notifyWatchers(db: Db, kill: ZkbKillMessage): void {
 
   // Format alert
   const value = kill.zkb?.totalValue ? Math.round(kill.zkb.totalValue / 1_000_000) : 0;
-  const shipName = resolveType(db, kill.victim?.ship_type_id ?? null) ?? '?';
-  const systemName = resolveSystem(db, kill.solar_system_id ?? 0);
+  const shipName = resolveType(db, esi.victim?.ship_type_id ?? null) ?? '?';
+  const systemName = resolveSystem(db, esi.solar_system_id ?? 0);
   const soloTag = kill.zkb?.solo ? ' [SOLO]' : '';
-  const text = `🔴 Kill in ${systemName}${soloTag}: ${shipName} lost (${value}M ISK)\nhttps://zkillboard.com/kill/${kill.killmail_id}/`;
+  const text = `🔴 Kill in ${systemName}${soloTag}: ${shipName} (${value}M ISK)\nhttps://zkillboard.com/kill/${kill.killmail_id}/`;
 
   // Dedup + send
   const now = Date.now();
@@ -252,10 +199,10 @@ function notifyWatchers(db: Db, kill: ZkbKillMessage): void {
     const key = `${chat_id}:${kill.killmail_id}`;
     if (recentNotifs.has(key)) continue;
     recentNotifs.set(key, now);
-    try { sender!(chat_id, text); } catch { /* */ }
+    try { streamSender!(chat_id, text); } catch { /* */ }
   }
 
-  console.log(`${LOG} kill ${kill.killmail_id} → ${watchers.length} chats`);
+  console.log(`${LOG} kill ${kill.killmail_id} in ${systemName} → ${watchers.length} chats`);
 }
 
 // ---------------------------------------------------------------------------
