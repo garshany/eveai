@@ -330,7 +330,10 @@ async function pollLocation(inst: MonitorInstance): Promise<void> {
       monitor.chatId,
     );
 
-    if (!loc.ok || !loc.data?.solar_system_id) return;
+    if (!loc.ok || !loc.data?.solar_system_id) {
+      console.log(`${LOG} location: ESI failed or no data`);
+      return;
+    }
 
     const newSystemId = loc.data.solar_system_id;
     if (newSystemId === monitor.currentSystemId) return;
@@ -386,8 +389,11 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     );
     if (systemsAhead.length === 0) return;
 
+    const sysNames = systemsAhead.map((id) => resolveSystemName(db, id));
+    console.log(`${LOG} kill scan: ${sysNames.join(', ')} (${systemsAhead.length} ahead)`);
+
     const now = Date.now();
-    const threats: string[] = []; // Batch alerts into one message
+    const threats: string[] = [];
 
     for (const sysId of systemsAhead) {
       const feed = await fetchZkbSystemKills(sysId);
@@ -433,6 +439,7 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     }
 
     // Send ONE batched alert instead of 5 separate messages
+    console.log(`${LOG} kill scan done: ${monitor.stats.killsSeen} total kills seen, ${threats.length} threats`);
     if (threats.length > 0) {
       updateMonitorStats(db, monitor.chatId, monitor.stats);
       const header = `⚠️ Угрозы впереди (${monitor.shipName}, базовый EHP ${Math.round(shipAssessment.ehp)}):\n`;
