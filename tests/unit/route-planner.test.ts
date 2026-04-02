@@ -4,7 +4,6 @@ import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 const callEsiOperationMock = vi.fn();
 const getLinkedCharacterMock = vi.fn();
-const getKilllistMock = vi.fn();
 
 vi.mock('../../src/eve/esi-client.js', () => ({
   callEsiOperation: callEsiOperationMock,
@@ -14,8 +13,12 @@ vi.mock('../../src/eve/sso.js', () => ({
   getLinkedCharacter: getLinkedCharacterMock,
 }));
 
-vi.mock('../../src/eve-kill/client.js', () => ({
-  getKilllist: getKilllistMock,
+// Mock eve-board modules to prevent import issues
+vi.mock('../../src/eve-board/monitor.js', () => ({
+  startRouteMonitor: vi.fn(),
+}));
+vi.mock('../../src/eve-board/briefing.js', () => ({
+  generateBriefing: vi.fn().mockResolvedValue(''),
 }));
 
 let db: Database.Database;
@@ -32,32 +35,20 @@ beforeEach(() => {
 
   getLinkedCharacterMock.mockReturnValue({ characterId: 2116626188 });
 
-  // Default: getKilllist returns kills per system.
-  // It's called once per system in the route. Return kill only for Midpoint (30002660).
-  getKilllistMock.mockImplementation(async (_db: unknown, params: Record<string, unknown>) => {
-    if (params.system_id === 30002660) {
+  // Mock global fetch for zKB danger scan — return kills only for Midpoint (30002660)
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+    if (typeof url === 'string' && url.includes('systemID/30002660')) {
       return {
         ok: true,
-        data: [{
+        json: async () => [{
           killmail_id: 134200001,
-          killmail_time: '2026-03-22T10:15:00Z',
-          solar_system_id: 30002660,
-          solar_system_name: 'Midpoint',
-          solar_system_security: 0.5,
-          total_value: 42000000,
-          is_npc: false,
-          is_solo: false,
-          attacker_count: 1,
-          ship_name: 'Victim Ship',
-          victim_character_name: 'Victim One',
-          victim_corporation_name: 'Victim Corp',
-          final_blow_character_name: 'Attacker One',
-          final_blow_corporation_name: 'Attacker Corp',
+          zkb: { hash: 'abc123', totalValue: 42000000, npc: false, solo: false },
         }],
       };
     }
-    return { ok: true, data: [] };
-  });
+    // Other systems or URLs: empty array
+    return { ok: true, json: async () => [] };
+  }));
 
   consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
@@ -75,6 +66,30 @@ beforeEach(() => {
 
     if (operation === 'post_ui_autopilot_waypoint') {
       return { ok: true, status: 204, cached: false, headers: {}, data: null };
+    }
+
+    if (operation === 'get_killmails_killmail_id_killmail_hash') {
+      return {
+        ok: true, status: 200, cached: false, headers: {},
+        data: {
+          killmail_time: '2026-03-22T10:15:00Z',
+          solar_system_id: 30002660,
+          victim: { character_id: 9001, corporation_id: 9101, ship_type_id: 587 },
+          attackers: [{ character_id: 9201, corporation_id: 9301, ship_type_id: 603, final_blow: true }],
+        },
+      };
+    }
+
+    if (operation === 'post_universe_names') {
+      return {
+        ok: true, status: 200, cached: false, headers: {},
+        data: [
+          { id: 9001, name: 'Victim One' },
+          { id: 9101, name: 'Victim Corp' },
+          { id: 9201, name: 'Attacker One' },
+          { id: 9301, name: 'Attacker Corp' },
+        ],
+      };
     }
 
     return { ok: false, status: 404, error: `Unexpected operation: ${operation}` };
@@ -154,26 +169,24 @@ describe('route planner', () => {
   });
 
   it('keeps preferred-route risk metrics separate from merged danger coverage and shows route association', async () => {
-    // Kills in multiple systems: Dodixie, Midpoint, Scout Gate
-    const mkKill = (id: number, sysId: number, sysName: string) => ({
+    // Kills in multiple systems via zKB mock
+    const mkZkbKill = (id: number) => ({
       killmail_id: id,
-      killmail_time: '2026-03-22T10:15:00Z',
-      solar_system_id: sysId,
-      solar_system_name: sysName,
-      total_value: 42000000,
-      is_npc: false,
-      attacker_count: 1,
-      ship_name: 'Victim Ship',
-      victim_character_name: 'Victim One',
-      final_blow_character_name: 'Attacker One',
+      zkb: { hash: `hash${id}`, totalValue: 42000000, npc: false, solo: false },
     });
-    getKilllistMock.mockImplementation(async (_db: unknown, params: Record<string, unknown>) => {
-      const sysId = params.system_id as number;
-      if (sysId === 30002659) return { ok: true, data: [mkKill(134200010, 30002659, 'Dodixie')] };
-      if (sysId === 30002660) return { ok: true, data: [mkKill(134200011, 30002660, 'Midpoint')] };
-      if (sysId === 30002661) return { ok: true, data: [mkKill(134200012, 30002661, 'Scout Gate')] };
-      return { ok: true, data: [] };
-    });
+    const origFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('systemID/30002659')) {
+        return { ok: true, json: async () => [mkZkbKill(134200010)] };
+      }
+      if (typeof url === 'string' && url.includes('systemID/30002660')) {
+        return { ok: true, json: async () => [mkZkbKill(134200011)] };
+      }
+      if (typeof url === 'string' && url.includes('systemID/30002661')) {
+        return { ok: true, json: async () => [mkZkbKill(134200012)] };
+      }
+      return { ok: true, json: async () => [] };
+    }));
 
     const { planRoute } = await import('../../src/eve/route-planner.js');
     const result = await planRoute(

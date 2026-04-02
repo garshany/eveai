@@ -18,15 +18,14 @@
  */
 
 import type { Db } from '../db/sqlite.js';
+import { config } from '../config.js';
 import { callEsiOperation } from '../eve/esi-client.js';
-import { getKilllist } from '../eve-kill/client.js';
-import { analyzeKillPattern, scoreThreat, updateGankerCache, assessShip } from './threat.js';
+import { analyzeKillPattern, scoreThreat, assessShip } from './threat.js';
 import type {
   RouteMonitor,
   RouteStats,
   DangerEvent,
   ShipAssessment,
-  ThreatLevel,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -42,10 +41,10 @@ type MonitorInstance = {
   onlineTimer: ReturnType<typeof setInterval>;
   sender: NotifySender;
   db: Db;
-  /** Ship assessment for threat scoring. */
   shipAssessment: ShipAssessment;
-  /** Tracks when we last saw the pilot offline (epoch ms). */
   offlineSince: number | null;
+  /** Cooldown: system_id → last alert timestamp. Don't re-alert same system within 5 min. */
+  alertCooldowns: Map<number, number>;
 };
 
 type StopReason = 'arrived' | 'death' | 'offline' | 'manual';
@@ -59,9 +58,34 @@ const LOCATION_INTERVAL_MS = 15_000;
 const KILL_INTERVAL_MS = 30_000;
 const ONLINE_INTERVAL_MS = 60_000;
 const SYSTEMS_AHEAD_COUNT = 5;
-/** EVE-KILL killlist TTL for monitor scans — short, we want fresh data. */
-const KILLLIST_TTL_SECONDS = 30;
 const OFFLINE_TIMEOUT_MINUTES = 30;
+/** Don't re-alert the same system within this window */
+const ALERT_COOLDOWN_MS = 5 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// zKB fetch (direct, not via EVE-KILL which doesn't filter by system)
+// ---------------------------------------------------------------------------
+
+type ZkbFeedItem = {
+  killmail_id: number;
+  zkb?: { hash?: string; totalValue?: number; npc?: boolean; solo?: boolean };
+};
+
+async function fetchZkbSystemKills(systemId: number): Promise<ZkbFeedItem[]> {
+  const url = `${config.zkill.baseUrl}kills/systemID/${systemId}/pastSeconds/1800/`;
+  try {
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json', 'Accept-Encoding': 'gzip', 'User-Agent': config.zkill.userAgent },
+      signal: AbortSignal.timeout(config.zkill.timeoutMs),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
+    return data.filter((item: unknown): item is ZkbFeedItem =>
+      !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).killmail_id === 'number',
+    );
+  } catch { return []; }
+}
 
 // ---------------------------------------------------------------------------
 // Singleton state
@@ -126,6 +150,7 @@ export function startRouteMonitor(
     db,
     shipAssessment,
     offlineSince: null,
+    alertCooldowns: new Map(),
     // Timers are assigned below after immediate polls
     locationTimer: null!,
     killTimer: null!,
@@ -242,11 +267,11 @@ async function pollLocation(inst: MonitorInstance): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Poll: Kill scan (30s) — uses EVE-KILL killlist, same as route-planner
+// Poll: Kill scan (30s) — uses zKB directly (EVE-KILL killlist ignores system_id)
 // ---------------------------------------------------------------------------
 
 async function pollKills(inst: MonitorInstance): Promise<void> {
-  const { monitor, db, sender, shipAssessment } = inst;
+  const { monitor, db, sender, shipAssessment, alertCooldowns } = inst;
   try {
     const currentIdx = monitor.routeSystems.indexOf(monitor.currentSystemId);
     if (currentIdx < 0) return;
@@ -257,36 +282,48 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     );
     if (systemsAhead.length === 0) return;
 
+    const now = Date.now();
+    const threats: string[] = []; // Batch alerts into one message
+
     for (const sysId of systemsAhead) {
-      const result = await getKilllist(db, { system_id: sysId, limit: 20 }, KILLLIST_TTL_SECONDS);
-      if (!result.ok || result.data.length === 0) continue;
+      const feed = await fetchZkbSystemKills(sysId);
+      if (feed.length === 0) continue;
 
-      const kills = result.data;
-
-      // Death detection: check if user's character is a victim
-      for (const kill of kills) {
-        if (kill.victim_character_id === monitor.characterId) {
-          console.log(`${LOG} chat=${monitor.chatId} DEATH detected km=${kill.killmail_id}`);
-          stopRouteMonitor(monitor.chatId, 'death');
-          return;
-        }
-      }
+      // Skip NPC-only systems
+      const pvpKills = feed.filter((k) => !k.zkb?.npc);
+      if (pvpKills.length === 0) continue;
 
       const sysName = resolveSystemName(db, sysId);
       const sysSec = resolveSystemSec(db, sysId);
-      const pattern = analyzeKillPattern(kills, sysId, sysName, sysSec);
+
+      // Convert zKB items to KilllistItem-like shape for analyzeKillPattern
+      const fakeKills = pvpKills.map((k) => ({
+        killmail_id: k.killmail_id,
+        total_value: k.zkb?.totalValue ?? 0,
+        is_npc: k.zkb?.npc ?? false,
+        is_solo: k.zkb?.solo ?? false,
+        attacker_count: 1,
+        ship_name: null as string | null,
+        victim_character_name: null as string | null,
+        final_blow_character_id: undefined as number | undefined,
+      }));
+
+      const pattern = analyzeKillPattern(fakeKills as never[], sysId, sysName, sysSec);
       const threat = scoreThreat(pattern, shipAssessment);
 
-      // Update ganker cache with observed attackers
-      updateGankerCache(db, kills, sysId);
-
-      monitor.stats.killsSeen += kills.length;
+      monitor.stats.killsSeen += pvpKills.length;
 
       if (threat.level === 'HIGH' || threat.level === 'CRITICAL') {
+        // Cooldown check: skip if alerted this system within 5 min
+        const lastAlert = alertCooldowns.get(sysId) ?? 0;
+        if (now - lastAlert < ALERT_COOLDOWN_MS) continue;
+        alertCooldowns.set(sysId, now);
+
         const jumpsAhead = monitor.routeSystems.indexOf(sysId) - currentIdx;
-        const alert = formatThreatAlert(
-          sysName, sysSec, jumpsAhead, kills.length,
-          threat.level, threat.reason, monitor.shipName,
+
+        threats.push(
+          `${threat.level === 'CRITICAL' ? '🔴' : '🟠'} ${sysName} (${sysSec.toFixed(1)}) — ${jumpsAhead} прыжков\n` +
+          `  ${pvpKills.length} PvP киллов за 30 мин | ${threat.reason}`,
         );
 
         const event: DangerEvent = {
@@ -297,13 +334,16 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
           description: threat.reason,
         };
         monitor.stats.dangerEvents.push(event);
-
-        updateMonitorStats(db, monitor.chatId, monitor.stats);
-
-        try {
-          sender(monitor.chatId, alert);
-        } catch { /* notification failure is non-fatal */ }
       }
+    }
+
+    // Send ONE batched alert instead of 5 separate messages
+    if (threats.length > 0) {
+      updateMonitorStats(db, monitor.chatId, monitor.stats);
+      const header = `⚠️ Угрозы впереди (${monitor.shipName}, EHP ${Math.round(shipAssessment.ehp)}):\n`;
+      try {
+        sender(monitor.chatId, header + threats.join('\n\n'));
+      } catch { /* */ }
     }
   } catch (err) {
     console.error(`${LOG} kill scan error chat=${monitor.chatId}:`, (err as Error).message);
@@ -386,23 +426,6 @@ function resolveSystemSec(db: Db, systemId: number): number {
 // Formatting
 // ---------------------------------------------------------------------------
 
-function formatThreatAlert(
-  systemName: string,
-  systemSec: number,
-  jumpsAhead: number,
-  killCount: number,
-  threatLevel: ThreatLevel,
-  reason: string,
-  shipName: string,
-): string {
-  const emoji = threatLevel === 'CRITICAL' ? '\u{1F6A8}' : '\u{26A0}\u{FE0F}';
-  return [
-    `${emoji} УГРОЗА: ${systemName} (${systemSec.toFixed(1)}) — ${jumpsAhead} прыжков впереди`,
-    `${killCount} ганков недавно`,
-    `Угроза для ${shipName}: ${threatLevel}`,
-    reason,
-  ].join('\n');
-}
 
 function formatStopMessage(
   reason: StopReason,

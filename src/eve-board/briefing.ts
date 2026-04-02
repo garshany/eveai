@@ -9,7 +9,7 @@
  */
 
 import type { Db } from '../db/sqlite.js';
-import { getKilllist } from '../eve-kill/client.js';
+import { config } from '../config.js';
 import { assessShip, analyzeKillPattern, scoreThreat, detectGankWindow } from './threat.js';
 import type { RouteStats, DangerEvent, ThreatLevel, KillPattern, ShipAssessment } from './types.js';
 
@@ -23,11 +23,30 @@ const SAFE_SEC_THRESHOLD = 1.0;
 /** Max systems to scan to keep briefing fast. */
 const MAX_SYSTEMS_TO_SCAN = 10;
 
-/** Kills to fetch per system from EVE-KILL. */
-const KILLS_PER_SYSTEM = 20;
+// ---------------------------------------------------------------------------
+// zKB fetch (direct — EVE-KILL killlist doesn't filter by system_id)
+// ---------------------------------------------------------------------------
 
-/** Short TTL for kill queries during briefing (seconds). */
-const KILL_CACHE_TTL = 60;
+type ZkbItem = {
+  killmail_id: number;
+  zkb?: { hash?: string; totalValue?: number; npc?: boolean; solo?: boolean };
+};
+
+async function fetchZkbForBriefing(systemId: number): Promise<ZkbItem[]> {
+  const url = `${config.zkill.baseUrl}kills/systemID/${systemId}/pastSeconds/3600/`;
+  try {
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json', 'Accept-Encoding': 'gzip', 'User-Agent': config.zkill.userAgent },
+      signal: AbortSignal.timeout(config.zkill.timeoutMs),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
+    return data.filter((item: unknown): item is ZkbItem =>
+      !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).killmail_id === 'number',
+    );
+  } catch { return []; }
+}
 
 // ---------------------------------------------------------------------------
 // SDE helpers (same pattern as monitor.ts)
@@ -129,16 +148,11 @@ export async function generateBriefing(
 
   const scanResults = await Promise.all(
     systemsToScan.map(async (sys) => {
-      const killResult = await getKilllist(db, {
-        system_id: sys.id,
-        limit: KILLS_PER_SYSTEM,
-      }, KILL_CACHE_TTL);
+      const feed = await fetchZkbForBriefing(sys.id);
+      const pvpKills = feed.filter((k) => !k.zkb?.npc);
+      if (pvpKills.length === 0) return null;
 
-      if (!killResult.ok || killResult.data.length === 0) {
-        return null;
-      }
-
-      const pattern = analyzeKillPattern(killResult.data, sys.id, sys.name, sys.sec);
+      const pattern = analyzeKillPattern(pvpKills as never[], sys.id, sys.name, sys.sec);
       const threat = scoreThreat(pattern, ship);
       return { sys, pattern, threat };
     }),
