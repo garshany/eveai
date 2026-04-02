@@ -15,6 +15,7 @@ import {
   isHeartbeatConfigTool,
   isOsintInferTool,
   isAnalyzeLocalTool,
+  isAnalyzeScanTool,
   isRouteMonitorTool,
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
@@ -42,6 +43,7 @@ import { getLinkedCharacter } from '../eve/sso.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { executeOsintInferHome } from '../eve-osint/inference.js';
 import { executeAnalyzeLocal } from '../eve-local/analyzer.js';
+import { executeAnalyzeScan } from '../eve-scan/analyzer.js';
 
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_WEB_SEARCHES_PER_TURN = 2;
@@ -827,6 +829,10 @@ async function executeToolCall(
 
   if (isAnalyzeLocalTool(name)) {
     return await executeAnalyzeLocal(db, args);
+  }
+
+  if (isAnalyzeScanTool(name)) {
+    return await executeAnalyzeScan(db, args);
   }
 
   if (isHeartbeatConfigTool(name)) {

@@ -219,6 +219,7 @@ export function isHeartbeatConfigTool(name: string): boolean {
 const BATCH_MARKET_TOOL_NAME = 'batch_market_prices';
 const OSINT_INFER_TOOL_NAME = 'osint_infer_home';
 const ANALYZE_LOCAL_TOOL_NAME = 'analyze_local';
+const ANALYZE_SCAN_TOOL_NAME = 'analyze_scan';
 
 const BATCH_MARKET_TOOL: NativeFunctionTool = {
   type: 'function',
@@ -297,6 +298,38 @@ const ANALYZE_LOCAL_TOOL: NativeFunctionTool = {
   },
 };
 
+const ANALYZE_SCAN_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: ANALYZE_SCAN_TOOL_NAME,
+  description: 'Analyze an EVE Online scan paste: D-Scan, Local chat, or Fleet composition. Auto-detects scan type from paste format. D-Scan → ship/structure/deployable breakdown by class with fleet profile, capitals extraction, and "interesting" items highlight. Local → pilot intel with kill stats (delegates to analyze_local). Fleet → ship composition with doctrine analysis. Paste raw text from EVE client.',
+  strict: true,
+  defer_loading: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      paste: {
+        type: 'string',
+        description: 'Raw paste from EVE client: D-Scan (tab-separated with type IDs and distances), Local chat (character names per line), or Fleet composition (tab-separated with ship types and pilot names).',
+      },
+      scan_type: {
+        type: ['string', 'null'],
+        enum: ['dscan', 'local', 'fleet', null],
+        description: 'Force scan type. null = auto-detect from paste format.',
+      },
+      days: {
+        type: ['integer', 'null'],
+        description: 'Kill stats lookback for local scan mode. Default 7, max 90. Ignored for dscan/fleet.',
+      },
+    },
+    required: ['paste', 'scan_type', 'days'],
+    additionalProperties: false,
+  },
+};
+
+export function isAnalyzeScanTool(name: string): boolean {
+  return name === ANALYZE_SCAN_TOOL_NAME;
+}
+
 export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 'full'): Promise<NativeTool[]> {
   if (mode === 'static_aggregate') {
     return ALWAYS_ON_FUNCTION_TOOLS.filter((tool) =>
@@ -313,6 +346,7 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
     BATCH_MARKET_TOOL,
     OSINT_INFER_TOOL,
     ANALYZE_LOCAL_TOOL,
+    ANALYZE_SCAN_TOOL,
     buildEveKillNamespace(),
     ...(await listEsiNamespaces()),
   ];
@@ -343,7 +377,7 @@ export function isSdeSqlTool(name: string): boolean {
 }
 
 export function isDeferredLookupToolName(name: string): boolean {
-  return isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name);
+  return isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name);
 }
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
@@ -1127,7 +1161,7 @@ export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'u
   if (name === 'update_plan') {
     return 'write';
   }
-  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name)) {
+  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();
