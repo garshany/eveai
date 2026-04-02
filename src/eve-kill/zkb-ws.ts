@@ -135,7 +135,6 @@ async function poll(): Promise<void> {
       });
 
       if (res.status === 404) {
-        if (fetched === 0) console.log(`${LOG} waiting for seq=${nextSeq} (404)`);
         schedule(DELAY_EMPTY_MS);
         return;
       }
@@ -148,7 +147,7 @@ async function poll(): Promise<void> {
 
       kill = await res.json() as R2Z2Kill;
     } catch (err) {
-      console.error(`${LOG} fetch seq=${nextSeq} error:`, (err as Error).message);
+      console.error(`${LOG} fetch error:`, (err as Error).message);
       schedule(DELAY_EMPTY_MS);
       return;
     }
