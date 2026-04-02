@@ -569,13 +569,12 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     const allScanSystems = [...currentSystem, ...systemsAhead, ...systemsBehind];
     if (allScanSystems.length === 0) return;
 
-    // Step 1: ESI system_kills — fast check which systems have PvP activity
-    const activeSystemIds = await getActiveSystemsFromEsi(db, allScanSystems);
+    // Scan ALL systems directly via zKB (ESI system_kills has 1h cache, misses recent kills)
     const currentName = resolveSystemName(db, monitor.currentSystemId);
     const aheadNames = systemsAhead.map((id) => resolveSystemName(db, id));
     const behindNames = systemsBehind.map((id) => resolveSystemName(db, id));
     console.log(
-      `${LOG} kill scan: current=[${currentName}] ahead=[${aheadNames.join(', ')}] behind=[${behindNames.join(', ')}] — ${activeSystemIds.size} with PvP (ESI filter)`,
+      `${LOG} kill scan: current=[${currentName}] ahead=[${aheadNames.join(', ')}] behind=[${behindNames.join(', ')}] (${allScanSystems.length} systems)`,
     );
 
     // Step 2: Death detection via ESI character killmails (own kills/losses)
@@ -623,18 +622,7 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
       ).get(sysId) as { cnt: number } | undefined;
       const gankerCount = gankerRow?.cnt ?? 0;
 
-      // Always scan dangerous systems (sec < 0.7) and systems with known gankers via zKB,
-      // even if ESI hourly cache doesn't flag them. ESI is stale up to 1 hour.
-      const mustScan = sysSec < 0.7 || gankerCount > 0 || isCurrent;
-      if (!activeSystemIds.has(sysId) && !mustScan) {
-        const quietDigest = buildSystemDigest(
-          sysId, sysName, sysSec, jumpDist,
-          'LOW' as ThreatLevel, 'тихо', [], spikeMap.get(sysId) ?? null, gankerCount, db,
-        );
-        if (isAhead || isCurrent) systemDigestsAhead.push(quietDigest);
-        else systemDigestsBehind.push(quietDigest);
-        continue;
-      }
+      // All systems scanned directly via zKB (no ESI pre-filter)
 
       const feed = await fetchZkbSystemKills(sysId);
       if (feed.length === 0) {
