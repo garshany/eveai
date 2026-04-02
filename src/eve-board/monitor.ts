@@ -802,28 +802,18 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
     // 2.5. Get active ganker intel across the route
     const gankerIntel = getActiveGankers(db, monitor.routeSystems);
 
-    // === Delta detection: don't spam identical "quiet" digests ===
-    const threatChanged = digest.overallThreat !== inst.lastOverallThreat;
-    const killsChanged = monitor.stats.killsSeen !== inst.lastKillsSeen;
-    const systemChanged = monitor.currentSystemId !== inst.lastPilotSystem;
-    const gankersAppeared = gankerIntel.length > 0;
+    // === Only send digest when there's something to report ===
+    const hasKills = monitor.stats.killsSeen > 0;
+    const hasGankers = gankerIntel.length > 0;
+    const hasThreat = digest.overallThreat !== 'LOW';
+    const hasPursuit = pursuit !== null;
 
-    if (!threatChanged && !killsChanged && !systemChanged && !gankersAppeared && !pursuit) {
-      inst.quietDigestCount++;
-      // After 2 quiet digests (4 min), only send every 3rd cycle (6 min)
-      if (inst.quietDigestCount > 2 && inst.quietDigestCount % 3 !== 0) {
-        console.log(`${LOG} digest skipped (quiet #${inst.quietDigestCount}) chat=${monitor.chatId}`);
-        return;
-      }
-    } else {
-      inst.quietDigestCount = 0;
+    if (!hasKills && !hasGankers && !hasThreat && !hasPursuit) {
+      console.log(`${LOG} digest skipped (nothing to report) chat=${monitor.chatId}`);
+      return;
     }
 
-    inst.lastOverallThreat = digest.overallThreat;
-    inst.lastKillsSeen = monitor.stats.killsSeen;
-    inst.lastPilotSystem = monitor.currentSystemId;
-
-    // 3. ALWAYS call LLM for route analysis — this is the ESP
+    // 3. Call LLM for route analysis — only when there's real intel
     const intelSummary = await generateRouteIntelSummary(
       digest, shipAssessment, pursuit, gankerIntel,
       {
