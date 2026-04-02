@@ -135,19 +135,20 @@ async function poll(): Promise<void> {
       });
 
       if (res.status === 404) {
-        // No more kills — wait 6s per docs
+        if (fetched === 0) console.log(`${LOG} waiting for seq=${nextSeq} (404)`);
         schedule(DELAY_EMPTY_MS);
         return;
       }
 
       if (!res.ok) {
-        // Rate limit or error — back off
+        console.warn(`${LOG} seq=${nextSeq} status=${res.status}, backing off`);
         schedule(res.status === 429 ? 10_000 : DELAY_EMPTY_MS);
         return;
       }
 
       kill = await res.json() as R2Z2Kill;
-    } catch {
+    } catch (err) {
+      console.error(`${LOG} fetch seq=${nextSeq} error:`, (err as Error).message);
       schedule(DELAY_EMPTY_MS);
       return;
     }
