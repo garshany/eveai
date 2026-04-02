@@ -294,6 +294,10 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;');
 }
 
+function escapeHtmlAttribute(text: string): string {
+  return escapeHtml(text).replace(/"/g, '&quot;');
+}
+
 function describeAlternativeHint(routes: RouteVariant[], preferred: RouteVariant): string | null {
   const candidates = routes.filter((route) => route.flag !== preferred.flag);
   if (candidates.length === 0) return null;
@@ -351,14 +355,15 @@ function buildSelectedRouteKillSummary(route: RouteVariant): string[] {
 
   const lines = ['zKB срез:'];
   for (const system of route.danger_systems.slice(0, 2)) {
-    lines.push(`- ${system.name} ${system.sec.toFixed(1)}: ${system.kills_1h} PvP, ${system.total_value_m}M`);
+    lines.push(`- ${escapeHtml(system.name)} ${system.sec.toFixed(1)}: ${system.kills_1h} PvP, ${system.total_value_m}M`);
     for (const kill of system.kills.slice(0, 2)) {
-      const victimShip = kill.victim_ship ?? '?';
-      const victim = kill.victim ?? '?';
-      const attacker = kill.attacker ?? '?';
+      const victimShip = escapeHtml(kill.victim_ship ?? '?');
+      const victim = escapeHtml(kill.victim ?? '?');
+      const attacker = escapeHtml(kill.attacker ?? '?');
       const value = kill.value_m && kill.value_m > 0 ? ` ${kill.value_m}M` : '';
       const time = kill.time ?? 'недавно';
-      lines.push(`  ${time} ${victimShip}${value} ${victim} <- ${attacker}`);
+      const link = kill.url ? ` <a href="${escapeHtmlAttribute(kill.url)}">zkb</a>` : '';
+      lines.push(`  ${time} ${victimShip}${value} ${victim} <- ${attacker}${link}`);
     }
   }
   return lines;
