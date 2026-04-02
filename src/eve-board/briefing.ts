@@ -475,7 +475,7 @@ function formatKillLine(systemName: string, kill: KilllistItem): string {
   const attackerCount = kill.attacker_count ?? 1;
   const attackerPart = attackerCount > 1 ? `${attackerName} +${attackerCount - 1}` : attackerName;
   const valuePart = valueM > 0 ? ` ${valueM}M` : '';
-  return `${systemName} — ${age} ${victimShip}${valuePart} ${victimName} <- ${attackerPart}`;
+  return `${systemName} — ${age} ${victimShip}${valuePart} ${victimName} ← ${attackerPart}`;
 }
 
 function formatKillAge(value: string | undefined): string {

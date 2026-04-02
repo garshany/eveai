@@ -1,0 +1,26 @@
+{
+  "task_id": "telegram-html-route-format-20260402",
+  "status": "PASS",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "status": "PASS",
+      "evidence": "Route and briefing kill lines now use the Unicode arrow character instead of raw '<-' in Telegram HTML replies."
+    },
+    {
+      "id": "AC2",
+      "status": "PASS",
+      "evidence": "finalizeThreadMessage appends <b>/<code> helper blocks for HTML messages instead of Markdown."
+    },
+    {
+      "id": "AC3",
+      "status": "PASS",
+      "evidence": "Targeted tests and full npm run check succeeded."
+    }
+  ],
+  "commands": [
+    "npm run test -- tests/unit/route-planner.test.ts tests/unit/briefing.test.ts tests/unit/finalizer.test.ts tests/unit/telegram-formatting.test.ts",
+    "npm run typecheck",
+    "npm run check"
+  ]
+}

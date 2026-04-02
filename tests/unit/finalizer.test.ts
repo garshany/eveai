@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { truncateForTelegram, sanitizeOutput, finalizeMessage } from '../../src/agent/finalizer.js';
+import Database from 'better-sqlite3';
+import { SCHEMA_SQL } from '../../src/db/schema.js';
+import {
+  truncateForTelegram,
+  sanitizeOutput,
+  finalizeMessage,
+  finalizeThreadMessage,
+} from '../../src/agent/finalizer.js';
 
 describe('finalizer', () => {
   it('passes short text through unchanged', () => {
@@ -30,5 +37,23 @@ describe('finalizer', () => {
     const text = 'Bearer eyJabc123456789012345678901234567890';
     const result = finalizeMessage(text);
     expect(result).not.toContain('eyJ');
+  });
+
+  it('keeps HTML telegram replies valid when appending helpful commands', () => {
+    const db = new Database(':memory:');
+    db.exec(SCHEMA_SQL);
+    db.prepare('INSERT INTO telegram_sessions (chat_id) VALUES (?)').run(1);
+    db.prepare('INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)').run('thread-1', 1);
+    db.prepare(
+      "INSERT INTO messages (thread_id, role, content) VALUES (?, 'tool', ?)"
+    ).run('thread-1', JSON.stringify({ suggested: '/market 34' }));
+
+    const result = finalizeThreadMessage(db, 'thread-1', '<b>Dodixie → Jita</b>\nVictim ← Attacker');
+
+    expect(result).toContain('<b>Полезные команды</b>');
+    expect(result).toContain('<code>/market 34</code>');
+    expect(result).not.toContain('**Полезные команды**');
+
+    db.close();
   });
 });

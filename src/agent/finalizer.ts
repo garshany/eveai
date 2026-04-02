@@ -3,6 +3,7 @@
  * Post-processes agent output before sending to Telegram.
  */
 import type { Db } from '../db/sqlite.js';
+import { pickTelegramParseMode } from '../telegram/formatting.js';
 
 const MAX_TELEGRAM_LENGTH = 4096;
 
@@ -97,7 +98,17 @@ function buildHelpfulCommandsBlock(db: Db, threadId: string, text: string): stri
     .slice(0, 8);
 
   if (filtered.length === 0) return null;
+  if (pickTelegramParseMode(text) === 'HTML') {
+    return `<b>Полезные команды</b>\n${filtered.map((command) => `• <code>${escapeHtml(command)}</code>`).join('\n')}`;
+  }
   return `**Полезные команды**\n${filtered.map((command) => `- \`${command}\``).join('\n')}`;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function collectCommands(value: unknown, commands: Set<string>): void {

@@ -389,7 +389,7 @@ function buildSelectedRouteKillSummary(route: RouteVariant): string[] {
       const value = kill.value_m && kill.value_m > 0 ? ` ${kill.value_m}M` : '';
       const time = kill.time ?? 'недавно';
       const link = kill.url ? ` <a href="${escapeHtmlAttribute(kill.url)}">zkb</a>` : '';
-      lines.push(`  ${time} ${victimShip}${value} ${victim} <- ${attacker}${link}`);
+      lines.push(`  ${time} ${victimShip}${value} ${victim} ← ${attacker}${link}`);
     }
   }
   return lines;

@@ -190,7 +190,7 @@ describe('generateBriefing', () => {
 
     expect(briefing).toContain('Анализ:');
     expect(briefing).toContain('Последние киллы:');
-    expect(briefing).toContain('Victim One <- Attacker One');
+    expect(briefing).toContain('Victim One ← Attacker One');
   });
 
   it('drops stale killmails whose actual killmail_time is older than the briefing window', async () => {
@@ -453,7 +453,7 @@ describe('generateBriefing', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(briefing).toContain('Сейчас: Dodixie');
     expect(briefing).toContain('Активность: Dodixie [старт]: 1 PvP');
-    expect(briefing).toContain('Logos Tr <- Osmon Queen');
+    expect(briefing).toContain('Logos Tr ← Osmon Queen');
   });
 });
 

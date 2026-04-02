@@ -193,6 +193,7 @@ describe('route planner', () => {
     expect(result.formatted_summary).toContain('Сейчас: Dodixie');
     expect(result.formatted_summary).not.toContain('<b>Опасные системы</b>');
     expect(result.formatted_summary).toContain('zkb</a>');
+    expect(result.formatted_summary).not.toContain('<-');
     expect(result.formatted_summary).not.toContain('{"');
     expect(callEsiOperationMock).toHaveBeenCalledWith(
       db,
