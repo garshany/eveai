@@ -38,7 +38,8 @@
     "jose": "^6.2.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "socks-proxy-agent": "^8.0.5"
+    "socks-proxy-agent": "^8.0.5",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.13",
@@ -46,6 +47,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
+    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "@vitejs/plugin-react": "^5.0.2",
