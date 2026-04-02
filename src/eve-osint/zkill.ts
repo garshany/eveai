@@ -65,6 +65,7 @@ export type OsintKillmail = {
 
 const MAX_FEED_PAGES = 10;
 const MAX_ENRICHED_KILLS = 250;
+const ESI_BATCH_SIZE = 25;
 
 export async function fetchEntityActivityFeed(
   db: Db,
@@ -78,49 +79,60 @@ export async function fetchEntityActivityFeed(
   const feedItems = await fetchEntityFeedPages(db, args);
   if (feedItems.length === 0) return [];
 
-  const enriched: Array<OsintKillmail | null> = await Promise.all(feedItems.map(async (item) => {
-    const hash = item.zkb?.hash;
-    if (!hash) return null;
-
-    const detail = await callEsiOperation<PublicEsiKillmail>(
-      db,
-      'get_killmails_killmail_id_killmail_hash',
-      { killmail_id: item.killmail_id, killmail_hash: hash },
-    );
-    if (!detail.ok || !detail.data) return null;
-
-    const victim = detail.data.victim ?? {};
-    const attackers = Array.isArray(detail.data.attackers) ? detail.data.attackers : [];
-    const finalBlow = attackers.find((entry) => entry.final_blow === true) ?? attackers[0];
-    const labels = item.zkb?.labels?.filter((label): label is string => typeof label === 'string') ?? [];
-
-    return {
-      activity: args.activity,
-      killmail_id: item.killmail_id,
-      killmail_time: detail.data.killmail_time,
-      solar_system_id: detail.data.solar_system_id,
-      total_value: item.zkb?.totalValue,
-      attacker_count: attackers.length,
-      is_npc: item.zkb?.npc === true,
-      is_solo: item.zkb?.solo === true,
-      is_awox: item.zkb?.awox === true,
-      ship_type_id: victim.ship_type_id,
-      victim_character_id: victim.character_id,
-      victim_corporation_id: victim.corporation_id,
-      victim_alliance_id: victim.alliance_id ?? undefined,
-      final_blow_character_id: finalBlow?.character_id,
-      final_blow_corporation_id: finalBlow?.corporation_id,
-      final_blow_alliance_id: finalBlow?.alliance_id ?? undefined,
-      attackers,
-      zkb_labels: labels,
-      tz_label: pickLabel(labels, 'tz:'),
-      location_label: pickLabel(labels, 'loc:'),
-    } satisfies OsintKillmail;
-  }));
+  const enriched: Array<OsintKillmail | null> = [];
+  for (let i = 0; i < feedItems.length; i += ESI_BATCH_SIZE) {
+    const batch = feedItems.slice(i, i + ESI_BATCH_SIZE);
+    const batchResults = await Promise.all(batch.map((item) => enrichFeedItem(db, args.activity, item)));
+    enriched.push(...batchResults);
+  }
 
   return enriched
     .filter((entry): entry is OsintKillmail => entry !== null)
     .sort((a, b) => new Date((b?.killmail_time) ?? 0).getTime() - new Date((a?.killmail_time) ?? 0).getTime());
+}
+
+async function enrichFeedItem(
+  db: Db,
+  activity: ZkillActivityKind,
+  item: ZkbFeedItem,
+): Promise<OsintKillmail | null> {
+  const hash = item.zkb?.hash;
+  if (!hash) return null;
+
+  const detail = await callEsiOperation<PublicEsiKillmail>(
+    db,
+    'get_killmails_killmail_id_killmail_hash',
+    { killmail_id: item.killmail_id, killmail_hash: hash },
+  );
+  if (!detail.ok || !detail.data) return null;
+
+  const victim = detail.data.victim ?? {};
+  const attackers = Array.isArray(detail.data.attackers) ? detail.data.attackers : [];
+  const finalBlow = attackers.find((entry) => entry.final_blow === true) ?? attackers[0];
+  const labels = item.zkb?.labels?.filter((label): label is string => typeof label === 'string') ?? [];
+
+  return {
+    activity,
+    killmail_id: item.killmail_id,
+    killmail_time: detail.data.killmail_time,
+    solar_system_id: detail.data.solar_system_id,
+    total_value: item.zkb?.totalValue,
+    attacker_count: attackers.length,
+    is_npc: item.zkb?.npc === true,
+    is_solo: item.zkb?.solo === true,
+    is_awox: item.zkb?.awox === true,
+    ship_type_id: victim.ship_type_id,
+    victim_character_id: victim.character_id,
+    victim_corporation_id: victim.corporation_id,
+    victim_alliance_id: victim.alliance_id ?? undefined,
+    final_blow_character_id: finalBlow?.character_id,
+    final_blow_corporation_id: finalBlow?.corporation_id,
+    final_blow_alliance_id: finalBlow?.alliance_id ?? undefined,
+    attackers,
+    zkb_labels: labels,
+    tz_label: pickLabel(labels, 'tz:'),
+    location_label: pickLabel(labels, 'loc:'),
+  };
 }
 
 async function fetchEntityFeedPages(
