@@ -9,6 +9,7 @@ import {
 import { startHeartbeat, stopHeartbeat } from './scheduled/heartbeat-worker.js';
 import { startKillPoller, stopKillPoller } from './eve-kill/poll.js';
 import { setRouteMonitorSender } from './eve/route-planner.js';
+import { restoreMonitors } from './eve-board/monitor.js';
 
 async function main() {
   console.log('[app] Starting EVE Agent...');
@@ -67,6 +68,9 @@ async function main() {
 
   // Kill watch: REST polling every 60s (reliable, 1-3 min delay)
   startKillPoller(db, sendKillAlert);
+
+  // Restore route monitors from DB (survives pm2 restart)
+  restoreMonitors(db, sendKillAlert);
 
   let shuttingDown = false;
   const shutdown = async (exitCode = 0) => {

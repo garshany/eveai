@@ -316,6 +316,25 @@ export function getActiveMonitor(chatId: number): RouteMonitor | null {
   return activeMonitors.get(chatId)?.monitor ?? null;
 }
 
+/**
+ * Restore monitors from DB after process restart.
+ */
+export function restoreMonitors(db: Db, sender: NotifySender): void {
+  const rows = db.prepare('SELECT * FROM route_monitors').all() as Array<Record<string, unknown>>;
+  if (rows.length === 0) return;
+
+  for (const row of rows) {
+    const chatId = row.chat_id as number;
+    const characterId = row.character_id as number;
+    const routeSystems = JSON.parse(String(row.route_systems ?? '[]')) as number[];
+    const shipTypeId = (row.ship_type_id as number) ?? 0;
+    const shipName = String(row.ship_name ?? 'Unknown');
+
+    console.log(`${LOG} restoring monitor chat=${chatId} route=${routeSystems.length} systems`);
+    startRouteMonitor(db, chatId, characterId, routeSystems, shipTypeId, shipName, sender);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Poll: Location (15s)
 // ---------------------------------------------------------------------------
