@@ -31,8 +31,22 @@ import type {
   DangerEvent,
   ShipAssessment,
   SystemSnapshot,
+  ThreatLevel,
+  JumpSpike,
+  SystemThreatDigest,
 } from './types.js';
 import { subscribeTopics, unsubscribeTopics } from '../eve-kill/zkb-ws.js';
+import {
+  detectJumpSpikes,
+  buildSystemDigest,
+  buildRouteThreatDigest,
+  formatThreatDigest,
+} from './analytics.js';
+import {
+  detectPursuit,
+  generateRouteIntelSummary,
+  formatIntelMessage,
+} from './advisor.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,6 +59,7 @@ type MonitorInstance = {
   locationTimer: ReturnType<typeof setInterval>;
   killTimer: ReturnType<typeof setInterval>;
   onlineTimer: ReturnType<typeof setInterval>;
+  digestTimer: ReturnType<typeof setInterval>;
   sender: NotifySender;
   db: Db;
   shipAssessment: ShipAssessment;
@@ -57,6 +72,14 @@ type MonitorInstance = {
   snapshots: SystemSnapshot[];
   /** Auto-created kill_watch topics for route systems (cleaned up on stop) */
   routeWatchTopics: string[];
+  /** Accumulated kill data for current digest cycle */
+  recentKillsBySystem: Map<number, Array<{ systemId: number; time: string }>>;
+  /** Last digest send time */
+  lastDigestTime: number;
+  /** System threat digests from last scan — ahead of pilot */
+  lastDigestsAhead: SystemThreatDigest[];
+  /** System threat digests from last scan — behind pilot */
+  lastDigestsBehind: SystemThreatDigest[];
 };
 
 type StopReason = 'arrived' | 'death' | 'offline' | 'manual';
@@ -69,6 +92,7 @@ const LOG = '[route-monitor]';
 const LOCATION_INTERVAL_MS = 15_000;
 const KILL_INTERVAL_MS = 30_000;
 const ONLINE_INTERVAL_MS = 60_000;
+const DIGEST_INTERVAL_MS = 120_000; // 2 minutes
 /** Max systems ahead to scan (API budget cap) */
 const MAX_SYSTEMS_AHEAD = 10;
 /** Max systems behind to scan (tail-check) */
@@ -300,10 +324,15 @@ export function startRouteMonitor(
     previousJumps: new Map(),
     snapshots: [],
     routeWatchTopics,
+    recentKillsBySystem: new Map(),
+    lastDigestTime: Date.now(),
+    lastDigestsAhead: [],
+    lastDigestsBehind: [],
     // Timers are assigned below after immediate polls
     locationTimer: null!,
     killTimer: null!,
     onlineTimer: null!,
+    digestTimer: null!,
   };
 
   activeMonitors.set(chatId, instance);
@@ -322,6 +351,7 @@ export function startRouteMonitor(
   instance.locationTimer = setInterval(() => void pollLocation(instance), LOCATION_INTERVAL_MS);
   instance.killTimer = setInterval(() => void pollKills(instance), KILL_INTERVAL_MS);
   instance.onlineTimer = setInterval(() => void pollOnline(instance), ONLINE_INTERVAL_MS);
+  instance.digestTimer = setInterval(() => void sendRouteDigest(instance), DIGEST_INTERVAL_MS);
 }
 
 /**
@@ -334,6 +364,7 @@ export function stopRouteMonitor(chatId: number, reason: StopReason): void {
   clearInterval(instance.locationTimer);
   clearInterval(instance.killTimer);
   clearInterval(instance.onlineTimer);
+  clearInterval(instance.digestTimer);
 
   // Clean up auto-created route watches
   unsubscribeRouteWatches(instance.db, chatId, instance.routeWatchTopics);
@@ -458,7 +489,7 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     const currentIdx = monitor.routeSystems.indexOf(monitor.currentSystemId);
     if (currentIdx < 0) return;
 
-    // Full route scan: ahead (up to MAX_SYSTEMS_AHEAD) + behind (up to MAX_SYSTEMS_BEHIND)
+    // Full route scan: current + ahead (up to MAX_SYSTEMS_AHEAD) + behind (up to MAX_SYSTEMS_BEHIND)
     const systemsAhead = monitor.routeSystems.slice(
       currentIdx + 1,
       currentIdx + 1 + MAX_SYSTEMS_AHEAD,
@@ -467,40 +498,97 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
       Math.max(0, currentIdx - MAX_SYSTEMS_BEHIND),
       currentIdx,
     );
-    const allScanSystems = [...systemsAhead, ...systemsBehind];
+    const currentSystem = [monitor.currentSystemId];
+    const allScanSystems = [...currentSystem, ...systemsAhead, ...systemsBehind];
     if (allScanSystems.length === 0) return;
 
     // Step 1: ESI system_kills — fast check which systems have PvP activity
     const activeSystemIds = await getActiveSystemsFromEsi(db, allScanSystems);
+    const currentName = resolveSystemName(db, monitor.currentSystemId);
     const aheadNames = systemsAhead.map((id) => resolveSystemName(db, id));
     const behindNames = systemsBehind.map((id) => resolveSystemName(db, id));
     console.log(
-      `${LOG} kill scan: ahead=[${aheadNames.join(', ')}] behind=[${behindNames.join(', ')}] — ${activeSystemIds.size} with PvP (ESI filter)`,
+      `${LOG} kill scan: current=[${currentName}] ahead=[${aheadNames.join(', ')}] behind=[${behindNames.join(', ')}] — ${activeSystemIds.size} with PvP (ESI filter)`,
     );
 
     // Step 2: Death detection via ESI character killmails (own kills/losses)
     await checkOwnDeath(inst);
 
-    // Step 3: System jumps polling (same cadence)
+    // Snapshot jump counts BEFORE pollJumps updates them (for spike detection)
+    const previousJumpsSnapshot = new Map(inst.previousJumps);
+
+    // Step 3: System jumps polling (same cadence — updates inst.previousJumps in place)
     await pollJumps(inst, allScanSystems, currentIdx);
 
     // Step 4: zKB details only for systems with ship_kills > 0
+    // Build system digests for analytics + intelligence layers
     const now = Date.now();
     const threatsAhead: string[] = [];
     const threatsBehind: string[] = [];
+    const systemDigestsAhead: SystemThreatDigest[] = [];
+    const systemDigestsBehind: SystemThreatDigest[] = [];
+
+    // Build system name map for jump spike detection
+    const systemNames = new Map<number, string>();
+    for (const sysId of allScanSystems) {
+      systemNames.set(sysId, resolveSystemName(db, sysId));
+    }
+
+    // Detect jump spikes: current values (post-poll) vs previous snapshot (pre-poll)
+    const jumpSpikes = detectJumpSpikes(inst.previousJumps, previousJumpsSnapshot, systemNames);
+    const spikeMap = new Map<number, JumpSpike>();
+    for (const spike of jumpSpikes) {
+      spikeMap.set(spike.systemId, spike);
+    }
 
     for (const sysId of allScanSystems) {
-      // Skip systems with no PvP kills according to ESI
-      if (!activeSystemIds.has(sysId)) continue;
-
-      const feed = await fetchZkbSystemKills(sysId);
-      if (feed.length === 0) continue;
-
-      const pvpKills = feed.filter((k) => !k.zkb?.npc);
-      if (pvpKills.length === 0) continue;
+      const sysIdx = monitor.routeSystems.indexOf(sysId);
+      const isAhead = sysIdx > currentIdx;
+      const isCurrent = sysId === monitor.currentSystemId;
+      const jumpDist = sysIdx - currentIdx; // positive = ahead, negative = behind, 0 = current
 
       const sysName = resolveSystemName(db, sysId);
       const sysSec = resolveSystemSec(db, sysId);
+
+      // Query ganker cache for this system
+      const gankerRow = db.prepare(
+        "SELECT count(*) as cnt FROM route_ganker_cache WHERE system_id = ? AND last_seen >= datetime('now', '-1 hour')",
+      ).get(sysId) as { cnt: number } | undefined;
+      const gankerCount = gankerRow?.cnt ?? 0;
+
+      // Skip systems with no PvP kills according to ESI — but still build LOW digest
+      if (!activeSystemIds.has(sysId)) {
+        // Build a quiet-system digest for analytics
+        const quietDigest = buildSystemDigest(
+          sysId, sysName, sysSec, jumpDist,
+          'LOW' as ThreatLevel, 'тихо', [], spikeMap.get(sysId) ?? null, gankerCount, db,
+        );
+        if (isAhead || isCurrent) systemDigestsAhead.push(quietDigest);
+        else systemDigestsBehind.push(quietDigest);
+        continue;
+      }
+
+      const feed = await fetchZkbSystemKills(sysId);
+      if (feed.length === 0) {
+        const quietDigest = buildSystemDigest(
+          sysId, sysName, sysSec, jumpDist,
+          'LOW' as ThreatLevel, 'тихо', [], spikeMap.get(sysId) ?? null, gankerCount, db,
+        );
+        if (isAhead || isCurrent) systemDigestsAhead.push(quietDigest);
+        else systemDigestsBehind.push(quietDigest);
+        continue;
+      }
+
+      const pvpKills = feed.filter((k) => !k.zkb?.npc);
+      if (pvpKills.length === 0) {
+        const quietDigest = buildSystemDigest(
+          sysId, sysName, sysSec, jumpDist,
+          'LOW' as ThreatLevel, 'только NPC', [], spikeMap.get(sysId) ?? null, gankerCount, db,
+        );
+        if (isAhead || isCurrent) systemDigestsAhead.push(quietDigest);
+        else systemDigestsBehind.push(quietDigest);
+        continue;
+      }
 
       const enrichResult = await enrichZkbKills(db, pvpKills);
       const pattern = analyzeKillPattern(enrichResult.kills, sysId, sysName, sysSec);
@@ -511,25 +599,52 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
       // Upsert ganker cache from enriched attacker data
       upsertGankerCache(db, sysId, enrichResult.attackers);
 
+      // Build system digest for Level 2+3 analytics
+      const killsForDigest = enrichResult.kills.map((k) => ({
+        killmail_time: k.killmail_time,
+        killmail_id: k.killmail_id,
+        position: undefined as { x: number; y: number; z: number } | undefined,
+      }));
+      const sysDigest = buildSystemDigest(
+        sysId, sysName, sysSec, jumpDist,
+        threat.level, threat.reason,
+        killsForDigest, spikeMap.get(sysId) ?? null, gankerCount, db,
+      );
+      if (isAhead || isCurrent) systemDigestsAhead.push(sysDigest);
+      else systemDigestsBehind.push(sysDigest);
+
+      // Track kills behind pilot for pursuit detection
+      if (pvpKills.length > 0 && !isAhead && !isCurrent) {
+        const existing = inst.recentKillsBySystem.get(sysId) ?? [];
+        for (const k of enrichResult.kills) {
+          existing.push({
+            systemId: sysId,
+            time: k.killmail_time ?? new Date().toISOString(),
+          });
+        }
+        inst.recentKillsBySystem.set(sysId, existing);
+      }
+
       if (threat.level === 'HIGH' || threat.level === 'CRITICAL') {
         const lastAlert = alertCooldowns.get(sysId) ?? 0;
         if (now - lastAlert < ALERT_COOLDOWN_MS) continue;
         alertCooldowns.set(sysId, now);
 
-        const sysIdx = monitor.routeSystems.indexOf(sysId);
-        const isAhead = sysIdx > currentIdx;
-        const jumpDist = Math.abs(sysIdx - currentIdx);
-
         const icon = threat.level === 'CRITICAL' ? '\u{1F534}' : '\u{1F7E0}';
 
-        if (isAhead) {
+        if (isCurrent) {
           threatsAhead.push(
-            `${icon} ${sysName} (${sysSec.toFixed(1)}) \u2014 ${jumpDist} \u043F\u0440\u044B\u0436\u043A\u043E\u0432\n` +
+            `${icon} ${sysName} (${sysSec.toFixed(1)}) \u2014 \u0412\u044B \u0437\u0434\u0435\u0441\u044C!\n` +
+            `  ${pvpKills.length} PvP \u043A\u0438\u043B\u043B\u043E\u0432 \u0437\u0430 30 \u043C\u0438\u043D | ${threat.reason}`,
+          );
+        } else if (isAhead) {
+          threatsAhead.push(
+            `${icon} ${sysName} (${sysSec.toFixed(1)}) \u2014 ${Math.abs(jumpDist)} \u043F\u0440\u044B\u0436\u043A\u043E\u0432\n` +
             `  ${pvpKills.length} PvP \u043A\u0438\u043B\u043B\u043E\u0432 \u0437\u0430 30 \u043C\u0438\u043D | ${threat.reason}`,
           );
         } else {
           threatsBehind.push(
-            `\u{1F441} ${sysName} (${sysSec.toFixed(1)}) \u2014 ${jumpDist} \u043F\u0440\u044B\u0436\u043A\u043E\u0432 \u043D\u0430\u0437\u0430\u0434\n` +
+            `\u{1F441} ${sysName} (${sysSec.toFixed(1)}) \u2014 ${Math.abs(jumpDist)} \u043F\u0440\u044B\u0436\u043A\u043E\u0432 \u043D\u0430\u0437\u0430\u0434\n` +
             `  ${pvpKills.length} PvP \u043A\u0438\u043B\u043B\u043E\u0432 \u0437\u0430 30 \u043C\u0438\u043D | ${threat.reason}`,
           );
         }
@@ -544,6 +659,10 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
         monitor.stats.dangerEvents.push(event);
       }
     }
+
+    // Store digests for the periodic digest sender
+    inst.lastDigestsAhead = systemDigestsAhead;
+    inst.lastDigestsBehind = systemDigestsBehind;
 
     // Send ONE batched alert with ahead/behind sections
     const totalThreats = threatsAhead.length + threatsBehind.length;
@@ -561,8 +680,78 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
         sender(monitor.chatId, parts.join('\n\n'));
       } catch { /* */ }
     }
+
+    // Trim stale pursuit data (older than 20 minutes)
+    const pursuitCutoff = now - 20 * 60_000;
+    for (const [sysId, kills] of inst.recentKillsBySystem) {
+      const fresh = kills.filter((k) => new Date(k.time).getTime() >= pursuitCutoff);
+      if (fresh.length === 0) inst.recentKillsBySystem.delete(sysId);
+      else inst.recentKillsBySystem.set(sysId, fresh);
+    }
   } catch (err) {
     console.error(`${LOG} kill scan error chat=${monitor.chatId}:`, (err as Error).message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Periodic route digest — Level 2+3 analytics and intelligence (every 2 min)
+// ---------------------------------------------------------------------------
+
+async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
+  const { monitor, db, sender, shipAssessment } = inst;
+  try {
+    const currentIdx = monitor.routeSystems.indexOf(monitor.currentSystemId);
+    if (currentIdx < 0) return;
+
+    // Skip if no digest data yet (first poll cycle hasn't run)
+    if (inst.lastDigestsAhead.length === 0 && inst.lastDigestsBehind.length === 0) return;
+
+    // 1. Detect pursuit from accumulated kill data behind pilot
+    const allRecentKills: Array<{ systemId: number; time: string }> = [];
+    for (const [, kills] of inst.recentKillsBySystem) {
+      allRecentKills.push(...kills);
+    }
+    const pursuit = detectPursuit(monitor.routeSystems, currentIdx, allRecentKills);
+
+    // 2. Build route threat digest from last scan data
+    const pilotSystem = resolveSystemName(db, monitor.currentSystemId);
+    const digest = buildRouteThreatDigest(
+      pilotSystem, currentIdx,
+      inst.lastDigestsAhead,
+      inst.lastDigestsBehind,
+    );
+
+    // 3. Send formatted digest to user
+    const digestText = formatThreatDigest(digest);
+    sender(monitor.chatId, digestText);
+
+    // 4. If significant threats or pursuit detected — invoke LLM route intel
+    if (digest.overallThreat === 'HIGH' || digest.overallThreat === 'CRITICAL' || pursuit) {
+      const intelSummary = await generateRouteIntelSummary(
+        digest, shipAssessment, pursuit,
+        {
+          routeSystems: monitor.routeSystems,
+          originId: monitor.originId,
+          destinationId: monitor.destinationId,
+          currentSystemId: monitor.currentSystemId,
+        },
+      );
+      const intelText = formatIntelMessage(intelSummary);
+      sender(monitor.chatId, intelText);
+
+      if (pursuit) {
+        console.log(
+          `${LOG} pursuit detected chat=${monitor.chatId} confidence=${pursuit.confidence} systems=${pursuit.systemIds.length}`,
+        );
+      }
+    }
+
+    inst.lastDigestTime = Date.now();
+    console.log(
+      `${LOG} digest sent chat=${monitor.chatId} overall=${digest.overallThreat} ahead=${inst.lastDigestsAhead.length} behind=${inst.lastDigestsBehind.length}`,
+    );
+  } catch (err) {
+    console.error(`${LOG} digest error chat=${monitor.chatId}:`, (err as Error).message);
   }
 }
 
