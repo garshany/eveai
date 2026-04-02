@@ -1,10 +1,9 @@
 # EVE Board Combat ESP
 
 ## Goal
-Push `src/eve-board` toward a more tactical "combat ESP" style output so route analysis emphasizes route-relative risk, tactical state, and actionable windows instead of only kill counts.
+Upgrade live route ESP so it feels like a tactical route analyst instead of a raw kill feed.
 
 ## Acceptance Criteria
-- AC1: Route threat digest includes a tactical assessment derived from current/start, transit, destination, and rear route zones.
-- AC2: Live ESP output exposes tactical state/window context in addition to the existing `Сейчас / Впереди / Действие` contract.
-- AC3: Pre-flight briefing includes a concise tactical line so one-shot route output also feels more operational.
-- AC4: Regression coverage and full repo checks pass.
+- AC1: Live ESP messages expose tactical route context, not only recommendation text. At minimum: route contour (`start / transit / destination`) and tactical state.
+- AC2: Template fallback guidance becomes more operational for hot starts, gate-camp-like activity, and open windows.
+- AC3: Targeted advisor/intel/analytics tests and full repo checks pass.

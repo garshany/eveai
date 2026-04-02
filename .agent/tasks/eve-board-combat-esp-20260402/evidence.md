@@ -1,16 +1,16 @@
 # Evidence
 
 ## Scope
-- Extended `RouteThreatDigest` with tactical assessment metadata.
-- Route analytics now derives tactical state, confidence, headline, zone risk, and window-open status.
-- Live ESP already had a route-tactical layer in `advisor.ts`; this change feeds richer digest context and keeps one-shot `briefing.ts` aligned with a new `Тактика:` line.
+- Refined live route tactical assessment rendering in `advisor.ts`.
+- Exposed tactical contour and tactical state in live ESP output.
+- Hardened fallback action lines for gate-camp and window-open route states.
 
 ## Commands
-- `npm run test -- tests/unit/eve-board-analytics.test.ts tests/unit/eve-board-advisor.test.ts tests/unit/briefing.test.ts tests/unit/eve-board-monitor.test.ts`
+- `npm run test -- tests/unit/eve-board-advisor.test.ts tests/unit/eve-board-intel.test.ts tests/unit/eve-board-analytics.test.ts`
+- `npm run typecheck`
 - `npm run check`
 
 ## Result
 - PASS: AC1
 - PASS: AC2
 - PASS: AC3
-- PASS: AC4

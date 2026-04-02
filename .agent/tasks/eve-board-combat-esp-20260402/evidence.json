@@ -5,26 +5,22 @@
     {
       "id": "AC1",
       "status": "PASS",
-      "evidence": "RouteThreatDigest now carries a tactical assessment with state, confidence, headline, reasons, windowOpen, and route-relative zone risks."
+      "evidence": "Live ESP output now includes tactical contour and a human-readable tactical state."
     },
     {
       "id": "AC2",
       "status": "PASS",
-      "evidence": "Live ESP formatting continues to expose tactical state/window context while using the richer digest data."
+      "evidence": "Fallback operational lines now react more specifically to hot starts, probable camps, and open windows."
     },
     {
       "id": "AC3",
       "status": "PASS",
-      "evidence": "Pre-flight briefing now emits a concise `Тактика:` line."
-    },
-    {
-      "id": "AC4",
-      "status": "PASS",
-      "evidence": "Targeted tests and full npm run check passed."
+      "evidence": "Targeted tests, typecheck, and full repo checks passed."
     }
   ],
   "commands": [
-    "npm run test -- tests/unit/eve-board-analytics.test.ts tests/unit/eve-board-advisor.test.ts tests/unit/briefing.test.ts tests/unit/eve-board-monitor.test.ts",
+    "npm run test -- tests/unit/eve-board-advisor.test.ts tests/unit/eve-board-intel.test.ts tests/unit/eve-board-analytics.test.ts",
+    "npm run typecheck",
     "npm run check"
   ]
 }
