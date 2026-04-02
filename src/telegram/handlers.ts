@@ -13,6 +13,7 @@ import { getOrCreateUser, type UserContext } from '../auth/user-resolver.js';
 import { createHandoffToken } from '../auth/handoff.js';
 import { createAuthRequestToken } from '../auth/auth-request.js';
 import { evaluateTelegramRequestAllowance } from './request-guard.js';
+import { pickTelegramParseMode } from './formatting.js';
 
 const inFlightRequests = new Map<number, {
   token: string;
@@ -441,9 +442,7 @@ async function replyChunks(ctx: Context, text: string): Promise<void> {
 
 async function replyFormatted(ctx: Context, text: string): Promise<void> {
   try {
-    const parseMode = text.includes('<tg-spoiler>') || text.includes('<b>') || text.includes('<a href=')
-      ? 'HTML'
-      : 'Markdown';
+    const parseMode = pickTelegramParseMode(text);
     await ctx.reply(text, { parse_mode: parseMode });
   } catch {
     await ctx.reply(text);
@@ -664,4 +663,3 @@ function collectErrorText(err: unknown): string {
 
   return parts.join(' ');
 }
-

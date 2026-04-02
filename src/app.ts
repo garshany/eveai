@@ -10,6 +10,7 @@ import { startHeartbeat, stopHeartbeat } from './scheduled/heartbeat-worker.js';
 import { startZkbWs, stopZkbWs } from './eve-kill/zkb-ws.js';
 import { setRouteMonitorSender } from './eve/route-planner.js';
 import { restoreMonitors } from './eve-board/monitor.js';
+import { pickTelegramParseMode } from './telegram/formatting.js';
 
 async function main() {
   console.log('[app] Starting EVE Agent...');
@@ -36,7 +37,7 @@ async function main() {
 
   // 2b. Set up route monitor sender (must be set before any route is planned)
   setRouteMonitorSender((chatId, text) => {
-    bot.api.sendMessage(chatId, text, { parse_mode: undefined }).catch((err) => {
+    bot.api.sendMessage(chatId, text, { parse_mode: pickTelegramParseMode(text) }).catch((err) => {
       console.error('[route-monitor] Telegram send failed:', err);
     });
   });
@@ -61,7 +62,7 @@ async function main() {
 
   // 6. Start EVE-KILL kill tracking
   const sendKillAlert = (chatId: number, text: string) => {
-    bot.api.sendMessage(chatId, text, { parse_mode: undefined }).catch((err) => {
+    bot.api.sendMessage(chatId, text, { parse_mode: pickTelegramParseMode(text) }).catch((err) => {
       console.error('[kill-watch] Telegram send failed:', err);
     });
   };
