@@ -79,16 +79,23 @@ R2Z2 poll loop (every 100ms-6s):
 
 ```
 src/eve-board/
-├── monitor.ts    — 15s location, 30s kill scan, 60s online check
+├── monitor.ts    — 15s location, 30s kill+jump scan, 60s online check
+├── analytics.ts  — jump spike detection, gate kill attribution, threat digest
 ├── threat.ts     — EHP calc, gank fleet detection, threat scoring
-├── advisor.ts    — LLM-powered smart alerts
+├── advisor.ts    — LLM intel summary, pursuit detection, stop/wait/go
 ├── briefing.ts   — pre-route briefing + post-route report
-└── types.ts      — RouteMonitor, ShipAssessment, KillPattern
+└── types.ts      — RouteMonitor, SystemSnapshot, RouteThreatDigest, PursuitSignal
 
-Auto-starts on autopilot. Kill scan uses:
-  1. ESI system_kills (1 call) → filter active systems
-  2. zKB REST for details only on active systems
-  3. ESI character killmails → own death detection
+Auto-starts on autopilot. Full route security scan:
+  1. ESI system_kills (1 call) → filter active systems (10 ahead + 5 behind)
+  2. ESI system_jumps → traffic spike detection per system
+  3. zKB REST for kill details on active systems
+  4. Gate-level attribution (kill position vs stargate proximity)
+  5. Kill velocity analysis (active camp detection)
+  6. Ganker cache population from enriched kills
+  7. R2Z2 auto-subscribe on route systems (real-time kill alerts)
+  8. Pursuit detection (kills behind pilot approaching)
+  9. LLM route intelligence summary (STOP/WAIT/PROCEED/REROUTE)
 ```
 
 ## Config
@@ -156,14 +163,13 @@ ZKILL_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com)
 | `intel.ts` | kill_stats/battles/entity/lookup/spatial/prices |
 | `query.ts` | MongoDB filter builder |
 | `types.ts` | TypeScript types |
-| `ws.ts` | EVE-KILL WS client (unused, Cloudflare blocks) |
-
 ### src/eve-board/
 
 | File | Purpose |
 |---|---|
-| `monitor.ts` | Route monitor poller (location/kills/online) |
+| `monitor.ts` | Route monitor: full scan (10 ahead + 5 behind), jumps, ganker cache, R2Z2 auto-watch |
+| `analytics.ts` | Jump spike detection, gate kill attribution, kill velocity, threat digest |
 | `threat.ts` | Threat assessment (EHP, gank detection, scoring) |
-| `advisor.ts` | LLM smart alerts |
+| `advisor.ts` | LLM intel summary, pursuit detection, stop/wait/go recommendations |
 | `briefing.ts` | Pre-route briefing + post-route report |
-| `types.ts` | Route intelligence types |
+| `types.ts` | Route intelligence types (SystemSnapshot, RouteThreatDigest, PursuitSignal) |
