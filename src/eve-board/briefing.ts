@@ -174,13 +174,15 @@ type SystemJumpEntry = { system_id: number; ship_jumps: number };
 
 async function fetchSystemJumps(db: Db, systemIds: number[]): Promise<Map<number, number>> {
   const map = new Map<number, number>();
+  const wantedIds = new Set(systemIds);
   try {
     const result = await callEsiOperation<SystemJumpEntry[]>(
-      db, 'get_universe_system_jumps', { filter_ids: JSON.stringify(systemIds) },
+      db, 'get_universe_system_jumps', {},
     );
     if (result.ok && Array.isArray(result.data)) {
       for (const entry of result.data) {
-        if (entry.system_id && entry.ship_jumps) {
+        // Filter client-side — ESI returns all systems
+        if (wantedIds.has(entry.system_id) && entry.ship_jumps) {
           map.set(entry.system_id, entry.ship_jumps);
         }
       }
