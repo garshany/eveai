@@ -65,7 +65,19 @@ async function enrichZkbKills(
   db: Db,
   items: ZkbItem[],
 ): Promise<KilllistItem[]> {
+  type PendingKill = {
+    item: ZkbItem;
+    km: EsiKillmail;
+    victim: EsiKillmailVictim;
+    attackers: EsiKillmailAttacker[];
+    fb: EsiKillmailAttacker | undefined;
+    shipInfo: { typeName: string; groupName: string } | null;
+    victimShipTypeId: number | undefined;
+  };
+
   const results: KilllistItem[] = [];
+  const pending: PendingKill[] = [];
+  const idsToResolve = new Set<number>();
 
   for (const item of items.slice(0, MAX_ENRICH_PER_SYSTEM)) {
     const hash = item.zkb?.hash;
@@ -94,24 +106,62 @@ async function enrichZkbKills(
       const victimShipTypeId = victim.ship_type_id;
       const shipInfo = victimShipTypeId ? resolveTypeGroup(db, victimShipTypeId) : null;
 
-      results.push({
-        killmail_id: item.killmail_id,
-        killmail_time: typeof km.killmail_time === 'string' ? km.killmail_time : undefined,
-        total_value: item.zkb?.totalValue ?? 0,
-        is_npc: item.zkb?.npc ?? false,
-        is_solo: item.zkb?.solo ?? false,
-        attacker_count: attackers.length,
-        ship_type_id: victimShipTypeId,
-        ship_name: shipInfo?.typeName ?? undefined,
-        ship_group_name: shipInfo?.groupName ?? undefined,
-        final_blow_character_id: fb?.character_id,
+      pending.push({
+        item,
+        km,
+        victim,
+        attackers,
+        fb,
+        shipInfo,
+        victimShipTypeId,
       });
+      if (victim.character_id && victim.character_id > 0) idsToResolve.add(victim.character_id);
+      if (fb?.character_id && fb.character_id > 0) idsToResolve.add(fb.character_id);
     } catch {
       results.push(zkbToKilllistFallback(item));
     }
   }
 
+  const nameMap = await resolveCharacterNames(db, idsToResolve);
+  for (const entry of pending) {
+    results.push({
+      killmail_id: entry.item.killmail_id,
+      killmail_time: typeof entry.km.killmail_time === 'string' ? entry.km.killmail_time : undefined,
+      total_value: entry.item.zkb?.totalValue ?? 0,
+      is_npc: entry.item.zkb?.npc ?? false,
+      is_solo: entry.item.zkb?.solo ?? false,
+      attacker_count: entry.attackers.length,
+      ship_type_id: entry.victimShipTypeId,
+      ship_name: entry.shipInfo?.typeName ?? undefined,
+      ship_group_name: entry.shipInfo?.groupName ?? undefined,
+      victim_character_id: entry.victim.character_id,
+      victim_character_name: entry.victim.character_id ? nameMap.get(entry.victim.character_id) : undefined,
+      final_blow_character_id: entry.fb?.character_id,
+      final_blow_character_name: entry.fb?.character_id ? nameMap.get(entry.fb.character_id) : undefined,
+    });
+  }
+
   return results;
+}
+
+async function resolveCharacterNames(db: Db, ids: Set<number>): Promise<Map<number, string>> {
+  const map = new Map<number, string>();
+  if (ids.size === 0) return map;
+  try {
+    const result = await callEsiOperation<Array<{ id: number; name: string }>>(
+      db,
+      'post_universe_names',
+      { ids: JSON.stringify([...ids].slice(0, 100)) },
+    );
+    if (result.ok && Array.isArray(result.data)) {
+      for (const entry of result.data) {
+        if (entry.id && entry.name) map.set(entry.id, entry.name);
+      }
+    }
+  } catch {
+    // non-critical: detail lines degrade gracefully without names
+  }
+  return map;
 }
 
 function zkbToKilllistFallback(item: ZkbItem): KilllistItem {
@@ -216,6 +266,7 @@ type DangerSystemInfo = {
   name: string;
   sec: number;
   pattern: KillPattern;
+  recentKills: KilllistItem[];
   threatLevel: ThreatLevel;
   threatReason: string;
 };
@@ -256,7 +307,12 @@ export async function generateBriefing(
   console.log(`[briefing] scanning ${systemsToScan.length} systems: ${systemsToScan.map(s => `${s.name}(${s.sec})`).join(', ')}`);
 
   // Sequential scan to avoid zKB rate limit
-  const scanResults: Array<{ sys: typeof systemsToScan[0]; pattern: KillPattern; threat: { level: ThreatLevel; reason: string } } | null> = [];
+  const scanResults: Array<{
+    sys: typeof systemsToScan[0];
+    pattern: KillPattern;
+    enrichedKills: KilllistItem[];
+    threat: { level: ThreatLevel; reason: string };
+  } | null> = [];
   for (const sys of systemsToScan) {
     try {
       const feed = await fetchZkbForBriefing(sys.id);
@@ -267,7 +323,7 @@ export async function generateBriefing(
       const enrichedKills = await enrichZkbKills(db, pvpKills);
       const pattern = analyzeKillPattern(enrichedKills, sys.id, sys.name, sys.sec);
       const threat = scoreThreat(pattern, ship);
-      scanResults.push({ sys, pattern, threat });
+      scanResults.push({ sys, pattern, enrichedKills, threat });
     } catch (err) {
       console.error(`[briefing] scan error ${sys.name}:`, (err as Error).message);
       scanResults.push(null);
@@ -276,7 +332,7 @@ export async function generateBriefing(
 
   for (const result of scanResults) {
     if (!result) continue;
-    const { sys, pattern, threat } = result;
+    const { sys, pattern, enrichedKills, threat } = result;
 
     patterns.push(pattern);
 
@@ -286,6 +342,9 @@ export async function generateBriefing(
       sec: sys.sec,
       routeIndex: routeSystems.indexOf(sys.id),
       pattern,
+      recentKills: enrichedKills
+        .slice()
+        .sort((left, right) => (right.killmail_time ?? '').localeCompare(left.killmail_time ?? '')),
       threatLevel: threat.level,
       threatReason: threat.reason,
     });
@@ -459,6 +518,13 @@ function buildSupportLines(
       .slice(0, 3)
       .map((system) => `${system.name}: ${system.pattern.killCount} kills`);
     lines.push(`Активность: ${topSystems.join(' | ')}`);
+    lines.push(`Анализ: ${buildRouteAnalysis(dangerSystems)}`);
+
+    const recentKillLines = buildRecentKillLines(dangerSystems);
+    if (recentKillLines.length > 0) {
+      lines.push('Последние киллы:');
+      lines.push(...recentKillLines);
+    }
   }
 
   if (jumpMap.size > 0) {
@@ -478,6 +544,64 @@ function buildSupportLines(
   }
 
   return lines;
+}
+
+function buildRouteAnalysis(dangerSystems: DangerSystemInfo[]): string {
+  const currentSystem = dangerSystems.find((system) => system.routeIndex === 0) ?? null;
+  const aheadSystems = dangerSystems
+    .filter((system) => system.routeIndex > 0)
+    .sort((left, right) => left.routeIndex - right.routeIndex);
+  const nearestAhead = aheadSystems[0] ?? null;
+  const farSystems = aheadSystems.slice(1);
+
+  const parts: string[] = [];
+  if (currentSystem) {
+    parts.push(`стартовый шум в ${currentSystem.name}`);
+  } else {
+    parts.push('стартовая система тихая');
+  }
+
+  if (nearestAhead) {
+    parts.push(`ближайшая PvP-точка ${nearestAhead.name} через ${nearestAhead.routeIndex} ${jumpWord(nearestAhead.routeIndex)}`);
+  } else {
+    parts.push('впереди по маршруту свежих PvP-точек нет');
+  }
+
+  if (farSystems.length > 0) {
+    parts.push(`дальше ещё ${farSystems.length} фоновых точек без явного camp-паттерна`);
+  }
+
+  return parts.join('; ') + '.';
+}
+
+function buildRecentKillLines(dangerSystems: DangerSystemInfo[]): string[] {
+  const lines: string[] = [];
+  for (const system of [...dangerSystems].sort((left, right) => left.routeIndex - right.routeIndex).slice(0, 3)) {
+    for (const kill of system.recentKills.slice(0, 2)) {
+      lines.push(`  ${formatKillLine(system.name, kill)}`);
+      if (lines.length >= 6) return lines;
+    }
+  }
+  return lines;
+}
+
+function formatKillLine(systemName: string, kill: KilllistItem): string {
+  const age = formatKillAge(kill.killmail_time);
+  const victimShip = kill.ship_name ?? '?';
+  const valueM = Math.round((kill.total_value ?? 0) / 1_000_000);
+  const victimName = kill.victim_character_name ?? '?';
+  const attackerName = kill.final_blow_character_name ?? '?';
+  const attackerCount = kill.attacker_count ?? 1;
+  const attackerPart = attackerCount > 1 ? `${attackerName} +${attackerCount - 1}` : attackerName;
+  const valuePart = valueM > 0 ? ` ${valueM}M` : '';
+  return `${systemName} — ${age} ${victimShip}${valuePart} ${victimName} <- ${attackerPart}`;
+}
+
+function formatKillAge(value: string | undefined): string {
+  const minutes = value ? minutesSinceIso(value) : null;
+  if (minutes === null) return 'недавно';
+  if (minutes < 1) return 'только что';
+  return `${minutes}м назад`;
 }
 
 function minutesSinceIso(value: string): number | null {

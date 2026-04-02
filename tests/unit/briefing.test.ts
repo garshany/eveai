@@ -91,6 +91,80 @@ describe('generateBriefing', () => {
     expect(briefing).not.toContain('Маршрут безопасен. PvP активности не обнаружено.');
   });
 
+  it('includes route analysis and recent kill details for active systems', async () => {
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string) => {
+      if (operation === 'get_universe_system_jumps') {
+        return {
+          ok: true,
+          status: 200,
+          cached: false,
+          headers: {},
+          data: [
+            { system_id: 30002659, ship_jumps: 17 },
+            { system_id: 30002660, ship_jumps: 91 },
+            { system_id: 30000142, ship_jumps: 120 },
+          ],
+        };
+      }
+
+      if (operation === 'get_killmails_killmail_id_killmail_hash') {
+        return {
+          ok: true,
+          status: 200,
+          cached: false,
+          headers: {},
+          data: {
+            killmail_time: new Date().toISOString(),
+            victim: { ship_type_id: 587, character_id: 9001 },
+            attackers: [{ character_id: 9002, final_blow: true }],
+          },
+        };
+      }
+
+      if (operation === 'post_universe_names') {
+        return {
+          ok: true,
+          status: 200,
+          cached: false,
+          headers: {},
+          data: [
+            { id: 9001, name: 'Victim One' },
+            { id: 9002, name: 'Attacker One' },
+          ],
+        };
+      }
+
+      return { ok: false, status: 404, error: `Unexpected operation: ${operation}` };
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.includes('systemID/30002660')) {
+        return {
+          ok: true,
+          json: async () => [{
+            killmail_id: 134200002,
+            zkb: { hash: 'hash-2', totalValue: 42000000, npc: false, solo: false },
+          }],
+        };
+      }
+
+      return { ok: true, json: async () => [] };
+    }));
+
+    const briefing = await generateBriefing(
+      db,
+      [30002659, 30002660, 30000142],
+      'Dodixie',
+      'Jita',
+      2116626188,
+      587,
+    );
+
+    expect(briefing).toContain('Анализ:');
+    expect(briefing).toContain('Последние киллы:');
+    expect(briefing).toContain('Victim One <- Attacker One');
+  });
+
   it('scans the whole selected route instead of truncating a late dangerous system', async () => {
     for (let i = 0; i < 10; i++) {
       insertSystem(db, 30003000 + i, `Route ${i + 1}`, 20000389, 0.9);

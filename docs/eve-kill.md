@@ -141,6 +141,11 @@ ZKILL_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com)
 - `Статус мониторинга маршрута` → monitor status
 - `Останови мониторинг` → stop monitor
 
+Pre-flight briefing for `plan_route` should stay operational:
+- top block: `Сейчас`, `Впереди`, `Действие`
+- support block: `Активность`, short `Анализ`, and several `Последние киллы` from the selected route
+- live monitor keeps ESP/digest updates separate from the one-time pre-flight snapshot
+
 ### Other kill tools
 - `Найди киллы дороже 10 миллиардов` → kill_query
 - `Покажи серверные лидерборды` → kill_stats
@@ -172,5 +177,5 @@ ZKILL_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com)
 | `analytics.ts` | Jump spike detection, gate kill attribution, kill velocity, threat digest |
 | `threat.ts` | Threat assessment (EHP, gank detection, scoring) |
 | `advisor.ts` | Deterministic digest formatter, focused LLM intel, pursuit detection, stop/wait/go recommendations |
-| `briefing.ts` | Pre-route briefing + post-route report |
+| `briefing.ts` | Pre-route briefing with route analysis and recent kills + post-route report |
 | `types.ts` | Route intelligence types (SystemSnapshot, RouteThreatDigest, PursuitSignal) |
