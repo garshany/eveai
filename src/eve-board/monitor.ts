@@ -128,11 +128,11 @@ type ZkbFeedItem = {
 let lastZkbCall = 0;
 
 async function fetchZkbSystemKills(systemId: number): Promise<ZkbFeedItem[]> {
-  // Rate limit: wait if needed to keep ~1 req/sec
+  // Rate limit: 1 req per 2s to stay safe under zKB 60/min limit
   const now = Date.now();
   const elapsed = now - lastZkbCall;
-  if (elapsed < 1100) {
-    await new Promise((r) => setTimeout(r, 1100 - elapsed));
+  if (elapsed < 2000) {
+    await new Promise((r) => setTimeout(r, 2000 - elapsed));
   }
   lastZkbCall = Date.now();
 
@@ -576,12 +576,24 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     const systemsBehind = monitor.routeSystems.slice(0, currentIdx);
     if (allScanSystems.length === 0) return;
 
-    // Scan ALL systems directly via zKB (ESI system_kills has 1h cache, misses recent kills)
-    const currentName = resolveSystemName(db, monitor.currentSystemId);
-    const aheadNames = systemsAhead.map((id) => resolveSystemName(db, id));
-    const behindNames = systemsBehind.map((id) => resolveSystemName(db, id));
+    // Hybrid: ESI pre-filter (free, 1 call) + always scan key systems via zKB
+    const activeSystemIds = await getActiveSystemsFromEsi(db, allScanSystems);
+
+    // Always scan via zKB: current system + known dangerous + systems with gankers
+    const mustScanIds = new Set<number>([monitor.currentSystemId]);
+    for (const sysId of allScanSystems) {
+      if (activeSystemIds.has(sysId)) mustScanIds.add(sysId);
+      const sec = resolveSystemSec(db, sysId);
+      if (sec < 0.7) mustScanIds.add(sysId); // lowsec always
+      const gc = db.prepare(
+        "SELECT 1 FROM route_ganker_cache WHERE system_id = ? AND last_seen >= datetime('now', '-30 minutes') LIMIT 1",
+      ).get(sysId);
+      if (gc) mustScanIds.add(sysId);
+    }
+
+    const zkbScanSystems = [...mustScanIds];
     console.log(
-      `${LOG} kill scan: current=[${currentName}] ahead=[${aheadNames.join(', ')}] behind=[${behindNames.join(', ')}] (${allScanSystems.length} systems)`,
+      `${LOG} kill scan: ${allScanSystems.length} total, ${zkbScanSystems.length} via zKB (ESI=${activeSystemIds.size} active)`,
     );
 
     // Step 2: Death detection via ESI character killmails (own kills/losses)
@@ -629,7 +641,16 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
       ).get(sysId) as { cnt: number } | undefined;
       const gankerCount = gankerRow?.cnt ?? 0;
 
-      // All systems scanned directly via zKB (no ESI pre-filter)
+      // Only zKB scan selected systems; others get quiet digest
+      if (!mustScanIds.has(sysId)) {
+        const quietDigest = buildSystemDigest(
+          sysId, sysName, sysSec, jumpDist,
+          'LOW' as ThreatLevel, 'тихо', [], spikeMap.get(sysId) ?? null, gankerCount, db,
+        );
+        if (isAhead || isCurrent) systemDigestsAhead.push(quietDigest);
+        else systemDigestsBehind.push(quietDigest);
+        continue;
+      }
 
       const feed = await fetchZkbSystemKills(sysId);
       if (feed.length === 0) {
