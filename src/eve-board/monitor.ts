@@ -21,7 +21,7 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { callEsiOperation } from '../eve/esi-client.js';
-import { getEveCapabilities } from '../eve/capabilities.js';
+import { getEveCapabilities, hasFreshCapabilitySnapshot } from '../eve/capabilities.js';
 import type { KilllistItem } from '../eve-kill/client.js';
 import { getKillmailBatch } from '../eve-kill/client.js';
 import type { EveKillKillmail } from '../eve-kill/types.js';
@@ -48,6 +48,7 @@ import {
   generateRouteIntelSummary,
   formatIntelMessage,
 } from './advisor.js';
+import type { UserContext } from '../auth/user-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -562,11 +563,12 @@ export function restoreMonitors(db: Db, sender: NotifySender): void {
 async function pollLocation(inst: MonitorInstance): Promise<void> {
   const { monitor, db } = inst;
   try {
+    await ensureMonitorCapabilities(inst, 'route-monitor-location');
     const loc = await callEsiOperation<{ solar_system_id?: number }>(
       db,
       'get_characters_character_id_location',
       { character_id: monitor.characterId },
-      monitor.chatId,
+      getMonitorUserContext(monitor.chatId),
     );
 
     if (!loc.ok || !loc.data?.solar_system_id) {
@@ -987,11 +989,12 @@ async function getActiveSystemsFromEsi(db: Db, systemIds: number[]): Promise<Set
 async function checkOwnDeath(inst: MonitorInstance): Promise<void> {
   const { monitor, db } = inst;
   try {
+    await ensureMonitorCapabilities(inst, 'route-monitor-killmails');
     const result = await callEsiOperation<Array<{ killmail_id: number; killmail_hash: string }>>(
       db,
       'get_characters_character_id_killmails_recent',
       { character_id: monitor.characterId },
-      monitor.chatId,
+      getMonitorUserContext(monitor.chatId),
     );
     if (!result.ok || !Array.isArray(result.data) || result.data.length === 0) return;
 
@@ -1023,6 +1026,7 @@ async function checkOwnDeath(inst: MonitorInstance): Promise<void> {
 async function pollOnline(inst: MonitorInstance): Promise<void> {
   const { monitor, db } = inst;
   try {
+    await ensureMonitorCapabilities(inst, 'route-monitor-online');
     const online = await callEsiOperation<{
       online?: boolean;
       last_login?: string;
@@ -1031,7 +1035,7 @@ async function pollOnline(inst: MonitorInstance): Promise<void> {
       db,
       'get_characters_character_id_online',
       { character_id: monitor.characterId },
-      monitor.chatId,
+      getMonitorUserContext(monitor.chatId),
     );
 
     if (!online.ok) return;
@@ -1051,6 +1055,18 @@ async function pollOnline(inst: MonitorInstance): Promise<void> {
   } catch (err) {
     console.error(`${LOG} online poll error chat=${monitor.chatId}:`, (err as Error).message);
   }
+}
+
+function getMonitorUserContext(chatId: number): UserContext {
+  return { userId: 0, chatId };
+}
+
+async function ensureMonitorCapabilities(inst: MonitorInstance, intent: string): Promise<void> {
+  const ctx = getMonitorUserContext(inst.monitor.chatId);
+  if (hasFreshCapabilitySnapshot(ctx, inst.monitor.characterId)) {
+    return;
+  }
+  await getEveCapabilities(inst.db, intent, ctx);
 }
 
 // ---------------------------------------------------------------------------
