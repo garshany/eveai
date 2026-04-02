@@ -98,7 +98,7 @@ type StopReason = 'arrived' | 'death' | 'offline' | 'manual';
 
 const LOG = '[route-monitor]';
 const LOCATION_INTERVAL_MS = 15_000;
-const KILL_INTERVAL_MS = 30_000;
+const KILL_INTERVAL_MS = 60_000; // 60s — gives time for throttled zKB calls across all systems
 const ONLINE_INTERVAL_MS = 60_000;
 const DIGEST_INTERVAL_MS = 120_000; // 2 minutes
 /** Max systems ahead to scan (API budget cap) */
@@ -124,14 +124,28 @@ type ZkbFeedItem = {
   zkb?: { hash?: string; totalValue?: number; npc?: boolean; solo?: boolean };
 };
 
+/** Throttle zKB: max 1 req/sec to stay well under 60/min limit */
+let lastZkbCall = 0;
+
 async function fetchZkbSystemKills(systemId: number): Promise<ZkbFeedItem[]> {
+  // Rate limit: wait if needed to keep ~1 req/sec
+  const now = Date.now();
+  const elapsed = now - lastZkbCall;
+  if (elapsed < 1100) {
+    await new Promise((r) => setTimeout(r, 1100 - elapsed));
+  }
+  lastZkbCall = Date.now();
+
   const url = `${config.zkill.baseUrl}kills/systemID/${systemId}/pastSeconds/1800/`;
   try {
     const res = await fetch(url, {
       headers: { Accept: 'application/json', 'Accept-Encoding': 'gzip', 'User-Agent': config.zkill.userAgent },
       signal: AbortSignal.timeout(config.zkill.timeoutMs),
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      if (res.status === 429) console.warn(`${LOG} zKB rate limited for system ${systemId}`);
+      return [];
+    }
     const data = await res.json();
     if (!Array.isArray(data)) return [];
     return data.filter((item: unknown): item is ZkbFeedItem =>
