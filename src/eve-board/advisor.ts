@@ -327,8 +327,9 @@ function buildIntelPrompt(
     `Выживаемость: ${ship.survivalChance}`,
     '',
     '=== МАРШРУТ ===',
-    `Позиция: ${digest.pilotSystem} (${digest.pilotSystemIdx + 1}/${monitor.routeSystems.length})`,
-    `Всего прыжков: ${monitor.routeSystems.length - 1}`,
+    `Маршрут: ${digest.origin} → ${digest.destination}`,
+    `Позиция: ${digest.pilotSystem} (${digest.pilotSystemIdx + 1}/${digest.totalRouteSystems})`,
+    `Осталось прыжков: ${digest.totalRouteSystems - 1 - digest.pilotSystemIdx}`,
     `Общая угроза: ${digest.overallThreat}`,
     '',
   ];

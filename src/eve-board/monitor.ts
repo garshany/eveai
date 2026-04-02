@@ -80,6 +80,14 @@ type MonitorInstance = {
   lastDigestsAhead: SystemThreatDigest[];
   /** System threat digests from last scan — behind pilot */
   lastDigestsBehind: SystemThreatDigest[];
+  /** Previous digest overall threat — for delta detection */
+  lastOverallThreat: ThreatLevel;
+  /** Previous kills seen count — for delta detection */
+  lastKillsSeen: number;
+  /** Previous pilot system — detect system change */
+  lastPilotSystem: number;
+  /** Count of identical "quiet" digests sent — skip after 2 */
+  quietDigestCount: number;
 };
 
 type StopReason = 'arrived' | 'death' | 'offline' | 'manual';
@@ -383,6 +391,10 @@ export function startRouteMonitor(
     lastDigestTime: Date.now(),
     lastDigestsAhead: [],
     lastDigestsBehind: [],
+    lastOverallThreat: 'LOW' as ThreatLevel,
+    lastKillsSeen: 0,
+    lastPilotSystem: 0,
+    quietDigestCount: 0,
     // Timers are assigned below after immediate polls
     locationTimer: null!,
     killTimer: null!,
@@ -611,9 +623,10 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
       ).get(sysId) as { cnt: number } | undefined;
       const gankerCount = gankerRow?.cnt ?? 0;
 
-      // Skip systems with no PvP kills according to ESI — but still build LOW digest
-      if (!activeSystemIds.has(sysId)) {
-        // Build a quiet-system digest for analytics
+      // Always scan dangerous systems (sec < 0.7) and systems with known gankers via zKB,
+      // even if ESI hourly cache doesn't flag them. ESI is stale up to 1 hour.
+      const mustScan = sysSec < 0.7 || gankerCount > 0 || isCurrent;
+      if (!activeSystemIds.has(sysId) && !mustScan) {
         const quietDigest = buildSystemDigest(
           sysId, sysName, sysSec, jumpDist,
           'LOW' as ThreatLevel, 'тихо', [], spikeMap.get(sysId) ?? null, gankerCount, db,
@@ -789,6 +802,27 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
     // 2.5. Get active ganker intel across the route
     const gankerIntel = getActiveGankers(db, monitor.routeSystems);
 
+    // === Delta detection: don't spam identical "quiet" digests ===
+    const threatChanged = digest.overallThreat !== inst.lastOverallThreat;
+    const killsChanged = monitor.stats.killsSeen !== inst.lastKillsSeen;
+    const systemChanged = monitor.currentSystemId !== inst.lastPilotSystem;
+    const gankersAppeared = gankerIntel.length > 0;
+
+    if (!threatChanged && !killsChanged && !systemChanged && !gankersAppeared && !pursuit) {
+      inst.quietDigestCount++;
+      // After 2 quiet digests (4 min), only send every 3rd cycle (6 min)
+      if (inst.quietDigestCount > 2 && inst.quietDigestCount % 3 !== 0) {
+        console.log(`${LOG} digest skipped (quiet #${inst.quietDigestCount}) chat=${monitor.chatId}`);
+        return;
+      }
+    } else {
+      inst.quietDigestCount = 0;
+    }
+
+    inst.lastOverallThreat = digest.overallThreat;
+    inst.lastKillsSeen = monitor.stats.killsSeen;
+    inst.lastPilotSystem = monitor.currentSystemId;
+
     // 3. ALWAYS call LLM for route analysis — this is the ESP
     const intelSummary = await generateRouteIntelSummary(
       digest, shipAssessment, pursuit, gankerIntel,
@@ -810,7 +844,7 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
 
     inst.lastDigestTime = Date.now();
     console.log(
-      `${LOG} digest sent chat=${monitor.chatId} overall=${digest.overallThreat} ahead=${inst.lastDigestsAhead.length} behind=${inst.lastDigestsBehind.length}`,
+      `${LOG} digest sent chat=${monitor.chatId} overall=${digest.overallThreat} ahead=${inst.lastDigestsAhead.length} behind=${inst.lastDigestsBehind.length} gankers=${gankerIntel.length}`,
     );
   } catch (err) {
     console.error(`${LOG} digest error chat=${monitor.chatId}:`, (err as Error).message);
