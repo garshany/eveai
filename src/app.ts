@@ -7,7 +7,6 @@ import {
   markTelegramBotHealthStarting,
 } from './web/health.js';
 import { startHeartbeat, stopHeartbeat } from './scheduled/heartbeat-worker.js';
-import { startKillPoller, stopKillPoller } from './eve-kill/poll.js';
 import { startZkbWs, stopZkbWs } from './eve-kill/zkb-ws.js';
 import { setRouteMonitorSender } from './eve/route-planner.js';
 import { restoreMonitors } from './eve-board/monitor.js';
@@ -67,9 +66,8 @@ async function main() {
     });
   };
 
-  // Kill watch: zKB WebSocket (real-time) + REST polling (fallback, 60s)
+  // Kill watch: zKB WebSocket (real-time)
   startZkbWs(db, sendKillAlert);
-  startKillPoller(db, sendKillAlert);
 
   // Restore route monitors from DB (survives pm2 restart)
   restoreMonitors(db, sendKillAlert);
@@ -80,7 +78,6 @@ async function main() {
     shuttingDown = true;
     console.log('[app] Shutting down...');
     stopZkbWs();
-    stopKillPoller();
     stopHeartbeat();
     bot.stop();
     await server.close();
