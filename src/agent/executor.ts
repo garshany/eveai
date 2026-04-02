@@ -13,6 +13,7 @@ import {
   isEveKillToolName,
   isBatchMarketTool,
   isHeartbeatConfigTool,
+  isOsintInferTool,
   isRouteMonitorTool,
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
@@ -38,6 +39,7 @@ import { executeHeartbeatConfig } from '../scheduled/heartbeat-config.js';
 import type { HeartbeatConfigArgs } from '../scheduled/heartbeat-config.js';
 import { getLinkedCharacter } from '../eve/sso.js';
 import type { UserContext } from '../auth/user-resolver.js';
+import { executeOsintInferHome } from '../eve-osint/inference.js';
 
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_WEB_SEARCHES_PER_TURN = 2;
@@ -815,6 +817,10 @@ async function executeToolCall(
 
   if (isBatchMarketTool(name)) {
     return await executeBatchMarketPrices(db, args, ctx);
+  }
+
+  if (isOsintInferTool(name)) {
+    return await executeOsintInferHome(db, args);
   }
 
   if (isHeartbeatConfigTool(name)) {
@@ -1645,6 +1651,7 @@ export const __test__ = {
   buildSmartContext,
   buildToolStateRecoveryContext,
   buildRecentToolSummaryMessage,
+  executeToolCall,
   deriveLiveContextNeeds,
   resolveSystemLocationContext,
   shouldRecoverFromToolStateMismatch,

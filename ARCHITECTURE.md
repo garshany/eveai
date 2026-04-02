@@ -58,6 +58,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/eve/capabilities.ts` computes scope-aware access for private ESI.
 - `src/eve/sde.ts`, `sde-loader.ts`, and `sde-downloader.ts` own static data ingestion and lookup.
 - `src/eve/route-planner.ts`, `zkill.ts`, and `killmail.ts` provide higher-level EVE features.
+- `src/eve-osint/inference.ts` builds residence/staging hypotheses from kill activity, SDE geography, and an optional compact LLM pattern pass.
 
 ### Persistence Boundary
 

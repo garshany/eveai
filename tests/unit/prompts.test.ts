@@ -22,6 +22,7 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('web_search');
     expect(prompt).toContain('tool_search');
     expect(prompt).toContain('batch_market_prices');
+    expect(prompt).toContain('osint_infer_home');
     expect(prompt).toContain('Backend управляет auth, tokens, pagination, retries, rate limits');
     expect(prompt).toContain('character_id уже известен');
     expect(prompt).toContain('ДУМАЙ → ПЛАНИРУЙ → ВЫЗЫВАЙ');
@@ -29,6 +30,8 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('обычно достаточно 1 вызова');
     expect(prompt).toContain('Максимум 2 за ответ');
     expect(prompt).toContain('Персонаж не привязан');
+    expect(prompt).toContain('Residence/staging OSINT');
+    expect(prompt).toContain('osint_infer_home');
     expect(prompt).toContain('EFT');
     expect(prompt).toContain('ломают импорт');
     expect(prompt).not.toContain('ОБЯЗАТЕЛЬНО вызывай для поиска ESI');
@@ -43,6 +46,8 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('<verbosity_controls>');
     expect(prompt).toContain('<completeness_contract>');
     expect(prompt).toContain('<missing_context_gating>');
+    expect(prompt).toContain('<osint_rules>');
+    expect(prompt).toContain('residence/staging inference');
 
     // Prompt should be smaller than pre-optimization (was ~17K with capabilities bloat)
     expect(prompt.length).toBeLessThan(14000);

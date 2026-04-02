@@ -57,6 +57,12 @@ Use it when you need to find the right file or folder before reading implementat
 - `user-profile.ts`: generated user snapshot/profile flow
 - `scopes.ts`, `eve-links.ts`, `http.ts`: support modules
 
+### `src/eve-osint/`
+
+- `inference.ts`: activity collection, graph digest, deterministic scoring, optional LLM pattern pass
+- `llm.ts`: compact graph-digest LLM interpretation with deterministic fallback
+- `types.ts`: OSINT tool-facing argument/result types
+
 ### `src/eve-kill/`
 
 PvP killboard integration (EVE-KILL, replaces zKillboard). See `docs/eve-kill.md`.
@@ -130,3 +136,4 @@ PvP killboard integration (EVE-KILL, replaces zKillboard). See `docs/eve-kill.md
 - Need docs catalog -> [index.md](./index.md)
 - Need product intent -> [PRODUCT_SENSE.md](./PRODUCT_SENSE.md)
 - Need operational rules -> [RELIABILITY.md](./RELIABILITY.md), [SECURITY.md](./SECURITY.md), [deployment.md](./deployment.md)
+- Need OSINT behavior -> [osint.md](./osint.md)

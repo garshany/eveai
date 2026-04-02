@@ -24,6 +24,7 @@ Read the smallest document that answers the current question. Start here, then d
 - [SECURITY.md](./SECURITY.md): auth, secret, and web protection rules
 - [deployment.md](./deployment.md): production server runbook
 - [heartbeat.md](./heartbeat.md): periodic background checks and notifications system
+- [osint.md](./osint.md): probabilistic residence/staging inference from activity graphs
 
 ## Indexed Subtrees
 

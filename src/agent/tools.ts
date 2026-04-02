@@ -217,6 +217,7 @@ export function isHeartbeatConfigTool(name: string): boolean {
 }
 
 const BATCH_MARKET_TOOL_NAME = 'batch_market_prices';
+const OSINT_INFER_TOOL_NAME = 'osint_infer_home';
 
 const BATCH_MARKET_TOOL: NativeFunctionTool = {
   type: 'function',
@@ -230,6 +231,45 @@ const BATCH_MARKET_TOOL: NativeFunctionTool = {
       type_ids: { type: 'array', items: { type: 'integer' }, description: 'Array of type_ids to look up. Resolve via sde_sql first.' },
     },
     required: ['region_id', 'type_ids'],
+    additionalProperties: false,
+  },
+};
+
+const OSINT_INFER_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: OSINT_INFER_TOOL_NAME,
+  description: 'Infer likely home, staging, and hunting systems for a character, corporation, or alliance using precomputed activity-graph features from EVE-KILL plus local SDE geography. Returns probabilistic hypotheses with confidence, signals, uncertainty, and an optional compact graph digest. Prefer this over manual residence inference from raw kill feeds.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      scope: {
+        type: 'string',
+        enum: ['character', 'corporation', 'alliance'],
+        description: 'Target entity type to analyze.',
+      },
+      id: {
+        type: 'integer',
+        description: 'CCP ID of the character, corporation, or alliance.',
+      },
+      window_days: {
+        type: ['integer', 'null'],
+        description: 'Recent analysis window in days. Default 30, max 90.',
+      },
+      include_member_analysis: {
+        type: ['boolean', 'null'],
+        description: 'Include a compact core-member breakdown derived from recurring pilots in the observed activity.',
+      },
+      include_graph: {
+        type: ['boolean', 'null'],
+        description: 'Include a compact graph digest for downstream reasoning and explanations.',
+      },
+      include_llm_pattern_analysis: {
+        type: ['boolean', 'null'],
+        description: 'Run an optional LLM pass over the compact graph digest to classify higher-level patterns. Use only when the user explicitly wants deeper pattern analysis.',
+      },
+    },
+    required: ['scope', 'id', 'window_days', 'include_member_analysis', 'include_graph', 'include_llm_pattern_analysis'],
     additionalProperties: false,
   },
 };
@@ -248,6 +288,7 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
     ROUTE_MONITOR_TOOL,
     HEARTBEAT_CONFIG_TOOL,
     BATCH_MARKET_TOOL,
+    OSINT_INFER_TOOL,
     buildEveKillNamespace(),
     ...(await listEsiNamespaces()),
   ];
@@ -261,6 +302,10 @@ export function isBatchMarketTool(name: string): boolean {
   return name === BATCH_MARKET_TOOL_NAME;
 }
 
+export function isOsintInferTool(name: string): boolean {
+  return name === OSINT_INFER_TOOL_NAME;
+}
+
 export function isUniverseCountTool(name: string): boolean {
   return name === UNIVERSE_COUNT_TOOL_NAME;
 }
@@ -270,7 +315,7 @@ export function isSdeSqlTool(name: string): boolean {
 }
 
 export function isDeferredLookupToolName(name: string): boolean {
-  return isEveKillToolName(name) || isBatchMarketTool(name);
+  return isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name);
 }
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
@@ -1054,10 +1099,9 @@ export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'u
   if (name === 'update_plan') {
     return 'write';
   }
-  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isBatchMarketTool(name)) {
+  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();
   return catalog.get(name)?.toolPolicy ?? null;
 }
-

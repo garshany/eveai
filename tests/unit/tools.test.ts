@@ -19,6 +19,7 @@ describe('agent tools', () => {
     const namespaceNames = namespaces.map((tool) => tool.name);
 
     expect(functionNames).toContain('web_search');
+    expect(functionNames).toContain('osint_infer_home');
     expect(functionNames).toContain('update_plan');
     expect(functionNames).toContain('get_eve_capabilities');
     expect(functionNames).toContain('plan_route');
@@ -123,6 +124,7 @@ describe('agent tools', () => {
     expect(functionNames).not.toContain('get_eve_capabilities');
     expect(functionNames).not.toContain('plan_route');
     expect(functionNames).not.toContain('batch_market_prices');
+    expect(functionNames).not.toContain('osint_infer_home');
     expect(tools.some((tool) => tool.type === 'tool_search')).toBe(false);
     expect(tools.some((tool) => tool.type === 'namespace')).toBe(false);
   });
