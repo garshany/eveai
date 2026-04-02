@@ -17,6 +17,7 @@ import {
   isAnalyzeLocalTool,
   isAnalyzeScanTool,
   isIntelNoteTool,
+  isSetActiveFitTool,
   isRouteMonitorTool,
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
@@ -47,6 +48,7 @@ import { executeAnalyzeLocal } from '../eve-local/analyzer.js';
 import { executeAnalyzeScan } from '../eve-scan/analyzer.js';
 import { executeIntelNote } from '../eve-intel/notes.js';
 import { assessShip } from '../eve-board/threat.js';
+import { resolveActiveFitting, writeManualFitting } from '../eve/active-fitting.js';
 
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_WEB_SEARCHES_PER_TURN = 2;
@@ -420,6 +422,12 @@ async function fetchLiveContext(
         + `, класс=${assessment.shipClass}, base_ehp=${assessment.ehp}, align=${assessment.alignTime}s, warp=${assessment.warpSpeed}AU/s`
         + (assessment.isHighValueTarget ? ', HIGH_VALUE_TARGET' : ''),
       );
+
+      // Resolve saved fitting matching current ship → persist to USER.md
+      const fitting = await resolveActiveFitting(db, ctx, shipResult.data.ship_type_id, shipType);
+      if (fitting) {
+        parts.push(`Активный фит:\n${fitting}`);
+      }
     }
 
     return {
@@ -846,6 +854,10 @@ async function executeToolCall(
 
   if (isIntelNoteTool(name)) {
     return executeIntelNote(db, ctx.userId, args);
+  }
+
+  if (isSetActiveFitTool(name)) {
+    return writeManualFitting(db, ctx, String(args.fitting ?? ''));
   }
 
   if (isHeartbeatConfigTool(name)) {

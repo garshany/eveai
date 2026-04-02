@@ -383,6 +383,30 @@ export function isIntelNoteTool(name: string): boolean {
   return name === INTEL_NOTE_TOOL_NAME;
 }
 
+const SET_ACTIVE_FIT_TOOL_NAME = 'set_active_fit';
+
+const SET_ACTIVE_FIT_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: SET_ACTIVE_FIT_TOOL_NAME,
+  description: 'Set or replace the active fitting in the user profile (USER.md). Use when the user pastes an EFT fit or says "мой фит теперь этот". The fitting is persisted and used for all future tactical assessments.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      fitting: {
+        type: 'string',
+        description: 'EFT-format fitting text or free-form module list. Will be stored as-is in USER.md.',
+      },
+    },
+    required: ['fitting'],
+    additionalProperties: false,
+  },
+};
+
+export function isSetActiveFitTool(name: string): boolean {
+  return name === SET_ACTIVE_FIT_TOOL_NAME;
+}
+
 export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 'full'): Promise<NativeTool[]> {
   if (mode === 'static_aggregate') {
     return ALWAYS_ON_FUNCTION_TOOLS.filter((tool) =>
@@ -401,6 +425,7 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
     ANALYZE_LOCAL_TOOL,
     ANALYZE_SCAN_TOOL,
     INTEL_NOTE_TOOL,
+    SET_ACTIVE_FIT_TOOL,
     buildEveKillNamespace(),
     ...(await listEsiNamespaces()),
   ];
@@ -431,7 +456,7 @@ export function isSdeSqlTool(name: string): boolean {
 }
 
 export function isDeferredLookupToolName(name: string): boolean {
-  return isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name);
+  return isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
 }
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
@@ -1215,7 +1240,7 @@ export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'u
   if (name === 'update_plan') {
     return 'write';
   }
-  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name)) {
+  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();
