@@ -3,9 +3,8 @@
  * Handles D-Scan, Local chat, and Fleet composition pastes.
  * Auto-detects scan type from paste format.
  *
- * Inspired by adashboard.info multi-view approach:
- * ships by class, caps extraction, "interesting" highlights,
- * on/off grid separation, combat-only view, fleet profiling.
+ * Ship roles and groups derived from SDE dynamically via pattern matching
+ * on group names — no hardcoded group lists.
  */
 
 import type { Db } from '../db/sqlite.js';
@@ -17,6 +16,12 @@ import { executeAnalyzeLocal } from '../eve-local/analyzer.js';
 
 const MAX_LINES = 1000;
 const ON_GRID_THRESHOLD_KM = 10_000;
+
+// SDE category IDs (stable CCP constants)
+const CAT_SHIP = 6;
+// Noise categories filtered from output
+const CAT_CELESTIAL = 2;
+const CAT_ASTEROID = 25;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,6 +42,7 @@ interface TypeCount {
   name: string;
   count: number;
   groupName: string;
+  categoryId: number;
   categoryName: string;
 }
 
@@ -53,83 +59,102 @@ interface CatOut {
 }
 
 // ---------------------------------------------------------------------------
-// Ship role classification (group name → role)
+// Ship role classification — pattern-based on SDE group names
 // ---------------------------------------------------------------------------
 
-const ROLE_MAP: Record<string, string> = {
-  'Logistics Cruiser': 'logistics',
-  'Logistics Frigate': 'logistics',
-  'Force Auxiliary': 'logistics',
-  'Electronic Attack Ship': 'ewar',
-  'Force Recon Ship': 'ewar',
-  'Combat Recon Ship': 'ewar',
-  'Interceptor': 'tackle',
-  'Interdictor': 'tackle',
-  'Heavy Interdiction Cruiser': 'tackle',
-  'Covert Ops': 'scout',
-  'Stealth Bomber': 'scout',
-  'Carrier': 'capital',
-  'Dreadnought': 'capital',
-  'Supercarrier': 'capital',
-  'Titan': 'capital',
-  'Industrial Ship': 'industrial',
-  'Transport Ship': 'industrial',
-  'Blockade Runner': 'industrial',
-  'Deep Space Transport': 'industrial',
-  'Freighter': 'industrial',
-  'Jump Freighter': 'industrial',
-  'Mining Barge': 'industrial',
-  'Exhumer': 'industrial',
-  'Industrial Command Ship': 'industrial',
-  'Capital Industrial Ship': 'industrial',
-  'Expedition Frigate': 'industrial',
-  'Capsule': 'non_combat',
-  'Shuttle': 'non_combat',
-  'Rookie ship': 'non_combat',
-};
+// Role patterns: tested against lowercased group name.
+// Order matters — first match wins.
+const ROLE_PATTERNS: Array<[RegExp, string]> = [
+  [/logistic/i, 'logistics'],
+  [/force auxiliary/i, 'logistics'],
+  [/electronic attack/i, 'ewar'],
+  [/recon ship/i, 'ewar'],
+  [/interceptor/i, 'tackle'],
+  [/interdictor/i, 'tackle'],   // matches Interdictor and Heavy Interdiction Cruiser
+  [/covert ops/i, 'scout'],
+  [/stealth bomber/i, 'scout'],
+  [/titan/i, 'capital'],
+  [/supercarrier/i, 'capital'],
+  [/dreadnought/i, 'capital'],
+  [/\bcarrier\b/i, 'capital'],  // word boundary to avoid "Blockade Runner" false match
+  [/freighter/i, 'industrial'],
+  [/transport/i, 'industrial'],
+  [/blockade runner/i, 'industrial'],
+  [/industrial/i, 'industrial'],
+  [/mining barge/i, 'industrial'],
+  [/exhumer/i, 'industrial'],
+  [/expedition frigate/i, 'industrial'],
+  [/capsule/i, 'non_combat'],
+  [/shuttle/i, 'non_combat'],
+  [/rookie/i, 'non_combat'],
+];
 
-// Display order: lower = bigger threat, shown first
-const GROUP_ORDER: Record<string, number> = {
-  Titan: 1, Supercarrier: 2, Dreadnought: 3, Carrier: 4, 'Force Auxiliary': 5,
-  Battleship: 10, 'Black Ops': 11, Marauder: 12,
-  Battlecruiser: 20, 'Command Ship': 21,
-  'Strategic Cruiser': 25,
-  'Heavy Assault Cruiser': 30, Cruiser: 31,
-  'Heavy Interdiction Cruiser': 32, 'Combat Recon Ship': 33, 'Force Recon Ship': 34,
-  'Logistics Cruiser': 35,
-  'Tactical Destroyer': 40, Destroyer: 41, Interdictor: 42, 'Command Destroyer': 43,
-  'Assault Frigate': 50, Frigate: 51, Interceptor: 52, 'Stealth Bomber': 53,
-  'Electronic Attack Ship': 54, 'Covert Ops': 55, 'Logistics Frigate': 56,
-};
+function classifyRole(groupName: string): string {
+  for (const [pattern, role] of ROLE_PATTERNS) {
+    if (pattern.test(groupName)) return role;
+  }
+  return 'dps';
+}
 
-// "Interesting" groups — tactically significant items highlighted by FC tools
-// (adashboard.info "Interesting" section concept)
-const INTERESTING_GROUPS = new Set([
-  'Titan', 'Supercarrier', 'Dreadnought', 'Carrier', 'Force Auxiliary',
-  'Black Ops', 'Marauder', 'Command Ship', 'Command Destroyer',
-  'Strategic Cruiser', 'Heavy Interdiction Cruiser',
-  'Combat Recon Ship', 'Force Recon Ship',
-]);
+// ---------------------------------------------------------------------------
+// Group display order — pattern-based size tiers
+// ---------------------------------------------------------------------------
 
-// Interesting type names (specific ships/items regardless of group)
-const INTERESTING_TYPES = new Set([
-  'Monitor',                          // FC immune ship
-  'Ansiblex Jump Gate',               // jump bridge
-  'Pharolux Cyno Beacon',             // cyno beacon
-  'Tenebrex Cyno Jammer',             // cyno jammer
-  'Mobile Cynosural Inhibitor',       // deployable cyno jam
-  'Mobile Large Warp Disruptor I',    // drag bubble
-  'Mobile Large Warp Disruptor II',
-  'Mobile Medium Warp Disruptor I',
-  'Mobile Medium Warp Disruptor II',
-  'Mobile Small Warp Disruptor I',
-  'Mobile Small Warp Disruptor II',
-]);
+const SIZE_TIER_PATTERNS: Array<[RegExp, number]> = [
+  [/titan/i, 1],
+  [/supercarrier/i, 2],
+  [/dreadnought/i, 3],
+  [/\bcarrier\b/i, 4],
+  [/force auxiliary/i, 5],
+  [/battleship|black ops|marauder/i, 10],
+  [/battlecruiser|command ship/i, 20],
+  [/strategic cruiser/i, 25],
+  [/cruiser|heavy assault|recon/i, 30],
+  [/logistic.*cruiser/i, 35],
+  [/destroyer|interdictor|command destroyer|tactical destroyer/i, 40],
+  [/frigate|assault|interceptor|stealth|electronic|covert|logistic.*frigate/i, 50],
+];
 
-// Capital groups for caps extraction
-const CAPITAL_GROUPS = new Set([
-  'Titan', 'Supercarrier', 'Dreadnought', 'Carrier', 'Force Auxiliary',
-]);
+function groupSortOrder(groupName: string): number {
+  for (const [pattern, order] of SIZE_TIER_PATTERNS) {
+    if (pattern.test(groupName)) return order;
+  }
+  return 90;
+}
+
+// ---------------------------------------------------------------------------
+// "Interesting" detection — pattern-based
+// ---------------------------------------------------------------------------
+
+const INTERESTING_GROUP_PATTERNS = [
+  /titan/i, /supercarrier/i, /dreadnought/i, /\bcarrier\b/i, /force auxiliary/i,
+  /black ops/i, /marauder/i, /command ship/i, /command destroyer/i,
+  /strategic cruiser/i, /interdictor/i, /recon/i,
+];
+
+const INTERESTING_TYPE_PATTERNS = [
+  /^monitor$/i,                       // FC immune ship
+  /ansiblex/i,                        // jump bridge
+  /pharolux/i,                        // cyno beacon
+  /tenebrex/i,                        // cyno jammer
+  /cynosural inhibitor/i,             // deployable cyno jam
+  /warp disruptor/i,                  // drag bubbles
+];
+
+function isInteresting(groupName: string, typeName: string): boolean {
+  for (const p of INTERESTING_GROUP_PATTERNS) {
+    if (p.test(groupName)) return true;
+  }
+  for (const p of INTERESTING_TYPE_PATTERNS) {
+    if (p.test(typeName)) return true;
+  }
+  return false;
+}
+
+function isCapital(groupName: string): boolean {
+  return /titan|supercarrier|dreadnought|force auxiliary/i.test(groupName)
+    || (/\bcarrier\b/i.test(groupName) && !/blockade/i.test(groupName));
+}
 
 // ---------------------------------------------------------------------------
 // Scan type auto-detection
@@ -164,7 +189,7 @@ function parseDistanceKm(raw: string): number | null {
   const unit = match[2].toLowerCase();
   if (unit === 'au') return value * 149_597_870.7;
   if (unit === 'm') return value / 1000;
-  return value; // km
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +257,7 @@ function countTypes(
         name: sde.name,
         count: 1,
         groupName: sde.group_name,
+        categoryId: sde.category_id,
         categoryName: sde.category_name,
       });
     }
@@ -255,16 +281,17 @@ function groupByCat(tcs: TypeCount[]): Record<string, CatOut> {
     for (const [grp, types] of gm) {
       const n = types.reduce((s, t) => s + t.count, 0);
       total += n;
+      const isShipCat = types[0]?.categoryId === CAT_SHIP;
       groups.push({
         group: grp,
-        role: cat === 'Ship' ? (ROLE_MAP[grp] ?? 'dps') : 'n/a',
+        role: isShipCat ? classifyRole(grp) : 'n/a',
         count: n,
         types: types
           .sort((a, b) => b.count - a.count)
           .map((t) => (t.count > 1 ? `${t.name} x${t.count}` : t.name)),
       });
     }
-    groups.sort((a, b) => (GROUP_ORDER[a.group] ?? 90) - (GROUP_ORDER[b.group] ?? 90));
+    groups.sort((a, b) => groupSortOrder(a.group) - groupSortOrder(b.group));
     out[cat] = { count: total, groups };
   }
   return out;
@@ -280,8 +307,8 @@ function buildFleetProfile(tcs: TypeCount[]): Record<string, unknown> {
   let scouts = 0;
 
   for (const tc of tcs) {
-    if (tc.categoryName !== 'Ship') continue;
-    const role = ROLE_MAP[tc.groupName] ?? 'dps';
+    if (tc.categoryId !== CAT_SHIP) continue;
+    const role = classifyRole(tc.groupName);
     switch (role) {
       case 'logistics': logi += tc.count; break;
       case 'ewar': ewar += tc.count; break;
@@ -315,27 +342,23 @@ function buildFleetProfile(tcs: TypeCount[]): Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Extract "interesting" items (adashboard concept)
+// Extract "interesting" items + capitals (pattern-based)
 // ---------------------------------------------------------------------------
 
 function extractInteresting(tcs: TypeCount[]): string[] {
   const items: string[] = [];
   for (const tc of tcs) {
-    if (INTERESTING_GROUPS.has(tc.groupName) || INTERESTING_TYPES.has(tc.name)) {
+    if (isInteresting(tc.groupName, tc.name)) {
       items.push(tc.count > 1 ? `${tc.name} x${tc.count}` : tc.name);
     }
   }
   return items;
 }
 
-// ---------------------------------------------------------------------------
-// Extract capitals summary
-// ---------------------------------------------------------------------------
-
 function extractCaps(tcs: TypeCount[]): string[] | null {
   const caps: string[] = [];
   for (const tc of tcs) {
-    if (CAPITAL_GROUPS.has(tc.groupName)) {
+    if (tc.categoryId === CAT_SHIP && isCapital(tc.groupName)) {
       caps.push(tc.count > 1 ? `${tc.name} x${tc.count}` : tc.name);
     }
   }
@@ -360,21 +383,11 @@ function parseDscanLines(lines: string[]): DscanEntry[] {
     const first = parts[0].trim();
     const num = parseInt(first, 10);
     if (!isNaN(num) && parts.length >= 3) {
-      // Standard format: typeID \t TypeName \t ItemName \t Distance
       const distRaw = parts[3]?.trim() ?? '';
-      entries.push({
-        typeId: num,
-        typeName: parts[1].trim(),
-        distanceKm: parseDistanceKm(distRaw),
-      });
+      entries.push({ typeId: num, typeName: parts[1].trim(), distanceKm: parseDistanceKm(distRaw) });
     } else {
-      // Fallback: TypeName \t ItemName \t Distance
       const distRaw = parts[2]?.trim() ?? parts[1]?.trim() ?? '';
-      entries.push({
-        typeId: null,
-        typeName: first,
-        distanceKm: parseDistanceKm(distRaw),
-      });
+      entries.push({ typeId: null, typeName: first, distanceKm: parseDistanceKm(distRaw) });
     }
   }
   return entries;
@@ -388,13 +401,11 @@ function analyzeDscan(db: Db, lines: string[]): unknown {
 
   console.log(`[analyze_scan] D-Scan: ${entries.length} entries`);
 
-  // Resolve via SDE
   const ids = [...new Set(entries.filter((e) => e.typeId !== null).map((e) => e.typeId!))];
   const names = [...new Set(entries.filter((e) => e.typeId === null).map((e) => e.typeName))];
   const idMap = resolveByIds(db, ids);
   const nameMap = resolveByNames(db, names);
 
-  // Count all
   const allEntries = entries.map((e) => ({ typeId: e.typeId, typeName: e.typeName }));
   const tcs = countTypes(allEntries, idMap, nameMap);
   const cats = groupByCat(tcs);
@@ -402,7 +413,7 @@ function analyzeDscan(db: Db, lines: string[]): unknown {
   const interesting = extractInteresting(tcs);
   const caps = extractCaps(tcs);
 
-  // On-grid / off-grid counts
+  // On-grid / off-grid
   let onGrid = 0;
   let offGrid = 0;
   for (const e of entries) {
@@ -413,18 +424,22 @@ function analyzeDscan(db: Db, lines: string[]): unknown {
   }
   const hasGridInfo = onGrid > 0 || offGrid > 0;
 
-  // Strip noise categories to save context tokens
+  // Strip noise categories by numeric ID
   const celestials = cats['Celestial']?.count ?? 0;
-  delete cats['Celestial'];
   const asteroids = cats['Asteroid']?.count ?? 0;
-  delete cats['Asteroid'];
+  const filtered: Record<string, CatOut> = {};
+  for (const [catName, catData] of Object.entries(cats)) {
+    const firstCatId = tcs.find((tc) => tc.categoryName === catName)?.categoryId;
+    if (firstCatId === CAT_CELESTIAL || firstCatId === CAT_ASTEROID) continue;
+    filtered[catName] = catData;
+  }
 
   return {
     ok: true,
     scan_type: 'dscan',
     total_objects: entries.length,
     resolved: tcs.reduce((s, t) => s + t.count, 0),
-    categories: cats,
+    categories: filtered,
     fleet_profile: profile,
     ...(interesting.length > 0 ? { interesting } : {}),
     ...(caps ? { capitals: caps } : {}),
@@ -450,20 +465,15 @@ function analyzeFleet(db: Db, lines: string[]): unknown {
 
   console.log(`[analyze_scan] Fleet: ${raw.length} entries`);
 
-  // EVE fleet window format has 5-7 columns:
-  // Pilot \t System(+Docked) \t ShipClass \t ShipType \t Position \t ...
-  // But pastes vary. Detect ship column by resolving sample against SDE.
+  // Detect ship column by resolving sample against SDE
   const maxCols = Math.min(raw[0].length, 5);
   const sample = raw.slice(0, 15);
-
   let bestCol = 1;
   let bestHits = 0;
-  const colMaps: Map<string, SdeTypeRow>[] = [];
 
   for (let col = 0; col < maxCols; col++) {
     const colNames = [...new Set(sample.map((r) => r[col]).filter(Boolean))];
     const resolved = resolveByNames(db, colNames);
-    colMaps[col] = resolved;
     const hits = sample.filter((r) => r[col] && resolved.has(r[col].toLowerCase())).length;
     if (hits > bestHits) {
       bestHits = hits;
@@ -471,10 +481,8 @@ function analyzeFleet(db: Db, lines: string[]): unknown {
     }
   }
 
-  // Pilot column = first column that isn't the ship column (prefer col 0)
   const pilotCol = bestCol === 0 ? 1 : 0;
 
-  // Resolve all ship names from the detected column
   const allShipNames = [...new Set(raw.map((r) => r[bestCol]).filter(Boolean))];
   const nameMap = resolveByNames(db, allShipNames);
 
@@ -485,10 +493,7 @@ function analyzeFleet(db: Db, lines: string[]): unknown {
   const interesting = extractInteresting(tcs);
   const caps = extractCaps(tcs);
 
-  const pilots = raw.slice(0, 50).map((r) => ({
-    name: r[pilotCol] ?? '',
-    ship: r[bestCol] ?? '',
-  }));
+  const pilots = raw.slice(0, 50).map((r) => ({ name: r[pilotCol] ?? '', ship: r[bestCol] ?? '' }));
 
   return {
     ok: true,
