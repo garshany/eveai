@@ -218,6 +218,7 @@ export function isHeartbeatConfigTool(name: string): boolean {
 
 const BATCH_MARKET_TOOL_NAME = 'batch_market_prices';
 const OSINT_INFER_TOOL_NAME = 'osint_infer_home';
+const ANALYZE_LOCAL_TOOL_NAME = 'analyze_local';
 
 const BATCH_MARKET_TOOL: NativeFunctionTool = {
   type: 'function',
@@ -274,6 +275,28 @@ const OSINT_INFER_TOOL: NativeFunctionTool = {
   },
 };
 
+const ANALYZE_LOCAL_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: ANALYZE_LOCAL_TOOL_NAME,
+  description: 'Analyze a pasted EVE Online local chat member list. Resolves character names, fetches corporation/alliance affiliations, kill statistics, and top ships for active PvPers. Returns grouped intel with threat assessment. Copy character names from in-game local chat and paste them.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      pilots: {
+        type: 'string',
+        description: 'Newline-separated character names copied from EVE Online local chat window.',
+      },
+      days: {
+        type: ['integer', 'null'],
+        description: 'Kill stats lookback period in days. Default 7, max 90.',
+      },
+    },
+    required: ['pilots', 'days'],
+    additionalProperties: false,
+  },
+};
+
 export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 'full'): Promise<NativeTool[]> {
   if (mode === 'static_aggregate') {
     return ALWAYS_ON_FUNCTION_TOOLS.filter((tool) =>
@@ -289,6 +312,7 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
     HEARTBEAT_CONFIG_TOOL,
     BATCH_MARKET_TOOL,
     OSINT_INFER_TOOL,
+    ANALYZE_LOCAL_TOOL,
     buildEveKillNamespace(),
     ...(await listEsiNamespaces()),
   ];
@@ -306,6 +330,10 @@ export function isOsintInferTool(name: string): boolean {
   return name === OSINT_INFER_TOOL_NAME;
 }
 
+export function isAnalyzeLocalTool(name: string): boolean {
+  return name === ANALYZE_LOCAL_TOOL_NAME;
+}
+
 export function isUniverseCountTool(name: string): boolean {
   return name === UNIVERSE_COUNT_TOOL_NAME;
 }
@@ -315,7 +343,7 @@ export function isSdeSqlTool(name: string): boolean {
 }
 
 export function isDeferredLookupToolName(name: string): boolean {
-  return isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name);
+  return isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name);
 }
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
