@@ -86,8 +86,8 @@ type MonitorInstance = {
   lastKillsSeen: number;
   /** Previous pilot system — detect system change */
   lastPilotSystem: number;
-  /** Count of identical "quiet" digests sent — skip after 2 */
-  quietDigestCount: number;
+  /** Previous ganker count for delta detection */
+  lastGankerCount: number;
 };
 
 type StopReason = 'arrived' | 'death' | 'offline' | 'manual';
@@ -408,7 +408,7 @@ export function startRouteMonitor(
     lastOverallThreat: 'LOW' as ThreatLevel,
     lastKillsSeen: 0,
     lastPilotSystem: 0,
-    quietDigestCount: 0,
+    lastGankerCount: 0,
     // Timers are assigned below after immediate polls
     locationTimer: null!,
     killTimer: null!,
@@ -818,16 +818,24 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
     // 2.5. Get active ganker intel across the route
     const gankerIntel = getActiveGankers(db, monitor.routeSystems);
 
-    // === Only send digest when there's something to report ===
-    const hasKills = monitor.stats.killsSeen > 0;
-    const hasGankers = gankerIntel.length > 0;
-    const hasThreat = digest.overallThreat !== 'LOW';
+    // === Only send when something CHANGED since last digest ===
+    const newKills = monitor.stats.killsSeen - inst.lastKillsSeen;
+    const threatChanged = digest.overallThreat !== inst.lastOverallThreat;
+    const systemChanged = monitor.currentSystemId !== inst.lastPilotSystem;
+    const gankersChanged = gankerIntel.length > 0 && gankerIntel.length !== inst.lastGankerCount;
     const hasPursuit = pursuit !== null;
 
-    if (!hasKills && !hasGankers && !hasThreat && !hasPursuit) {
-      console.log(`${LOG} digest skipped (nothing to report) chat=${monitor.chatId}`);
+    const shouldSend = newKills > 0 || threatChanged || systemChanged || gankersChanged || hasPursuit;
+
+    if (!shouldSend) {
+      console.log(`${LOG} digest skipped (no change) chat=${monitor.chatId} kills=${monitor.stats.killsSeen} threat=${digest.overallThreat}`);
       return;
     }
+
+    inst.lastKillsSeen = monitor.stats.killsSeen;
+    inst.lastOverallThreat = digest.overallThreat;
+    inst.lastPilotSystem = monitor.currentSystemId;
+    inst.lastGankerCount = gankerIntel.length;
 
     // 3. Call LLM for route analysis — only when there's real intel
     const intelSummary = await generateRouteIntelSummary(
