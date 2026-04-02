@@ -55,18 +55,24 @@ function executeKillWatch(db: Db, args: Record<string, unknown>, chatId?: number
     };
   }
 
+  if (action === 'unwatch_all') {
+    const count = removeAllWatches(db, chatId);
+    stopRouteMonitor(chatId, 'manual');
+    return { ok: true, removed: count, message: `Removed all ${count} watches. Route monitor stopped.` };
+  }
+
   if (action === 'unwatch') {
-    const topicType = args.topic_type as string | null;
-    const topicId = args.topic_id as number | null;
+    const topicType = args.topic_type as string | undefined;
+    const topicId = args.topic_id as number | undefined;
 
     if (!topicType && !topicId) {
-      // Remove all watches + stop route monitor
+      // Fallback: remove all
       const count = removeAllWatches(db, chatId);
       stopRouteMonitor(chatId, 'manual');
       return { ok: true, removed: count, message: `Removed all ${count} watches. Route monitor stopped.` };
     }
 
-    const topic = buildTopic(topicType, topicId);
+    const topic = buildTopic(topicType ?? null, topicId ?? null);
     if (!topic) return { ok: false, error: 'Invalid topic_type or topic_id.' };
 
     const result = removeWatch(db, chatId, topic);

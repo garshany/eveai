@@ -296,34 +296,34 @@ const DEFERRED_EVE_KILL_TOOLS: NativeFunctionTool[] = [
     type: 'function',
     name: 'kill_watch',
     description:
-      'Subscribe to real-time kill notifications via WebSocket. Watch a specific player, system, or region — ' +
-      'bot will send a Telegram alert when a matching kill happens. ' +
-      'Use when user asks "follow player X", "watch system Uedama", "alert me about kills in Delve".',
-    strict: true,
+      'Kill alert subscriptions. Watch player/system/region for real-time Telegram kill alerts. ' +
+      'IMPORTANT: to remove ALL watches at once, use action=unwatch_all (no other params needed). ' +
+      'Single unwatch needs topic_type + topic_id.',
+    strict: false,
     defer_loading: true,
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['watch', 'unwatch', 'list'],
-          description: 'watch=subscribe, unwatch=remove (pass null topic_type+topic_id to remove ALL at once), list=show active.',
+          enum: ['watch', 'unwatch', 'unwatch_all', 'list'],
+          description: 'watch=subscribe, unwatch=remove one, unwatch_all=remove ALL watches + stop route monitor, list=show active.',
         },
         topic_type: {
-          type: ['string', 'null'],
-          enum: ['victim', 'attacker', 'system', 'region', null],
-          description: 'What to watch. null with unwatch = remove ALL watches at once.',
+          type: 'string',
+          enum: ['victim', 'attacker', 'system', 'region'],
+          description: 'Required for watch/unwatch. Not needed for unwatch_all/list.',
         },
         topic_id: {
-          type: ['integer', 'null'],
-          description: 'CCP ID. null with unwatch = remove ALL watches at once.',
+          type: 'integer',
+          description: 'CCP ID: character_id, system_id, or region_id. Required for watch/unwatch.',
         },
         label: {
-          type: ['string', 'null'],
-          description: 'Human-readable label for the watch (e.g. player/system name).',
+          type: 'string',
+          description: 'Human-readable label (e.g. player/system name). Optional.',
         },
       },
-      required: ['action', 'topic_type', 'topic_id', 'label'],
+      required: ['action'],
       additionalProperties: false,
     },
   },
