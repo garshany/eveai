@@ -8,6 +8,7 @@ import {
 } from './web/health.js';
 import { startHeartbeat, stopHeartbeat } from './scheduled/heartbeat-worker.js';
 import { startKillPoller, stopKillPoller } from './eve-kill/poll.js';
+import { startZkbWs, stopZkbWs } from './eve-kill/zkb-ws.js';
 import { setRouteMonitorSender } from './eve/route-planner.js';
 import { restoreMonitors } from './eve-board/monitor.js';
 
@@ -66,7 +67,8 @@ async function main() {
     });
   };
 
-  // Kill watch: REST polling every 60s (reliable, 1-3 min delay)
+  // Kill watch: zKB WebSocket (real-time) + REST polling (fallback, 60s)
+  startZkbWs(db, sendKillAlert);
   startKillPoller(db, sendKillAlert);
 
   // Restore route monitors from DB (survives pm2 restart)
@@ -77,6 +79,7 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('[app] Shutting down...');
+    stopZkbWs();
     stopKillPoller();
     stopHeartbeat();
     bot.stop();
