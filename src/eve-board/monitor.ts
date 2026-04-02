@@ -148,7 +148,7 @@ type EsiKillmail = {
 };
 
 /** Attacker info extracted during enrichment for ganker cache */
-type ExtractedAttacker = { characterId: number; shipTypeId: number };
+type ExtractedAttacker = { characterId: number; characterName: string; shipTypeId: number };
 
 /** Enrichment result: kills for threat analysis + raw attacker data for ganker cache */
 type EnrichResult = { kills: KilllistItem[]; attackers: ExtractedAttacker[] };
@@ -162,14 +162,24 @@ async function enrichZkbKills(
   db: Db,
   items: ZkbFeedItem[],
 ): Promise<EnrichResult> {
-  const results: KilllistItem[] = [];
-  const attackerList: ExtractedAttacker[] = [];
+  // Phase 1: fetch ESI killmails, collect raw data
+  type PendingKill = {
+    item: ZkbFeedItem;
+    km: EsiKillmail;
+    victim: EsiKillmailVictim;
+    attackers: EsiKillmailAttacker[];
+    fb: EsiKillmailAttacker | undefined;
+    shipInfo: { typeName: string; groupName: string } | null;
+    victimShipTypeId: number | undefined;
+  };
+  const pending: PendingKill[] = [];
+  const fallbacks: KilllistItem[] = [];
+  const characterIdsToResolve = new Set<number>();
 
   for (const item of items.slice(0, MAX_ENRICH_PER_SYSTEM)) {
     const hash = item.zkb?.hash;
     if (!hash) {
-      // No hash — build from zKB metadata only
-      results.push(zkbToKilllistFallback(item));
+      fallbacks.push(zkbToKilllistFallback(item));
       continue;
     }
 
@@ -181,7 +191,7 @@ async function enrichZkbKills(
       );
 
       if (!r.ok || !r.data) {
-        results.push(zkbToKilllistFallback(item));
+        fallbacks.push(zkbToKilllistFallback(item));
         continue;
       }
 
@@ -189,39 +199,82 @@ async function enrichZkbKills(
       const victim = km.victim ?? {};
       const attackers = km.attackers ?? [];
       const fb = attackers.find((a) => a.final_blow === true) ?? attackers[0];
-
-      // Resolve victim ship group from SDE
       const victimShipTypeId = victim.ship_type_id;
       const shipInfo = victimShipTypeId ? resolveTypeGroup(db, victimShipTypeId) : null;
 
-      results.push({
-        killmail_id: item.killmail_id,
-        killmail_time: typeof km.killmail_time === 'string' ? km.killmail_time : undefined,
-        total_value: item.zkb?.totalValue ?? 0,
-        is_npc: item.zkb?.npc ?? false,
-        is_solo: item.zkb?.solo ?? false,
-        attacker_count: attackers.length,
-        ship_type_id: victimShipTypeId,
-        ship_name: shipInfo?.typeName ?? undefined,
-        ship_group_name: shipInfo?.groupName ?? undefined,
-        final_blow_character_id: fb?.character_id,
-      });
+      pending.push({ item, km, victim, attackers, fb, shipInfo, victimShipTypeId });
 
-      // Collect attacker data for ganker cache
+      // Collect all character IDs for batch name resolution
+      if (victim.character_id && victim.character_id > 0) {
+        characterIdsToResolve.add(victim.character_id);
+      }
       for (const atk of attackers) {
         if (atk.character_id && atk.character_id > 0) {
-          attackerList.push({
-            characterId: atk.character_id,
-            shipTypeId: atk.ship_type_id ?? 0,
-          });
+          characterIdsToResolve.add(atk.character_id);
         }
       }
     } catch {
-      results.push(zkbToKilllistFallback(item));
+      fallbacks.push(zkbToKilllistFallback(item));
+    }
+  }
+
+  // Phase 2: batch-resolve character names via ESI post_universe_names
+  const nameMap = await resolveCharacterNames(db, characterIdsToResolve);
+
+  // Phase 3: build results with resolved names
+  const results: KilllistItem[] = [...fallbacks];
+  const attackerList: ExtractedAttacker[] = [];
+
+  for (const p of pending) {
+    const fbName = p.fb?.character_id ? nameMap.get(p.fb.character_id) : undefined;
+    const victimName = p.victim.character_id ? nameMap.get(p.victim.character_id) : undefined;
+
+    results.push({
+      killmail_id: p.item.killmail_id,
+      killmail_time: typeof p.km.killmail_time === 'string' ? p.km.killmail_time : undefined,
+      total_value: p.item.zkb?.totalValue ?? 0,
+      is_npc: p.item.zkb?.npc ?? false,
+      is_solo: p.item.zkb?.solo ?? false,
+      attacker_count: p.attackers.length,
+      ship_type_id: p.victimShipTypeId,
+      ship_name: p.shipInfo?.typeName ?? undefined,
+      ship_group_name: p.shipInfo?.groupName ?? undefined,
+      final_blow_character_id: p.fb?.character_id,
+      final_blow_character_name: fbName,
+      victim_character_id: p.victim.character_id,
+      victim_character_name: victimName,
+    });
+
+    // Collect attacker data for ganker cache (with resolved names)
+    for (const atk of p.attackers) {
+      if (atk.character_id && atk.character_id > 0) {
+        attackerList.push({
+          characterId: atk.character_id,
+          characterName: nameMap.get(atk.character_id) ?? '',
+          shipTypeId: atk.ship_type_id ?? 0,
+        });
+      }
     }
   }
 
   return { kills: results, attackers: attackerList };
+}
+
+/** Batch-resolve character names via ESI post_universe_names (max 100 per call). */
+async function resolveCharacterNames(db: Db, ids: Set<number>): Promise<Map<number, string>> {
+  const map = new Map<number, string>();
+  if (ids.size === 0) return map;
+  try {
+    const r = await callEsiOperation<Array<{ id: number; name: string }>>(
+      db, 'post_universe_names', { ids: JSON.stringify([...ids].slice(0, 100)) },
+    );
+    if (r.ok && Array.isArray(r.data)) {
+      for (const e of r.data) {
+        if (e.id && e.name) map.set(e.id, e.name);
+      }
+    }
+  } catch { /* non-critical — names stay empty */ }
+  return map;
 }
 
 /** Fallback: build KilllistItem from zKB metadata when ESI enrichment fails. */
@@ -605,6 +658,12 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
       const killsForDigest = enrichResult.kills.map((k) => ({
         killmail_time: k.killmail_time,
         killmail_id: k.killmail_id,
+        ship_name: k.ship_name,
+        victim_character_name: k.victim_character_name,
+        final_blow_character_name: k.final_blow_character_name,
+        total_value: k.total_value,
+        attacker_count: k.attacker_count,
+        is_solo: k.is_solo,
         position: undefined as { x: number; y: number; z: number } | undefined,
       }));
       const sysDigest = buildSystemDigest(
@@ -727,9 +786,12 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
       inst.lastDigestsBehind,
     );
 
+    // 2.5. Get active ganker intel across the route
+    const gankerIntel = getActiveGankers(db, monitor.routeSystems);
+
     // 3. ALWAYS call LLM for route analysis — this is the ESP
     const intelSummary = await generateRouteIntelSummary(
-      digest, shipAssessment, pursuit,
+      digest, shipAssessment, pursuit, gankerIntel,
       {
         routeSystems: monitor.routeSystems,
         originId: monitor.originId,
@@ -912,6 +974,112 @@ async function pollJumps(
 }
 
 // ---------------------------------------------------------------------------
+// Ganker intel — active gankers across route systems
+// ---------------------------------------------------------------------------
+
+/** Per-ganker intelligence for LLM context. */
+export type GankerIntel = {
+  characterId: number;
+  characterName: string;
+  shipName: string;
+  systems: Array<{
+    systemId: number;
+    systemName: string;
+    lastSeen: string;
+    killCount: number;
+  }>;
+  totalKills: number;
+  lastSeenMinutesAgo: number;
+  /** Ganker was seen in 2+ systems — possibly moving along the route. */
+  isMoving: boolean;
+};
+
+type GankerCacheRow = {
+  character_id: number;
+  character_name: string | null;
+  system_id: number;
+  kill_count: number;
+  last_seen: string;
+  ship_type_id: number | null;
+};
+
+/**
+ * Query active gankers (last 30 min) across the given route systems.
+ * Groups by character, resolves ship and system names from SDE,
+ * and flags gankers seen in 2+ systems as "moving".
+ */
+function getActiveGankers(db: Db, routeSystems: number[]): GankerIntel[] {
+  if (routeSystems.length === 0) return [];
+
+  const placeholders = routeSystems.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT character_id, character_name, system_id, kill_count, last_seen, ship_type_id
+    FROM route_ganker_cache
+    WHERE system_id IN (${placeholders})
+      AND last_seen >= datetime('now', '-30 minutes')
+    ORDER BY last_seen DESC
+  `).all(...routeSystems) as GankerCacheRow[];
+
+  if (rows.length === 0) return [];
+
+  // Group by character_id
+  const byChar = new Map<number, { name: string; shipTypeId: number; rows: GankerCacheRow[] }>();
+  for (const row of rows) {
+    let entry = byChar.get(row.character_id);
+    if (!entry) {
+      entry = { name: row.character_name ?? '', shipTypeId: row.ship_type_id ?? 0, rows: [] };
+      byChar.set(row.character_id, entry);
+    }
+    entry.rows.push(row);
+    // Keep the most recent ship_type_id
+    if (row.ship_type_id && row.ship_type_id > 0) {
+      entry.shipTypeId = row.ship_type_id;
+    }
+    // Keep the longest name
+    if (row.character_name && row.character_name.length > entry.name.length) {
+      entry.name = row.character_name;
+    }
+  }
+
+  const now = Date.now();
+  const result: GankerIntel[] = [];
+
+  for (const [charId, entry] of byChar) {
+    // Resolve ship name from SDE
+    const shipInfo = entry.shipTypeId > 0 ? resolveTypeGroup(db, entry.shipTypeId) : null;
+
+    const systems = entry.rows.map((r) => ({
+      systemId: r.system_id,
+      systemName: resolveSystemName(db, r.system_id),
+      lastSeen: r.last_seen,
+      killCount: r.kill_count,
+    }));
+
+    const totalKills = systems.reduce((acc, s) => acc + s.killCount, 0);
+    const mostRecentMs = Math.max(...entry.rows.map((r) => new Date(r.last_seen).getTime()));
+    const lastSeenMinutesAgo = Math.round((now - mostRecentMs) / 60_000);
+
+    result.push({
+      characterId: charId,
+      characterName: entry.name || `ID:${charId}`,
+      shipName: shipInfo?.typeName ?? '?',
+      systems,
+      totalKills,
+      lastSeenMinutesAgo,
+      isMoving: systems.length >= 2,
+    });
+  }
+
+  // Sort: moving gankers first, then by total kills desc
+  result.sort((a, b) => {
+    if (a.isMoving !== b.isMoving) return a.isMoving ? -1 : 1;
+    return b.totalKills - a.totalKills;
+  });
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Ganker cache — upsert attacker data from enriched kills
 // ---------------------------------------------------------------------------
 
@@ -920,11 +1088,12 @@ function upsertGankerCache(db: Db, systemId: number, attackers: ExtractedAttacke
 
   const stmt = db.prepare(`
     INSERT INTO route_ganker_cache (character_id, system_id, character_name, kill_count, last_seen, ship_type_id)
-    VALUES (?, ?, '', 1, datetime('now'), ?)
+    VALUES (?, ?, ?, 1, datetime('now'), ?)
     ON CONFLICT(character_id, system_id) DO UPDATE SET
-      kill_count   = kill_count + 1,
-      last_seen    = datetime('now'),
-      ship_type_id = CASE WHEN excluded.ship_type_id > 0 THEN excluded.ship_type_id ELSE ship_type_id END
+      kill_count     = kill_count + 1,
+      last_seen      = datetime('now'),
+      character_name = CASE WHEN length(excluded.character_name) > 0 THEN excluded.character_name ELSE character_name END,
+      ship_type_id   = CASE WHEN excluded.ship_type_id > 0 THEN excluded.ship_type_id ELSE ship_type_id END
   `);
 
   // Deduplicate: same character may appear in multiple kills
@@ -932,7 +1101,7 @@ function upsertGankerCache(db: Db, systemId: number, attackers: ExtractedAttacke
   for (const atk of attackers) {
     if (seen.has(atk.characterId)) continue;
     seen.add(atk.characterId);
-    stmt.run(atk.characterId, systemId, atk.shipTypeId);
+    stmt.run(atk.characterId, systemId, atk.characterName, atk.shipTypeId);
   }
 }
 

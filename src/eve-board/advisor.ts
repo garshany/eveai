@@ -16,6 +16,7 @@ import type {
   SystemThreatDigest,
   ThreatLevel,
 } from './types.js';
+import type { GankerIntel } from './monitor.js';
 import { createNativeResponse, toNativeMessage } from '../agent/native-responses.js';
 
 // ---------------------------------------------------------------------------
@@ -263,6 +264,7 @@ export async function generateRouteIntelSummary(
   digest: RouteThreatDigest,
   shipAssessment: ShipAssessment,
   pursuit: PursuitSignal | null,
+  gankerIntel: GankerIntel[],
   monitor: {
     routeSystems: number[];
     originId: number;
@@ -270,7 +272,7 @@ export async function generateRouteIntelSummary(
     currentSystemId: number;
   },
 ): Promise<RouteIntelSummary> {
-  const prompt = buildIntelPrompt(digest, shipAssessment, pursuit, monitor);
+  const prompt = buildIntelPrompt(digest, shipAssessment, pursuit, gankerIntel, monitor);
 
   try {
     const response = await withTimeout(
@@ -301,6 +303,7 @@ function buildIntelPrompt(
   digest: RouteThreatDigest,
   ship: ShipAssessment,
   pursuit: PursuitSignal | null,
+  gankerIntel: GankerIntel[],
   monitor: {
     routeSystems: number[];
     originId: number;
@@ -342,6 +345,19 @@ function buildIntelPrompt(
     lines.push('=== СИСТЕМЫ ПОЗАДИ ===');
     for (const sys of digest.systemsBehind) {
       lines.push(formatSystemLine(sys));
+    }
+    lines.push('');
+  }
+
+  if (gankerIntel.length > 0) {
+    lines.push('=== ИЗВЕСТНЫЕ ГАНКЕРЫ (последние 30 мин) ===');
+    for (const g of gankerIntel.slice(0, 10)) {
+      const systemParts = g.systems.map((s) => {
+        const minsAgo = Math.round((Date.now() - new Date(s.lastSeen).getTime()) / 60_000);
+        return `${s.systemName} ${minsAgo} мин назад (${s.killCount} kills)`;
+      });
+      const movingTag = g.isMoving ? ' ⚠️ ДВИЖЕТСЯ' : '';
+      lines.push(`${g.characterName} (${g.shipName}) — ${systemParts.join(', ')}${movingTag}`);
     }
     lines.push('');
   }
