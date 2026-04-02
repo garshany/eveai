@@ -263,6 +263,12 @@ function formatRouteSummary(
   lines.push('');
   lines.push(`Ключевые точки: <code>${esc(buildRoutePreview(preferred))}</code>`);
 
+  const zkbLines = buildSelectedRouteKillSummary(preferred);
+  if (zkbLines.length > 0) {
+    lines.push('');
+    lines.push(...zkbLines);
+  }
+
   return lines.join('\n').trim();
 }
 
@@ -336,6 +342,26 @@ function buildRoutePreview(route: RouteVariant): string {
   add(route.systems[route.systems.length - 1]);
 
   return preview.join(' → ');
+}
+
+function buildSelectedRouteKillSummary(route: RouteVariant): string[] {
+  if (route.danger_systems.length === 0) {
+    return ['zKB срез: на выбранной трассе свежих killmail за последний час не видно.'];
+  }
+
+  const lines = ['zKB срез:'];
+  for (const system of route.danger_systems.slice(0, 2)) {
+    lines.push(`- ${system.name} ${system.sec.toFixed(1)}: ${system.kills_1h} PvP, ${system.total_value_m}M`);
+    for (const kill of system.kills.slice(0, 2)) {
+      const victimShip = kill.victim_ship ?? '?';
+      const victim = kill.victim ?? '?';
+      const attacker = kill.attacker ?? '?';
+      const value = kill.value_m && kill.value_m > 0 ? ` ${kill.value_m}M` : '';
+      const time = kill.time ?? 'недавно';
+      lines.push(`  ${time} ${victimShip}${value} ${victim} <- ${attacker}`);
+    }
+  }
+  return lines;
 }
 
 async function resolveOriginSystem(db: Db, origin: string, ctx: UserContext): Promise<SystemInfo | null> {
@@ -558,6 +584,7 @@ function buildRouteVariant(
 const MAX_KILLS_PER_SYSTEM = 3;
 const DANGER_SCAN_CONCURRENCY = 10;
 const DANGER_SCAN_PAST_SECONDS = 3600;
+const DANGER_SCAN_WINDOW_MINUTES = DANGER_SCAN_PAST_SECONDS / 60;
 
 type ZkillFeedItem = {
   killmail_id: number;
@@ -606,6 +633,7 @@ async function scanSystemDanger(
     victimCharId: number | null; victimCorpId: number | null; victimShipTypeId: number | null;
     attackerCharId: number | null; attackerCorpId: number | null; attackerShipTypeId: number | null;
     valueM: number;
+    isNpc: boolean;
   };
   const rawKills: RawKill[] = [];
   let eidx = 0;
@@ -629,6 +657,7 @@ async function scanSystemDanger(
           attackerCharId: numOrNull(fb.character_id), attackerCorpId: numOrNull(fb.corporation_id),
           attackerShipTypeId: numOrNull(fb.ship_type_id),
           valueM: Math.round((item.zkb?.totalValue ?? 0) / 1_000_000),
+          isNpc: item.zkb?.npc === true,
         });
       } catch { /* skip */ }
     }
@@ -646,13 +675,15 @@ async function scanSystemDanger(
 
   // Step 4: Build DangerSystem entries
   const dangerMap = new Map<number, DangerSystem>();
-  for (const [systemId, feed] of feedMap) {
+  for (const [systemId] of feedMap) {
     const info = systemInfoMap.get(systemId);
-    const npcCount = feed.filter((i) => i.zkb?.npc).length;
-    const pvpCount = feed.length - npcCount;
-    const totalValueM = feed.reduce((s, i) => s + Math.round((i.zkb?.totalValue ?? 0) / 1_000_000), 0);
+    const systemKills = rawKills
+      .filter((rk) => rk.systemId === systemId && isKillInsideDangerWindow(rk.time));
+    if (systemKills.length === 0) continue;
 
-    const systemKills = rawKills.filter((rk) => rk.systemId === systemId);
+    const npcCount = systemKills.filter((rk) => rk.isNpc).length;
+    const pvpCount = systemKills.length - npcCount;
+    const totalValueM = systemKills.reduce((sum, rk) => sum + rk.valueM, 0);
     const kills: RecentKill[] = systemKills.map((rk) => ({
       time: rk.time ? toMSK(rk.time) : null,
       victim: nameMap.get(rk.victimCharId ?? 0) ?? nameMap.get(rk.victimCorpId ?? 0) ?? null,
@@ -666,7 +697,7 @@ async function scanSystemDanger(
     dangerMap.set(systemId, {
       name: info?.name ?? `ID:${systemId}`,
       sec: info?.sec ?? 0,
-      kills_1h: feed.length,
+      kills_1h: systemKills.length,
       pvp: pvpCount,
       npc: npcCount,
       total_value_m: totalValueM,
@@ -732,6 +763,17 @@ function toMSK(utcTime: string): string {
   } catch {
     return utcTime;
   }
+}
+
+function isKillInsideDangerWindow(value: string | null): boolean {
+  const minutes = value ? minutesSinceIso(value) : null;
+  return minutes === null || minutes <= DANGER_SCAN_WINDOW_MINUTES;
+}
+
+function minutesSinceIso(value: string): number | null {
+  const ts = new Date(value).getTime();
+  if (!Number.isFinite(ts)) return null;
+  return Math.max(0, Math.round((Date.now() - ts) / 60_000));
 }
 
 function describeAutopilotMode(mode: AutopilotMode): string {

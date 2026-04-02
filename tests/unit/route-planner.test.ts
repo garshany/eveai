@@ -76,7 +76,7 @@ beforeEach(() => {
       return {
         ok: true, status: 200, cached: false, headers: {},
         data: {
-          killmail_time: '2026-03-22T10:15:00Z',
+          killmail_time: new Date().toISOString(),
           solar_system_id: 30002660,
           victim: { character_id: 9001, corporation_id: 9101, ship_type_id: 587 },
           attackers: [{ character_id: 9201, corporation_id: 9301, ship_type_id: 603, final_blow: true }],
@@ -102,6 +102,7 @@ beforeEach(() => {
 
 afterEach(() => {
   consoleLogSpy.mockRestore();
+  vi.useRealTimers();
   db.close();
 });
 
@@ -134,6 +135,7 @@ describe('route planner', () => {
     expect(result.formatted_summary).toContain('прыжков');
     expect(result.formatted_summary).toContain('secure');
     expect(result.formatted_summary).toContain('Ключевые точки');
+    expect(result.formatted_summary).toContain('zKB срез:');
     expect(result.formatted_summary).not.toContain('<b>Опасные системы</b>');
   });
 
@@ -184,6 +186,7 @@ describe('route planner', () => {
     expect(result.formatted_summary).toContain('<b>Dodixie → Jita</b>');
     expect(result.formatted_summary).toContain('выставлен');
     expect(result.formatted_summary).toContain('Ключевые точки');
+    expect(result.formatted_summary).toContain('zKB срез:');
     expect(result.formatted_summary).toContain('🛰️ Предполет | 🟢 ВЫХОДИ');
     expect(result.formatted_summary).toContain('Сейчас: Dodixie');
     expect(result.formatted_summary).not.toContain('<b>Опасные системы</b>');
@@ -235,9 +238,71 @@ describe('route planner', () => {
     expect(result.ok).toBe(true);
     expect(result.formatted_summary).toContain('киллов/ч: 2');
     expect(result.formatted_summary).toContain('Ключевые точки');
+    expect(result.formatted_summary).toContain('zKB срез:');
     expect(result.formatted_summary).toContain('Midpoint');
     expect(result.formatted_summary).not.toContain('Scout Gate');
     expect(result.formatted_summary).not.toContain('[insecure]');
+  });
+
+  it('drops stale route-planner kills from the selected route summary and shows a clean zKB snapshot', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-02T16:24:00Z'));
+
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string, args: unknown) => {
+      if (operation === 'get_route_origin_destination') {
+        const flag = String((args as Record<string, unknown>).flag);
+        if (flag === 'secure') {
+          return { ok: true, status: 200, cached: false, headers: {}, data: [30002659, 30002660, 30000142] };
+        }
+        if (flag === 'shortest') {
+          return { ok: true, status: 200, cached: false, headers: {}, data: [30002659, 30000142] };
+        }
+        return { ok: true, status: 200, cached: false, headers: {}, data: [30002659, 30002661, 30000142] };
+      }
+
+      if (operation === 'get_killmails_killmail_id_killmail_hash') {
+        return {
+          ok: true, status: 200, cached: false, headers: {},
+          data: {
+            killmail_time: '2026-04-02T14:59:00Z',
+            solar_system_id: 30002660,
+            victim: { character_id: 9001, corporation_id: 9101, ship_type_id: 587 },
+            attackers: [{ character_id: 9201, corporation_id: 9301, ship_type_id: 603, final_blow: true }],
+          },
+        };
+      }
+
+      if (operation === 'post_universe_names') {
+        return {
+          ok: true, status: 200, cached: false, headers: {},
+          data: [
+            { id: 9001, name: 'Victim One' },
+            { id: 9101, name: 'Victim Corp' },
+            { id: 9201, name: 'Attacker One' },
+            { id: 9301, name: 'Attacker Corp' },
+          ],
+        };
+      }
+
+      return { ok: false, status: 404, error: `Unexpected operation: ${operation}` };
+    });
+
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      {
+        origin: 'current',
+        destination: 'Jita',
+        set_autopilot: false,
+        prefer: 'secure',
+      },
+      { userId: 1, chatId: 1 },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.formatted_summary).toContain('киллов/ч: 0');
+    expect(result.formatted_summary).toContain('zKB срез: на выбранной трассе свежих killmail за последний час не видно.');
+    expect(result.formatted_summary).not.toContain('Victim One');
   });
 });
 

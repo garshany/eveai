@@ -142,6 +142,7 @@ ZKILL_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com)
 - `Останови мониторинг` → stop monitor
 
 Pre-flight briefing for `plan_route` should stay operational:
+- selected-route summary should show a compact `zKB срез` for the chosen route, or explicitly say that fresh killmails were not found
 - top block: `Сейчас`, `Впереди`, `Действие`
 - support block: `Активность`, short `Анализ`, and several `Последние киллы` from the selected route
 - only killmails whose actual `killmail_time` is still inside the briefing window should influence this snapshot; stale zKB rows must be dropped
