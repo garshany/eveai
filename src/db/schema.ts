@@ -325,4 +325,17 @@ CREATE TABLE IF NOT EXISTS heartbeat_config (
   updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, character_id)
 );
+
+CREATE TABLE IF NOT EXISTS intel_notes (
+  note_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL,
+  system_id    INTEGER,
+  system_name  TEXT,
+  region_id    INTEGER,
+  region_name  TEXT,
+  entity_name  TEXT,
+  tag          TEXT NOT NULL DEFAULT 'general',
+  text         TEXT NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;

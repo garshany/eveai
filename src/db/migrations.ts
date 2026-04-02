@@ -26,6 +26,7 @@ export function runMigrations(db: Db): void {
     addColumnIfMissing(db, 'heartbeat_config', 'state_json', "TEXT NOT NULL DEFAULT '{}'");
     ensureKillWatches(db);
     ensureRouteMonitors(db);
+    ensureIntelNotes(db);
   });
 
   migrate();
@@ -195,6 +196,31 @@ function ensureRouteMonitors(db: Db): void {
         PRIMARY KEY (character_id, system_id)
       )
     `);
+  }
+}
+
+function ensureIntelNotes(db: Db): void {
+  const exists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='intel_notes'",
+  ).get();
+  if (!exists) {
+    db.exec(`
+      CREATE TABLE intel_notes (
+        note_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id      INTEGER NOT NULL,
+        system_id    INTEGER,
+        system_name  TEXT,
+        region_id    INTEGER,
+        region_name  TEXT,
+        entity_name  TEXT,
+        tag          TEXT NOT NULL DEFAULT 'general',
+        text         TEXT NOT NULL,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.exec('CREATE INDEX idx_intel_notes_user ON intel_notes(user_id)');
+    db.exec('CREATE INDEX idx_intel_notes_system ON intel_notes(user_id, system_id)');
+    db.exec('CREATE INDEX idx_intel_notes_region ON intel_notes(user_id, region_id)');
   }
 }
 

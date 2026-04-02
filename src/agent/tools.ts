@@ -220,6 +220,7 @@ const BATCH_MARKET_TOOL_NAME = 'batch_market_prices';
 const OSINT_INFER_TOOL_NAME = 'osint_infer_home';
 const ANALYZE_LOCAL_TOOL_NAME = 'analyze_local';
 const ANALYZE_SCAN_TOOL_NAME = 'analyze_scan';
+const INTEL_NOTE_TOOL_NAME = 'intel_note';
 
 const BATCH_MARKET_TOOL: NativeFunctionTool = {
   type: 'function',
@@ -330,6 +331,58 @@ export function isAnalyzeScanTool(name: string): boolean {
   return name === ANALYZE_SCAN_TOOL_NAME;
 }
 
+const INTEL_NOTE_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: INTEL_NOTE_TOOL_NAME,
+  description: 'Personal intel notebook — save, search, list, or delete notes about systems, regions, entities, or anything EVE-related. Notes persist across conversations. Use when the user says "запомни", "заметка", "запиши" or asks to recall previous intel.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['save', 'search', 'list', 'delete'],
+        description: 'save = create note, search = find notes by filters, list = recent notes, delete = remove by note_id.',
+      },
+      text: {
+        type: ['string', 'null'],
+        description: 'Note content for save action. Max 2000 chars.',
+      },
+      system: {
+        type: ['string', 'null'],
+        description: 'EVE system name to attach or search by. Auto-resolved via SDE. Wormhole names stored as-is.',
+      },
+      region: {
+        type: ['string', 'null'],
+        description: 'EVE region name to attach or search by. Auto-set from system if not provided.',
+      },
+      entity_name: {
+        type: ['string', 'null'],
+        description: 'Player, corporation, or alliance name related to this note.',
+      },
+      tag: {
+        type: ['string', 'null'],
+        enum: ['general', 'hostile', 'friendly', 'structure', 'wormhole', 'route', 'market', 'bookmark', null],
+        description: 'Note category tag. Default: general.',
+      },
+      query: {
+        type: ['string', 'null'],
+        description: 'Free-text search in note content (for search action).',
+      },
+      note_id: {
+        type: ['integer', 'null'],
+        description: 'Note ID for delete action.',
+      },
+    },
+    required: ['action', 'text', 'system', 'region', 'entity_name', 'tag', 'query', 'note_id'],
+    additionalProperties: false,
+  },
+};
+
+export function isIntelNoteTool(name: string): boolean {
+  return name === INTEL_NOTE_TOOL_NAME;
+}
+
 export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 'full'): Promise<NativeTool[]> {
   if (mode === 'static_aggregate') {
     return ALWAYS_ON_FUNCTION_TOOLS.filter((tool) =>
@@ -347,6 +400,7 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
     OSINT_INFER_TOOL,
     ANALYZE_LOCAL_TOOL,
     ANALYZE_SCAN_TOOL,
+    INTEL_NOTE_TOOL,
     buildEveKillNamespace(),
     ...(await listEsiNamespaces()),
   ];
@@ -377,7 +431,7 @@ export function isSdeSqlTool(name: string): boolean {
 }
 
 export function isDeferredLookupToolName(name: string): boolean {
-  return isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name);
+  return isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name);
 }
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
@@ -1161,7 +1215,7 @@ export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'u
   if (name === 'update_plan') {
     return 'write';
   }
-  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name)) {
+  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();

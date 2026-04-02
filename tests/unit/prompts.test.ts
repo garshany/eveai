@@ -49,8 +49,8 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('<osint_rules>');
     expect(prompt).toContain('residence/staging inference');
 
-    // Prompt should stay compact (scan_analysis_rules added ~3.5K for D-Scan/Fleet/Local AI enrichment)
-    expect(prompt.length).toBeLessThan(18000);
+    // Prompt grows with new tool rules (scan_analysis + intel_note). Track size to avoid unbounded bloat.
+    expect(prompt.length).toBeLessThan(20000);
   });
 
   it('appends profile and summary when provided', () => {

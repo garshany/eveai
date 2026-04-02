@@ -16,6 +16,7 @@ import {
   isOsintInferTool,
   isAnalyzeLocalTool,
   isAnalyzeScanTool,
+  isIntelNoteTool,
   isRouteMonitorTool,
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
@@ -44,6 +45,7 @@ import type { UserContext } from '../auth/user-resolver.js';
 import { executeOsintInferHome } from '../eve-osint/inference.js';
 import { executeAnalyzeLocal } from '../eve-local/analyzer.js';
 import { executeAnalyzeScan } from '../eve-scan/analyzer.js';
+import { executeIntelNote } from '../eve-intel/notes.js';
 
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_WEB_SEARCHES_PER_TURN = 2;
@@ -833,6 +835,10 @@ async function executeToolCall(
 
   if (isAnalyzeScanTool(name)) {
     return await executeAnalyzeScan(db, args);
+  }
+
+  if (isIntelNoteTool(name)) {
+    return executeIntelNote(db, ctx.userId, args);
   }
 
   if (isHeartbeatConfigTool(name)) {
