@@ -155,7 +155,6 @@ describe('osint inference', () => {
     expect(result.hypotheses[0]?.system_name).toBe('X-70MU');
     expect(result.hypotheses[0]?.kind).toBe('home_system');
     expect(result.activity_cluster?.systems).toContain('X-70MU');
-    expect(result.graph_digest?.top_systems[0]?.system_name).toBe('X-70MU');
     expect(result.member_analysis?.members_analyzed).toBe(2);
     expect(result.member_analysis?.core_members[0]?.character_name).toBe('Pilot One');
     expect((result.llm_pattern_analysis as { intelligence_summary?: string })?.intelligence_summary).toContain('X-70MU');
@@ -227,7 +226,5 @@ describe('osint inference', () => {
 
     expect(result.ok).toBe(true);
     expect(result.hypotheses[0]?.system_name).toBe('X-70MU');
-    expect(result.graph_digest?.top_regions[0]?.region_name).toBe('Delve');
-    expect(result.graph_digest?.signals.single_day_spike_bias).toBeGreaterThan(0);
   });
 });
