@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { collectNewKillmailIds, extractKillPosition } from '../../src/eve-board/monitor.js';
+import { collectNewKillmailIds, extractKillPosition, shouldSendDigestHeartbeat } from '../../src/eve-board/monitor.js';
+import type { RouteThreatDigest } from '../../src/eve-board/types.js';
 
 describe('eve-board monitor', () => {
   it('deduplicates killmails across polling cycles', () => {
@@ -38,5 +39,23 @@ describe('eve-board monitor', () => {
     })).toEqual({ x: 40, y: 50, z: 60 });
 
     expect(extractKillPosition({ killmail_id: 3 })).toBeNull();
+  });
+
+  it('re-sends actionable digest after heartbeat interval even without new deltas', () => {
+    const digest: RouteThreatDigest = {
+      timestamp: '2026-04-02T15:00:00Z',
+      pilotSystem: 'Dodixie',
+      pilotSystemIdx: 0,
+      totalRouteSystems: 15,
+      origin: 'Dodixie',
+      destination: 'Jita',
+      overallThreat: 'MEDIUM',
+      summary: 'medium route',
+      systemsAhead: [],
+      systemsBehind: [],
+    };
+
+    expect(shouldSendDigestHeartbeat(Date.now() - 7 * 60_000, digest, 0)).toBe(true);
+    expect(shouldSendDigestHeartbeat(Date.now() - 5 * 60_000, digest, 0)).toBe(false);
   });
 });

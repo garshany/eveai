@@ -35,6 +35,7 @@ import type {
   ThreatLevel,
   JumpSpike,
   SystemThreatDigest,
+  RouteThreatDigest,
 } from './types.js';
 import { subscribeTopics, unsubscribeTopics } from '../eve-kill/zkb-ws.js';
 import {
@@ -103,6 +104,7 @@ const LOCATION_INTERVAL_MS = 15_000;
 const KILL_INTERVAL_MS = 60_000; // 60s — gives time for throttled zKB calls across all systems
 const ONLINE_INTERVAL_MS = 60_000;
 const DIGEST_INTERVAL_MS = 120_000; // 2 minutes
+const DIGEST_HEARTBEAT_MS = 6 * 60_000; // resend actionable digest every 6 minutes even without deltas
 const OFFLINE_TIMEOUT_MINUTES = 30;
 /** Don't re-alert the same system within this window */
 const ALERT_COOLDOWN_MS = 5 * 60 * 1000;
@@ -888,8 +890,9 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
     const gankerSignature = buildGankerSignature(gankerIntel);
     const gankersChanged = gankerSignature !== '' && gankerSignature !== inst.lastGankerSignature;
     const hasPursuit = pursuit !== null;
+    const heartbeatDue = shouldSendDigestHeartbeat(inst.lastDigestTime, digest, gankerIntel.length);
 
-    const shouldSend = newKills > 0 || threatChanged || systemChanged || gankersChanged || hasPursuit;
+    const shouldSend = newKills > 0 || threatChanged || systemChanged || gankersChanged || hasPursuit || heartbeatDue;
 
     if (!shouldSend) {
       console.log(`${LOG} digest skipped (no change) chat=${monitor.chatId} kills=${monitor.stats.killsSeen} threat=${digest.overallThreat}`);
@@ -931,6 +934,30 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
   } catch (err) {
     console.error(`${LOG} digest error chat=${monitor.chatId}:`, (err as Error).message);
   }
+}
+
+export function shouldSendDigestHeartbeat(
+  lastDigestTime: number,
+  digest: RouteThreatDigest,
+  gankerCount: number,
+): boolean {
+  if (Date.now() - lastDigestTime < DIGEST_HEARTBEAT_MS) {
+    return false;
+  }
+
+  if (digest.overallThreat !== 'LOW') {
+    return true;
+  }
+
+  const systems = [...digest.systemsAhead, ...digest.systemsBehind];
+  if (gankerCount > 0) return true;
+
+  return systems.some((system) =>
+    system.recentKills.length > 0
+    || system.gateKills.length > 0
+    || system.gankerCount > 0
+    || system.jumpSpike !== null,
+  );
 }
 
 // ---------------------------------------------------------------------------
