@@ -350,7 +350,8 @@ async function pollLocation(inst: MonitorInstance): Promise<void> {
     );
 
     if (!loc.ok || !loc.data?.solar_system_id) {
-      console.log(`${LOG} location: ESI failed or no data`);
+      const errInfo = !loc.ok ? `status=${(loc as { status?: number }).status} error=${(loc as { error?: string }).error}` : 'no solar_system_id';
+      console.log(`${LOG} location: ESI failed — ${errInfo}`);
       return;
     }
 
