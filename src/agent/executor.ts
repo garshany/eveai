@@ -43,7 +43,7 @@ import { executeOsintInferHome } from '../eve-osint/inference.js';
 
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_WEB_SEARCHES_PER_TURN = 2;
-const MAX_EVE_KILL_CALLS_PER_TURN = 6;
+const MAX_EVE_KILL_CALLS_PER_TURN = 30;
 const MAX_CONSECUTIVE_SAME_TOOL = 3;
 const MAX_CONTEXT_MESSAGES = 10;
 const MAX_CONTEXT_CHARS = 15000;
