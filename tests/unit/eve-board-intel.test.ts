@@ -137,6 +137,8 @@ function makeSystemDigest(input: {
     threatLevel: input.threatLevel,
     reason: 'тихо',
     killVelocity: 0,
+    activeCamp: false,
+    latestKillMinutes: null,
     jumpSpike: null,
     gateKills: [],
     gankerCount: 0,
