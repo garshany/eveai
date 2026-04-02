@@ -167,6 +167,29 @@ function resolveSystemSec(db: Db, systemId: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// ESI system jumps (public, bulk endpoint)
+// ---------------------------------------------------------------------------
+
+type SystemJumpEntry = { system_id: number; ship_jumps: number };
+
+async function fetchSystemJumps(db: Db, systemIds: number[]): Promise<Map<number, number>> {
+  const map = new Map<number, number>();
+  try {
+    const result = await callEsiOperation<SystemJumpEntry[]>(
+      db, 'get_universe_system_jumps', { filter_ids: JSON.stringify(systemIds) },
+    );
+    if (result.ok && Array.isArray(result.data)) {
+      for (const entry of result.data) {
+        if (entry.system_id && entry.ship_jumps) {
+          map.set(entry.system_id, entry.ship_jumps);
+        }
+      }
+    }
+  } catch { /* non-critical */ }
+  return map;
+}
+
+// ---------------------------------------------------------------------------
 // Text helpers
 // ---------------------------------------------------------------------------
 
@@ -285,16 +308,22 @@ export async function generateBriefing(
   const levelOrder: Record<ThreatLevel, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
   dangerSystems.sort((a, b) => levelOrder[a.threatLevel] - levelOrder[b.threatLevel]);
 
-  // Step 4: gank window detection
+  // Step 4: fetch jump stats for route systems (ESI, public, bulk)
+  const jumpMap = await fetchSystemJumps(db, routeSystems);
+  console.log(`[briefing] jump stats: ${jumpMap.size} systems with data`);
+
+  // Step 5: gank window detection
   const gankWindow = detectGankWindow(patterns);
 
-  // Step 5: format briefing
-  return formatBriefing(ship, dangerSystems, gankWindow, originName, destName, routeSystems.length);
+  // Step 6: format briefing
+  return formatBriefing(db, ship, dangerSystems, jumpMap, gankWindow, originName, destName, routeSystems.length);
 }
 
 function formatBriefing(
+  db: Db,
   ship: ShipAssessment,
   dangerSystems: DangerSystemInfo[],
+  jumpMap: Map<number, number>,
   gankWindow: { isOpen: boolean; reason: string },
   originName: string,
   destName: string,
@@ -302,16 +331,23 @@ function formatBriefing(
 ): string {
   const lines: string[] = [];
 
-  // Header
-  lines.push(`\u{1F4CB} \u0411\u0440\u0438\u0444: ${originName} \u2192 ${destName} (${jumps} \u043F\u0440\u044B\u0436\u043A\u043E\u0432)`);
+  lines.push(`\u{1F4CB} Бриф: ${originName} → ${destName} (${jumps} прыжков)`);
   lines.push('');
 
-  // Ship info
-  lines.push(
-    `\u{1F680} \u041A\u043E\u0440\u0430\u0431\u043B\u044C: ${ship.shipName} | \u0411\u0430\u0437\u043E\u0432\u044B\u0439 EHP (\u0431\u0435\u0437 \u0444\u0438\u0442\u0430): ${ship.ehp.toLocaleString('ru-RU')} | Align: ${ship.alignTime}s`,
-  );
-  lines.push(`\u041E\u0446\u0435\u043D\u043A\u0430: ${SURVIVAL_TEXT[ship.survivalChance]}`);
+  lines.push(`\u{1F680} Корабль: ${ship.shipName} | Базовый EHP (без фита): ${ship.ehp.toLocaleString('ru-RU')} | Align: ${ship.alignTime}s`);
+  lines.push(`Оценка: ${SURVIVAL_TEXT[ship.survivalChance]}`);
   lines.push('');
+
+  // Jump traffic — top 5 busiest systems on route
+  if (jumpMap.size > 0) {
+    const sorted = [...jumpMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+    lines.push('\u{1F6A6} Трафик на маршруте (прыжков/час):');
+    for (const [sysId, jumpsCount] of sorted) {
+      const sysName = resolveSystemName(db, sysId);
+      lines.push(`  ${sysName}: ${jumpsCount.toLocaleString('ru-RU')}`);
+    }
+    lines.push('');
+  }
 
   // Systems with PvP activity
   if (dangerSystems.length === 0) {
