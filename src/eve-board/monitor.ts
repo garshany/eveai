@@ -8,14 +8,13 @@
  *
  * Poll cadences:
  *   - Location:     every 15 s (ESI character location)
- *   - Kill scan:    every 30 s (zKB for up to 10 ahead + 5 behind)
- *   - Jump scan:    every 30 s (ESI system_jumps, same cycle as kills)
+ *   - Kill scan:    every 60 s (ESI pre-filter + zKB across the active route)
+ *   - Jump scan:    every 60 s (ESI system_jumps, same cycle as kills)
  *   - Online check: every 60 s (ESI character online)
  *
  * Auto-stop conditions:
  *   - Arrived at destination
  *   - Death (victim in killmail)
- *   - Offline > 30 min
  *   - Manual stop
  */
 
@@ -40,7 +39,6 @@ import {
   detectJumpSpikes,
   buildSystemDigest,
   buildRouteThreatDigest,
-  formatThreatDigest,
 } from './analytics.js';
 import {
   detectPursuit,
@@ -86,8 +84,10 @@ type MonitorInstance = {
   lastKillsSeen: number;
   /** Previous pilot system — detect system change */
   lastPilotSystem: number;
-  /** Previous ganker count for delta detection */
-  lastGankerCount: number;
+  /** Previous ganker signature for delta detection */
+  lastGankerSignature: string;
+  /** Killmail IDs already seen during this monitor session. */
+  seenKillmailIds: Set<number>;
 };
 
 type StopReason = 'arrived' | 'death' | 'offline' | 'manual';
@@ -101,13 +101,7 @@ const LOCATION_INTERVAL_MS = 15_000;
 const KILL_INTERVAL_MS = 60_000; // 60s — gives time for throttled zKB calls across all systems
 const ONLINE_INTERVAL_MS = 60_000;
 const DIGEST_INTERVAL_MS = 120_000; // 2 minutes
-/** Max systems ahead to scan (API budget cap) */
-const MAX_SYSTEMS_AHEAD = 10;
-/** Max systems behind to scan (tail-check) */
-const MAX_SYSTEMS_BEHIND = 5;
 const OFFLINE_TIMEOUT_MINUTES = 30;
-/** Grace period after monitor start — don't auto-stop for offline during this window */
-const STARTUP_GRACE_MS = 5 * 60 * 1000; // 5 minutes
 /** Don't re-alert the same system within this window */
 const ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 /** Rolling snapshot window: keep last 20 snapshots per system */
@@ -170,7 +164,7 @@ type EsiKillmail = {
 };
 
 /** Attacker info extracted during enrichment for ganker cache */
-type ExtractedAttacker = { characterId: number; characterName: string; shipTypeId: number };
+type ExtractedAttacker = { killmailId: number; characterId: number; characterName: string; shipTypeId: number };
 
 /** Enrichment result: kills for threat analysis + raw attacker data for ganker cache */
 type EnrichResult = { kills: KilllistItem[]; attackers: ExtractedAttacker[] };
@@ -271,6 +265,7 @@ async function enrichZkbKills(
     for (const atk of p.attackers) {
       if (atk.character_id && atk.character_id > 0) {
         attackerList.push({
+          killmailId: p.item.killmail_id,
           characterId: atk.character_id,
           characterName: nameMap.get(atk.character_id) ?? '',
           shipTypeId: atk.ship_type_id ?? 0,
@@ -333,6 +328,19 @@ function resolveTypeGroup(
 // ---------------------------------------------------------------------------
 
 export const activeMonitors = new Map<number, MonitorInstance>();
+
+export function collectNewKillmailIds(
+  seenKillmailIds: Set<number>,
+  kills: Array<{ killmail_id: number }>,
+): Set<number> {
+  const fresh = new Set<number>();
+  for (const kill of kills) {
+    if (seenKillmailIds.has(kill.killmail_id)) continue;
+    seenKillmailIds.add(kill.killmail_id);
+    fresh.add(kill.killmail_id);
+  }
+  return fresh;
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -408,7 +416,8 @@ export function startRouteMonitor(
     lastOverallThreat: 'LOW' as ThreatLevel,
     lastKillsSeen: 0,
     lastPilotSystem: 0,
-    lastGankerCount: 0,
+    lastGankerSignature: '',
+    seenKillmailIds: new Set(),
     // Timers are assigned below after immediate polls
     locationTimer: null!,
     killTimer: null!,
@@ -557,8 +566,9 @@ async function pollLocation(inst: MonitorInstance): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Poll: Kill scan (30s)
-// Strategy: ESI system_kills as fast filter → zKB only for active systems
+// Poll: Kill scan (60s)
+// Strategy: ESI system_kills as fast filter → zKB only for active or tactically
+// relevant systems across the full route
 // + ESI character killmails for own death detection
 // ---------------------------------------------------------------------------
 
@@ -572,8 +582,6 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
 
     // Scan ALL systems on the route — no range limit
     const allScanSystems = [...monitor.routeSystems];
-    const systemsAhead = monitor.routeSystems.slice(currentIdx + 1);
-    const systemsBehind = monitor.routeSystems.slice(0, currentIdx);
     if (allScanSystems.length === 0) return;
 
     // Hybrid: ESI pre-filter (free, 1 call) + always scan key systems via zKB
@@ -608,6 +616,7 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     // Step 4: zKB details only for systems with ship_kills > 0
     // Build system digests for analytics + intelligence layers
     const now = Date.now();
+    let observedNewKills = 0;
     const threatsAhead: string[] = [];
     const threatsBehind: string[] = [];
     const systemDigestsAhead: SystemThreatDigest[] = [];
@@ -674,14 +683,19 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
         continue;
       }
 
+      const newKillmailIds = collectNewKillmailIds(inst.seenKillmailIds, pvpKills);
       const enrichResult = await enrichZkbKills(db, pvpKills);
       const pattern = analyzeKillPattern(enrichResult.kills, sysId, sysName, sysSec);
       const threat = scoreThreat(pattern, shipAssessment);
 
-      monitor.stats.killsSeen += pvpKills.length;
+      monitor.stats.killsSeen += newKillmailIds.size;
+      observedNewKills += newKillmailIds.size;
 
-      // Upsert ganker cache from enriched attacker data
-      upsertGankerCache(db, sysId, enrichResult.attackers);
+      // Upsert ganker cache only for genuinely new killmails from this session.
+      const newAttackers = enrichResult.attackers.filter((attacker) => newKillmailIds.has(attacker.killmailId));
+      if (newAttackers.length > 0) {
+        upsertGankerCache(db, sysId, newAttackers);
+      }
 
       // Build system digest for Level 2+3 analytics
       const killsForDigest = enrichResult.kills.map((k) => ({
@@ -704,9 +718,10 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
       else systemDigestsBehind.push(sysDigest);
 
       // Track kills behind pilot for pursuit detection
-      if (pvpKills.length > 0 && !isAhead && !isCurrent) {
+      if (newKillmailIds.size > 0 && !isAhead && !isCurrent) {
         const existing = inst.recentKillsBySystem.get(sysId) ?? [];
         for (const k of enrichResult.kills) {
+          if (!newKillmailIds.has(k.killmail_id)) continue;
           existing.push({
             systemId: sysId,
             time: k.killmail_time ?? new Date().toISOString(),
@@ -725,17 +740,17 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
         if (isCurrent) {
           threatsAhead.push(
             `${icon} ${sysName} (${sysSec.toFixed(1)}) \u2014 \u0412\u044B \u0437\u0434\u0435\u0441\u044C!\n` +
-            `  ${pvpKills.length} PvP \u043A\u0438\u043B\u043B\u043E\u0432 \u0437\u0430 30 \u043C\u0438\u043D | ${threat.reason}`,
+            `  ${pvpKills.length} PvP \u043A\u0438\u043B\u043B\u043E\u0432 \u0437\u0430 1 \u0447\u0430\u0441 | ${threat.reason}`,
           );
         } else if (isAhead) {
           threatsAhead.push(
             `${icon} ${sysName} (${sysSec.toFixed(1)}) \u2014 ${Math.abs(jumpDist)} \u043F\u0440\u044B\u0436\u043A\u043E\u0432\n` +
-            `  ${pvpKills.length} PvP \u043A\u0438\u043B\u043B\u043E\u0432 \u0437\u0430 30 \u043C\u0438\u043D | ${threat.reason}`,
+            `  ${pvpKills.length} PvP \u043A\u0438\u043B\u043B\u043E\u0432 \u0437\u0430 1 \u0447\u0430\u0441 | ${threat.reason}`,
           );
         } else {
           threatsBehind.push(
             `\u{1F441} ${sysName} (${sysSec.toFixed(1)}) \u2014 ${Math.abs(jumpDist)} \u043F\u0440\u044B\u0436\u043A\u043E\u0432 \u043D\u0430\u0437\u0430\u0434\n` +
-            `  ${pvpKills.length} PvP \u043A\u0438\u043B\u043B\u043E\u0432 \u0437\u0430 30 \u043C\u0438\u043D | ${threat.reason}`,
+            `  ${pvpKills.length} PvP \u043A\u0438\u043B\u043B\u043E\u0432 \u0437\u0430 1 \u0447\u0430\u0441 | ${threat.reason}`,
           );
         }
 
@@ -757,8 +772,10 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     // Send ONE batched alert with ahead/behind sections
     const totalThreats = threatsAhead.length + threatsBehind.length;
     console.log(`${LOG} kill scan done: ${monitor.stats.killsSeen} total kills seen, ${totalThreats} threats`);
-    if (totalThreats > 0) {
+    if (observedNewKills > 0 || totalThreats > 0) {
       updateMonitorStats(db, monitor.chatId, monitor.stats);
+    }
+    if (totalThreats > 0) {
       const parts: string[] = [];
       if (threatsAhead.length > 0) {
         parts.push(`\u26A0\uFE0F \u0423\u0433\u0440\u043E\u0437\u044B \u0432\u043F\u0435\u0440\u0435\u0434\u0438 (${monitor.shipName}, EHP ${Math.round(shipAssessment.ehp)}):\n` + threatsAhead.join('\n\n'));
@@ -822,7 +839,8 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
     const newKills = monitor.stats.killsSeen - inst.lastKillsSeen;
     const threatChanged = digest.overallThreat !== inst.lastOverallThreat;
     const systemChanged = monitor.currentSystemId !== inst.lastPilotSystem;
-    const gankersChanged = gankerIntel.length > 0 && gankerIntel.length !== inst.lastGankerCount;
+    const gankerSignature = buildGankerSignature(gankerIntel);
+    const gankersChanged = gankerSignature !== '' && gankerSignature !== inst.lastGankerSignature;
     const hasPursuit = pursuit !== null;
 
     const shouldSend = newKills > 0 || threatChanged || systemChanged || gankersChanged || hasPursuit;
@@ -835,7 +853,7 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
     inst.lastKillsSeen = monitor.stats.killsSeen;
     inst.lastOverallThreat = digest.overallThreat;
     inst.lastPilotSystem = monitor.currentSystemId;
-    inst.lastGankerCount = gankerIntel.length;
+    inst.lastGankerSignature = gankerSignature;
 
     // 3. Call LLM for route analysis — only when there's real intel
     const intelSummary = await generateRouteIntelSummary(
@@ -847,7 +865,11 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
         currentSystemId: monitor.currentSystemId,
       },
     );
-    const intelText = formatIntelMessage(intelSummary);
+    const intelText = formatIntelMessage(intelSummary, {
+      digest,
+      ship: shipAssessment,
+      gankerIntel,
+    });
     sender(monitor.chatId, intelText);
 
     if (pursuit) {
@@ -1127,6 +1149,19 @@ function getActiveGankers(db: Db, routeSystems: number[]): GankerIntel[] {
   return result;
 }
 
+function buildGankerSignature(gankers: GankerIntel[]): string {
+  return gankers
+    .slice(0, 10)
+    .map((ganker) => {
+      const systems = ganker.systems
+        .map((system) => `${system.systemId}:${system.killCount}`)
+        .sort()
+        .join(',');
+      return `${ganker.characterId}|${ganker.isMoving ? 1 : 0}|${systems}`;
+    })
+    .join(';');
+}
+
 // ---------------------------------------------------------------------------
 // Ganker cache — upsert attacker data from enriched kills
 // ---------------------------------------------------------------------------
@@ -1136,20 +1171,44 @@ function upsertGankerCache(db: Db, systemId: number, attackers: ExtractedAttacke
 
   const stmt = db.prepare(`
     INSERT INTO route_ganker_cache (character_id, system_id, character_name, kill_count, last_seen, ship_type_id)
-    VALUES (?, ?, ?, 1, datetime('now'), ?)
+    VALUES (?, ?, ?, ?, datetime('now'), ?)
     ON CONFLICT(character_id, system_id) DO UPDATE SET
-      kill_count     = kill_count + 1,
+      kill_count     = kill_count + excluded.kill_count,
       last_seen      = datetime('now'),
       character_name = CASE WHEN length(excluded.character_name) > 0 THEN excluded.character_name ELSE character_name END,
       ship_type_id   = CASE WHEN excluded.ship_type_id > 0 THEN excluded.ship_type_id ELSE ship_type_id END
   `);
 
-  // Deduplicate: same character may appear in multiple kills
-  const seen = new Set<number>();
+  const grouped = new Map<number, {
+    characterName: string;
+    shipTypeId: number;
+    killmailIds: Set<number>;
+  }>();
+
   for (const atk of attackers) {
-    if (seen.has(atk.characterId)) continue;
-    seen.add(atk.characterId);
-    stmt.run(atk.characterId, systemId, atk.characterName, atk.shipTypeId);
+    const existing = grouped.get(atk.characterId) ?? {
+      characterName: '',
+      shipTypeId: 0,
+      killmailIds: new Set<number>(),
+    };
+    existing.killmailIds.add(atk.killmailId);
+    if (atk.characterName.length > existing.characterName.length) {
+      existing.characterName = atk.characterName;
+    }
+    if (atk.shipTypeId > 0) {
+      existing.shipTypeId = atk.shipTypeId;
+    }
+    grouped.set(atk.characterId, existing);
+  }
+
+  for (const [characterId, entry] of grouped) {
+    stmt.run(
+      characterId,
+      systemId,
+      entry.characterName,
+      entry.killmailIds.size,
+      entry.shipTypeId,
+    );
   }
 }
 

@@ -79,23 +79,24 @@ R2Z2 poll loop (every 100ms-6s):
 
 ```
 src/eve-board/
-├── monitor.ts    — 15s location, 30s kill+jump scan, 60s online check
+├── monitor.ts    — 15s location, 60s hybrid route scan, 60s online check, 2m digest
 ├── analytics.ts  — jump spike detection, gate kill attribution, threat digest
 ├── threat.ts     — EHP calc, gank fleet detection, threat scoring
-├── advisor.ts    — LLM intel summary, pursuit detection, stop/wait/go
+├── advisor.ts    — deterministic digest formatting, focused LLM route intel, pursuit detection
 ├── briefing.ts   — pre-route briefing + post-route report
 └── types.ts      — RouteMonitor, SystemSnapshot, RouteThreatDigest, PursuitSignal
 
-Auto-starts on autopilot. Full route security scan:
-  1. ESI system_kills (1 call) → filter active systems (10 ahead + 5 behind)
-  2. ESI system_jumps → traffic spike detection per system
-  3. zKB REST for kill details on active systems
-  4. Gate-level attribution (kill position vs stargate proximity)
-  5. Kill velocity analysis (active camp detection)
-  6. Ganker cache population from enriched kills
-  7. R2Z2 auto-subscribe on route systems (real-time kill alerts)
-  8. Pursuit detection (kills behind pilot approaching)
-  9. LLM route intelligence summary (STOP/WAIT/PROCEED/REROUTE)
+Auto-starts on autopilot. Current route flow:
+  1. `plan_route` builds route variants and returns a compact, selected-route-first route summary instead of a merged danger dump.
+  2. If a linked character and selected route are available, `generateBriefing()` appends one unified pre-flight travel brief even when autopilot is not enabled.
+  3. `generateBriefing()` scans the selected route systems with `sec < 1.0`, preserves route order, and formats the pilot-facing answer around `Маршрут`, `Корабль`, `Сейчас`, `Впереди`, `Действие`.
+  4. `monitor.ts` starts only when autopilot is actually active, then tracks pilot location, scans the full selected route every cycle, and keeps route watches subscribed in R2Z2.
+  5. Live kill scanning uses ESI `system_kills` as a prefilter, then zKB REST for the systems that matter.
+  6. Newly observed killmail IDs are deduplicated per monitor session before they affect `killsSeen`, ganker cache updates, or digest deltas.
+  7. Digest delta checks compare unique kill growth, threat changes, pilot movement, pursuit state, and the active ganker signature instead of raw repeated scans.
+  8. Live digest data is built from jump spikes, gate attribution, kill velocity, and the ganker cache.
+  9. The periodic ESP digest shares the same action-oriented contract as pre-flight: `Сейчас`, `Впереди`, `Действие`, with deterministic quiet-state output and LLM reserved for actionable route situations.
+  10. Alternative routes, traffic comparisons, and long kill details stay secondary layers; the primary UX is always the chosen route and the pilot's next action.
 ```
 
 ## Config
@@ -167,9 +168,9 @@ ZKILL_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com)
 
 | File | Purpose |
 |---|---|
-| `monitor.ts` | Route monitor: full scan (10 ahead + 5 behind), jumps, ganker cache, R2Z2 auto-watch |
+| `monitor.ts` | Route monitor: full-route hybrid scan, kill dedupe, jumps, ganker cache, R2Z2 auto-watch |
 | `analytics.ts` | Jump spike detection, gate kill attribution, kill velocity, threat digest |
 | `threat.ts` | Threat assessment (EHP, gank detection, scoring) |
-| `advisor.ts` | LLM intel summary, pursuit detection, stop/wait/go recommendations |
+| `advisor.ts` | Deterministic digest formatter, focused LLM intel, pursuit detection, stop/wait/go recommendations |
 | `briefing.ts` | Pre-route briefing + post-route report |
 | `types.ts` | Route intelligence types (SystemSnapshot, RouteThreatDigest, PursuitSignal) |

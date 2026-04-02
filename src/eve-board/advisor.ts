@@ -172,16 +172,18 @@ const INTEL_TIMEOUT_MS = 15_000;
 
 const INTEL_SYSTEM_PROMPT = [
   'Ты — бортовой ИИ безопасности (ESP) корабля в EVE Online.',
-  'Ты получаешь полные данные о маршруте: киллы, трафик, ганкеры, угрозы.',
-  'Проанализируй ВСЮ информацию и дай пилоту полную картину.',
+  'Ты получаешь только релевантные данные о текущей обстановке на маршруте.',
+  'Дай пилоту одну связную тактическую сводку без лишнего шума.',
   '',
   'Формат ответа (строго):',
   'РЕКОМЕНДАЦИЯ: СТОП|ЖДАТЬ|ВПЕРЁД|ОБХОД',
-  'СОВЕТ: 3-6 строк конкретного анализа. Назови конкретные системы, корабли, имена.',
-  'Если тихо — скажи что безопасно и почему. Если есть киллы — проанализируй кто кого убил,',
-  'насколько опасен атакующий для нашего корабля, есть ли паттерн (ганк-флот, gate camp, соло).',
+  'СОВЕТ: ровно 3 строки в формате "Сейчас:", "Впереди:", "Действие:".',
+  'Называй только текущую систему, ближайшие релевантные системы впереди и действительно важные имена/корабли.',
+  'Не перечисляй тихие системы и не повторяй одно и то же разными словами.',
   'ФАКТОРЫ: ключевые факторы через запятую',
 ].join('\n');
+
+const ACTIONABLE_LEVELS = new Set<ThreatLevel>(['HIGH', 'CRITICAL']);
 
 // ---------------------------------------------------------------------------
 // 1. Pursuit detection
@@ -272,6 +274,10 @@ export async function generateRouteIntelSummary(
     currentSystemId: number;
   },
 ): Promise<RouteIntelSummary> {
+  if (!shouldUseLlmIntel(digest, pursuit, gankerIntel)) {
+    return buildTemplateSummary(digest, pursuit, gankerIntel);
+  }
+
   const prompt = buildIntelPrompt(digest, shipAssessment, pursuit, gankerIntel, monitor);
 
   try {
@@ -292,7 +298,7 @@ export async function generateRouteIntelSummary(
     console.error('[route-intel] LLM call failed, falling back to template:', err);
   }
 
-  return buildTemplateSummary(digest, pursuit);
+  return buildTemplateSummary(digest, pursuit, gankerIntel);
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +310,7 @@ function buildIntelPrompt(
   ship: ShipAssessment,
   pursuit: PursuitSignal | null,
   gankerIntel: GankerIntel[],
-  monitor: {
+  _monitor: {
     routeSystems: number[];
     originId: number;
     destinationId: number;
@@ -318,6 +324,10 @@ function buildIntelPrompt(
     : utcHour >= 0 && utcHour < 6 ? 'US prime'
     : utcHour >= 8 && utcHour < 12 ? 'AU prime'
     : 'off-peak';
+  const currentSystem = getCurrentSystemDigest(digest);
+  const aheadSystems = selectRelevantAheadSystems(digest);
+  const behindSystems = selectRelevantBehindSystems(digest, pursuit);
+  const relevantGankers = selectRelevantGankers(digest, gankerIntel);
 
   const lines: string[] = [
     '=== КОРАБЛЬ ===',
@@ -334,25 +344,35 @@ function buildIntelPrompt(
     '',
   ];
 
-  if (digest.systemsAhead.length > 0) {
-    lines.push('=== СИСТЕМЫ ВПЕРЕДИ ===');
-    for (const sys of digest.systemsAhead) {
-      lines.push(formatSystemLine(sys));
-    }
+  if (currentSystem && isSystemMeaningful(currentSystem, true)) {
+    lines.push('=== ТЕКУЩАЯ СИСТЕМА ===');
+    lines.push(formatSystemLine(currentSystem));
     lines.push('');
   }
 
-  if (digest.systemsBehind.length > 0) {
+  if (aheadSystems.length > 0) {
+    lines.push('=== ВПЕРЕДИ ===');
+    for (const sys of aheadSystems) {
+      lines.push(formatSystemLine(sys));
+    }
+    lines.push('');
+  } else {
+    lines.push('=== ВПЕРЕДИ ===');
+    lines.push('  тихо');
+    lines.push('');
+  }
+
+  if (behindSystems.length > 0) {
     lines.push('=== СИСТЕМЫ ПОЗАДИ ===');
-    for (const sys of digest.systemsBehind) {
+    for (const sys of behindSystems) {
       lines.push(formatSystemLine(sys));
     }
     lines.push('');
   }
 
-  if (gankerIntel.length > 0) {
+  if (relevantGankers.length > 0) {
     lines.push('=== ИЗВЕСТНЫЕ ГАНКЕРЫ (последние 30 мин) ===');
-    for (const g of gankerIntel.slice(0, 10)) {
+    for (const g of relevantGankers.slice(0, 5)) {
       const systemParts = g.systems.map((s) => {
         const minsAgo = Math.round((Date.now() - new Date(s.lastSeen).getTime()) / 60_000);
         return `${s.systemName} ${minsAgo} мин назад (${s.killCount} kills)`;
@@ -374,6 +394,114 @@ function buildIntelPrompt(
   lines.push(`Время: ${now.toISOString()} (${tz})`);
 
   return lines.join('\n');
+}
+
+function getCurrentSystemDigest(digest: RouteThreatDigest): SystemThreatDigest | null {
+  return digest.systemsAhead.find((sys) => sys.jumpsFromPilot === 0) ?? null;
+}
+
+function isSystemMeaningful(sys: SystemThreatDigest, includeCurrent = false): boolean {
+  if (sys.threatLevel === 'MEDIUM') return true;
+  if (ACTIONABLE_LEVELS.has(sys.threatLevel)) return true;
+  if (sys.gankerCount > 0) return true;
+  if (sys.jumpSpike && sys.jumpSpike.severity !== 'elevated') return true;
+  if (includeCurrent) return sys.recentKills.length > 0;
+  return false;
+}
+
+function selectRelevantAheadSystems(digest: RouteThreatDigest): SystemThreatDigest[] {
+  return digest.systemsAhead
+    .filter((sys) => sys.jumpsFromPilot > 0 && isSystemMeaningful(sys))
+    .sort((a, b) => {
+      if (a.jumpsFromPilot !== b.jumpsFromPilot) return a.jumpsFromPilot - b.jumpsFromPilot;
+      return threatWeight(b.threatLevel) - threatWeight(a.threatLevel);
+    })
+    .slice(0, 3);
+}
+
+function selectRelevantBehindSystems(
+  digest: RouteThreatDigest,
+  pursuit: PursuitSignal | null,
+): SystemThreatDigest[] {
+  const pursuitSystems = new Set(pursuit?.systemIds ?? []);
+  return digest.systemsBehind
+    .filter((sys) => isSystemMeaningful(sys) || pursuitSystems.has(sys.systemId))
+    .sort((a, b) => {
+      if (Math.abs(a.jumpsFromPilot) !== Math.abs(b.jumpsFromPilot)) {
+        return Math.abs(a.jumpsFromPilot) - Math.abs(b.jumpsFromPilot);
+      }
+      return threatWeight(b.threatLevel) - threatWeight(a.threatLevel);
+    })
+    .slice(0, 2);
+}
+
+function selectRelevantGankers(
+  digest: RouteThreatDigest,
+  gankerIntel: GankerIntel[],
+): GankerIntel[] {
+  const jumpMap = buildSystemJumpMap(digest);
+
+  return gankerIntel
+    .map((ganker) => ({
+      ganker,
+      nearestAheadJump: ganker.systems
+        .map((system) => jumpMap.get(system.systemId))
+        .filter((jump): jump is number => typeof jump === 'number' && jump >= 0)
+        .sort((a, b) => a - b)[0] ?? null,
+    }))
+    .filter(({ ganker, nearestAheadJump }) =>
+      nearestAheadJump !== null
+      && (ganker.isMoving || ganker.lastSeenMinutesAgo <= 10 || ganker.totalKills >= 3),
+    )
+    .sort((left, right) => {
+      if (left.nearestAheadJump !== right.nearestAheadJump) {
+        return (left.nearestAheadJump ?? Infinity) - (right.nearestAheadJump ?? Infinity);
+      }
+      return left.ganker.lastSeenMinutesAgo - right.ganker.lastSeenMinutesAgo;
+    })
+    .map(({ ganker }) => ganker);
+}
+
+function buildSystemJumpMap(digest: RouteThreatDigest): Map<number, number> {
+  const map = new Map<number, number>();
+  for (const sys of digest.systemsAhead) map.set(sys.systemId, sys.jumpsFromPilot);
+  for (const sys of digest.systemsBehind) map.set(sys.systemId, sys.jumpsFromPilot);
+  return map;
+}
+
+function threatWeight(level: ThreatLevel): number {
+  switch (level) {
+    case 'CRITICAL': return 3;
+    case 'HIGH': return 2;
+    case 'MEDIUM': return 1;
+    case 'LOW': return 0;
+  }
+}
+
+export function shouldUseLlmIntel(
+  digest: RouteThreatDigest,
+  pursuit: PursuitSignal | null,
+  gankerIntel: GankerIntel[],
+): boolean {
+  if (pursuit?.confidence === 'high') return true;
+
+  const currentSystem = getCurrentSystemDigest(digest);
+  if (currentSystem && (currentSystem.threatLevel === 'HIGH' || currentSystem.threatLevel === 'CRITICAL')) {
+    return true;
+  }
+
+  const aheadSystems = selectRelevantAheadSystems(digest);
+  if (aheadSystems.some((system) => system.jumpsFromPilot <= 2 && ACTIONABLE_LEVELS.has(system.threatLevel))) {
+    return true;
+  }
+  if (aheadSystems.filter((system) => system.jumpsFromPilot <= 3).length >= 2) {
+    return true;
+  }
+
+  const relevantGankers = selectRelevantGankers(digest, gankerIntel);
+  if (relevantGankers.some((ganker) => ganker.isMoving)) return true;
+
+  return false;
 }
 
 function formatSystemLine(sys: SystemThreatDigest): string {
@@ -455,45 +583,50 @@ function parseIntelResponse(
 function buildTemplateSummary(
   digest: RouteThreatDigest,
   pursuit: PursuitSignal | null,
+  gankerIntel: GankerIntel[],
 ): RouteIntelSummary {
-  const hasCritical = digest.systemsAhead.some((s) => s.threatLevel === 'CRITICAL');
-  const highCount = digest.systemsAhead.filter((s) => s.threatLevel === 'HIGH').length;
-  const mostAhead = digest.systemsAhead.length;
-
+  const currentSystem = getCurrentSystemDigest(digest);
+  const aheadThreats = selectRelevantAheadSystems(digest);
+  const nearestAhead = aheadThreats[0] ?? null;
+  const relevantGankers = selectRelevantGankers(digest, gankerIntel);
   let recommendation: RouteIntelSummary['recommendation'];
-  let advice: string;
   const factors: string[] = [];
 
-  if (hasCritical && pursuit) {
+  if (currentSystem?.threatLevel === 'CRITICAL' || pursuit?.confidence === 'high') {
     recommendation = 'STOP';
-    advice = 'Впереди критическая угроза, обнаружено преследование. Задокьтесь немедленно.';
-    factors.push('критическая угроза', 'преследование');
-  } else if (hasCritical) {
+  } else if (
+    currentSystem?.threatLevel === 'HIGH'
+    || nearestAhead?.threatLevel === 'CRITICAL'
+    || nearestAhead?.threatLevel === 'HIGH'
+  ) {
     recommendation = 'WAIT';
-    const critSys = digest.systemsAhead.find((s) => s.threatLevel === 'CRITICAL');
-    advice = critSys
-      ? `Критическая угроза в ${critSys.systemName} (${Math.abs(critSys.jumpsFromPilot)} прыжков впереди). Подождите 15-20 минут.`
-      : 'Критическая угроза на маршруте. Подождите 15-20 минут.';
-    factors.push('критическая угроза');
-  } else if (pursuit?.confidence === 'high') {
-    recommendation = 'STOP';
-    advice = 'Высокая вероятность преследования. Задокьтесь и подождите.';
-    factors.push('преследование высокой уверенности');
-  } else if (mostAhead > 0 && highCount >= mostAhead * 0.5) {
-    recommendation = 'WAIT';
-    advice = `Большинство систем впереди (${highCount}/${mostAhead}) на высоком уровне угрозы. Подождите.`;
-    factors.push('множественные HIGH системы');
   } else {
     recommendation = 'PROCEED';
-    advice = 'Маршрут относительно безопасен. Будьте внимательны.';
-    factors.push('низкая угроза');
   }
 
-  if (pursuit && !factors.includes('преследование') && !factors.includes('преследование высокой уверенности')) {
+  const advice = [
+    buildCurrentLine(digest, currentSystem, relevantGankers),
+    buildAheadLine(digest, relevantGankers),
+    buildActionLine(recommendation, nearestAhead !== null || relevantGankers.length > 0),
+  ].join('\n');
+
+  if (pursuit) {
     factors.push(`преследование (${pursuit.confidence})`);
+  }
+  if (currentSystem && isSystemMeaningful(currentSystem, true)) {
+    factors.push(`текущая система: ${currentSystem.systemName}`);
+  }
+  if (nearestAhead) {
+    factors.push(`впереди: ${nearestAhead.systemName}`);
+  }
+  if (relevantGankers.length > 0) {
+    factors.push(`активные ганкеры: ${relevantGankers.length}`);
   }
   if (digest.overallThreat !== 'LOW') {
     factors.push(`общий уровень: ${digest.overallThreat}`);
+  }
+  if (factors.length === 0) {
+    factors.push('тихий маршрут');
   }
 
   return {
@@ -503,6 +636,94 @@ function buildTemplateSummary(
     factors,
     pursuit,
   };
+}
+
+function normaliseReason(reason: string): string {
+  return reason.trim().replace(/\.$/, '');
+}
+
+function buildCurrentLine(
+  digest: RouteThreatDigest,
+  currentSystem: SystemThreatDigest | null,
+  relevantGankers: GankerIntel[],
+): string {
+  if (!currentSystem) {
+    return `Сейчас: ${digest.pilotSystem} — позиция определена, локальных сигналов нет.`;
+  }
+
+  if (currentSystem.threatLevel !== 'LOW') {
+    return `Сейчас: ${currentSystem.systemName} — ${currentSystem.reason}.`;
+  }
+
+  const localGankers = relevantGankers.filter((ganker) =>
+    ganker.systems.some((system) => system.systemId === currentSystem.systemId),
+  );
+  if (localGankers.length > 0) {
+    return `Сейчас: ${currentSystem.systemName} — локально светились активные пилоты, но без подтверждённого свежего кемпа.`;
+  }
+
+  if (currentSystem.recentKills.length > 0) {
+    return `Сейчас: ${currentSystem.systemName} — ${normaliseReason(currentSystem.reason)}, активного лагеря не видно.`;
+  }
+
+  return `Сейчас: ${currentSystem.systemName} — локально тихо.`;
+}
+
+function buildAheadLine(
+  digest: RouteThreatDigest,
+  relevantGankers: GankerIntel[],
+): string {
+  const aheadThreats = selectRelevantAheadSystems(digest).slice(0, 2);
+  if (aheadThreats.length > 0) {
+    const parts = aheadThreats.map((system) =>
+      `${system.systemName} через ${formatJumpDistance(Math.abs(system.jumpsFromPilot))} — ${normaliseReason(system.reason)}`,
+    );
+    return `Впереди: ${parts.join('; ')}.`;
+  }
+
+  if (relevantGankers.length > 0) {
+    const named = relevantGankers.slice(0, 2).map((ganker) => ganker.characterName).filter(Boolean);
+    const suffix = named.length > 0 ? ` Видны пилоты: ${named.join(', ')}.` : '';
+    return `Впереди: свежих PvP-паттернов не видно, но на трассе есть активные ганкеры.${suffix}`;
+  }
+
+  const nextSystems = digest.systemsAhead
+    .filter((system) => system.jumpsFromPilot > 0)
+    .sort((left, right) => left.jumpsFromPilot - right.jumpsFromPilot)
+    .slice(0, 4)
+    .map((system) => system.systemName);
+
+  if (nextSystems.length === 0) {
+    return 'Впереди: маршрут почти завершён, свежих PvP-угроз не видно.';
+  }
+
+  return `Впереди: ${nextSystems.join(', ')} — свежих PvP-угроз не видно.`;
+}
+
+function formatJumpDistance(jumps: number): string {
+  const mod10 = jumps % 10;
+  const mod100 = jumps % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${jumps} прыжок`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${jumps} прыжка`;
+  return `${jumps} прыжков`;
+}
+
+function buildActionLine(
+  recommendation: RouteIntelSummary['recommendation'],
+  hasAnyRisk: boolean,
+): string {
+  switch (recommendation) {
+    case 'STOP':
+      return 'Действие: не выходите дальше, док/переварп и переждите.';
+    case 'WAIT':
+      return 'Действие: подождите 10-15 минут или проверьте трассу скаутом перед выходом.';
+    case 'REROUTE':
+      return 'Действие: меняйте маршрут, текущая трасса даёт слишком плохое окно.';
+    case 'PROCEED':
+      return hasAnyRisk
+        ? 'Действие: можно идти, но не стойте на воротах и не полагайтесь на автопилот.'
+        : 'Действие: можно выходить, держите нормальную дисциплину на андоке и воротах.';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -523,16 +744,24 @@ const REC_LABEL: Record<RouteIntelSummary['recommendation'], string> = {
   REROUTE: 'ОБХОД',
 };
 
-export function formatIntelMessage(summary: RouteIntelSummary): string {
+export function formatIntelMessage(
+  summary: RouteIntelSummary,
+  context?: {
+    digest?: RouteThreatDigest;
+    ship?: ShipAssessment;
+    gankerIntel?: GankerIntel[];
+  },
+): string {
   const emoji = REC_EMOJI[summary.recommendation];
   const label = REC_LABEL[summary.recommendation];
   const now = new Date();
   const timeStr = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')} UTC`;
+  const adviceLines = buildOperationalAdviceLines(summary, context);
 
   const lines: string[] = [
     `\u{1F6F0}\u{FE0F} ESP | ${emoji} ${label}`,
     '',
-    summary.advice,
+    ...adviceLines,
   ];
 
   if (summary.pursuit) {
@@ -546,4 +775,77 @@ export function formatIntelMessage(summary: RouteIntelSummary): string {
   lines.push(`${timeStr}`);
 
   return lines.join('\n');
+}
+
+function buildOperationalAdviceLines(
+  summary: RouteIntelSummary,
+  context?: {
+    digest?: RouteThreatDigest;
+    ship?: ShipAssessment;
+    gankerIntel?: GankerIntel[];
+  },
+): string[] {
+  const fromAdvice = extractOperationalLines(summary.advice);
+  if (fromAdvice.length >= 3) {
+    return fromAdvice.slice(0, 3);
+  }
+
+  if (context?.digest) {
+    return buildFallbackOperationalLines(summary, context.digest, context.gankerIntel ?? []);
+  }
+
+  const compact = summary.advice
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (compact.length >= 3) {
+    return compact.slice(0, 3);
+  }
+
+  return [
+    'Сейчас: сводка сокращена.',
+    'Впереди: ориентируйтесь на последний скан маршрута.',
+    `Действие: ${buildActionLine(summary.recommendation, true).replace(/^Действие:\s*/, '')}`,
+  ];
+}
+
+function extractOperationalLines(advice: string): string[] {
+  const lines = advice
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const labeled = lines.filter((line) =>
+    line.startsWith('Сейчас:') || line.startsWith('Впереди:') || line.startsWith('Действие:'),
+  );
+  if (labeled.length >= 3) return labeled;
+
+  const current = extractAdviceLine(advice, 'Сейчас');
+  const ahead = extractAdviceLine(advice, 'Впереди');
+  const action = extractAdviceLine(advice, 'Действие');
+  const extracted = [current, ahead, action].filter((line): line is string => Boolean(line));
+  return extracted;
+}
+
+function extractAdviceLine(advice: string, label: 'Сейчас' | 'Впереди' | 'Действие'): string | null {
+  const match = advice.match(new RegExp(`${label}:\\s*([^\\n]+)`, 'i'));
+  if (!match?.[1]) return null;
+  return `${label}: ${match[1].trim()}`;
+}
+
+function buildFallbackOperationalLines(
+  summary: RouteIntelSummary,
+  digest: RouteThreatDigest,
+  gankerIntel: GankerIntel[],
+): string[] {
+  const currentSystem = getCurrentSystemDigest(digest);
+  const hasAheadRisk = selectRelevantAheadSystems(digest).length > 0;
+  const relevantGankers = selectRelevantGankers(digest, gankerIntel);
+
+  return [
+    buildCurrentLine(digest, currentSystem, relevantGankers),
+    buildAheadLine(digest, relevantGankers),
+    buildActionLine(summary.recommendation, hasAheadRisk || relevantGankers.length > 0),
+  ];
 }

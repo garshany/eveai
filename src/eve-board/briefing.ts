@@ -22,9 +22,6 @@ import type { RouteStats, DangerEvent, ThreatLevel, KillPattern, ShipAssessment 
 /** Systems with sec >= 1.0 are fully safe — skip scanning. */
 const SAFE_SEC_THRESHOLD = 1.0;
 
-/** Max systems to scan to keep briefing fast. */
-const MAX_SYSTEMS_TO_SCAN = 10;
-
 // ---------------------------------------------------------------------------
 // zKB fetch (direct — EVE-KILL killlist doesn't filter by system_id)
 // ---------------------------------------------------------------------------
@@ -195,20 +192,6 @@ async function fetchSystemJumps(db: Db, systemIds: number[]): Promise<Map<number
 // Text helpers
 // ---------------------------------------------------------------------------
 
-const THREAT_EMOJI: Record<ThreatLevel, string> = {
-  CRITICAL: '\u{1F534}',  // red circle
-  HIGH: '\u{1F7E0}',      // orange circle
-  MEDIUM: '\u{1F7E1}',    // yellow circle
-  LOW: '\u26AA',           // white circle
-};
-
-const THREAT_LABEL: Record<ThreatLevel, string> = {
-  CRITICAL: 'CRITICAL',
-  HIGH: 'HIGH',
-  MEDIUM: 'MEDIUM',
-  LOW: 'LOW',
-};
-
 const SURVIVAL_TEXT: Record<ShipAssessment['survivalChance'], string> = {
   DEAD: '\u{1F480} Базовая живучесть минимальна (с фитом может быть выше)',
   UNLIKELY: '\u{26A0}\u{FE0F} Базовая живучесть низкая (с фитом будет выше)',
@@ -216,11 +199,12 @@ const SURVIVAL_TEXT: Record<ShipAssessment['survivalChance'], string> = {
   SAFE: '\u{1F7E2} Высокая базовая живучесть',
 };
 
-function formatKillRate(killCount: number, windowMinutes: number): string {
-  if (windowMinutes <= 0) return `${killCount} убийств`;
-  if (windowMinutes < 60) return `${killCount} за ${windowMinutes} мин`;
-  const perHour = Math.round(killCount / (windowMinutes / 60));
-  return `${perHour} ганков/час`;
+function jumpWord(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'прыжок';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'прыжка';
+  return 'прыжков';
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +212,7 @@ function formatKillRate(killCount: number, windowMinutes: number): string {
 // ---------------------------------------------------------------------------
 
 type DangerSystemInfo = {
+  routeIndex: number;
   name: string;
   sec: number;
   pattern: KillPattern;
@@ -238,7 +223,7 @@ type DangerSystemInfo = {
 /**
  * Generate a pre-route briefing: danger assessment, ship check, recommendations.
  *
- * Scans systems on route with sec < 1.0 (up to MAX_SYSTEMS_TO_SCAN) for recent
+ * Scans systems on the selected route with sec < 1.0 for recent
  * kill activity from EVE-KILL, scores threat against the pilot's ship, and
  * compiles a formatted Russian-language briefing string.
  */
@@ -247,13 +232,14 @@ export async function generateBriefing(
   routeSystems: number[],
   originName: string,
   destName: string,
-  characterId: number,
+  _characterId: number,
   shipTypeId: number,
 ): Promise<string> {
   // Step 1: assess ship
   const ship = assessShip(db, shipTypeId);
 
-  // Step 2: identify systems to scan (sec < 1.0), sorted by security (lowest first)
+  // Step 2: identify systems to scan on the selected route (sec < 1.0).
+  // Keep route order intact so the briefing matches the actual flight path.
   const candidates: Array<{ id: number; name: string; sec: number }> = [];
   for (const sysId of routeSystems) {
     const sec = resolveSystemSec(db, sysId);
@@ -261,9 +247,7 @@ export async function generateBriefing(
       candidates.push({ id: sysId, name: resolveSystemName(db, sysId), sec });
     }
   }
-  // Sort by security ascending (most dangerous first), then limit
-  candidates.sort((a, b) => a.sec - b.sec);
-  const systemsToScan = candidates.slice(0, MAX_SYSTEMS_TO_SCAN);
+  const systemsToScan = candidates;
 
   // Step 3: fetch kills and analyze patterns in parallel
   const dangerSystems: DangerSystemInfo[] = [];
@@ -300,6 +284,7 @@ export async function generateBriefing(
     dangerSystems.push({
       name: sys.name,
       sec: sys.sec,
+      routeIndex: routeSystems.indexOf(sys.id),
       pattern,
       threatLevel: threat.level,
       threatReason: threat.reason,
@@ -318,7 +303,7 @@ export async function generateBriefing(
   const gankWindow = detectGankWindow(patterns);
 
   // Step 6: format briefing
-  return formatBriefing(db, ship, dangerSystems, jumpMap, gankWindow, originName, destName, routeSystems.length);
+  return formatBriefing(db, ship, dangerSystems, jumpMap, gankWindow, originName, destName, routeSystems);
 }
 
 function formatBriefing(
@@ -329,85 +314,177 @@ function formatBriefing(
   gankWindow: { isOpen: boolean; reason: string },
   originName: string,
   destName: string,
-  jumps: number,
+  routeSystems: number[],
 ): string {
+  const jumps = Math.max(routeSystems.length - 1, 0);
   const lines: string[] = [];
+  const action = assessPreflightAction(ship, dangerSystems, gankWindow);
+  const currentSystem = dangerSystems.find((system) => system.name === originName) ?? null;
+  const aheadSystems = dangerSystems
+    .filter((system) => system.name !== originName)
+    .sort((left, right) => left.routeIndex - right.routeIndex);
 
-  lines.push(`\u{1F4CB} Бриф: ${originName} → ${destName} (${jumps} прыжков)`);
+  lines.push(`\u{1F6F0}\u{FE0F} Предполет | ${action.emoji} ${action.label}`);
+  lines.push('');
+  lines.push(`Маршрут: ${originName} → ${destName} (${jumps} прыжков)`);
+  lines.push(`Корабль: ${ship.shipName} | Базовый EHP: ${ship.ehp.toLocaleString('ru-RU')} | Align: ${ship.alignTime}s`);
+  lines.push(`Сейчас: ${buildCurrentLine(originName, currentSystem)}`);
+  lines.push(`Впереди: ${buildAheadLine(aheadSystems, routeSystems, db)}`);
+  lines.push(`Действие: ${action.action}`);
   lines.push('');
 
-  lines.push(`\u{1F680} Корабль: ${ship.shipName} | Базовый EHP (без фита): ${ship.ehp.toLocaleString('ru-RU')} | Align: ${ship.alignTime}s`);
-  lines.push(`Оценка: ${SURVIVAL_TEXT[ship.survivalChance]}`);
-  lines.push('');
-
-  // Jump traffic — top 5 busiest systems on route
-  if (jumpMap.size > 0) {
-    const sorted = [...jumpMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
-    lines.push('\u{1F6A6} Трафик на маршруте (прыжков/час):');
-    for (const [sysId, jumpsCount] of sorted) {
-      const sysName = resolveSystemName(db, sysId);
-      lines.push(`  ${sysName}: ${jumpsCount.toLocaleString('ru-RU')}`);
-    }
+  const supportLines = buildSupportLines(db, dangerSystems, jumpMap, gankWindow, routeSystems);
+  if (supportLines.length > 0) {
+    lines.push(...supportLines);
     lines.push('');
   }
 
-  // Systems with PvP activity
-  if (dangerSystems.length === 0) {
-    lines.push('\u2705 \u041C\u0430\u0440\u0448\u0440\u0443\u0442 \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u0435\u043D. PvP \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u0438 \u043D\u0435 \u043E\u0431\u043D\u0430\u0440\u0443\u0436\u0435\u043D\u043E.');
-  } else {
-    lines.push('\u26A0\uFE0F \u0421\u0438\u0441\u0442\u0435\u043C\u044B \u0441 PvP \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u044C\u044E:');
-    for (const ds of dangerSystems) {
-      const emoji = THREAT_EMOJI[ds.threatLevel];
-      const killInfo = formatKillRate(ds.pattern.killCount, ds.pattern.timeWindowMinutes);
-      lines.push(
-        `  ${emoji} ${ds.name} (${ds.sec}) \u2014 ${killInfo}, ${THREAT_LABEL[ds.threatLevel]}`,
-      );
-    }
-    lines.push('');
-
-    // Gank window info (only when there are danger systems with real threat)
-    const hasRealThreat = dangerSystems.some(d => d.threatLevel !== 'LOW');
-    if (hasRealThreat) {
-      if (gankWindow.isOpen) {
-        lines.push(`\u{1F7E2} \u041E\u043A\u043D\u043E \u043F\u0440\u043E\u0445\u043E\u0434\u0430: ${gankWindow.reason}`);
-      } else {
-        lines.push(`\u{1F534} \u041E\u043A\u043D\u043E \u043F\u0440\u043E\u0445\u043E\u0434\u0430: ${gankWindow.reason}`);
-      }
-    }
-  }
-
-  lines.push('');
-
-  // Recommendation
-  lines.push(`\u{1F4A1} \u0420\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0430\u0446\u0438\u044F: ${pickRecommendation(ship, dangerSystems, gankWindow)}`);
+  lines.push(`Оценка корпуса: ${SURVIVAL_TEXT[ship.survivalChance]}`);
 
   return lines.join('\n');
 }
 
-function pickRecommendation(
+type PreflightAction = {
+  emoji: string;
+  label: 'ВЫХОДИ' | 'ОСТОРОЖНО' | 'ЖДАТЬ' | 'СТОП';
+  action: string;
+};
+
+function assessPreflightAction(
   ship: ShipAssessment,
   dangerSystems: DangerSystemInfo[],
   gankWindow: { isOpen: boolean; reason: string },
-): string {
+): PreflightAction {
   const hasCritical = dangerSystems.some(d => d.threatLevel === 'CRITICAL');
   const hasHigh = dangerSystems.some(d => d.threatLevel === 'HIGH');
 
   if (hasCritical && ship.survivalChance === 'DEAD') {
-    return '\u041D\u0435 \u043B\u0435\u0442\u0438\u0442\u0435! \u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0433\u0430\u043D\u043A-\u0444\u043B\u043E\u0442, \u0432\u0430\u0448 \u043A\u043E\u0440\u0430\u0431\u043B\u044C \u043D\u0435 \u0432\u044B\u0436\u0438\u0432\u0435\u0442. \u0418\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0439\u0442\u0435 \u0430\u043B\u044C\u0442\u0435\u0440\u043D\u0430\u0442\u0438\u0432\u043D\u044B\u0439 \u043C\u0430\u0440\u0448\u0440\u0443\u0442 \u0438\u043B\u0438 \u043F\u043E\u0434\u043E\u0436\u0434\u0438\u0442\u0435.';
+    return {
+      emoji: '\u{1F534}',
+      label: 'СТОП',
+      action: 'не выходите на маршрут: активный ганк-паттерн и ваш базовый танк слишком тонкий.',
+    };
   }
   if (hasCritical) {
-    return '\u041E\u0447\u0435\u043D\u044C \u043E\u043F\u0430\u0441\u043D\u043E. \u0415\u0441\u043B\u0438 \u0432\u043E\u0437\u043C\u043E\u0436\u043D\u043E, \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0434\u0440\u0443\u0433\u043E\u0439 \u043C\u0430\u0440\u0448\u0440\u0443\u0442 \u0438\u043B\u0438 \u0434\u043E\u0436\u0434\u0438\u0442\u0435\u0441\u044C \u043E\u043A\u043D\u0430 \u043F\u0440\u043E\u0445\u043E\u0434\u0430.';
+    return {
+      emoji: '\u{1F534}',
+      label: 'СТОП',
+      action: 'маршрут слишком горячий прямо сейчас, лучше переждать окно или выбрать другой путь.',
+    };
   }
   if (hasHigh && !gankWindow.isOpen) {
-    return '\u0413\u0430\u043D\u043A\u0435\u0440\u044B \u0430\u043A\u0442\u0438\u0432\u043D\u044B. \u041F\u043E\u0434\u043E\u0436\u0434\u0438\u0442\u0435 15\u201320 \u043C\u0438\u043D\u0443\u0442 \u043F\u043E\u0441\u043B\u0435 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0433\u043E \u043A\u0438\u043B\u043B\u0430 \u0438\u043B\u0438 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0439\u0442\u0435 \u0441\u043A\u0430\u0443\u0442\u0430.';
+    return {
+      emoji: '\u{1F7E1}',
+      label: 'ЖДАТЬ',
+      action: 'подождите 10-20 минут или проверьте трассу скаутом перед выходом.',
+    };
   }
   if (hasHigh && gankWindow.isOpen) {
-    return '\u0415\u0441\u0442\u044C \u043E\u043A\u043D\u043E \u043F\u0440\u043E\u0445\u043E\u0434\u0430, \u043D\u043E \u0431\u0443\u0434\u044C\u0442\u0435 \u0432\u043D\u0438\u043C\u0430\u0442\u0435\u043B\u044C\u043D\u044B. \u041B\u043E\u043A\u0430\u043B \u043C\u043E\u0436\u0435\u0442 \u0431\u044B\u0441\u0442\u0440\u043E \u0438\u0437\u043C\u0435\u043D\u0438\u0442\u044C\u0441\u044F.';
+    return {
+      emoji: '\u{1F7E1}',
+      label: 'ОСТОРОЖНО',
+      action: 'окно прохода есть, но летите вручную и не зависайте на воротах или андоке.',
+    };
+  }
+  const hasOnlyLow = dangerSystems.length > 0 && dangerSystems.every((system) => system.threatLevel === 'LOW');
+  if (hasOnlyLow) {
+    return {
+      emoji: '\u{1F7E1}',
+      label: 'ОСТОРОЖНО',
+      action: 'по пути есть отдельные киллы, но свежего лагеря не видно. Летите вручную.',
+    };
   }
   if (dangerSystems.length > 0) {
-    return '\u0423\u043C\u0435\u0440\u0435\u043D\u043D\u044B\u0439 \u0440\u0438\u0441\u043A. \u041B\u0435\u0442\u0438\u0442\u0435 \u0441 \u043E\u0441\u0442\u043E\u0440\u043E\u0436\u043D\u043E\u0441\u0442\u044C\u044E, \u0441\u043B\u0435\u0434\u0438\u0442\u0435 \u0437\u0430 \u043B\u043E\u043A\u0430\u043B\u043E\u043C.';
+    return {
+      emoji: '\u{1F7E1}',
+      label: 'ОСТОРОЖНО',
+      action: 'лететь можно, но держите локал и d-scan, не стойте на гейтах.',
+    };
   }
-  return '\u041C\u0430\u0440\u0448\u0440\u0443\u0442 \u0447\u0438\u0441\u0442. \u041B\u0435\u0442\u0438\u0442\u0435 \u0441\u043F\u043E\u043A\u043E\u0439\u043D\u043E.';
+  return {
+    emoji: '\u{1F7E2}',
+    label: 'ВЫХОДИ',
+    action: 'маршрут сейчас чистый, можно выходить с обычной дисциплиной полёта.',
+  };
+}
+
+function buildCurrentLine(originName: string, currentSystem: DangerSystemInfo | null): string {
+  if (!currentSystem) {
+    return `${originName} — локально тихо, свежих PvP-сигналов не видно.`;
+  }
+
+  if (currentSystem.threatLevel === 'CRITICAL' || currentSystem.threatLevel === 'HIGH') {
+    return `${originName} — ${currentSystem.threatReason}`;
+  }
+
+  const minutesAgo = minutesSinceIso(currentSystem.pattern.latestKillTime);
+  const timePart = minutesAgo === null ? 'недавно' : `${minutesAgo} мин назад`;
+  return `${originName} — ${currentSystem.pattern.killCount} PvP за маршрутным окном, последнее ${timePart}; устойчивого лагеря не видно.`;
+}
+
+function buildAheadLine(
+  aheadSystems: DangerSystemInfo[],
+  routeSystems: number[],
+  db: Db,
+): string {
+  if (aheadSystems.length > 0) {
+    const nearest = aheadSystems[0]!;
+    const distance = Math.max(nearest.routeIndex, 0);
+    return `${nearest.name} через ${distance} ${jumpWord(distance)} — ${nearest.threatReason.toLowerCase()}.`;
+  }
+
+  const nextSystems = routeSystems
+    .slice(1, 4)
+    .map((systemId) => resolveSystemName(db, systemId));
+
+  if (nextSystems.length === 0) {
+    return 'маршрут почти завершён, впереди тихо.';
+  }
+
+  return `${nextSystems.join(', ')} — свежих PvP-угроз не видно.`;
+}
+
+function buildSupportLines(
+  db: Db,
+  dangerSystems: DangerSystemInfo[],
+  jumpMap: Map<number, number>,
+  gankWindow: { isOpen: boolean; reason: string },
+  routeSystems: number[],
+): string[] {
+  const lines: string[] = [];
+
+  if (dangerSystems.length > 0) {
+    const topSystems = [...dangerSystems]
+      .sort((left, right) => left.routeIndex - right.routeIndex)
+      .slice(0, 3)
+      .map((system) => `${system.name}: ${system.pattern.killCount} kills`);
+    lines.push(`Активность: ${topSystems.join(' | ')}`);
+  }
+
+  if (jumpMap.size > 0) {
+    const routeSystemSet = new Set(routeSystems);
+    const traffic = [...jumpMap.entries()]
+      .filter(([sysId]) => routeSystemSet.has(sysId))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([sysId, jumpsCount]) => `${resolveSystemName(db, sysId)} ${jumpsCount.toLocaleString('ru-RU')}`);
+    if (traffic.length > 0) {
+      lines.push(`Трафик: ${traffic.join(' | ')}`);
+    }
+  }
+
+  if (dangerSystems.some((system) => system.threatLevel !== 'LOW')) {
+    lines.push(`Окно: ${gankWindow.reason}`);
+  }
+
+  return lines;
+}
+
+function minutesSinceIso(value: string): number | null {
+  if (!value) return null;
+  const ts = new Date(value).getTime();
+  if (!Number.isFinite(ts)) return null;
+  return Math.max(0, Math.round((Date.now() - ts) / 60_000));
 }
 
 // ---------------------------------------------------------------------------

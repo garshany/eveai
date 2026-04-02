@@ -1,0 +1,70 @@
+{
+  "task_id": "eve-board-ux-unification-20260402",
+  "status": "PASS",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "status": "PASS",
+      "evidence": [
+        "src/eve/route-planner.ts compact selected-route-first summary",
+        "src/eve-board/briefing.ts unified pre-flight format",
+        "tests/unit/route-planner.test.ts"
+      ]
+    },
+    {
+      "id": "AC2",
+      "status": "PASS",
+      "evidence": [
+        "src/eve-board/briefing.ts action-state pre-flight",
+        "src/eve-board/advisor.ts operational live ESP formatting",
+        "tests/unit/briefing.test.ts",
+        "tests/unit/eve-board-briefing.test.ts",
+        "tests/unit/eve-board-advisor.test.ts",
+        "tests/unit/eve-board-intel.test.ts"
+      ]
+    },
+    {
+      "id": "AC3",
+      "status": "PASS",
+      "evidence": [
+        "src/eve/route-planner.ts alternative/detail layer compression",
+        "tests/unit/route-planner.test.ts"
+      ]
+    },
+    {
+      "id": "AC4",
+      "status": "PASS",
+      "evidence": [
+        "src/eve-board/advisor.ts deterministic quiet-state fallback",
+        "src/eve-board/monitor.ts collectNewKillmailIds() session dedupe",
+        "tests/unit/eve-board-advisor.test.ts",
+        "tests/unit/eve-board-intel.test.ts",
+        "tests/unit/eve-board-monitor.test.ts"
+      ]
+    },
+    {
+      "id": "AC5",
+      "status": "PASS",
+      "evidence": [
+        "docs/eve-kill.md",
+        "docs/exec-plans/completed/eve-board-ux-unification.md",
+        "docs/exec-plans/completed/index.md"
+      ]
+    }
+  ],
+  "verification": {
+    "commands": [
+      "npx vitest run tests/unit/route-planner.test.ts tests/unit/briefing.test.ts tests/unit/eve-board-briefing.test.ts tests/unit/eve-board-advisor.test.ts tests/unit/eve-board-intel.test.ts tests/unit/eve-board-monitor.test.ts",
+      "npm run typecheck",
+      "npm run lint",
+      "npm run check"
+    ],
+    "artifacts": [
+      ".agent/tasks/eve-board-ux-unification-20260402/artifacts/vitest-targeted.txt",
+      ".agent/tasks/eve-board-ux-unification-20260402/artifacts/typecheck.txt",
+      ".agent/tasks/eve-board-ux-unification-20260402/artifacts/lint.txt",
+      ".agent/tasks/eve-board-ux-unification-20260402/artifacts/check.txt"
+    ],
+    "result": "PASS"
+  }
+}

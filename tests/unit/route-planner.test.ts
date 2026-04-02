@@ -4,6 +4,9 @@ import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 const callEsiOperationMock = vi.fn();
 const getLinkedCharacterMock = vi.fn();
+const { generateBriefingMock } = vi.hoisted(() => ({
+  generateBriefingMock: vi.fn().mockResolvedValue(''),
+}));
 
 vi.mock('../../src/eve/esi-client.js', () => ({
   callEsiOperation: callEsiOperationMock,
@@ -18,7 +21,7 @@ vi.mock('../../src/eve-board/monitor.js', () => ({
   startRouteMonitor: vi.fn(),
 }));
 vi.mock('../../src/eve-board/briefing.js', () => ({
-  generateBriefing: vi.fn().mockResolvedValue(''),
+  generateBriefing: generateBriefingMock,
 }));
 
 let db: Database.Database;
@@ -34,6 +37,7 @@ beforeEach(() => {
   seedRouteData(db);
 
   getLinkedCharacterMock.mockReturnValue({ characterId: 2116626188 });
+  generateBriefingMock.mockResolvedValue('');
 
   // Mock global fetch for zKB danger scan — return kills only for Midpoint (30002660)
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
@@ -126,12 +130,42 @@ describe('route planner', () => {
     expect(result.routes[0].safe_count).toBe(2);
     expect(result.routes[0].danger_systems).toHaveLength(1);
     expect(result.formatted_summary).toContain('<b>Dodixie → Jita</b>');
-    expect(result.formatted_summary).toContain('нет');
+    expect(result.formatted_summary).toContain('Выбран: secure');
     expect(result.formatted_summary).toContain('прыжков');
     expect(result.formatted_summary).toContain('secure');
+    expect(result.formatted_summary).toContain('Ключевые точки');
+    expect(result.formatted_summary).not.toContain('<b>Опасные системы</b>');
   });
 
-  it('returns a human-readable route summary with danger details and autopilot flag', async () => {
+  it('can append the unified pre-flight brief even when autopilot is not enabled', async () => {
+    generateBriefingMock.mockResolvedValue('🛰️ Предполет | 🟡 ОСТОРОЖНО');
+
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      {
+        origin: 'current',
+        destination: 'Jita',
+        set_autopilot: false,
+        prefer: 'secure',
+      },
+      { userId: 1, chatId: 1 },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.autopilot_set).toBe(false);
+    expect(result.formatted_summary).toContain('🛰️ Предполет | 🟡 ОСТОРОЖНО');
+  });
+
+  it('returns a compact route summary and appends the unified pre-flight brief', async () => {
+    generateBriefingMock.mockResolvedValue([
+      '🛰️ Предполет | 🟢 ВЫХОДИ',
+      'Маршрут: Dodixie → Jita (2 прыжков)',
+      'Сейчас: Dodixie — локально тихо.',
+      'Впереди: Midpoint через 1 прыжок — свежих PvP-угроз не видно.',
+      'Действие: можно выходить.',
+    ].join('\n'));
+
     const { planRoute } = await import('../../src/eve/route-planner.js');
     const result = await planRoute(
       db,
@@ -149,12 +183,11 @@ describe('route planner', () => {
     expect(result.autopilot_mode).toBe('exact_route');
     expect(result.formatted_summary).toContain('<b>Dodixie → Jita</b>');
     expect(result.formatted_summary).toContain('выставлен');
-    expect(result.formatted_summary).toContain('Dodixie');
-    expect(result.formatted_summary).toContain('Jita');
-    expect(result.formatted_summary).toContain('<b>Опасные системы</b>');
-    expect(result.formatted_summary).toContain('<b>Midpoint</b>');
-    expect(result.formatted_summary).toContain('Victim One');
-    expect(result.formatted_summary).toContain('kill</a>');
+    expect(result.formatted_summary).toContain('Ключевые точки');
+    expect(result.formatted_summary).toContain('🛰️ Предполет | 🟢 ВЫХОДИ');
+    expect(result.formatted_summary).toContain('Сейчас: Dodixie');
+    expect(result.formatted_summary).not.toContain('<b>Опасные системы</b>');
+    expect(result.formatted_summary).not.toContain('kill</a>');
     expect(result.formatted_summary).not.toContain('{"');
     expect(callEsiOperationMock).toHaveBeenCalledWith(
       db,
@@ -168,13 +201,12 @@ describe('route planner', () => {
     );
   });
 
-  it('keeps preferred-route risk metrics separate from merged danger coverage and shows route association', async () => {
+  it('keeps the summary focused on the selected route instead of merged danger coverage', async () => {
     // Kills in multiple systems via zKB mock
     const mkZkbKill = (id: number) => ({
       killmail_id: id,
       zkb: { hash: `hash${id}`, totalValue: 42000000, npc: false, solo: false },
     });
-    const origFetch = globalThis.fetch;
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
       if (typeof url === 'string' && url.includes('systemID/30002659')) {
         return { ok: true, json: async () => [mkZkbKill(134200010)] };
@@ -202,10 +234,10 @@ describe('route planner', () => {
 
     expect(result.ok).toBe(true);
     expect(result.formatted_summary).toContain('киллов/ч: 2');
-    expect(result.formatted_summary).toContain('<b>Dodixie</b>');
-    expect(result.formatted_summary).toContain('42M ISK');
-    expect(result.formatted_summary).toContain('<b>Scout Gate</b>');
-    expect(result.formatted_summary).toContain('[insecure]');
+    expect(result.formatted_summary).toContain('Ключевые точки');
+    expect(result.formatted_summary).toContain('Midpoint');
+    expect(result.formatted_summary).not.toContain('Scout Gate');
+    expect(result.formatted_summary).not.toContain('[insecure]');
   });
 });
 

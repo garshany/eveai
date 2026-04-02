@@ -162,52 +162,51 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
 
   let formattedSummary = formatRouteSummary(originInfo, destInfo, routes, autopilotMode, args.prefer);
 
-  // Auto-start route monitor and generate briefing when autopilot is set
-  if (autopilotSet && routeMonitorSender) {
-    const linked = getLinkedCharacter(db, ctx);
-    const characterId = linked?.characterId ?? 0;
-    const chatId = ctx.chatId ?? ctx.userId;
+  const linked = getLinkedCharacter(db, ctx);
+  const characterId = linked?.characterId ?? 0;
+  const chatId = ctx.chatId ?? ctx.userId;
 
-    // Get the preferred route's system IDs for the monitor
-    const preferred = args.prefer
-      ? routes.find((r) => r.flag === args.prefer) ?? routes[0]
-      : routes.find((r) => r.flag === 'secure') ?? routes[0];
-    const prefIndex = flags.indexOf(preferred.flag);
-    const monitorSystemIds = routeResults[prefIndex] ?? [];
+  // Get the preferred route's system IDs for the selected route
+  const preferredRoute = args.prefer
+    ? routes.find((r) => r.flag === args.prefer) ?? routes[0]
+    : routes.find((r) => r.flag === 'secure') ?? routes[0];
+  const prefIndex = flags.indexOf(preferredRoute.flag);
+  const monitorSystemIds = routeResults[prefIndex] ?? [];
 
-    if (characterId > 0 && monitorSystemIds.length > 0) {
-      // Fetch current ship info for threat assessment
-      let shipTypeId = 0;
-      let shipName = 'Unknown';
-      try {
-        const shipInfo = await callEsiOperation<{ ship_type_id?: number; ship_name?: string }>(
-          db,
-          'get_characters_character_id_ship',
-          { character_id: characterId },
-          ctx,
-        );
-        if (shipInfo.ok && shipInfo.data) {
-          shipTypeId = shipInfo.data.ship_type_id ?? 0;
-          shipName = shipInfo.data.ship_name ?? 'Unknown';
-        }
-      } catch (err) {
-        console.log('[plan_route] ship fetch failed: %s', err instanceof Error ? err.message : String(err));
+  if (characterId > 0 && monitorSystemIds.length > 0) {
+    // Fetch current ship info for threat assessment
+    let shipTypeId = 0;
+    let shipName = 'Unknown';
+    try {
+      const shipInfo = await callEsiOperation<{ ship_type_id?: number; ship_name?: string }>(
+        db,
+        'get_characters_character_id_ship',
+        { character_id: characterId },
+        ctx,
+      );
+      if (shipInfo.ok && shipInfo.data) {
+        shipTypeId = shipInfo.data.ship_type_id ?? 0;
+        shipName = shipInfo.data.ship_name ?? 'Unknown';
       }
+    } catch (err) {
+      console.log('[plan_route] ship fetch failed: %s', err instanceof Error ? err.message : String(err));
+    }
 
-      // Start the route monitor
+    // Generate pre-flight briefing and append to summary
+    try {
+      const briefing = await generateBriefing(
+        db, monitorSystemIds, originInfo.name, destInfo.name, characterId, shipTypeId,
+      );
+      if (briefing) {
+        formattedSummary += '\n\n' + briefing;
+      }
+    } catch (err) {
+      console.log('[plan_route] briefing generation failed: %s', err instanceof Error ? err.message : String(err));
+    }
+
+    // Auto-start route monitor only when autopilot is actually active
+    if (autopilotSet && routeMonitorSender) {
       startRouteMonitor(db, chatId, characterId, monitorSystemIds, shipTypeId, shipName, routeMonitorSender);
-
-      // Generate pre-flight briefing and append to summary
-      try {
-        const briefing = await generateBriefing(
-          db, monitorSystemIds, originInfo.name, destInfo.name, characterId, shipTypeId,
-        );
-        if (briefing) {
-          formattedSummary += '\n\n' + briefing;
-        }
-      } catch (err) {
-        console.log('[plan_route] briefing generation failed: %s', err instanceof Error ? err.message : String(err));
-      }
     }
   }
 
@@ -237,20 +236,23 @@ function formatRouteSummary(
   const preferred = (preferFlag && routes.find((route) => route.flag === preferFlag))
     ?? routes.find((route) => route.flag === 'secure')
     ?? routes[0];
-  const mergedDangerSystems = mergeDangerSystems(routes);
   const dangerCount = preferred.danger_systems.length;
+  const alternativeHint = describeAlternativeHint(routes, preferred);
 
   // Header
   lines.push(`<b>${esc(origin.name)} → ${esc(dest.name)}</b>`);
   const riskEmoji = describeRouteRiskEmoji(preferred, dangerCount);
-  lines.push(`${riskEmoji} ${preferred.jumps} прыжков | мин. сек: ${preferred.min_sec.toFixed(1)} | киллов/ч: ${preferred.total_kills_1h} | потери: ${preferred.total_value_m}M`);
+  lines.push(`${riskEmoji} Выбран: ${esc(preferred.flag)} | ${preferred.jumps} прыжков | мин. сек: ${preferred.min_sec.toFixed(1)} | киллов/ч: ${preferred.total_kills_1h} | потери: ${preferred.total_value_m}M`);
   lines.push(`Автопилот: ${esc(describeAutopilotMode(autopilotMode))} (${esc(preferred.flag)})`);
+  if (alternativeHint) {
+    lines.push(alternativeHint);
+  }
 
-  // Route comparison table
+  // Route comparison table — keep compact as a secondary layer.
   if (routes.length > 1) {
     lines.push('');
     lines.push('<code>');
-    lines.push('         прыж  сек   kills  ISK');
+    lines.push('         прыж  сек   kills');
     for (const route of routes) {
       const marker = route.flag === preferred.flag ? '>' : ' ';
       lines.push(`${marker}${formatVariantRow(route)}`);
@@ -258,55 +260,8 @@ function formatRouteSummary(
     lines.push('</code>');
   }
 
-  // System chain — compact, no bold per system
   lines.push('');
-  const chain = preferred.systems.join(' → ');
-  if (chain.length > 120) {
-    // Long chain: split into lines of ~60 chars
-    const parts: string[] = [];
-    let current = '';
-    for (const sys of preferred.systems) {
-      const next = current ? `${current} → ${sys}` : sys;
-      if (next.length > 60 && current) {
-        parts.push(current + ' →');
-        current = sys;
-      } else {
-        current = next;
-      }
-    }
-    if (current) parts.push(current);
-    lines.push(`<code>${parts.join('\n')}</code>`);
-  } else {
-    lines.push(`<code>${esc(chain)}</code>`);
-  }
-
-  // Danger report
-  if (mergedDangerSystems.length > 0) {
-    lines.push('');
-    lines.push('<b>Опасные системы</b>');
-    for (const ds of mergedDangerSystems) {
-      const secLabel = ds.sec < 0.5 ? 'low' : 'hi';
-      const routeLabel = ds.route_flags.length < routes.length
-        ? ` [${ds.route_flags.join(', ')}]`
-        : '';
-      lines.push(`\n<b>${esc(ds.name)}</b> ${ds.sec.toFixed(1)} ${secLabel}${routeLabel} — ${ds.kills_1h} kills, ${ds.total_value_m}M ISK`);
-
-      for (const kill of ds.kills) {
-        const time = kill.time?.split(' ')[0] ?? '?'; // just HH:MM
-        const ship = esc(kill.victim_ship ?? '?');
-        const isk = kill.value_m ? ` ${kill.value_m}M` : '';
-        const link = kill.url ? `<a href="${escapeHtmlAttribute(kill.url)}">kill</a>` : '';
-        const victim = esc(truncateName(kill.victim));
-        lines.push(`  ${time} ${ship}${isk} ${victim} ${link}`);
-      }
-      if (ds.kills.length < ds.kills_1h) {
-        lines.push(`  <i>+${ds.kills_1h - ds.kills.length} ещё</i>`);
-      }
-    }
-  } else {
-    lines.push('');
-    lines.push('Опасных систем не обнаружено.');
-  }
+  lines.push(`Ключевые точки: <code>${esc(buildRoutePreview(preferred))}</code>`);
 
   return lines.join('\n').trim();
 }
@@ -317,7 +272,6 @@ function formatVariantRow(route: RouteVariant): string {
     String(route.jumps).padStart(3),
     `  ${route.min_sec.toFixed(1)}`,
     `  ${String(route.total_kills_1h).padStart(4)}`,
-    `  ${route.total_value_m}M`,
   ].join('');
 }
 
@@ -327,11 +281,6 @@ function describeRouteRiskEmoji(route: RouteVariant, dangerSystems: number): str
   return '\u{1F7E2}'; // green circle
 }
 
-function truncateName(name: string | null): string {
-  if (!name) return '?';
-  return name.length > 16 ? name.slice(0, 14) + '..' : name;
-}
-
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -339,8 +288,54 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;');
 }
 
-function escapeHtmlAttribute(text: string): string {
-  return escapeHtml(text).replace(/"/g, '&quot;');
+function describeAlternativeHint(routes: RouteVariant[], preferred: RouteVariant): string | null {
+  const candidates = routes.filter((route) => route.flag !== preferred.flag);
+  if (candidates.length === 0) return null;
+
+  const safer = candidates
+    .filter((route) => route.total_kills_1h < preferred.total_kills_1h || route.min_sec > preferred.min_sec)
+    .sort((left, right) => {
+      if (left.total_kills_1h !== right.total_kills_1h) return left.total_kills_1h - right.total_kills_1h;
+      return right.min_sec - left.min_sec;
+    })[0];
+
+  if (safer && safer.total_kills_1h + 3 < preferred.total_kills_1h) {
+    return `Альтернатива: ${safer.flag} тише по киллам (${safer.total_kills_1h} против ${preferred.total_kills_1h}), но смотрите на jumps/sec.`;
+  }
+
+  const faster = candidates
+    .filter((route) => route.jumps < preferred.jumps)
+    .sort((left, right) => left.jumps - right.jumps)[0];
+
+  if (faster && faster.jumps + 2 <= preferred.jumps) {
+    return `Альтернатива: ${faster.flag} короче на ${preferred.jumps - faster.jumps} прыжков, но риск выше.`;
+  }
+
+  return null;
+}
+
+function buildRoutePreview(route: RouteVariant): string {
+  if (route.systems.length <= 6) return route.systems.join(' → ');
+
+  const preview: string[] = [];
+  const add = (name: string | undefined): void => {
+    if (!name) return;
+    if (preview.includes(name)) return;
+    preview.push(name);
+  };
+
+  add(route.systems[0]);
+  add(route.systems[1]);
+
+  const dangerNames = route.systems.filter((name) =>
+    route.danger_systems.some((danger) => danger.name === name),
+  );
+  for (const name of dangerNames.slice(0, 2)) add(name);
+
+  add(route.systems[route.systems.length - 2]);
+  add(route.systems[route.systems.length - 1]);
+
+  return preview.join(' → ');
 }
 
 async function resolveOriginSystem(db: Db, origin: string, ctx: UserContext): Promise<SystemInfo | null> {
@@ -743,30 +738,4 @@ function describeAutopilotMode(mode: AutopilotMode): string {
   if (mode === 'exact_route') return 'выставлен';
   if (mode === 'destination_only') return 'точка назначения выставлена';
   return 'нет';
-}
-
-function mergeDangerSystems(routes: RouteVariant[]): Array<DangerSystem & { route_flags: RouteFlag[] }> {
-  const merged = new Map<string, DangerSystem & { route_flags: RouteFlag[] }>();
-
-  for (const route of routes) {
-    for (const danger of route.danger_systems) {
-      const existing = merged.get(danger.name);
-      if (existing) {
-        if (!existing.route_flags.includes(route.flag)) {
-          existing.route_flags.push(route.flag);
-        }
-        continue;
-      }
-      merged.set(danger.name, {
-        ...danger,
-        route_flags: [route.flag],
-      });
-    }
-  }
-
-  return [...merged.values()].sort((left, right) => (
-    right.kills_1h - left.kills_1h
-    || left.sec - right.sec
-    || left.name.localeCompare(right.name)
-  ));
 }
