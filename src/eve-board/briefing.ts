@@ -244,20 +244,26 @@ export async function generateBriefing(
   const dangerSystems: DangerSystemInfo[] = [];
   const patterns: KillPattern[] = [];
 
-  const scanResults = await Promise.all(
-    systemsToScan.map(async (sys) => {
+  console.log(`[briefing] scanning ${systemsToScan.length} systems: ${systemsToScan.map(s => `${s.name}(${s.sec})`).join(', ')}`);
+
+  // Sequential scan to avoid zKB rate limit
+  const scanResults: Array<{ sys: typeof systemsToScan[0]; pattern: KillPattern; threat: { level: ThreatLevel; reason: string } } | null> = [];
+  for (const sys of systemsToScan) {
+    try {
       const feed = await fetchZkbForBriefing(sys.id);
       const pvpKills = feed.filter((k) => !k.zkb?.npc);
-      if (pvpKills.length === 0) return null;
+      console.log(`[briefing] ${sys.name}: ${feed.length} total, ${pvpKills.length} PvP`);
+      if (pvpKills.length === 0) { scanResults.push(null); continue; }
 
-      // Enrich top kills with ESI data (time, attackers, victim ship)
       const enrichedKills = await enrichZkbKills(db, pvpKills);
-
       const pattern = analyzeKillPattern(enrichedKills, sys.id, sys.name, sys.sec);
       const threat = scoreThreat(pattern, ship);
-      return { sys, pattern, threat };
-    }),
-  );
+      scanResults.push({ sys, pattern, threat });
+    } catch (err) {
+      console.error(`[briefing] scan error ${sys.name}:`, (err as Error).message);
+      scanResults.push(null);
+    }
+  }
 
   for (const result of scanResults) {
     if (!result) continue;
