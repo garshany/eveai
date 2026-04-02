@@ -727,29 +727,23 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
       inst.lastDigestsBehind,
     );
 
-    // 3. Send formatted digest to user
-    const digestText = formatThreatDigest(digest);
-    sender(monitor.chatId, digestText);
+    // 3. ALWAYS call LLM for route analysis — this is the ESP
+    const intelSummary = await generateRouteIntelSummary(
+      digest, shipAssessment, pursuit,
+      {
+        routeSystems: monitor.routeSystems,
+        originId: monitor.originId,
+        destinationId: monitor.destinationId,
+        currentSystemId: monitor.currentSystemId,
+      },
+    );
+    const intelText = formatIntelMessage(intelSummary);
+    sender(monitor.chatId, intelText);
 
-    // 4. If significant threats or pursuit detected — invoke LLM route intel
-    if (digest.overallThreat === 'HIGH' || digest.overallThreat === 'CRITICAL' || pursuit) {
-      const intelSummary = await generateRouteIntelSummary(
-        digest, shipAssessment, pursuit,
-        {
-          routeSystems: monitor.routeSystems,
-          originId: monitor.originId,
-          destinationId: monitor.destinationId,
-          currentSystemId: monitor.currentSystemId,
-        },
+    if (pursuit) {
+      console.log(
+        `${LOG} pursuit detected chat=${monitor.chatId} confidence=${pursuit.confidence} systems=${pursuit.systemIds.length}`,
       );
-      const intelText = formatIntelMessage(intelSummary);
-      sender(monitor.chatId, intelText);
-
-      if (pursuit) {
-        console.log(
-          `${LOG} pursuit detected chat=${monitor.chatId} confidence=${pursuit.confidence} systems=${pursuit.systemIds.length}`,
-        );
-      }
     }
 
     inst.lastDigestTime = Date.now();

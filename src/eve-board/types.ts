@@ -183,6 +183,18 @@ export type GateKill = {
   recentKills: number;     // kills in last 5 min
 };
 
+/** Compact kill summary for LLM context */
+export type KillSummary = {
+  time: string;           // "12:05 UTC"
+  victimShip: string;     // "Badger"
+  victimName: string;     // "SlayerBoxer6" or "?"
+  attackerShip: string;   // "Tornado"
+  attackerName: string;   // "GankerMcStab" or "?"
+  attackerCount: number;
+  valueMISK: number;
+  solo: boolean;
+};
+
 /** Per-system threat analysis combining kills + jumps + time */
 export type SystemThreatDigest = {
   systemId: number;
@@ -196,6 +208,8 @@ export type SystemThreatDigest = {
   jumpSpike: JumpSpike | null;
   gateKills: GateKill[];
   gankerCount: number;     // known gankers from cache
+  /** Recent kills for LLM analysis context */
+  recentKills: KillSummary[];
 };
 
 /** Full route threat digest sent to user */

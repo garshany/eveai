@@ -170,11 +170,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 const INTEL_TIMEOUT_MS = 15_000;
 
 const INTEL_SYSTEM_PROMPT = [
-  'Ты — бортовой ИИ безопасности корабля в EVE Online. Анализируй данные маршрута и дай чёткую рекомендацию пилоту.',
+  'Ты — бортовой ИИ безопасности (ESP) корабля в EVE Online.',
+  'Ты получаешь полные данные о маршруте: киллы, трафик, ганкеры, угрозы.',
+  'Проанализируй ВСЮ информацию и дай пилоту полную картину.',
   '',
   'Формат ответа (строго):',
   'РЕКОМЕНДАЦИЯ: СТОП|ЖДАТЬ|ВПЕРЁД|ОБХОД',
-  'СОВЕТ: 2-4 строки конкретного совета',
+  'СОВЕТ: 3-6 строк конкретного анализа. Назови конкретные системы, корабли, имена.',
+  'Если тихо — скажи что безопасно и почему. Если есть киллы — проанализируй кто кого убил,',
+  'насколько опасен атакующий для нашего корабля, есть ли паттерн (ганк-флот, gate camp, соло).',
   'ФАКТОРЫ: ключевые факторы через запятую',
 ].join('\n');
 
@@ -356,19 +360,31 @@ function buildIntelPrompt(
 }
 
 function formatSystemLine(sys: SystemThreatDigest): string {
-  const parts = [
+  const lines: string[] = [];
+  const header = [
     `  ${sys.systemName} (${sys.systemSec.toFixed(1)})`,
     `${Math.abs(sys.jumpsFromPilot)}j`,
     sys.threatLevel,
   ];
-  if (sys.reason) parts.push(sys.reason);
-  if (sys.jumpSpike) parts.push(`spike:${sys.jumpSpike.severity}`);
+  if (sys.reason) header.push(sys.reason);
+  if (sys.jumpSpike) header.push(`traffic spike: ${sys.jumpSpike.severity} (+${sys.jumpSpike.delta})`);
   if (sys.gateKills.length > 0) {
-    const gk = sys.gateKills.map((g) => `${g.connectedSystemName}:${g.recentKills}`).join(',');
-    parts.push(`gate:[${gk}]`);
+    const gk = sys.gateKills.map((g) => `gate ${g.connectedSystemName}: ${g.recentKills} kills`).join(', ');
+    header.push(gk);
   }
-  if (sys.gankerCount > 0) parts.push(`gankers:${sys.gankerCount}`);
-  return parts.join(' | ');
+  if (sys.gankerCount > 0) header.push(`${sys.gankerCount} known gankers`);
+  lines.push(header.join(' | '));
+
+  // Add concrete kill details for LLM analysis
+  for (const k of sys.recentKills) {
+    const soloTag = k.solo ? ' [solo]' : '';
+    const atkInfo = k.attackerCount > 1
+      ? `${k.attackerCount} atk, FB: ${k.attackerName} (${k.attackerShip})`
+      : `${k.attackerName} (${k.attackerShip})`;
+    lines.push(`    ${k.time} ${k.victimShip} ${k.valueMISK}M — killed by ${atkInfo}${soloTag}`);
+  }
+
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -497,26 +513,20 @@ export function formatIntelMessage(summary: RouteIntelSummary): string {
   const timeStr = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')} UTC`;
 
   const lines: string[] = [
-    '\u{1F9E0} Анализ маршрута',
+    `\u{1F6F0}\u{FE0F} ESP | ${emoji} ${label}`,
     '',
-    `${emoji} РЕКОМЕНДАЦИЯ: ${label}`,
     summary.advice,
   ];
-
-  if (summary.factors.length > 0) {
-    lines.push('');
-    lines.push(`Факторы: ${summary.factors.join(', ')}`);
-  }
 
   if (summary.pursuit) {
     lines.push('');
     lines.push(
-      `\u{1F6A8} Преследование: ${summary.pursuit.confidence} уверенность, ${summary.pursuit.systemIds.length} систем`,
+      `\u{1F6A8} Преследование: ${summary.pursuit.confidence}, ${summary.pursuit.systemIds.length} систем`,
     );
   }
 
   lines.push('');
-  lines.push(`\u{23F0} ${timeStr}`);
+  lines.push(`${timeStr}`);
 
   return lines.join('\n');
 }

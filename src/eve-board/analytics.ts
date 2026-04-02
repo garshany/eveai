@@ -17,6 +17,7 @@ import type {
   ThreatLevel,
   JumpSpike,
   GateKill,
+  KillSummary,
   SystemThreatDigest,
   RouteThreatDigest,
 } from './types.js';
@@ -322,7 +323,18 @@ export function buildSystemDigest(
   jumpsFromPilot: number,
   threatLevel: ThreatLevel,
   reason: string,
-  kills: Array<{ killmail_time?: string; position?: { x: number; y: number; z: number }; killmail_id: number }>,
+  kills: Array<{
+    killmail_time?: string;
+    killmail_id: number;
+    position?: { x: number; y: number; z: number };
+    // Enriched fields from KilllistItem
+    ship_name?: string;
+    victim_character_name?: string;
+    final_blow_character_name?: string;
+    total_value?: number;
+    attacker_count?: number;
+    is_solo?: boolean;
+  }>,
   jumpSpike: JumpSpike | null,
   gankerCount: number,
   db: Db,
@@ -332,6 +344,23 @@ export function buildSystemDigest(
 
   // Gate-level kill attribution
   const gateKills = attributeKillsToGates(db, systemId, kills);
+
+  // Build kill summaries for LLM context (max 5)
+  const recentKills: KillSummary[] = kills.slice(0, 5).map((k) => {
+    const t = k.killmail_time ? new Date(k.killmail_time) : new Date();
+    const hh = String(t.getUTCHours()).padStart(2, '0');
+    const mm = String(t.getUTCMinutes()).padStart(2, '0');
+    return {
+      time: `${hh}:${mm}`,
+      victimShip: k.ship_name ?? '?',
+      victimName: k.victim_character_name ?? '?',
+      attackerShip: '?', // FB ship resolved in monitor
+      attackerName: k.final_blow_character_name ?? '?',
+      attackerCount: k.attacker_count ?? 1,
+      valueMISK: Math.round((k.total_value ?? 0) / 1_000_000),
+      solo: k.is_solo ?? false,
+    };
+  });
 
   return {
     systemId,
@@ -344,6 +373,7 @@ export function buildSystemDigest(
     jumpSpike,
     gateKills,
     gankerCount,
+    recentKills,
   };
 }
 
