@@ -320,8 +320,10 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
   const soloLossSystems = new Map<number, SoloLossMetrics>();
   const filtered = { npc: 0, awox: 0, incomplete: 0 };
 
-  const pastSeconds = Math.max(86_400, Math.min(args.windowDays * 86_400, config.zkill.maxPastSeconds));
-  const sourceWindowDays = Math.max(1, Math.floor(pastSeconds / 86_400));
+  const pastSeconds = Math.max(86_400, args.windowDays * 86_400);
+  const sourceWindowDays = pastSeconds <= config.zkill.maxPastSeconds
+    ? Math.max(1, Math.floor(pastSeconds / 86_400))
+    : args.windowDays;
   const [killsFeed, lossesFeed] = await Promise.all([
     fetchEntityActivityFeed(db, { scope: args.scope, id: args.id, activity: 'kills', pastSeconds }),
     fetchEntityActivityFeed(db, { scope: args.scope, id: args.id, activity: 'losses', pastSeconds }),
