@@ -307,16 +307,16 @@ const DEFERRED_EVE_KILL_TOOLS: NativeFunctionTool[] = [
         action: {
           type: 'string',
           enum: ['watch', 'unwatch', 'list'],
-          description: 'watch=subscribe to kill alerts, unwatch=remove subscription, list=show active watches.',
+          description: 'watch=subscribe, unwatch=remove (pass null topic_type+topic_id to remove ALL at once), list=show active.',
         },
         topic_type: {
           type: ['string', 'null'],
           enum: ['victim', 'attacker', 'system', 'region', null],
-          description: 'What to watch. victim=when player dies, attacker=when player kills, system/region=all kills in area.',
+          description: 'What to watch. null with unwatch = remove ALL watches at once.',
         },
         topic_id: {
           type: ['integer', 'null'],
-          description: 'CCP ID: character_id, system_id, or region_id. Resolve via sde_sql or kill_lookup search.',
+          description: 'CCP ID. null with unwatch = remove ALL watches at once.',
         },
         label: {
           type: ['string', 'null'],

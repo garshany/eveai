@@ -9,6 +9,7 @@ import { executeKillFeed } from './feed.js';
 import { executeKillQuery } from './kill-query.js';
 import { executeKillIntel } from './intel.js';
 import { addWatch, removeWatch, removeAllWatches, listWatches } from './watch.js';
+import { stopRouteMonitor } from '../eve-board/monitor.js';
 
 export async function executeEveKillTool(
   db: Db,
@@ -59,9 +60,10 @@ function executeKillWatch(db: Db, args: Record<string, unknown>, chatId?: number
     const topicId = args.topic_id as number | null;
 
     if (!topicType && !topicId) {
-      // Remove all
+      // Remove all watches + stop route monitor
       const count = removeAllWatches(db, chatId);
-      return { ok: true, removed: count, message: `Removed all ${count} watches.` };
+      stopRouteMonitor(chatId, 'manual');
+      return { ok: true, removed: count, message: `Removed all ${count} watches. Route monitor stopped.` };
     }
 
     const topic = buildTopic(topicType, topicId);
