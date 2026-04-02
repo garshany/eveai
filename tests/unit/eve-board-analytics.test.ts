@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
-import { buildSystemDigest } from '../../src/eve-board/analytics.js';
+import { buildRouteThreatDigest, buildSystemDigest } from '../../src/eve-board/analytics.js';
 
 describe('eve-board analytics', () => {
   it('attributes live kills to the nearest stargate when killmail positions are present', () => {
@@ -70,8 +70,79 @@ describe('eve-board analytics', () => {
       expect(digest.gateKills).toHaveLength(1);
       expect(digest.gateKills[0]?.connectedSystemName).toBe('Jita');
       expect(digest.gateKills[0]?.killCount).toBe(1);
+      expect(digest.recentKills[0]?.ageMinutes).not.toBeNull();
     } finally {
       db.close();
     }
+  });
+
+  it('builds tactical route state for nearby gate activity', () => {
+    const digest = buildRouteThreatDigest(
+      'Dodixie',
+      0,
+      4,
+      'Dodixie',
+      'Jita',
+      [{
+        systemId: 30002659,
+        systemName: 'Dodixie',
+        systemSec: 0.9,
+        jumpsFromPilot: 0,
+        threatLevel: 'LOW',
+        reason: 'тихо',
+        killVelocity: 0,
+        jumpSpike: null,
+        gateKills: [],
+        gankerCount: 0,
+        recentKills: [],
+      }, {
+        systemId: 30002660,
+        systemName: 'Uedama',
+        systemSec: 0.5,
+        jumpsFromPilot: 1,
+        threatLevel: 'MEDIUM',
+        reason: 'замечена активность у гейта',
+        killVelocity: 0.3,
+        jumpSpike: null,
+        gateKills: [{
+          systemId: 30002660,
+          systemName: 'Uedama',
+          stargateId: 5001,
+          connectedSystemName: 'Jita',
+          killCount: 2,
+          recentKills: 1,
+        }],
+        gankerCount: 2,
+        recentKills: [{
+          time: '16:20',
+          ageMinutes: 4,
+          victimShip: 'Badger',
+          victimName: 'Pilot',
+          attackerShip: '?',
+          attackerName: 'Ganker',
+          attackerCount: 2,
+          valueMISK: 120,
+          solo: false,
+        }],
+      }, {
+        systemId: 30000142,
+        systemName: 'Jita',
+        systemSec: 0.9,
+        jumpsFromPilot: 2,
+        threatLevel: 'LOW',
+        reason: 'тихо',
+        killVelocity: 0,
+        jumpSpike: null,
+        gateKills: [],
+        gankerCount: 0,
+        recentKills: [],
+      }],
+      [],
+    );
+
+    expect(digest.tactical.state).toBe('CAMP_LIKELY');
+    expect(digest.tactical.zoneRisk.transit).toBe('MEDIUM');
+    expect(digest.tactical.zoneRisk.destination).toBe('LOW');
+    expect(digest.tactical.headline).toContain('кемп');
   });
 });

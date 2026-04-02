@@ -51,6 +51,19 @@ describe('eve-board monitor', () => {
       destination: 'Jita',
       overallThreat: 'MEDIUM',
       summary: 'medium route',
+      tactical: {
+        state: 'WARM',
+        confidence: 0.62,
+        headline: 'Маршрут тёплый: есть фоновые угрозы без явного кемпа.',
+        reasons: ['фоновые PvP-точки на трассе'],
+        windowOpen: false,
+        zoneRisk: {
+          start: 'LOW',
+          transit: 'MEDIUM',
+          destination: 'LOW',
+          rear: 'LOW',
+        },
+      },
       systemsAhead: [],
       systemsBehind: [],
     };

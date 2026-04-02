@@ -186,6 +186,7 @@ export type GateKill = {
 /** Compact kill summary for LLM context */
 export type KillSummary = {
   time: string;           // "12:05 UTC"
+  ageMinutes: number | null;
   victimShip: string;     // "Badger"
   victimName: string;     // "SlayerBoxer6" or "?"
   attackerShip: string;   // "Tornado"
@@ -205,11 +206,31 @@ export type SystemThreatDigest = {
   /** Compact reason string */
   reason: string;
   killVelocity: number;    // kills per minute in recent window
+  activeCamp: boolean;
+  latestKillMinutes: number | null;
   jumpSpike: JumpSpike | null;
   gateKills: GateKill[];
   gankerCount: number;     // known gankers from cache
   /** Recent kills for LLM analysis context */
   recentKills: KillSummary[];
+};
+
+export type TacticalState = 'CLEAR' | 'WARM' | 'HOT' | 'CAMP_LIKELY' | 'WINDOW_OPEN';
+
+export type RouteZoneRisk = {
+  start: ThreatLevel;
+  transit: ThreatLevel;
+  destination: ThreatLevel;
+  rear: ThreatLevel;
+};
+
+export type TacticalAssessment = {
+  state: TacticalState;
+  confidence: number;
+  headline: string;
+  reasons: string[];
+  windowOpen: boolean;
+  zoneRisk: RouteZoneRisk;
 };
 
 /** Full route threat digest sent to user */
@@ -227,6 +248,7 @@ export type RouteThreatDigest = {
   systemsBehind: SystemThreatDigest[];
   overallThreat: ThreatLevel;
   summary: string;
+  tactical: TacticalAssessment;
 };
 
 // ---------------------------------------------------------------------------

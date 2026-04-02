@@ -1,14 +1,12 @@
 # Evidence
 
 ## Scope
-- Added a tactical combat-ESP layer in `src/eve-board/advisor.ts`.
-- Tactical assessment now separates `start / transit / destination` risk and derives route state plus tactical window/confidence.
-- Live ESP output now includes a compact tactical layer before `Сейчас / Впереди / Действие`.
-- LLM prompt context now includes the same tactical assessment as the deterministic fallback.
+- Extended `RouteThreatDigest` with tactical assessment metadata.
+- Route analytics now derives tactical state, confidence, headline, zone risk, and window-open status.
+- Live ESP already had a route-tactical layer in `advisor.ts`; this change feeds richer digest context and keeps one-shot `briefing.ts` aligned with a new `Тактика:` line.
 
 ## Commands
-- `npm run test -- tests/unit/eve-board-advisor.test.ts tests/unit/eve-board-monitor.test.ts tests/unit/eve-board-analytics.test.ts`
-- `npm run typecheck`
+- `npm run test -- tests/unit/eve-board-analytics.test.ts tests/unit/eve-board-advisor.test.ts tests/unit/briefing.test.ts tests/unit/eve-board-monitor.test.ts`
 - `npm run check`
 
 ## Result
@@ -16,5 +14,3 @@
 - PASS: AC2
 - PASS: AC3
 - PASS: AC4
-- PASS: AC5
-- PASS: AC6

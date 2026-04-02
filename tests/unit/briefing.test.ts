@@ -87,6 +87,7 @@ describe('generateBriefing', () => {
     expect(briefing).toContain('Предполет');
     expect(briefing).toContain('Сейчас:');
     expect(briefing).toContain('Впереди:');
+    expect(briefing).toContain('Тактика:');
     expect(briefing).toContain('Действие:');
     expect(briefing).toContain('Midpoint');
     expect(briefing).not.toContain('Маршрут безопасен. PvP активности не обнаружено.');

@@ -20,6 +20,8 @@ import type {
   KillSummary,
   SystemThreatDigest,
   RouteThreatDigest,
+  TacticalAssessment,
+  TacticalState,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -340,7 +342,8 @@ export function buildSystemDigest(
   db: Db,
 ): SystemThreatDigest {
   // Kill velocity over 15-minute window
-  const { velocity } = analyzeKillVelocity(kills, 15);
+  const { velocity, isActiveCamp } = analyzeKillVelocity(kills, 15);
+  const latestKillMinutes = getLatestKillMinutes(kills);
 
   // Gate-level kill attribution
   const gateKills = attributeKillsToGates(db, systemId, kills);
@@ -350,8 +353,12 @@ export function buildSystemDigest(
     const t = k.killmail_time ? new Date(k.killmail_time) : new Date();
     const hh = String(t.getUTCHours()).padStart(2, '0');
     const mm = String(t.getUTCMinutes()).padStart(2, '0');
+    const ageMinutes = k.killmail_time
+      ? Math.max(0, Math.round((Date.now() - new Date(k.killmail_time).getTime()) / 60_000))
+      : null;
     return {
       time: `${hh}:${mm}`,
+      ageMinutes,
       victimShip: k.ship_name ?? '?',
       victimName: k.victim_character_name ?? '?',
       attackerShip: '?', // FB ship resolved in monitor
@@ -370,11 +377,26 @@ export function buildSystemDigest(
     threatLevel,
     reason,
     killVelocity: velocity,
+    activeCamp: isActiveCamp,
+    latestKillMinutes,
     jumpSpike,
     gateKills,
     gankerCount,
     recentKills,
   };
+}
+
+function getLatestKillMinutes(
+  kills: Array<{ killmail_time?: string }>,
+): number | null {
+  let latestTs = Number.NEGATIVE_INFINITY;
+  for (const kill of kills) {
+    if (!kill.killmail_time) continue;
+    const ts = new Date(kill.killmail_time).getTime();
+    if (Number.isFinite(ts) && ts > latestTs) latestTs = ts;
+  }
+  if (!Number.isFinite(latestTs)) return null;
+  return Math.max(0, Math.round((Date.now() - latestTs) / 60_000));
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +425,7 @@ export function buildRouteThreatDigest(
   }
 
   const summary = buildSummaryText(overallThreat, systemsAhead, systemsBehind);
+  const tactical = buildTacticalAssessment(overallThreat, systemsAhead, systemsBehind);
 
   return {
     timestamp: new Date().toISOString(),
@@ -415,7 +438,118 @@ export function buildRouteThreatDigest(
     systemsBehind,
     overallThreat,
     summary,
+    tactical,
   };
+}
+
+function buildTacticalAssessment(
+  overallThreat: ThreatLevel,
+  systemsAhead: SystemThreatDigest[],
+  systemsBehind: SystemThreatDigest[],
+): TacticalAssessment {
+  const currentSystem = systemsAhead.find((system) => system.jumpsFromPilot === 0) ?? null;
+  const aheadOnly = systemsAhead.filter((system) => system.jumpsFromPilot > 0);
+  const destinationJumpDistance = aheadOnly.reduce((max, system) => Math.max(max, system.jumpsFromPilot), 0);
+  const destinationSystem = aheadOnly.find((system) => system.jumpsFromPilot === destinationJumpDistance) ?? null;
+  const transitSystems = aheadOnly.filter((system) => system.jumpsFromPilot < destinationJumpDistance);
+  const nearAhead = aheadOnly.filter((system) => system.jumpsFromPilot <= 2);
+
+  const zoneRisk = {
+    start: currentSystem?.threatLevel ?? 'LOW',
+    transit: maxThreatAcross(transitSystems),
+    destination: destinationSystem?.threatLevel ?? 'LOW',
+    rear: maxThreatAcross(systemsBehind),
+  };
+
+  const campSystem = [currentSystem, ...nearAhead]
+    .filter((system): system is SystemThreatDigest => Boolean(system))
+    .find((system) => system.gateKills.some((gate) => gate.recentKills > 0 || gate.killCount >= 2)) ?? null;
+
+  const freshestAge = minRecentKillAge([...systemsAhead, ...systemsBehind]);
+  const hasRecentGateActivity = [...systemsAhead, ...systemsBehind].some((system) =>
+    system.gateKills.some((gate) => gate.recentKills > 0),
+  );
+  const hasGankersAhead = aheadOnly.some((system) => system.gankerCount > 0);
+
+  let state: TacticalState = 'CLEAR';
+  const reasons: string[] = [];
+  let confidence = 0.45;
+  let headline = 'Маршрут тихий, явных тактических сигналов нет.';
+
+  if (campSystem) {
+    state = 'CAMP_LIKELY';
+    const gate = campSystem.gateKills[0];
+    headline = gate
+      ? `Вероятен кемп у ${campSystem.systemName} gate на ${gate.connectedSystemName}.`
+      : `Вероятен кемп в ${campSystem.systemName}.`;
+    reasons.push(`гейтовая активность у ${campSystem.systemName}`);
+    confidence = 0.86;
+  } else if (
+    zoneRisk.start === 'HIGH' || zoneRisk.start === 'CRITICAL'
+    || maxThreatAcross(nearAhead) === 'HIGH'
+    || maxThreatAcross(nearAhead) === 'CRITICAL'
+  ) {
+    state = 'HOT';
+    const primary = currentSystem && THREAT_ORDER[currentSystem.threatLevel] >= THREAT_ORDER['HIGH']
+      ? currentSystem
+      : nearAhead.find((system) => THREAT_ORDER[system.threatLevel] >= THREAT_ORDER['HIGH']) ?? null;
+    headline = primary
+      ? `Маршрут горячий: критичная точка ${primary.systemName} в пределах 0-2 прыжков.`
+      : 'Маршрут горячий в ближайшем тактическом окне.';
+    reasons.push('угроза в стартовой или ближней зоне');
+    confidence = 0.78;
+  } else if (
+    overallThreat !== 'LOW'
+    && !hasRecentGateActivity
+    && freshestAge !== null
+    && freshestAge >= 12
+  ) {
+    state = 'WINDOW_OPEN';
+    headline = `Окно прохода открыто: свежего контакта нет уже ${freshestAge} мин.`;
+    reasons.push('последняя активность остывает');
+    if (hasGankersAhead) reasons.push('известные пилоты ещё на трассе');
+    confidence = 0.72;
+  } else if (overallThreat !== 'LOW' || hasGankersAhead || zoneRisk.destination !== 'LOW') {
+    state = 'WARM';
+    if (zoneRisk.destination !== 'LOW' && transitSystems.every((system) => system.threatLevel === 'LOW')) {
+      headline = 'Транзит выглядит чисто, но цель остаётся шумной.';
+      reasons.push('активность локальна в точке прибытия');
+    } else if (zoneRisk.start !== 'LOW') {
+      headline = 'Риск локален на старте, но трасса не выглядит закрытой.';
+      reasons.push('шум в стартовой системе');
+    } else {
+      headline = 'Маршрут тёплый: есть фоновые угрозы без явного кемпа.';
+      reasons.push('фоновые PvP-точки на трассе');
+    }
+    confidence = 0.62;
+  }
+
+  if (systemsBehind.some((system) => system.threatLevel !== 'LOW')) {
+    reasons.push('позади есть активность');
+  }
+  if (reasons.length === 0) reasons.push('явных триггеров не найдено');
+
+  return {
+    state,
+    confidence,
+    headline,
+    reasons,
+    windowOpen: state === 'WINDOW_OPEN',
+    zoneRisk,
+  };
+}
+
+function maxThreatAcross(systems: SystemThreatDigest[]): ThreatLevel {
+  return systems.reduce<ThreatLevel>((acc, system) => maxThreat(acc, system.threatLevel), 'LOW');
+}
+
+function minRecentKillAge(systems: SystemThreatDigest[]): number | null {
+  const ages = systems
+    .flatMap((system) => system.recentKills)
+    .map((kill) => kill.ageMinutes)
+    .filter((age): age is number => typeof age === 'number' && Number.isFinite(age));
+  if (ages.length === 0) return null;
+  return Math.min(...ages);
 }
 
 /**

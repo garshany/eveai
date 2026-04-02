@@ -5,37 +5,26 @@
     {
       "id": "AC1",
       "status": "PASS",
-      "evidence": "buildRouteTacticalAssessment() explicitly computes start, transit, and destination risk from the route digest."
+      "evidence": "RouteThreatDigest now carries a tactical assessment with state, confidence, headline, reasons, windowOpen, and route-relative zone risks."
     },
     {
       "id": "AC2",
       "status": "PASS",
-      "evidence": "Tactical state derives route states such as HOT START, CAMP LIKELY, DEST HOT, PURSUIT, and WINDOW OPEN."
+      "evidence": "Live ESP formatting continues to expose tactical state/window context while using the richer digest data."
     },
     {
       "id": "AC3",
       "status": "PASS",
-      "evidence": "formatIntelMessage() now renders a tactical summary and window/confidence layer before operational advice."
+      "evidence": "Pre-flight briefing now emits a concise `Тактика:` line."
     },
     {
       "id": "AC4",
       "status": "PASS",
-      "evidence": "buildIntelPrompt() now includes a dedicated tactical assessment block for the LLM route-intel path."
-    },
-    {
-      "id": "AC5",
-      "status": "PASS",
-      "evidence": "Advisor unit tests cover quiet output, gate-camp/hot-start assessment, and destination-hot separation."
-    },
-    {
-      "id": "AC6",
-      "status": "PASS",
-      "evidence": "npm run check passed on the final codebase."
+      "evidence": "Targeted tests and full npm run check passed."
     }
   ],
   "commands": [
-    "npm run test -- tests/unit/eve-board-advisor.test.ts tests/unit/eve-board-monitor.test.ts tests/unit/eve-board-analytics.test.ts",
-    "npm run typecheck",
+    "npm run test -- tests/unit/eve-board-analytics.test.ts tests/unit/eve-board-advisor.test.ts tests/unit/briefing.test.ts tests/unit/eve-board-monitor.test.ts",
     "npm run check"
   ]
 }

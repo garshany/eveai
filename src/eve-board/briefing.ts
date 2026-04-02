@@ -214,6 +214,7 @@ function formatBriefing(
   lines.push(buildShipLine(ship));
   lines.push(`Сейчас: ${buildCurrentLine(originName, currentSystem)}`);
   lines.push(`Впереди: ${buildAheadLine(aheadSystems, destinationSystem, routeSystems, db)}`);
+  lines.push(`Тактика: ${buildTacticalLine(currentSystem, aheadSystems, destinationSystem, gankWindow)}`);
   lines.push(`Действие: ${action.action}`);
   lines.push('');
 
@@ -234,6 +235,28 @@ function formatBriefing(
   lines.push(buildSurvivalLine(ship));
 
   return lines.join('\n');
+}
+
+function buildTacticalLine(
+  currentSystem: DangerSystemInfo | null,
+  aheadSystems: DangerSystemInfo[],
+  destinationSystem: DangerSystemInfo | null,
+  gankWindow: { isOpen: boolean; reason: string },
+): string {
+  const nearestAhead = aheadSystems[0] ?? null;
+  if (currentSystem && (currentSystem.threatLevel === 'HIGH' || currentSystem.threatLevel === 'CRITICAL')) {
+    return `старт HOT: ${currentSystem.name} держит основной риск; окно ${gankWindow.isOpen ? 'приоткрыто' : 'закрыто'}.`;
+  }
+  if (nearestAhead && (nearestAhead.threatLevel === 'HIGH' || nearestAhead.threatLevel === 'CRITICAL')) {
+    return `транзит HOT: ближайшая жёсткая точка ${nearestAhead.name} через ${nearestAhead.routeIndex} ${jumpWord(nearestAhead.routeIndex)}.`;
+  }
+  if (nearestAhead) {
+    return `транзит WARM: фоновая активность в ${nearestAhead.name}; окно ${gankWindow.isOpen ? 'прохода открыто' : 'прохода сужено'}.`;
+  }
+  if (destinationSystem) {
+    return `транзит CLEAR: риск локален в цели ${destinationSystem.name}; окно ${gankWindow.isOpen ? 'прохода открыто' : 'прохода сужено'}.`;
+  }
+  return `транзит CLEAR: трасса выглядит чистой; окно ${gankWindow.isOpen ? 'прохода открыто' : 'прохода сужено'}.`;
 }
 
 function hasUsableShipAssessment(ship: ShipAssessment): boolean {

@@ -36,6 +36,7 @@ function makeDigest(overrides: Partial<RouteThreatDigest>): RouteThreatDigest {
         reason: 'единичные киллы 20 мин назад',
         recentKills: [{
           time: '10:25',
+          ageMinutes: 20,
           victimShip: 'Capsule',
           victimName: 'Pilot A',
           attackerShip: '?',
@@ -59,6 +60,19 @@ function makeDigest(overrides: Partial<RouteThreatDigest>): RouteThreatDigest {
     systemsBehind: [],
     overallThreat: 'LOW',
     summary: 'тихо',
+    tactical: {
+      state: 'CLEAR',
+      confidence: 0.45,
+      headline: 'Маршрут тихий, явных тактических сигналов нет.',
+      reasons: ['явных триггеров не найдено'],
+      windowOpen: false,
+      zoneRisk: {
+        start: 'LOW',
+        transit: 'LOW',
+        destination: 'LOW',
+        rear: 'LOW',
+      },
+    },
     ...overrides,
   };
 }
@@ -132,7 +146,7 @@ describe('eve-board advisor', () => {
     expect(tactical.state).toBe('CAMP_LIKELY');
     expect(tactical.startRisk).toBe('MEDIUM');
     expect(tactical.window).toBe('CLOSED');
-    expect(tactical.summary).toContain('CAMP LIKELY');
+    expect(tactical.summary).toContain('вероятен кемп');
   });
 
   it('marks destination-local heat separately from transit risk', () => {

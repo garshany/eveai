@@ -90,7 +90,7 @@ src/eve-board/
 Auto-starts on autopilot. Current route flow:
   1. `plan_route` builds route variants and returns a compact, selected-route-first route summary instead of a merged danger dump.
   2. The selected-route top block and appended pre-flight briefing are derived from one shared selected-route threat snapshot, so `киллов/ч`, `zKB срез`, `Сейчас`, `Впереди`, `Анализ`, and `Последние киллы` agree on the same kill set.
-  3. `generateBriefing()` formats that snapshot around `Маршрут`, `Корабль`, `Сейчас`, `Впереди`, `Действие`; direct briefing generation also uses the same `route-snapshot` scan path.
+  3. `generateBriefing()` formats that snapshot around `Маршрут`, `Корабль`, `Сейчас`, `Впереди`, `Тактика`, `Действие`; direct briefing generation also uses the same `route-snapshot` scan path.
   4. `monitor.ts` starts only when autopilot is actually active, then tracks pilot location, scans the full selected route every cycle, and keeps route watches subscribed in R2Z2.
   5. Live kill scanning uses ESI `system_kills` as a prefilter, then zKB REST for the systems that matter.
   6. Newly observed killmail IDs are deduplicated per monitor session before they affect `killsSeen`, ganker cache updates, or digest deltas.
