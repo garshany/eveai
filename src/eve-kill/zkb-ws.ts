@@ -37,9 +37,15 @@ type R2Z2Kill = {
       corporation_id?: number;
       alliance_id?: number;
       ship_type_id?: number;
+      damage_taken?: number;
     };
     attackers?: Array<{
       character_id?: number;
+      corporation_id?: number;
+      alliance_id?: number;
+      ship_type_id?: number;
+      weapon_type_id?: number;
+      damage_done?: number;
       final_blow?: boolean;
     }>;
   };
@@ -47,6 +53,10 @@ type R2Z2Kill = {
     totalValue?: number;
     npc?: boolean;
     solo?: boolean;
+    awox?: boolean;
+    labels?: string[];
+    attackerCount?: number;
+    points?: number;
   };
 };
 
@@ -213,11 +223,9 @@ function matchKill(database: Db, kill: R2Z2Kill): void {
   if (watchers.length === 0) return;
 
   // Format
-  const value = kill.zkb?.totalValue ? Math.round(kill.zkb.totalValue / 1_000_000) : 0;
-  const shipName = resolveType(database, esi.victim?.ship_type_id ?? null) ?? '?';
   const systemName = resolveSystem(database, esi.solar_system_id ?? 0);
-  const soloTag = kill.zkb?.solo ? ' [SOLO]' : '';
-  const text = `🔴 Kill in ${systemName}${soloTag}: ${shipName} (${value}M ISK)\nhttps://zkillboard.com/kill/${kill.killmail_id}/`;
+  const systemSec = resolveSystemSec(database, esi.solar_system_id ?? 0);
+  const text = formatKillNotification(database, kill, esi, systemName, systemSec);
 
   // Dedup
   const now = Date.now();
@@ -233,6 +241,59 @@ function matchKill(database: Db, kill: R2Z2Kill): void {
   }
 
   console.log(`${LOG} kill ${kill.killmail_id} in ${systemName} → ${watchers.length} chats`);
+}
+
+// ---------------------------------------------------------------------------
+// Format
+// ---------------------------------------------------------------------------
+
+function formatKillNotification(
+  database: Db, kill: R2Z2Kill,
+  esi: NonNullable<R2Z2Kill['esi']>,
+  systemName: string, systemSec: number,
+): string {
+  const zkb = kill.zkb;
+  const value = zkb?.totalValue ? Math.round(zkb.totalValue / 1_000_000) : 0;
+  const valueFmt = value >= 1000 ? `${(value / 1000).toFixed(1)}B` : `${value}M`;
+
+  // Ship
+  const shipName = resolveType(database, esi.victim?.ship_type_id ?? null) ?? '?';
+
+  // Tags
+  const tags: string[] = [];
+  if (zkb?.solo) tags.push('solo');
+  if (zkb?.awox) tags.push('awox');
+  const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : '';
+
+  // Attackers
+  const atkCount = zkb?.attackerCount ?? (esi.attackers?.length ?? 0);
+  const finalBlow = esi.attackers?.find((a) => a.final_blow);
+  const fbShip = finalBlow ? resolveType(database, finalBlow.ship_type_id ?? null) : null;
+
+  // Time
+  const time = esi.killmail_time
+    ? new Date(esi.killmail_time).toISOString().slice(11, 16)
+    : '?';
+
+  // Security color
+  const secEmoji = systemSec >= 0.5 ? '🟢' : systemSec > 0.0 ? '🟠' : '🔴';
+
+  // Build message
+  const lines: string[] = [];
+  lines.push(`💀 ${systemName} (${systemSec.toFixed(1)}) ${secEmoji}${tagStr}`);
+  lines.push(`${shipName} — ${valueFmt} ISK`);
+
+  // Attacker info
+  if (atkCount === 1 && fbShip) {
+    lines.push(`Атакующий на ${fbShip}`);
+  } else if (atkCount > 1) {
+    const fbPart = fbShip ? `, FB: ${fbShip}` : '';
+    lines.push(`${atkCount} атакующих${fbPart}`);
+  }
+
+  lines.push(`${time} UTC`);
+  lines.push(`https://zkillboard.com/kill/${kill.killmail_id}/`);
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -252,4 +313,16 @@ function resolveType(database: Db, typeId: number | null): string | null {
 function resolveSystem(database: Db, systemId: number): string {
   const row = database.prepare('SELECT name FROM sde_systems WHERE system_id = ?').get(systemId) as { name: string } | undefined;
   return row?.name ?? `System ${systemId}`;
+}
+
+const secCache = new Map<number, number>();
+function resolveSystemSec(database: Db, systemId: number): number {
+  if (secCache.has(systemId)) return secCache.get(systemId)!;
+  const row = database.prepare('SELECT data_json FROM sde_systems WHERE system_id = ?').get(systemId) as { data_json: string } | undefined;
+  let sec = 0;
+  if (row) {
+    try { sec = (JSON.parse(row.data_json) as { security_status?: number }).security_status ?? 0; } catch { /* */ }
+  }
+  secCache.set(systemId, sec);
+  return sec;
 }
