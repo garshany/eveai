@@ -4,7 +4,8 @@ import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 const callEsiOperationMock = vi.fn();
 const getLinkedCharacterMock = vi.fn();
-const { generateBriefingMock } = vi.hoisted(() => ({
+const { generateBriefingFromSnapshotMock } = vi.hoisted(() => ({
+  generateBriefingFromSnapshotMock: vi.fn().mockResolvedValue(''),
   generateBriefingMock: vi.fn().mockResolvedValue(''),
 }));
 
@@ -21,7 +22,8 @@ vi.mock('../../src/eve-board/monitor.js', () => ({
   startRouteMonitor: vi.fn(),
 }));
 vi.mock('../../src/eve-board/briefing.js', () => ({
-  generateBriefing: generateBriefingMock,
+  generateBriefing: vi.fn(),
+  generateBriefingFromSnapshot: generateBriefingFromSnapshotMock,
 }));
 
 let db: Database.Database;
@@ -37,7 +39,7 @@ beforeEach(() => {
   seedRouteData(db);
 
   getLinkedCharacterMock.mockReturnValue({ characterId: 2116626188 });
-  generateBriefingMock.mockResolvedValue('');
+  generateBriefingFromSnapshotMock.mockResolvedValue('');
 
   // Mock global fetch for zKB danger scan — return kills only for Midpoint (30002660)
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
@@ -140,7 +142,7 @@ describe('route planner', () => {
   });
 
   it('can append the unified pre-flight brief even when autopilot is not enabled', async () => {
-    generateBriefingMock.mockResolvedValue('🛰️ Предполет | 🟡 ОСТОРОЖНО');
+    generateBriefingFromSnapshotMock.mockResolvedValue('🛰️ Предполет | 🟡 ОСТОРОЖНО');
 
     const { planRoute } = await import('../../src/eve/route-planner.js');
     const result = await planRoute(
@@ -160,7 +162,7 @@ describe('route planner', () => {
   });
 
   it('returns a compact route summary and appends the unified pre-flight brief', async () => {
-    generateBriefingMock.mockResolvedValue([
+    generateBriefingFromSnapshotMock.mockResolvedValue([
       '🛰️ Предполет | 🟢 ВЫХОДИ',
       'Маршрут: Dodixie → Jita (2 прыжков)',
       'Сейчас: Dodixie — локально тихо.',

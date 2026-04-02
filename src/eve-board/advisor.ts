@@ -404,6 +404,7 @@ function isSystemMeaningful(sys: SystemThreatDigest, includeCurrent = false): bo
   if (sys.threatLevel === 'MEDIUM') return true;
   if (ACTIONABLE_LEVELS.has(sys.threatLevel)) return true;
   if (sys.gankerCount > 0) return true;
+  if (sys.gateKills.some((gate) => gate.recentKills > 0 || gate.killCount >= 2)) return true;
   if (sys.jumpSpike && sys.jumpSpike.severity !== 'elevated') return true;
   if (includeCurrent) return sys.recentKills.length > 0;
   return false;
@@ -489,9 +490,17 @@ export function shouldUseLlmIntel(
   if (currentSystem && (currentSystem.threatLevel === 'HIGH' || currentSystem.threatLevel === 'CRITICAL')) {
     return true;
   }
+  if (currentSystem && currentSystem.gateKills.some((gate) => gate.recentKills > 0 || gate.killCount >= 2)) {
+    return true;
+  }
 
   const aheadSystems = selectRelevantAheadSystems(digest);
   if (aheadSystems.some((system) => system.jumpsFromPilot <= 2 && ACTIONABLE_LEVELS.has(system.threatLevel))) {
+    return true;
+  }
+  if (aheadSystems.some((system) =>
+    system.jumpsFromPilot <= 2 && system.gateKills.some((gate) => gate.recentKills > 0 || gate.killCount >= 2),
+  )) {
     return true;
   }
   if (aheadSystems.filter((system) => system.jumpsFromPilot <= 3).length >= 2) {
@@ -642,6 +651,17 @@ function normaliseReason(reason: string): string {
   return reason.trim().replace(/\.$/, '');
 }
 
+function buildSystemOperationalReason(sys: SystemThreatDigest): string {
+  if (sys.gateKills.length > 0) {
+    const gate = sys.gateKills[0]!;
+    const recentPart = gate.recentKills > 0
+      ? `${gate.recentKills} свежих киллов`
+      : `${gate.killCount} киллов`;
+    return `активность у гейта на ${gate.connectedSystemName}: ${recentPart}`;
+  }
+  return normaliseReason(sys.reason);
+}
+
 function buildCurrentLine(
   digest: RouteThreatDigest,
   currentSystem: SystemThreatDigest | null,
@@ -653,6 +673,10 @@ function buildCurrentLine(
 
   if (currentSystem.threatLevel !== 'LOW') {
     return `Сейчас: ${currentSystem.systemName} — ${currentSystem.reason}.`;
+  }
+
+  if (currentSystem.gateKills.length > 0) {
+    return `Сейчас: ${currentSystem.systemName} — ${buildSystemOperationalReason(currentSystem)}.`;
   }
 
   const localGankers = relevantGankers.filter((ganker) =>
@@ -676,7 +700,7 @@ function buildAheadLine(
   const aheadThreats = selectRelevantAheadSystems(digest).slice(0, 2);
   if (aheadThreats.length > 0) {
     const parts = aheadThreats.map((system) =>
-      `${system.systemName} через ${formatJumpDistance(Math.abs(system.jumpsFromPilot))} — ${normaliseReason(system.reason)}`,
+      `${system.systemName} через ${formatJumpDistance(Math.abs(system.jumpsFromPilot))} — ${buildSystemOperationalReason(system)}`,
     );
     return `Впереди: ${parts.join('; ')}.`;
   }

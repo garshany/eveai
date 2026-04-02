@@ -23,6 +23,8 @@ import { config } from '../config.js';
 import { callEsiOperation } from '../eve/esi-client.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
 import type { KilllistItem } from '../eve-kill/client.js';
+import { getKillmailBatch } from '../eve-kill/client.js';
+import type { EveKillKillmail } from '../eve-kill/types.js';
 import { analyzeKillPattern, scoreThreat, assessShip } from './threat.js';
 import type {
   RouteMonitor,
@@ -167,7 +169,12 @@ type EsiKillmail = {
 type ExtractedAttacker = { killmailId: number; characterId: number; characterName: string; shipTypeId: number };
 
 /** Enrichment result: kills for threat analysis + raw attacker data for ganker cache */
-type EnrichResult = { kills: KilllistItem[]; attackers: ExtractedAttacker[] };
+type EnrichResult = {
+  kills: KilllistItem[];
+  attackers: ExtractedAttacker[];
+  positions: Map<number, KillPosition>;
+};
+type KillPosition = { x: number; y: number; z: number };
 
 /**
  * Enrich zKB items with ESI killmail data and return KilllistItem[] for analyzeKillPattern.
@@ -236,6 +243,7 @@ async function enrichZkbKills(
 
   // Phase 2: batch-resolve character names via ESI post_universe_names
   const nameMap = await resolveCharacterNames(db, characterIdsToResolve);
+  const positions = await fetchKillPositions(db, pending.map((entry) => entry.item.killmail_id));
 
   // Phase 3: build results with resolved names
   const results: KilllistItem[] = [...fallbacks];
@@ -274,7 +282,37 @@ async function enrichZkbKills(
     }
   }
 
-  return { kills: results, attackers: attackerList };
+  return { kills: results, attackers: attackerList, positions };
+}
+
+async function fetchKillPositions(db: Db, killmailIds: number[]): Promise<Map<number, KillPosition>> {
+  const uniqueIds = [...new Set(killmailIds)].filter((id) => Number.isFinite(id) && id > 0);
+  if (uniqueIds.length === 0) return new Map();
+
+  try {
+    const result = await getKillmailBatch(db, uniqueIds);
+    if (!result.ok) return new Map();
+
+    const map = new Map<number, KillPosition>();
+    for (const killmail of result.data) {
+      const position = extractKillPosition(killmail);
+      if (!position || typeof killmail.killmail_id !== 'number') continue;
+      map.set(killmail.killmail_id, position);
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
+export function extractKillPosition(killmail: EveKillKillmail): KillPosition | null {
+  const raw = killmail as Record<string, unknown>;
+  const nested = asRec(raw.position);
+  const x = numOrNull(raw.x) ?? numOrNull(nested.x);
+  const y = numOrNull(raw.y) ?? numOrNull(nested.y);
+  const z = numOrNull(raw.z) ?? numOrNull(nested.z);
+  if (x === null || y === null || z === null) return null;
+  return { x, y, z };
 }
 
 /** Batch-resolve character names via ESI post_universe_names (max 100 per call). */
@@ -306,6 +344,14 @@ function zkbToKilllistFallback(item: ZkbFeedItem): KilllistItem {
     ship_group_name: undefined,
     final_blow_character_id: undefined,
   };
+}
+
+function asRec(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function numOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 /** Resolve type name and group name from SDE for a given type_id. */
@@ -707,7 +753,7 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
         total_value: k.total_value,
         attacker_count: k.attacker_count,
         is_solo: k.is_solo,
-        position: undefined as { x: number; y: number; z: number } | undefined,
+        position: enrichResult.positions.get(k.killmail_id),
       }));
       const sysDigest = buildSystemDigest(
         sysId, sysName, sysSec, jumpDist,

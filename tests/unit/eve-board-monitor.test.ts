@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectNewKillmailIds } from '../../src/eve-board/monitor.js';
+import { collectNewKillmailIds, extractKillPosition } from '../../src/eve-board/monitor.js';
 
 describe('eve-board monitor', () => {
   it('deduplicates killmails across polling cycles', () => {
@@ -22,5 +22,21 @@ describe('eve-board monitor', () => {
 
     expect([...secondWave]).toEqual([1004]);
     expect([...seen]).toEqual([1001, 1002, 1003, 1004]);
+  });
+
+  it('extracts killmail positions from EVE-KILL payloads for gate attribution', () => {
+    expect(extractKillPosition({
+      killmail_id: 1,
+      x: 10,
+      y: 20,
+      z: 30,
+    })).toEqual({ x: 10, y: 20, z: 30 });
+
+    expect(extractKillPosition({
+      killmail_id: 2,
+      position: { x: 40, y: 50, z: 60 },
+    })).toEqual({ x: 40, y: 50, z: 60 });
+
+    expect(extractKillPosition({ killmail_id: 3 })).toBeNull();
   });
 });

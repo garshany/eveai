@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
-import { generateBriefing } from '../../src/eve-board/briefing.js';
+import { generateBriefing, generateBriefingFromSnapshot } from '../../src/eve-board/briefing.js';
 
 const { callEsiOperationMock } = vi.hoisted(() => ({
   callEsiOperationMock: vi.fn(),
@@ -400,6 +400,60 @@ describe('generateBriefing', () => {
     expect(briefing).toContain('Предполет');
     expect(briefing).toContain('Впереди:');
     expect(briefing).not.toContain('Маршрут безопасен. PvP активности не обнаружено.');
+  });
+
+  it('builds pre-flight output from a shared route snapshot without rescanning the route', async () => {
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string) => {
+      if (operation === 'get_universe_system_jumps') {
+        return {
+          ok: true,
+          status: 200,
+          cached: false,
+          headers: {},
+          data: [
+            { system_id: 30002659, ship_jumps: 17 },
+            { system_id: 30002660, ship_jumps: 91 },
+            { system_id: 30000142, ship_jumps: 120 },
+          ],
+        };
+      }
+
+      return { ok: false, status: 404, error: `Unexpected operation: ${operation}` };
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => [] })));
+
+    const briefing = await generateBriefingFromSnapshot(
+      db,
+      [30002659, 30002660, 30000142],
+      [
+        {
+          systemId: 30002659,
+          name: 'Dodixie',
+          sec: 0.9,
+          kills_1h: 1,
+          total_value_m: 66,
+          recentKills: [{
+            killmail_id: 134440041,
+            killmail_time: '2026-04-02T13:45:00Z',
+            total_value: 66_000_000,
+            ship_name: 'Federation Navy Comet',
+            victim_character_name: 'Logos Tr',
+            final_blow_character_name: 'Osmon Queen',
+            attacker_count: 1,
+          }],
+        },
+      ],
+      'Dodixie',
+      'Jita',
+      2116626188,
+      587,
+    );
+
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(briefing).toContain('Сейчас: Dodixie');
+    expect(briefing).toContain('Активность: Dodixie [старт]: 1 PvP');
+    expect(briefing).toContain('Logos Tr <- Osmon Queen');
   });
 });
 

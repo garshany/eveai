@@ -123,4 +123,31 @@ describe('eve-board advisor', () => {
     expect(shouldUseLlmIntel(quietDigest, null, [])).toBe(false);
     expect(shouldUseLlmIntel(highAheadDigest, null, gankers)).toBe(true);
   });
+
+  it('treats fresh gate activity near the pilot as actionable intel', () => {
+    const gateDigest = makeDigest({
+      systemsAhead: [
+        makeSystemDigest({
+          systemId: 30002659,
+          systemName: 'Dodixie',
+          jumpsFromPilot: 0,
+          gateKills: [{
+            systemId: 30002659,
+            systemName: 'Dodixie',
+            stargateId: 50000001,
+            connectedSystemName: 'Jita',
+            killCount: 2,
+            recentKills: 1,
+          }],
+        }),
+        makeSystemDigest({
+          systemId: 30002660,
+          systemName: 'Uedama',
+          jumpsFromPilot: 1,
+        }),
+      ],
+    });
+
+    expect(shouldUseLlmIntel(gateDigest, null, [])).toBe(true);
+  });
 });

@@ -9,195 +9,34 @@
  */
 
 import type { Db } from '../db/sqlite.js';
-import { config } from '../config.js';
-import { callEsiOperation } from '../eve/esi-client.js';
 import type { KilllistItem } from '../eve-kill/client.js';
+import { callEsiOperation } from '../eve/esi-client.js';
 import { assessShip, analyzeKillPattern, scoreThreat, detectGankWindow } from './threat.js';
 import type { RouteStats, DangerEvent, ThreatLevel, KillPattern, ShipAssessment } from './types.js';
+import { buildRouteThreatSnapshot } from './route-snapshot.js';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Systems with sec >= 1.0 are fully safe — skip scanning. */
-const SAFE_SEC_THRESHOLD = 1.0;
-const BRIEFING_SCAN_WINDOW_MINUTES = 60;
-
-// ---------------------------------------------------------------------------
-// zKB fetch (direct — EVE-KILL killlist doesn't filter by system_id)
-// ---------------------------------------------------------------------------
-
-type ZkbItem = {
+export type RouteBriefingSnapshotKill = {
   killmail_id: number;
-  zkb?: { hash?: string; totalValue?: number; npc?: boolean; solo?: boolean };
-};
-
-async function fetchZkbForBriefing(systemId: number): Promise<ZkbItem[]> {
-  const url = `${config.zkill.baseUrl}kills/systemID/${systemId}/pastSeconds/3600/`;
-  try {
-    const res = await fetch(url, {
-      headers: { Accept: 'application/json', 'Accept-Encoding': 'gzip', 'User-Agent': config.zkill.userAgent },
-      signal: AbortSignal.timeout(config.zkill.timeoutMs),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    if (!Array.isArray(data)) return [];
-    return data.filter((item: unknown): item is ZkbItem =>
-      !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).killmail_id === 'number',
-    );
-  } catch { return []; }
-}
-
-// ---------------------------------------------------------------------------
-// ESI enrichment (same pattern as monitor.ts)
-// ---------------------------------------------------------------------------
-
-const MAX_ENRICH_PER_SYSTEM = 3;
-
-type EsiKillmailVictim = { ship_type_id?: number; character_id?: number };
-type EsiKillmailAttacker = { character_id?: number; final_blow?: boolean };
-type EsiKillmail = {
   killmail_time?: string;
-  victim?: EsiKillmailVictim;
-  attackers?: EsiKillmailAttacker[];
+  total_value?: number;
+  ship_name?: string;
+  victim_character_name?: string;
+  final_blow_character_name?: string;
+  attacker_count?: number;
 };
 
-async function enrichZkbKills(
-  db: Db,
-  items: ZkbItem[],
-): Promise<KilllistItem[]> {
-  type PendingKill = {
-    item: ZkbItem;
-    km: EsiKillmail;
-    victim: EsiKillmailVictim;
-    attackers: EsiKillmailAttacker[];
-    fb: EsiKillmailAttacker | undefined;
-    shipInfo: { typeName: string; groupName: string } | null;
-    victimShipTypeId: number | undefined;
-  };
-
-  const results: KilllistItem[] = [];
-  const pending: PendingKill[] = [];
-  const idsToResolve = new Set<number>();
-
-  for (const item of items.slice(0, MAX_ENRICH_PER_SYSTEM)) {
-    const hash = item.zkb?.hash;
-    if (!hash) {
-      results.push(zkbToKilllistFallback(item));
-      continue;
-    }
-
-    try {
-      const r = await callEsiOperation<EsiKillmail>(
-        db,
-        'get_killmails_killmail_id_killmail_hash',
-        { killmail_id: item.killmail_id, killmail_hash: hash },
-      );
-
-      if (!r.ok || !r.data) {
-        results.push(zkbToKilllistFallback(item));
-        continue;
-      }
-
-      const km = r.data;
-      const victim = km.victim ?? {};
-      const attackers = km.attackers ?? [];
-      const fb = attackers.find((a) => a.final_blow === true) ?? attackers[0];
-
-      const victimShipTypeId = victim.ship_type_id;
-      const shipInfo = victimShipTypeId ? resolveTypeGroup(db, victimShipTypeId) : null;
-
-      pending.push({
-        item,
-        km,
-        victim,
-        attackers,
-        fb,
-        shipInfo,
-        victimShipTypeId,
-      });
-      if (victim.character_id && victim.character_id > 0) idsToResolve.add(victim.character_id);
-      if (fb?.character_id && fb.character_id > 0) idsToResolve.add(fb.character_id);
-    } catch {
-      results.push(zkbToKilllistFallback(item));
-    }
-  }
-
-  const nameMap = await resolveCharacterNames(db, idsToResolve);
-  for (const entry of pending) {
-    results.push({
-      killmail_id: entry.item.killmail_id,
-      killmail_time: typeof entry.km.killmail_time === 'string' ? entry.km.killmail_time : undefined,
-      total_value: entry.item.zkb?.totalValue ?? 0,
-      is_npc: entry.item.zkb?.npc ?? false,
-      is_solo: entry.item.zkb?.solo ?? false,
-      attacker_count: entry.attackers.length,
-      ship_type_id: entry.victimShipTypeId,
-      ship_name: entry.shipInfo?.typeName ?? undefined,
-      ship_group_name: entry.shipInfo?.groupName ?? undefined,
-      victim_character_id: entry.victim.character_id,
-      victim_character_name: entry.victim.character_id ? nameMap.get(entry.victim.character_id) : undefined,
-      final_blow_character_id: entry.fb?.character_id,
-      final_blow_character_name: entry.fb?.character_id ? nameMap.get(entry.fb.character_id) : undefined,
-    });
-  }
-
-  return results;
-}
-
-async function resolveCharacterNames(db: Db, ids: Set<number>): Promise<Map<number, string>> {
-  const map = new Map<number, string>();
-  if (ids.size === 0) return map;
-  try {
-    const result = await callEsiOperation<Array<{ id: number; name: string }>>(
-      db,
-      'post_universe_names',
-      { ids: JSON.stringify([...ids].slice(0, 100)) },
-    );
-    if (result.ok && Array.isArray(result.data)) {
-      for (const entry of result.data) {
-        if (entry.id && entry.name) map.set(entry.id, entry.name);
-      }
-    }
-  } catch {
-    // non-critical: detail lines degrade gracefully without names
-  }
-  return map;
-}
-
-function zkbToKilllistFallback(item: ZkbItem): KilllistItem {
-  return {
-    killmail_id: item.killmail_id,
-    total_value: item.zkb?.totalValue ?? 0,
-    is_npc: item.zkb?.npc ?? false,
-    is_solo: item.zkb?.solo ?? false,
-    attacker_count: 1,
-    ship_name: undefined,
-    ship_group_name: undefined,
-    final_blow_character_id: undefined,
-  };
-}
-
-function resolveTypeGroup(
-  db: Db,
-  typeId: number,
-): { typeName: string; groupName: string } | null {
-  const row = db.prepare(`
-    SELECT t.name AS type_name, g.name AS group_name
-    FROM sde_types t
-    JOIN sde_groups g ON g.group_id = t.group_id
-    WHERE t.type_id = ?
-  `).get(typeId) as { type_name: string; group_name: string } | undefined;
-  if (!row) return null;
-  return { typeName: row.type_name, groupName: row.group_name };
-}
+export type RouteBriefingSnapshotSystem = {
+  systemId: number;
+  name: string;
+  sec: number;
+  kills_1h: number;
+  total_value_m: number;
+  recentKills: RouteBriefingSnapshotKill[];
+};
 
 // ---------------------------------------------------------------------------
 // SDE helpers (same pattern as monitor.ts)
 // ---------------------------------------------------------------------------
-
-const SEC_SQL =
-  "coalesce(json_extract(data_json, '$.securityStatus'), json_extract(data_json, '$.security'))";
 
 function resolveSystemName(db: Db, systemId: number): string {
   const row = db
@@ -206,18 +45,6 @@ function resolveSystemName(db: Db, systemId: number): string {
   return row?.name ?? `System ${systemId}`;
 }
 
-function resolveSystemSec(db: Db, systemId: number): number {
-  const row = db
-    .prepare(`SELECT ${SEC_SQL} as sec FROM sde_systems WHERE system_id = ?`)
-    .get(systemId) as { sec: number | null } | undefined;
-  if (!row?.sec || typeof row.sec !== 'number') return 0;
-  return Math.round(row.sec * 10) / 10;
-}
-
-// ---------------------------------------------------------------------------
-// ESI system jumps (public, bulk endpoint)
-// ---------------------------------------------------------------------------
-
 type SystemJumpEntry = { system_id: number; ship_jumps: number };
 
 async function fetchSystemJumps(db: Db, systemIds: number[]): Promise<Map<number, number>> {
@@ -225,17 +52,20 @@ async function fetchSystemJumps(db: Db, systemIds: number[]): Promise<Map<number
   const wantedIds = new Set(systemIds);
   try {
     const result = await callEsiOperation<SystemJumpEntry[]>(
-      db, 'get_universe_system_jumps', {},
+      db,
+      'get_universe_system_jumps',
+      {},
     );
     if (result.ok && Array.isArray(result.data)) {
       for (const entry of result.data) {
-        // Filter client-side — ESI returns all systems
         if (wantedIds.has(entry.system_id) && entry.ship_jumps) {
           map.set(entry.system_id, entry.ship_jumps);
         }
       }
     }
-  } catch { /* non-critical */ }
+  } catch {
+    // non-critical
+  }
   return map;
 }
 
@@ -264,6 +94,7 @@ function jumpWord(n: number): string {
 // ---------------------------------------------------------------------------
 
 type DangerSystemInfo = {
+  systemId: number;
   routeIndex: number;
   name: string;
   sec: number;
@@ -272,6 +103,22 @@ type DangerSystemInfo = {
   threatLevel: ThreatLevel;
   threatReason: string;
 };
+
+export async function generateBriefingFromSnapshot(
+  db: Db,
+  routeSystems: number[],
+  snapshotSystems: RouteBriefingSnapshotSystem[],
+  originName: string,
+  destName: string,
+  _characterId: number,
+  shipTypeId: number,
+): Promise<string> {
+  const ship = assessShip(db, shipTypeId);
+  const dangerSystems = buildDangerSystemsFromSnapshot(routeSystems, snapshotSystems, ship);
+  const jumpMap = await fetchSystemJumps(db, routeSystems);
+  const gankWindow = detectGankWindow(dangerSystems.map((system) => system.pattern));
+  return formatBriefing(db, ship, dangerSystems, jumpMap, gankWindow, originName, destName, routeSystems);
+}
 
 /**
  * Generate a pre-route briefing: danger assessment, ship check, recommendations.
@@ -288,66 +135,45 @@ export async function generateBriefing(
   _characterId: number,
   shipTypeId: number,
 ): Promise<string> {
-  // Step 1: assess ship
   const ship = assessShip(db, shipTypeId);
+  const snapshot = await buildRouteThreatSnapshot(db, routeSystems);
+  const dangerSystems = buildDangerSystemsFromSnapshot(
+    routeSystems,
+    snapshot.systems.map((system) => ({
+      systemId: system.systemId,
+      name: system.name,
+      sec: system.sec,
+      kills_1h: system.pvpKills,
+      total_value_m: system.totalValueM,
+      recentKills: system.recentKills,
+    })),
+    ship,
+  );
+  const gankWindow = detectGankWindow(dangerSystems.map((system) => system.pattern));
+  return formatBriefing(db, ship, dangerSystems, snapshot.jumpMap, gankWindow, originName, destName, routeSystems);
+}
 
-  // Step 2: identify systems to scan on the selected route (sec < 1.0).
-  // Keep route order intact so the briefing matches the actual flight path.
-  const candidates: Array<{ id: number; name: string; sec: number }> = [];
-  for (const sysId of routeSystems) {
-    const sec = resolveSystemSec(db, sysId);
-    if (sec < SAFE_SEC_THRESHOLD) {
-      candidates.push({ id: sysId, name: resolveSystemName(db, sysId), sec });
-    }
-  }
-  const systemsToScan = candidates;
-
-  // Step 3: fetch kills and analyze patterns in parallel
+function buildDangerSystemsFromSnapshot(
+  routeSystems: number[],
+  snapshotSystems: RouteBriefingSnapshotSystem[],
+  ship: ShipAssessment,
+): DangerSystemInfo[] {
+  const systemsById = new Map(snapshotSystems.map((system) => [system.systemId, system]));
   const dangerSystems: DangerSystemInfo[] = [];
-  const patterns: KillPattern[] = [];
 
-  console.log(`[briefing] scanning ${systemsToScan.length} systems: ${systemsToScan.map(s => `${s.name}(${s.sec})`).join(', ')}`);
+  for (const systemId of routeSystems) {
+    const snapshot = systemsById.get(systemId);
+    if (!snapshot || snapshot.recentKills.length === 0) continue;
 
-  // Sequential scan to avoid zKB rate limit
-  const scanResults: Array<{
-    sys: typeof systemsToScan[0];
-    pattern: KillPattern;
-    enrichedKills: KilllistItem[];
-    threat: { level: ThreatLevel; reason: string };
-  } | null> = [];
-  for (const sys of systemsToScan) {
-    try {
-      const feed = await fetchZkbForBriefing(sys.id);
-      const pvpKills = feed.filter((k) => !k.zkb?.npc);
-      console.log(`[briefing] ${sys.name}: ${feed.length} total, ${pvpKills.length} PvP`);
-      if (pvpKills.length === 0) { scanResults.push(null); continue; }
-
-      const enrichedKills = await enrichZkbKills(db, pvpKills);
-      const freshKills = enrichedKills.filter(isKillWithinBriefingWindow);
-      if (freshKills.length === 0) { scanResults.push(null); continue; }
-
-      const pattern = analyzeKillPattern(freshKills, sys.id, sys.name, sys.sec);
-      const threat = scoreThreat(pattern, ship);
-      scanResults.push({ sys, pattern, enrichedKills: freshKills, threat });
-    } catch (err) {
-      console.error(`[briefing] scan error ${sys.name}:`, (err as Error).message);
-      scanResults.push(null);
-    }
-  }
-
-  for (const result of scanResults) {
-    if (!result) continue;
-    const { sys, pattern, enrichedKills, threat } = result;
-
-    patterns.push(pattern);
-
-    // Include ALL systems with PvP kills, not just MEDIUM+
+    const pattern = analyzeKillPattern(snapshot.recentKills, systemId, snapshot.name, snapshot.sec);
+    const threat = scoreThreat(pattern, ship);
     dangerSystems.push({
-      name: sys.name,
-      sec: sys.sec,
-      routeIndex: routeSystems.indexOf(sys.id),
+      systemId,
+      name: snapshot.name,
+      sec: snapshot.sec,
+      routeIndex: routeSystems.indexOf(systemId),
       pattern,
-      recentKills: enrichedKills
+      recentKills: snapshot.recentKills
         .slice()
         .sort((left, right) => (right.killmail_time ?? '').localeCompare(left.killmail_time ?? '')),
       threatLevel: threat.level,
@@ -355,19 +181,14 @@ export async function generateBriefing(
     });
   }
 
-  // Sort danger systems: CRITICAL first, then HIGH, then MEDIUM
   const levelOrder: Record<ThreatLevel, number> = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
-  dangerSystems.sort((a, b) => levelOrder[a.threatLevel] - levelOrder[b.threatLevel]);
+  dangerSystems.sort((left, right) => {
+    const levelDiff = levelOrder[left.threatLevel] - levelOrder[right.threatLevel];
+    if (levelDiff !== 0) return levelDiff;
+    return left.routeIndex - right.routeIndex;
+  });
 
-  // Step 4: fetch jump stats for route systems (ESI, public, bulk)
-  const jumpMap = await fetchSystemJumps(db, routeSystems);
-  console.log(`[briefing] jump stats: ${jumpMap.size} systems with data`);
-
-  // Step 5: gank window detection
-  const gankWindow = detectGankWindow(patterns);
-
-  // Step 6: format briefing
-  return formatBriefing(db, ship, dangerSystems, jumpMap, gankWindow, originName, destName, routeSystems);
+  return dangerSystems;
 }
 
 function formatBriefing(
@@ -662,11 +483,6 @@ function formatKillAge(value: string | undefined): string {
   if (minutes === null) return 'недавно';
   if (minutes < 1) return 'только что';
   return `${minutes}м назад`;
-}
-
-function isKillWithinBriefingWindow(kill: KilllistItem): boolean {
-  const minutes = kill.killmail_time ? minutesSinceIso(kill.killmail_time) : null;
-  return minutes === null || minutes <= BRIEFING_SCAN_WINDOW_MINUTES;
 }
 
 function getCurrentDangerSystem(dangerSystems: DangerSystemInfo[]): DangerSystemInfo | null {

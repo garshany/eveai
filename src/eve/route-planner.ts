@@ -5,7 +5,7 @@ import { getLinkedCharacter } from './sso.js';
 import { config } from '../config.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { startRouteMonitor } from '../eve-board/monitor.js';
-import { generateBriefing } from '../eve-board/briefing.js';
+import { generateBriefingFromSnapshot } from '../eve-board/briefing.js';
 
 type RouteFlag = 'secure' | 'shortest' | 'insecure';
 
@@ -30,6 +30,8 @@ type SystemInfo = {
 
 type RecentKill = {
   time: string | null;
+  killmail_time: string | null;
+  killmail_id: number;
   victim: string | null;
   victim_ship: string | null;
   attacker: string | null;
@@ -39,6 +41,7 @@ type RecentKill = {
 };
 
 type DangerSystem = {
+  systemId: number;
   name: string;
   sec: number;
   kills_1h: number;
@@ -50,6 +53,7 @@ type DangerSystem = {
 
 type RouteVariant = {
   flag: RouteFlag;
+  system_ids: number[];
   jumps: number;
   min_sec: number;
   safe_count: number;
@@ -194,8 +198,30 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
 
     // Generate pre-flight briefing and append to summary
     try {
-      const briefing = await generateBriefing(
-        db, monitorSystemIds, originInfo.name, destInfo.name, characterId, shipTypeId,
+      const briefingSnapshot = preferredRoute.danger_systems.map((system) => ({
+        systemId: system.systemId,
+        name: system.name,
+        sec: system.sec,
+        kills_1h: system.kills_1h,
+        total_value_m: system.total_value_m,
+        recentKills: system.kills.map((kill) => ({
+          killmail_id: kill.killmail_id,
+          killmail_time: kill.killmail_time ?? undefined,
+          total_value: (kill.value_m ?? 0) * 1_000_000,
+          ship_name: kill.victim_ship ?? undefined,
+          victim_character_name: kill.victim ?? undefined,
+          final_blow_character_name: kill.attacker ?? undefined,
+          attacker_count: 1,
+        })),
+      }));
+      const briefing = await generateBriefingFromSnapshot(
+        db,
+        monitorSystemIds,
+        briefingSnapshot,
+        originInfo.name,
+        destInfo.name,
+        characterId,
+        shipTypeId,
       );
       if (briefing) {
         formattedSummary += '\n\n' + briefing;
@@ -572,6 +598,7 @@ function buildRouteVariant(
 
   return {
     flag,
+    system_ids: [...systemIds],
     jumps: systemIds.length - 1,
     min_sec: Math.round(minSec * 10) / 10,
     safe_count: systemIds.length - dangerSystems.length,
@@ -691,6 +718,8 @@ async function scanSystemDanger(
     const totalValueM = systemKills.reduce((sum, rk) => sum + rk.valueM, 0);
     const kills: RecentKill[] = systemKills.map((rk) => ({
       time: rk.time ? toMSK(rk.time) : null,
+      killmail_time: rk.time,
+      killmail_id: rk.killmailId,
       victim: nameMap.get(rk.victimCharId ?? 0) ?? nameMap.get(rk.victimCorpId ?? 0) ?? null,
       victim_ship: resolveTypeName(db, rk.victimShipTypeId),
       attacker: nameMap.get(rk.attackerCharId ?? 0) ?? nameMap.get(rk.attackerCorpId ?? 0) ?? null,
@@ -700,6 +729,7 @@ async function scanSystemDanger(
     }));
 
     dangerMap.set(systemId, {
+      systemId,
       name: info?.name ?? `ID:${systemId}`,
       sec: info?.sec ?? 0,
       kills_1h: systemKills.length,
