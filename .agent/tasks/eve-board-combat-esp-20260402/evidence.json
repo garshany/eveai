@@ -1,0 +1,41 @@
+{
+  "task_id": "eve-board-combat-esp-20260402",
+  "status": "PASS",
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "status": "PASS",
+      "evidence": "buildRouteTacticalAssessment() explicitly computes start, transit, and destination risk from the route digest."
+    },
+    {
+      "id": "AC2",
+      "status": "PASS",
+      "evidence": "Tactical state derives route states such as HOT START, CAMP LIKELY, DEST HOT, PURSUIT, and WINDOW OPEN."
+    },
+    {
+      "id": "AC3",
+      "status": "PASS",
+      "evidence": "formatIntelMessage() now renders a tactical summary and window/confidence layer before operational advice."
+    },
+    {
+      "id": "AC4",
+      "status": "PASS",
+      "evidence": "buildIntelPrompt() now includes a dedicated tactical assessment block for the LLM route-intel path."
+    },
+    {
+      "id": "AC5",
+      "status": "PASS",
+      "evidence": "Advisor unit tests cover quiet output, gate-camp/hot-start assessment, and destination-hot separation."
+    },
+    {
+      "id": "AC6",
+      "status": "PASS",
+      "evidence": "npm run check passed on the final codebase."
+    }
+  ],
+  "commands": [
+    "npm run test -- tests/unit/eve-board-advisor.test.ts tests/unit/eve-board-monitor.test.ts tests/unit/eve-board-analytics.test.ts",
+    "npm run typecheck",
+    "npm run check"
+  ]
+}

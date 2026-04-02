@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatIntelMessage, shouldUseLlmIntel } from '../../src/eve-board/advisor.js';
+import { buildRouteTacticalAssessment, formatIntelMessage, shouldUseLlmIntel } from '../../src/eve-board/advisor.js';
 import type { RouteIntelSummary, RouteThreatDigest, ShipAssessment, SystemThreatDigest } from '../../src/eve-board/types.js';
 import type { GankerIntel } from '../../src/eve-board/monitor.js';
 
@@ -88,10 +88,83 @@ describe('eve-board advisor', () => {
     const text = formatIntelMessage(summary, { digest, ship, gankerIntel: [] });
 
     expect(text).toContain('ESP | 🟢 ВПЕРЁД');
+    expect(text).toContain('Состояние:');
+    expect(text).toContain('Окно:');
     expect(text).toContain('Сейчас: Dodixie');
     expect(text).toContain('Впереди: Uedama');
     expect(text).toContain('Действие: можно выходить');
     expect(text).not.toContain('Маршрут относительно безопасен. Будьте внимательны.');
+  });
+
+  it('builds a tactical assessment for hot starts and gate-camp style activity', () => {
+    const digest = makeDigest({
+      overallThreat: 'MEDIUM',
+      systemsAhead: [
+        makeSystemDigest({
+          systemId: 30002659,
+          systemName: 'Dodixie',
+          jumpsFromPilot: 0,
+          threatLevel: 'MEDIUM',
+          gateKills: [{
+            systemId: 30002659,
+            systemName: 'Dodixie',
+            stargateId: 50000001,
+            connectedSystemName: 'Uedama',
+            killCount: 3,
+            recentKills: 2,
+          }],
+        }),
+        makeSystemDigest({
+          systemId: 30002660,
+          systemName: 'Uedama',
+          jumpsFromPilot: 1,
+        }),
+        makeSystemDigest({
+          systemId: 30000142,
+          systemName: 'Jita',
+          jumpsFromPilot: 2,
+        }),
+      ],
+    });
+
+    const tactical = buildRouteTacticalAssessment(digest, null, []);
+
+    expect(tactical.state).toBe('CAMP_LIKELY');
+    expect(tactical.startRisk).toBe('MEDIUM');
+    expect(tactical.window).toBe('CLOSED');
+    expect(tactical.summary).toContain('CAMP LIKELY');
+  });
+
+  it('marks destination-local heat separately from transit risk', () => {
+    const digest = makeDigest({
+      overallThreat: 'MEDIUM',
+      systemsAhead: [
+        makeSystemDigest({
+          systemId: 30002659,
+          systemName: 'Dodixie',
+          jumpsFromPilot: 0,
+        }),
+        makeSystemDigest({
+          systemId: 30002660,
+          systemName: 'Uedama',
+          jumpsFromPilot: 1,
+          threatLevel: 'LOW',
+        }),
+        makeSystemDigest({
+          systemId: 30000142,
+          systemName: 'Jita',
+          jumpsFromPilot: 2,
+          threatLevel: 'MEDIUM',
+          reason: 'локальная активность на входе',
+        }),
+      ],
+    });
+
+    const tactical = buildRouteTacticalAssessment(digest, null, []);
+
+    expect(tactical.state).toBe('DESTINATION_HOT');
+    expect(tactical.transitRisk).toBe('LOW');
+    expect(tactical.destinationRisk).toBe('MEDIUM');
   });
 
   it('uses LLM only for actionable route states', () => {

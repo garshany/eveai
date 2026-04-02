@@ -100,7 +100,8 @@ Auto-starts on autopilot. Current route flow:
   10. Quiet route states stay deterministic; the LLM is used only when the route digest is actionable (for example fresh gate activity, high/critical threats, pursuit, or moving gankers).
   11. The periodic ESP digest shares the same action-oriented contract as pre-flight: `Сейчас`, `Впереди`, `Действие`, with deterministic quiet-state output and LLM reserved for actionable route situations.
   12. If the route is still actionable (`overallThreat != LOW`, active gankers, gate activity, jump spikes), the monitor re-sends an ESP heartbeat digest every ~6 minutes even when no new delta event fired, so Telegram does not degrade into raw kill alerts only.
-  13. Alternative routes, traffic comparisons, and long kill details stay secondary layers; the primary UX is always the chosen route and the pilot's next action.
+  13. Live ESP now builds a tactical assessment on top of the route digest: separate `start / transit / destination` risk, route state (`HOT START`, `CAMP LIKELY`, `DEST HOT`, `PURSUIT`, `WINDOW OPEN`), and an explicit window/confidence layer.
+  14. Alternative routes, traffic comparisons, and long kill details stay secondary layers; the primary UX is always the chosen route and the pilot's next action.
 ```
 
 ## Config

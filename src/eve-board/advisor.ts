@@ -185,6 +185,27 @@ const INTEL_SYSTEM_PROMPT = [
 
 const ACTIONABLE_LEVELS = new Set<ThreatLevel>(['HIGH', 'CRITICAL']);
 
+type TacticalState =
+  | 'CLEAR'
+  | 'HOT_START'
+  | 'TRANSIT_RISK'
+  | 'DESTINATION_HOT'
+  | 'CAMP_LIKELY'
+  | 'PURSUIT'
+  | 'WINDOW_OPEN';
+
+type TacticalWindow = 'OPEN' | 'TIGHT' | 'CLOSED';
+
+type RouteTacticalAssessment = {
+  state: TacticalState;
+  startRisk: ThreatLevel;
+  transitRisk: ThreatLevel;
+  destinationRisk: ThreatLevel;
+  window: TacticalWindow;
+  confidence: 'LOW' | 'MEDIUM' | 'HIGH';
+  summary: string;
+};
+
 // ---------------------------------------------------------------------------
 // 1. Pursuit detection
 // ---------------------------------------------------------------------------
@@ -328,6 +349,7 @@ function buildIntelPrompt(
   const aheadSystems = selectRelevantAheadSystems(digest);
   const behindSystems = selectRelevantBehindSystems(digest, pursuit);
   const relevantGankers = selectRelevantGankers(digest, gankerIntel);
+  const tactical = buildRouteTacticalAssessment(digest, pursuit, gankerIntel);
 
   const lines: string[] = [
     '=== КОРАБЛЬ ===',
@@ -341,6 +363,10 @@ function buildIntelPrompt(
     `Позиция: ${digest.pilotSystem} (${digest.pilotSystemIdx + 1}/${digest.totalRouteSystems})`,
     `Осталось прыжков: ${digest.totalRouteSystems - 1 - digest.pilotSystemIdx}`,
     `Общая угроза: ${digest.overallThreat}`,
+    '',
+    '=== ТАКТИЧЕСКАЯ ОЦЕНКА ===',
+    tactical.summary,
+    `Окно: ${formatTacticalWindow(tactical.window)}, уверенность: ${tactical.confidence}`,
     '',
   ];
 
@@ -513,6 +539,72 @@ export function shouldUseLlmIntel(
   return false;
 }
 
+export function buildRouteTacticalAssessment(
+  digest: RouteThreatDigest,
+  pursuit: PursuitSignal | null,
+  gankerIntel: GankerIntel[],
+): RouteTacticalAssessment {
+  const currentSystem = getCurrentSystemDigest(digest);
+  const destinationSystem = getDestinationSystemDigest(digest);
+  const transitSystems = getTransitSystemDigests(digest);
+
+  const startRisk = currentSystem?.threatLevel ?? 'LOW';
+  const transitRisk = maxDigestThreat(transitSystems);
+  const destinationRisk = destinationSystem?.threatLevel ?? 'LOW';
+
+  const nearbySystems = digest.systemsAhead.filter((system) => system.jumpsFromPilot >= 0 && system.jumpsFromPilot <= 2);
+  const nearbyGateCamp = nearbySystems.some((system) =>
+    system.activeCamp
+    || system.gateKills.some((gate) => gate.recentKills > 0 || gate.killCount >= 2),
+  );
+  const hotCurrent = currentSystem !== null && ACTIONABLE_LEVELS.has(currentSystem.threatLevel);
+  const hotTransit = transitSystems.some((system) =>
+    system.jumpsFromPilot <= 3 && ACTIONABLE_LEVELS.has(system.threatLevel),
+  );
+  const nearbyMovingGankers = selectRelevantGankers(digest, gankerIntel)
+    .some((ganker) => ganker.lastSeenMinutesAgo <= 10);
+
+  let state: TacticalState;
+  if (pursuit) state = 'PURSUIT';
+  else if (nearbyGateCamp) state = 'CAMP_LIKELY';
+  else if (hotCurrent || startRisk === 'MEDIUM') state = 'HOT_START';
+  else if (hotTransit || transitRisk === 'MEDIUM') state = 'TRANSIT_RISK';
+  else if (destinationRisk !== 'LOW') state = 'DESTINATION_HOT';
+  else if (digest.overallThreat !== 'LOW' || gankerIntel.length > 0) state = 'WINDOW_OPEN';
+  else state = 'CLEAR';
+
+  const freshestIntelMinutes = getFreshestIntelMinutes(digest);
+  let window: TacticalWindow;
+  if (pursuit || nearbyGateCamp || hotCurrent || hotTransit || nearbyMovingGankers) {
+    window = 'CLOSED';
+  } else if (freshestIntelMinutes !== null && freshestIntelMinutes >= 15) {
+    window = 'OPEN';
+  } else if (digest.overallThreat !== 'LOW' || gankerIntel.length > 0 || hasRecentIntel(digest)) {
+    window = 'TIGHT';
+  } else {
+    window = 'OPEN';
+  }
+
+  const corroborationCount = [
+    pursuit !== null,
+    nearbyGateCamp,
+    hotCurrent || hotTransit,
+    gankerIntel.length > 0,
+    digest.overallThreat !== 'LOW',
+  ].filter(Boolean).length;
+  const confidence = corroborationCount >= 3 ? 'HIGH' : corroborationCount >= 2 ? 'MEDIUM' : 'LOW';
+
+  return {
+    state,
+    startRisk,
+    transitRisk,
+    destinationRisk,
+    window,
+    confidence,
+    summary: `Контур: старт ${startRisk} | транзит ${transitRisk} | цель ${destinationRisk}\nСостояние: ${formatTacticalState(state)}`,
+  };
+}
+
 function formatSystemLine(sys: SystemThreatDigest): string {
   const lines: string[] = [];
   const header = [
@@ -598,13 +690,15 @@ function buildTemplateSummary(
   const aheadThreats = selectRelevantAheadSystems(digest);
   const nearestAhead = aheadThreats[0] ?? null;
   const relevantGankers = selectRelevantGankers(digest, gankerIntel);
+  const tactical = buildRouteTacticalAssessment(digest, pursuit, gankerIntel);
   let recommendation: RouteIntelSummary['recommendation'];
   const factors: string[] = [];
 
-  if (currentSystem?.threatLevel === 'CRITICAL' || pursuit?.confidence === 'high') {
+  if (tactical.state === 'PURSUIT' || currentSystem?.threatLevel === 'CRITICAL' || pursuit?.confidence === 'high') {
     recommendation = 'STOP';
   } else if (
-    currentSystem?.threatLevel === 'HIGH'
+    tactical.state === 'CAMP_LIKELY'
+    || currentSystem?.threatLevel === 'HIGH'
     || nearestAhead?.threatLevel === 'CRITICAL'
     || nearestAhead?.threatLevel === 'HIGH'
   ) {
@@ -614,11 +708,13 @@ function buildTemplateSummary(
   }
 
   const advice = [
-    buildCurrentLine(digest, currentSystem, relevantGankers),
-    buildAheadLine(digest, relevantGankers),
-    buildActionLine(recommendation, nearestAhead !== null || relevantGankers.length > 0),
+    buildCurrentLine(digest, currentSystem, relevantGankers, tactical),
+    buildAheadLine(digest, relevantGankers, tactical),
+    buildActionLine(recommendation, nearestAhead !== null || relevantGankers.length > 0, tactical),
   ].join('\n');
 
+  factors.push(`состояние: ${formatTacticalState(tactical.state)}`);
+  factors.push(`окно: ${tactical.window}`);
   if (pursuit) {
     factors.push(`преследование (${pursuit.confidence})`);
   }
@@ -666,9 +762,18 @@ function buildCurrentLine(
   digest: RouteThreatDigest,
   currentSystem: SystemThreatDigest | null,
   relevantGankers: GankerIntel[],
+  tactical: RouteTacticalAssessment,
 ): string {
   if (!currentSystem) {
     return `Сейчас: ${digest.pilotSystem} — позиция определена, локальных сигналов нет.`;
+  }
+
+  if (tactical.state === 'PURSUIT') {
+    return `Сейчас: ${currentSystem.systemName} — позади формируется преследование, окно быстро закрывается.`;
+  }
+
+  if (tactical.state === 'HOT_START') {
+    return `Сейчас: ${currentSystem.systemName} — стартовая зона шумит; выход только вручную, без зависаний на андоке и воротах.`;
   }
 
   if (currentSystem.threatLevel !== 'LOW') {
@@ -676,7 +781,10 @@ function buildCurrentLine(
   }
 
   if (currentSystem.gateKills.length > 0) {
-    return `Сейчас: ${currentSystem.systemName} — ${buildSystemOperationalReason(currentSystem)}.`;
+    const prefix = tactical.state === 'CAMP_LIKELY'
+      ? 'похоже на кемп у выходного гейта'
+      : buildSystemOperationalReason(currentSystem);
+    return `Сейчас: ${currentSystem.systemName} — ${prefix}.`;
   }
 
   const localGankers = relevantGankers.filter((ganker) =>
@@ -696,6 +804,7 @@ function buildCurrentLine(
 function buildAheadLine(
   digest: RouteThreatDigest,
   relevantGankers: GankerIntel[],
+  tactical: RouteTacticalAssessment,
 ): string {
   const aheadThreats = selectRelevantAheadSystems(digest).slice(0, 2);
   if (aheadThreats.length > 0) {
@@ -705,10 +814,17 @@ function buildAheadLine(
     return `Впереди: ${parts.join('; ')}.`;
   }
 
+  if (tactical.state === 'WINDOW_OPEN') {
+    return 'Впереди: явного перехвата не видно, окно прохода открыто; ключевое условие — идти без пауз.';
+  }
+
   if (relevantGankers.length > 0) {
     const named = relevantGankers.slice(0, 2).map((ganker) => ganker.characterName).filter(Boolean);
     const suffix = named.length > 0 ? ` Видны пилоты: ${named.join(', ')}.` : '';
-    return `Впереди: свежих PvP-паттернов не видно, но на трассе есть активные ганкеры.${suffix}`;
+    const prefix = tactical.window === 'OPEN'
+      ? 'свежего перехвата не видно, но на трассе есть активные ганкеры.'
+      : 'на трассе есть активные ганкеры, окно остаётся узким.';
+    return `Впереди: ${prefix}${suffix}`;
   }
 
   const nextSystems = digest.systemsAhead
@@ -735,15 +851,22 @@ function formatJumpDistance(jumps: number): string {
 function buildActionLine(
   recommendation: RouteIntelSummary['recommendation'],
   hasAnyRisk: boolean,
+  tactical: RouteTacticalAssessment,
 ): string {
   switch (recommendation) {
     case 'STOP':
       return 'Действие: не выходите дальше, док/переварп и переждите.';
     case 'WAIT':
+      if (tactical.state === 'CAMP_LIKELY') {
+        return 'Действие: переждите 10-15 минут или отправьте скаута на проблемный гейт; лобовой проход сейчас плохая сделка.';
+      }
       return 'Действие: подождите 10-15 минут или проверьте трассу скаутом перед выходом.';
     case 'REROUTE':
       return 'Действие: меняйте маршрут, текущая трасса даёт слишком плохое окно.';
     case 'PROCEED':
+      if (tactical.window === 'OPEN') {
+        return 'Действие: окно открыто, выходите сейчас вручную и не стойте на воротах.';
+      }
       return hasAnyRisk
         ? 'Действие: можно идти, но не стойте на воротах и не полагайтесь на автопилот.'
         : 'Действие: можно выходить, держите нормальную дисциплину на андоке и воротах.';
@@ -781,10 +904,18 @@ export function formatIntelMessage(
   const now = new Date();
   const timeStr = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')} UTC`;
   const adviceLines = buildOperationalAdviceLines(summary, context);
+  const tactical = context?.digest
+    ? buildRouteTacticalAssessment(context.digest, summary.pursuit, context.gankerIntel ?? [])
+    : null;
 
   const lines: string[] = [
     `\u{1F6F0}\u{FE0F} ESP | ${emoji} ${label}`,
     '',
+    ...(tactical ? [
+      tactical.summary,
+      `Окно: ${formatTacticalWindow(tactical.window)} | уверенность: ${tactical.confidence}`,
+      '',
+    ] : []),
     ...adviceLines,
   ];
 
@@ -830,7 +961,15 @@ function buildOperationalAdviceLines(
   return [
     'Сейчас: сводка сокращена.',
     'Впереди: ориентируйтесь на последний скан маршрута.',
-    `Действие: ${buildActionLine(summary.recommendation, true).replace(/^Действие:\s*/, '')}`,
+    `Действие: ${buildActionLine(summary.recommendation, true, {
+      state: 'CLEAR',
+      startRisk: 'LOW',
+      transitRisk: 'LOW',
+      destinationRisk: 'LOW',
+      window: 'OPEN',
+      confidence: 'LOW',
+      summary: '',
+    }).replace(/^Действие:\s*/, '')}`,
   ];
 }
 
@@ -866,10 +1005,67 @@ function buildFallbackOperationalLines(
   const currentSystem = getCurrentSystemDigest(digest);
   const hasAheadRisk = selectRelevantAheadSystems(digest).length > 0;
   const relevantGankers = selectRelevantGankers(digest, gankerIntel);
+  const tactical = buildRouteTacticalAssessment(digest, summary.pursuit, gankerIntel);
 
   return [
-    buildCurrentLine(digest, currentSystem, relevantGankers),
-    buildAheadLine(digest, relevantGankers),
-    buildActionLine(summary.recommendation, hasAheadRisk || relevantGankers.length > 0),
+    buildCurrentLine(digest, currentSystem, relevantGankers, tactical),
+    buildAheadLine(digest, relevantGankers, tactical),
+    buildActionLine(summary.recommendation, hasAheadRisk || relevantGankers.length > 0, tactical),
   ];
+}
+
+function getDestinationSystemDigest(digest: RouteThreatDigest): SystemThreatDigest | null {
+  const destJumpDistance = digest.totalRouteSystems - 1 - digest.pilotSystemIdx;
+  return digest.systemsAhead.find((sys) => sys.jumpsFromPilot === destJumpDistance) ?? null;
+}
+
+function getTransitSystemDigests(digest: RouteThreatDigest): SystemThreatDigest[] {
+  const destination = getDestinationSystemDigest(digest);
+  return digest.systemsAhead.filter((sys) => sys.jumpsFromPilot > 0 && sys.systemId !== destination?.systemId);
+}
+
+function maxDigestThreat(systems: SystemThreatDigest[]): ThreatLevel {
+  return systems.reduce<ThreatLevel>((acc, system) => {
+    if (system.threatLevel === 'CRITICAL') return 'CRITICAL';
+    if (system.threatLevel === 'HIGH' && acc !== 'CRITICAL') return 'HIGH';
+    if (system.threatLevel === 'MEDIUM' && acc === 'LOW') return 'MEDIUM';
+    return acc;
+  }, 'LOW');
+}
+
+function hasRecentIntel(digest: RouteThreatDigest): boolean {
+  return [...digest.systemsAhead, ...digest.systemsBehind].some((system) =>
+    system.recentKills.length > 0
+    || system.gateKills.length > 0
+    || system.gankerCount > 0
+    || system.jumpSpike !== null,
+  );
+}
+
+function getFreshestIntelMinutes(digest: RouteThreatDigest): number | null {
+  const values = [...digest.systemsAhead, ...digest.systemsBehind]
+    .map((system) => system.latestKillMinutes)
+    .filter((value): value is number => value !== null && Number.isFinite(value));
+  if (values.length === 0) return null;
+  return Math.min(...values);
+}
+
+function formatTacticalState(state: TacticalState): string {
+  switch (state) {
+    case 'CLEAR': return 'трасса под контролем';
+    case 'HOT_START': return 'горячий старт';
+    case 'TRANSIT_RISK': return 'риск на транзите';
+    case 'DESTINATION_HOT': return 'горячая цель';
+    case 'CAMP_LIKELY': return 'вероятен кемп';
+    case 'PURSUIT': return 'возможное преследование';
+    case 'WINDOW_OPEN': return 'окно прохода открыто';
+  }
+}
+
+function formatTacticalWindow(window: TacticalWindow): string {
+  switch (window) {
+    case 'OPEN': return 'окно открыто';
+    case 'TIGHT': return 'окно узкое';
+    case 'CLOSED': return 'окно закрыто';
+  }
 }
