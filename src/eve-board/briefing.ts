@@ -10,6 +10,8 @@
 
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
+import { callEsiOperation } from '../eve/esi-client.js';
+import type { KilllistItem } from '../eve-kill/client.js';
 import { assessShip, analyzeKillPattern, scoreThreat, detectGankWindow } from './threat.js';
 import type { RouteStats, DangerEvent, ThreatLevel, KillPattern, ShipAssessment } from './types.js';
 
@@ -49,6 +51,100 @@ async function fetchZkbForBriefing(systemId: number): Promise<ZkbItem[]> {
 }
 
 // ---------------------------------------------------------------------------
+// ESI enrichment (same pattern as monitor.ts)
+// ---------------------------------------------------------------------------
+
+const MAX_ENRICH_PER_SYSTEM = 3;
+
+type EsiKillmailVictim = { ship_type_id?: number; character_id?: number };
+type EsiKillmailAttacker = { character_id?: number; final_blow?: boolean };
+type EsiKillmail = {
+  killmail_time?: string;
+  victim?: EsiKillmailVictim;
+  attackers?: EsiKillmailAttacker[];
+};
+
+async function enrichZkbKills(
+  db: Db,
+  items: ZkbItem[],
+): Promise<KilllistItem[]> {
+  const results: KilllistItem[] = [];
+
+  for (const item of items.slice(0, MAX_ENRICH_PER_SYSTEM)) {
+    const hash = item.zkb?.hash;
+    if (!hash) {
+      results.push(zkbToKilllistFallback(item));
+      continue;
+    }
+
+    try {
+      const r = await callEsiOperation<EsiKillmail>(
+        db,
+        'get_killmails_killmail_id_killmail_hash',
+        { killmail_id: item.killmail_id, killmail_hash: hash },
+      );
+
+      if (!r.ok || !r.data) {
+        results.push(zkbToKilllistFallback(item));
+        continue;
+      }
+
+      const km = r.data;
+      const victim = km.victim ?? {};
+      const attackers = km.attackers ?? [];
+      const fb = attackers.find((a) => a.final_blow === true) ?? attackers[0];
+
+      const victimShipTypeId = victim.ship_type_id;
+      const shipInfo = victimShipTypeId ? resolveTypeGroup(db, victimShipTypeId) : null;
+
+      results.push({
+        killmail_id: item.killmail_id,
+        killmail_time: typeof km.killmail_time === 'string' ? km.killmail_time : undefined,
+        total_value: item.zkb?.totalValue ?? 0,
+        is_npc: item.zkb?.npc ?? false,
+        is_solo: item.zkb?.solo ?? false,
+        attacker_count: attackers.length,
+        ship_type_id: victimShipTypeId,
+        ship_name: shipInfo?.typeName ?? undefined,
+        ship_group_name: shipInfo?.groupName ?? undefined,
+        final_blow_character_id: fb?.character_id,
+      });
+    } catch {
+      results.push(zkbToKilllistFallback(item));
+    }
+  }
+
+  return results;
+}
+
+function zkbToKilllistFallback(item: ZkbItem): KilllistItem {
+  return {
+    killmail_id: item.killmail_id,
+    total_value: item.zkb?.totalValue ?? 0,
+    is_npc: item.zkb?.npc ?? false,
+    is_solo: item.zkb?.solo ?? false,
+    attacker_count: 1,
+    ship_name: undefined,
+    ship_group_name: undefined,
+    final_blow_character_id: undefined,
+  };
+}
+
+function resolveTypeGroup(
+  db: Db,
+  typeId: number,
+): { typeName: string; groupName: string } | null {
+  const row = db.prepare(`
+    SELECT t.name AS type_name, g.name AS group_name
+    FROM sde_types t
+    JOIN sde_groups g ON g.group_id = t.group_id
+    WHERE t.type_id = ?
+  `).get(typeId) as { type_name: string; group_name: string } | undefined;
+  if (!row) return null;
+  return { typeName: row.type_name, groupName: row.group_name };
+}
+
+// ---------------------------------------------------------------------------
 // SDE helpers (same pattern as monitor.ts)
 // ---------------------------------------------------------------------------
 
@@ -78,7 +174,7 @@ const THREAT_EMOJI: Record<ThreatLevel, string> = {
   CRITICAL: '\u{1F534}',  // red circle
   HIGH: '\u{1F7E0}',      // orange circle
   MEDIUM: '\u{1F7E1}',    // yellow circle
-  LOW: '\u{1F7E2}',       // green circle
+  LOW: '\u26AA',           // white circle
 };
 
 const THREAT_LABEL: Record<ThreatLevel, string> = {
@@ -89,10 +185,10 @@ const THREAT_LABEL: Record<ThreatLevel, string> = {
 };
 
 const SURVIVAL_TEXT: Record<ShipAssessment['survivalChance'], string> = {
-  DEAD: '\u{1F480} Не выживет при ганке',
-  UNLIKELY: '\u{26A0}\u{FE0F} Маловероятно выживет',
-  POSSIBLE: '\u{1F7E1} Есть шанс пережить',
-  SAFE: '\u{1F7E2} Высокая живучесть',
+  DEAD: '\u{1F480} Базовая живучесть минимальна (с фитом может быть выше)',
+  UNLIKELY: '\u{26A0}\u{FE0F} Базовая живучесть низкая (с фитом будет выше)',
+  POSSIBLE: '\u{1F7E1} Базовая живучесть средняя (с фитом будет выше)',
+  SAFE: '\u{1F7E2} Высокая базовая живучесть',
 };
 
 function formatKillRate(killCount: number, windowMinutes: number): string {
@@ -132,15 +228,17 @@ export async function generateBriefing(
   // Step 1: assess ship
   const ship = assessShip(db, shipTypeId);
 
-  // Step 2: identify systems to scan (sec < 1.0, up to limit)
-  const systemsToScan: Array<{ id: number; name: string; sec: number }> = [];
+  // Step 2: identify systems to scan (sec < 1.0), sorted by security (lowest first)
+  const candidates: Array<{ id: number; name: string; sec: number }> = [];
   for (const sysId of routeSystems) {
-    if (systemsToScan.length >= MAX_SYSTEMS_TO_SCAN) break;
     const sec = resolveSystemSec(db, sysId);
     if (sec < SAFE_SEC_THRESHOLD) {
-      systemsToScan.push({ id: sysId, name: resolveSystemName(db, sysId), sec });
+      candidates.push({ id: sysId, name: resolveSystemName(db, sysId), sec });
     }
   }
+  // Sort by security ascending (most dangerous first), then limit
+  candidates.sort((a, b) => a.sec - b.sec);
+  const systemsToScan = candidates.slice(0, MAX_SYSTEMS_TO_SCAN);
 
   // Step 3: fetch kills and analyze patterns in parallel
   const dangerSystems: DangerSystemInfo[] = [];
@@ -152,7 +250,10 @@ export async function generateBriefing(
       const pvpKills = feed.filter((k) => !k.zkb?.npc);
       if (pvpKills.length === 0) return null;
 
-      const pattern = analyzeKillPattern(pvpKills as never[], sys.id, sys.name, sys.sec);
+      // Enrich top kills with ESI data (time, attackers, victim ship)
+      const enrichedKills = await enrichZkbKills(db, pvpKills);
+
+      const pattern = analyzeKillPattern(enrichedKills, sys.id, sys.name, sys.sec);
       const threat = scoreThreat(pattern, ship);
       return { sys, pattern, threat };
     }),
@@ -164,16 +265,14 @@ export async function generateBriefing(
 
     patterns.push(pattern);
 
-    // Only include systems with meaningful threat (not LOW)
-    if (threat.level !== 'LOW') {
-      dangerSystems.push({
-        name: sys.name,
-        sec: sys.sec,
-        pattern,
-        threatLevel: threat.level,
-        threatReason: threat.reason,
-      });
-    }
+    // Include ALL systems with PvP kills, not just MEDIUM+
+    dangerSystems.push({
+      name: sys.name,
+      sec: sys.sec,
+      pattern,
+      threatLevel: threat.level,
+      threatReason: threat.reason,
+    });
   }
 
   // Sort danger systems: CRITICAL first, then HIGH, then MEDIUM
@@ -203,30 +302,33 @@ function formatBriefing(
 
   // Ship info
   lines.push(
-    `\u{1F680} \u041A\u043E\u0440\u0430\u0431\u043B\u044C: ${ship.shipName} | EHP: ${ship.ehp.toLocaleString('ru-RU')} | Align: ${ship.alignTime}s`,
+    `\u{1F680} \u041A\u043E\u0440\u0430\u0431\u043B\u044C: ${ship.shipName} | \u0411\u0430\u0437\u043E\u0432\u044B\u0439 EHP (\u0431\u0435\u0437 \u0444\u0438\u0442\u0430): ${ship.ehp.toLocaleString('ru-RU')} | Align: ${ship.alignTime}s`,
   );
   lines.push(`\u041E\u0446\u0435\u043D\u043A\u0430: ${SURVIVAL_TEXT[ship.survivalChance]}`);
   lines.push('');
 
-  // Danger systems
+  // Systems with PvP activity
   if (dangerSystems.length === 0) {
-    lines.push('\u2705 \u041C\u0430\u0440\u0448\u0440\u0443\u0442 \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u0435\u043D. \u0413\u0430\u043D\u043A\u043E\u0432\u043E\u0439 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u0438 \u043D\u0435 \u043E\u0431\u043D\u0430\u0440\u0443\u0436\u0435\u043D\u043E.');
+    lines.push('\u2705 \u041C\u0430\u0440\u0448\u0440\u0443\u0442 \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u0435\u043D. PvP \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u0438 \u043D\u0435 \u043E\u0431\u043D\u0430\u0440\u0443\u0436\u0435\u043D\u043E.');
   } else {
-    lines.push('\u26A0\uFE0F \u041E\u043F\u0430\u0441\u043D\u044B\u0435 \u0441\u0438\u0441\u0442\u0435\u043C\u044B:');
+    lines.push('\u26A0\uFE0F \u0421\u0438\u0441\u0442\u0435\u043C\u044B \u0441 PvP \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u044C\u044E:');
     for (const ds of dangerSystems) {
       const emoji = THREAT_EMOJI[ds.threatLevel];
       const killInfo = formatKillRate(ds.pattern.killCount, ds.pattern.timeWindowMinutes);
       lines.push(
-        `  ${emoji} ${ds.name} (${ds.sec}) \u2014 ${killInfo}, ${THREAT_LABEL[ds.threatLevel]} \u0434\u043B\u044F \u0442\u0435\u0431\u044F`,
+        `  ${emoji} ${ds.name} (${ds.sec}) \u2014 ${killInfo}, ${THREAT_LABEL[ds.threatLevel]}`,
       );
     }
     lines.push('');
 
-    // Gank window info (only when there are danger systems)
-    if (gankWindow.isOpen) {
-      lines.push(`\u{1F7E2} \u041E\u043A\u043D\u043E \u043F\u0440\u043E\u0445\u043E\u0434\u0430: ${gankWindow.reason}`);
-    } else {
-      lines.push(`\u{1F534} \u041E\u043A\u043D\u043E \u043F\u0440\u043E\u0445\u043E\u0434\u0430: ${gankWindow.reason}`);
+    // Gank window info (only when there are danger systems with real threat)
+    const hasRealThreat = dangerSystems.some(d => d.threatLevel !== 'LOW');
+    if (hasRealThreat) {
+      if (gankWindow.isOpen) {
+        lines.push(`\u{1F7E2} \u041E\u043A\u043D\u043E \u043F\u0440\u043E\u0445\u043E\u0434\u0430: ${gankWindow.reason}`);
+      } else {
+        lines.push(`\u{1F534} \u041E\u043A\u043D\u043E \u043F\u0440\u043E\u0445\u043E\u0434\u0430: ${gankWindow.reason}`);
+      }
     }
   }
 

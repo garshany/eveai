@@ -20,6 +20,7 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { callEsiOperation } from '../eve/esi-client.js';
+import type { KilllistItem } from '../eve-kill/client.js';
 import { analyzeKillPattern, scoreThreat, assessShip } from './threat.js';
 import type {
   RouteMonitor,
@@ -85,6 +86,109 @@ async function fetchZkbSystemKills(systemId: number): Promise<ZkbFeedItem[]> {
       !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).killmail_id === 'number',
     );
   } catch { return []; }
+}
+
+// ---------------------------------------------------------------------------
+// ESI enrichment — enrich top kills with full killmail data
+// ---------------------------------------------------------------------------
+
+/** Max kills to enrich per system (ESI rate limit friendly). */
+const MAX_ENRICH_PER_SYSTEM = 3;
+
+type EsiKillmailVictim = { ship_type_id?: number; character_id?: number };
+type EsiKillmailAttacker = { character_id?: number; final_blow?: boolean };
+type EsiKillmail = {
+  killmail_time?: string;
+  victim?: EsiKillmailVictim;
+  attackers?: EsiKillmailAttacker[];
+};
+
+/**
+ * Enrich zKB items with ESI killmail data and return KilllistItem[] for analyzeKillPattern.
+ * Follows the pattern from eve-kill/poll.ts enrichKills().
+ */
+async function enrichZkbKills(
+  db: Db,
+  items: ZkbFeedItem[],
+): Promise<KilllistItem[]> {
+  const results: KilllistItem[] = [];
+
+  for (const item of items.slice(0, MAX_ENRICH_PER_SYSTEM)) {
+    const hash = item.zkb?.hash;
+    if (!hash) {
+      // No hash — build from zKB metadata only
+      results.push(zkbToKilllistFallback(item));
+      continue;
+    }
+
+    try {
+      const r = await callEsiOperation<EsiKillmail>(
+        db,
+        'get_killmails_killmail_id_killmail_hash',
+        { killmail_id: item.killmail_id, killmail_hash: hash },
+      );
+
+      if (!r.ok || !r.data) {
+        results.push(zkbToKilllistFallback(item));
+        continue;
+      }
+
+      const km = r.data;
+      const victim = km.victim ?? {};
+      const attackers = km.attackers ?? [];
+      const fb = attackers.find((a) => a.final_blow === true) ?? attackers[0];
+
+      // Resolve victim ship group from SDE
+      const victimShipTypeId = victim.ship_type_id;
+      const shipInfo = victimShipTypeId ? resolveTypeGroup(db, victimShipTypeId) : null;
+
+      results.push({
+        killmail_id: item.killmail_id,
+        killmail_time: typeof km.killmail_time === 'string' ? km.killmail_time : undefined,
+        total_value: item.zkb?.totalValue ?? 0,
+        is_npc: item.zkb?.npc ?? false,
+        is_solo: item.zkb?.solo ?? false,
+        attacker_count: attackers.length,
+        ship_type_id: victimShipTypeId,
+        ship_name: shipInfo?.typeName ?? undefined,
+        ship_group_name: shipInfo?.groupName ?? undefined,
+        final_blow_character_id: fb?.character_id,
+      });
+    } catch {
+      results.push(zkbToKilllistFallback(item));
+    }
+  }
+
+  return results;
+}
+
+/** Fallback: build KilllistItem from zKB metadata when ESI enrichment fails. */
+function zkbToKilllistFallback(item: ZkbFeedItem): KilllistItem {
+  return {
+    killmail_id: item.killmail_id,
+    total_value: item.zkb?.totalValue ?? 0,
+    is_npc: item.zkb?.npc ?? false,
+    is_solo: item.zkb?.solo ?? false,
+    attacker_count: 1,
+    ship_name: undefined,
+    ship_group_name: undefined,
+    final_blow_character_id: undefined,
+  };
+}
+
+/** Resolve type name and group name from SDE for a given type_id. */
+function resolveTypeGroup(
+  db: Db,
+  typeId: number,
+): { typeName: string; groupName: string } | null {
+  const row = db.prepare(`
+    SELECT t.name AS type_name, g.name AS group_name
+    FROM sde_types t
+    JOIN sde_groups g ON g.group_id = t.group_id
+    WHERE t.type_id = ?
+  `).get(typeId) as { type_name: string; group_name: string } | undefined;
+  if (!row) return null;
+  return { typeName: row.type_name, groupName: row.group_name };
 }
 
 // ---------------------------------------------------------------------------
@@ -296,19 +400,10 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
       const sysName = resolveSystemName(db, sysId);
       const sysSec = resolveSystemSec(db, sysId);
 
-      // Convert zKB items to KilllistItem-like shape for analyzeKillPattern
-      const fakeKills = pvpKills.map((k) => ({
-        killmail_id: k.killmail_id,
-        total_value: k.zkb?.totalValue ?? 0,
-        is_npc: k.zkb?.npc ?? false,
-        is_solo: k.zkb?.solo ?? false,
-        attacker_count: 1,
-        ship_name: null as string | null,
-        victim_character_name: null as string | null,
-        final_blow_character_id: undefined as number | undefined,
-      }));
+      // Enrich top kills with ESI data (time, attackers, victim ship)
+      const enrichedKills = await enrichZkbKills(db, pvpKills);
 
-      const pattern = analyzeKillPattern(fakeKills as never[], sysId, sysName, sysSec);
+      const pattern = analyzeKillPattern(enrichedKills, sysId, sysName, sysSec);
       const threat = scoreThreat(pattern, shipAssessment);
 
       monitor.stats.killsSeen += pvpKills.length;
@@ -340,7 +435,7 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     // Send ONE batched alert instead of 5 separate messages
     if (threats.length > 0) {
       updateMonitorStats(db, monitor.chatId, monitor.stats);
-      const header = `⚠️ Угрозы впереди (${monitor.shipName}, EHP ${Math.round(shipAssessment.ehp)}):\n`;
+      const header = `⚠️ Угрозы впереди (${monitor.shipName}, базовый EHP ${Math.round(shipAssessment.ehp)}):\n`;
       try {
         sender(monitor.chatId, header + threats.join('\n\n'));
       } catch { /* */ }
