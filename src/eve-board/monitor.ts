@@ -717,8 +717,12 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
 
     // 2. Build route threat digest from last scan data
     const pilotSystem = resolveSystemName(db, monitor.currentSystemId);
+    const originName = resolveSystemName(db, monitor.originId);
+    const destName = resolveSystemName(db, monitor.destinationId);
     const digest = buildRouteThreatDigest(
       pilotSystem, currentIdx,
+      monitor.routeSystems.length,
+      originName, destName,
       inst.lastDigestsAhead,
       inst.lastDigestsBehind,
     );

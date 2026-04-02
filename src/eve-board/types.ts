@@ -203,6 +203,12 @@ export type RouteThreatDigest = {
   timestamp: string;
   pilotSystem: string;
   pilotSystemIdx: number;
+  /** Total systems in the full route (not just scanned) */
+  totalRouteSystems: number;
+  /** Origin system name */
+  origin: string;
+  /** Destination system name */
+  destination: string;
   systemsAhead: SystemThreatDigest[];
   systemsBehind: SystemThreatDigest[];
   overallThreat: ThreatLevel;

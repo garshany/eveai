@@ -360,6 +360,9 @@ export function buildSystemDigest(
 export function buildRouteThreatDigest(
   pilotSystem: string,
   pilotSystemIdx: number,
+  totalRouteSystems: number,
+  origin: string,
+  destination: string,
   systemsAhead: SystemThreatDigest[],
   systemsBehind: SystemThreatDigest[],
 ): RouteThreatDigest {
@@ -375,6 +378,9 @@ export function buildRouteThreatDigest(
     timestamp: new Date().toISOString(),
     pilotSystem,
     pilotSystemIdx,
+    totalRouteSystems,
+    origin,
+    destination,
     systemsAhead,
     systemsBehind,
     overallThreat,
@@ -450,18 +456,9 @@ export function formatThreatDigest(digest: RouteThreatDigest): string {
   const lines: string[] = [];
 
   // Header: overall route status
-  const totalSystems = digest.systemsAhead.length + digest.systemsBehind.length + 1; // +1 for pilot system
   const pilotIdx = digest.pilotSystemIdx + 1; // 1-based for display
 
-  // Determine origin/destination from the extremes
-  const firstBehind = digest.systemsBehind.length > 0
-    ? digest.systemsBehind[digest.systemsBehind.length - 1]!.systemName
-    : digest.pilotSystem;
-  const lastAhead = digest.systemsAhead.length > 0
-    ? digest.systemsAhead[digest.systemsAhead.length - 1]!.systemName
-    : digest.pilotSystem;
-
-  lines.push(`📊 Маршрут: ${firstBehind} → ${lastAhead} | Вы в: ${digest.pilotSystem} (система ${pilotIdx}/${totalSystems})`);
+  lines.push(`📊 ${digest.origin} → ${digest.destination} | Вы в: ${digest.pilotSystem} (${pilotIdx}/${digest.totalRouteSystems})`);
   lines.push('');
 
   // Behind section

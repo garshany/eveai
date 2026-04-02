@@ -321,7 +321,7 @@ function resolveSystemSec(database: Db, systemId: number): number {
   const row = database.prepare('SELECT data_json FROM sde_systems WHERE system_id = ?').get(systemId) as { data_json: string } | undefined;
   let sec = 0;
   if (row) {
-    try { sec = (JSON.parse(row.data_json) as { security_status?: number }).security_status ?? 0; } catch { /* */ }
+    try { sec = (JSON.parse(row.data_json) as { securityStatus?: number }).securityStatus ?? 0; } catch { /* */ }
   }
   secCache.set(systemId, sec);
   return sec;
