@@ -400,8 +400,12 @@ async function pollLocation(inst: MonitorInstance): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Poll: Kill scan (30s) — uses zKB directly (EVE-KILL killlist ignores system_id)
+// Poll: Kill scan (30s)
+// Strategy: ESI system_kills as fast filter → zKB only for active systems
+// + ESI character killmails for own death detection
 // ---------------------------------------------------------------------------
+
+type SystemKillEntry = { system_id: number; ship_kills: number; pod_kills: number; npc_kills: number };
 
 async function pollKills(inst: MonitorInstance): Promise<void> {
   const { monitor, db, sender, shipAssessment, alertCooldowns } = inst;
@@ -415,33 +419,38 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     );
     if (systemsAhead.length === 0) return;
 
+    // Step 1: ESI system_kills — fast check which systems have PvP activity
+    const activeSystemIds = await getActiveSystemsFromEsi(db, systemsAhead);
     const sysNames = systemsAhead.map((id) => resolveSystemName(db, id));
-    console.log(`${LOG} kill scan: ${sysNames.join(', ')} (${systemsAhead.length} ahead)`);
+    console.log(`${LOG} kill scan: ${sysNames.join(', ')} — ${activeSystemIds.size} with PvP (ESI filter)`);
 
+    // Step 2: Death detection via ESI character killmails (own kills/losses)
+    await checkOwnDeath(inst);
+
+    // Step 3: zKB details only for systems with ship_kills > 0
     const now = Date.now();
     const threats: string[] = [];
 
     for (const sysId of systemsAhead) {
+      // Skip systems with no PvP kills according to ESI
+      if (!activeSystemIds.has(sysId)) continue;
+
       const feed = await fetchZkbSystemKills(sysId);
       if (feed.length === 0) continue;
 
-      // Skip NPC-only systems
       const pvpKills = feed.filter((k) => !k.zkb?.npc);
       if (pvpKills.length === 0) continue;
 
       const sysName = resolveSystemName(db, sysId);
       const sysSec = resolveSystemSec(db, sysId);
 
-      // Enrich top kills with ESI data (time, attackers, victim ship)
       const enrichedKills = await enrichZkbKills(db, pvpKills);
-
       const pattern = analyzeKillPattern(enrichedKills, sysId, sysName, sysSec);
       const threat = scoreThreat(pattern, shipAssessment);
 
       monitor.stats.killsSeen += pvpKills.length;
 
       if (threat.level === 'HIGH' || threat.level === 'CRITICAL') {
-        // Cooldown check: skip if alerted this system within 5 min
         const lastAlert = alertCooldowns.get(sysId) ?? 0;
         if (now - lastAlert < ALERT_COOLDOWN_MS) continue;
         alertCooldowns.set(sysId, now);
@@ -476,6 +485,62 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
   } catch (err) {
     console.error(`${LOG} kill scan error chat=${monitor.chatId}:`, (err as Error).message);
   }
+}
+
+// ---------------------------------------------------------------------------
+// ESI system_kills filter — one call for all systems, skip quiet ones
+// ---------------------------------------------------------------------------
+
+async function getActiveSystemsFromEsi(db: Db, systemIds: number[]): Promise<Set<number>> {
+  const active = new Set<number>();
+  try {
+    const result = await callEsiOperation<SystemKillEntry[]>(db, 'get_universe_system_kills', {});
+    if (!result.ok || !Array.isArray(result.data)) return active;
+
+    const wanted = new Set(systemIds);
+    for (const entry of result.data) {
+      if (wanted.has(entry.system_id) && (entry.ship_kills > 0 || entry.pod_kills > 0)) {
+        active.add(entry.system_id);
+      }
+    }
+  } catch { /* non-critical, fall through to scan all */ }
+  return active;
+}
+
+// ---------------------------------------------------------------------------
+// ESI death detection — check own character killmails
+// ---------------------------------------------------------------------------
+
+async function checkOwnDeath(inst: MonitorInstance): Promise<void> {
+  const { monitor, db } = inst;
+  try {
+    const result = await callEsiOperation<Array<{ killmail_id: number; killmail_hash: string }>>(
+      db,
+      'get_characters_character_id_killmails_recent',
+      { character_id: monitor.characterId },
+      monitor.chatId,
+    );
+    if (!result.ok || !Array.isArray(result.data) || result.data.length === 0) return;
+
+    // Check if latest killmail is a loss (fetch detail to see if we're the victim)
+    const latest = result.data[0];
+    const detail = await callEsiOperation<{ victim?: { character_id?: number } }>(
+      db,
+      'get_killmails_killmail_id_killmail_hash',
+      { killmail_id: latest.killmail_id, killmail_hash: latest.killmail_hash },
+    );
+    if (!detail.ok || !detail.data) return;
+
+    if (detail.data.victim?.character_id === monitor.characterId) {
+      // Check if this is a NEW death (not one we already know about)
+      const lastKnownDeath = (monitor.stats as Record<string, unknown>).lastDeathId as number | undefined;
+      if (lastKnownDeath === latest.killmail_id) return;
+
+      (monitor.stats as Record<string, unknown>).lastDeathId = latest.killmail_id;
+      console.log(`${LOG} chat=${monitor.chatId} DEATH detected via ESI km=${latest.killmail_id}`);
+      stopRouteMonitor(monitor.chatId, 'death');
+    }
+  } catch { /* non-critical */ }
 }
 
 // ---------------------------------------------------------------------------
