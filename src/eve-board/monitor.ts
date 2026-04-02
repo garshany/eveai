@@ -98,6 +98,8 @@ const MAX_SYSTEMS_AHEAD = 10;
 /** Max systems behind to scan (tail-check) */
 const MAX_SYSTEMS_BEHIND = 5;
 const OFFLINE_TIMEOUT_MINUTES = 30;
+/** Grace period after monitor start — don't auto-stop for offline during this window */
+const STARTUP_GRACE_MS = 5 * 60 * 1000; // 5 minutes
 /** Don't re-alert the same system within this window */
 const ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 /** Rolling snapshot window: keep last 20 snapshots per system */
@@ -839,22 +841,9 @@ async function pollOnline(inst: MonitorInstance): Promise<void> {
       return;
     }
 
-    // Pilot is offline
+    // Pilot is offline — track but don't auto-stop (user controls lifecycle)
     if (inst.offlineSince === null) {
-      // Start tracking offline time from last_logout if available
-      if (online.data.last_logout) {
-        inst.offlineSince = new Date(online.data.last_logout).getTime();
-      } else {
-        inst.offlineSince = Date.now();
-      }
-    }
-
-    const offlineMinutes = (Date.now() - inst.offlineSince) / 60_000;
-    if (offlineMinutes > OFFLINE_TIMEOUT_MINUTES) {
-      console.log(
-        `${LOG} chat=${monitor.chatId} offline for ${Math.round(offlineMinutes)} min, stopping`,
-      );
-      stopRouteMonitor(monitor.chatId, 'offline');
+      inst.offlineSince = Date.now();
     }
   } catch (err) {
     console.error(`${LOG} online poll error chat=${monitor.chatId}:`, (err as Error).message);
