@@ -92,6 +92,33 @@ describe('generateBriefing', () => {
     expect(briefing).not.toContain('Маршрут безопасен. PvP активности не обнаружено.');
   });
 
+  it('degrades gracefully when ship assessment data is missing or invalid', async () => {
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string) => {
+      if (operation === 'get_universe_system_jumps') {
+        return { ok: true, status: 200, cached: false, headers: {}, data: [] };
+      }
+
+      return { ok: false, status: 404, error: `Unexpected operation: ${operation}` };
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => [] })));
+
+    const briefing = await generateBriefing(
+      db,
+      [30002659, 30002660, 30000142],
+      'Dodixie',
+      'Jita',
+      2116626188,
+      0,
+    );
+
+    expect(briefing).toContain('Корабль: неизвестен | Базовая оценка недоступна');
+    expect(briefing).toContain('Оценка корпуса: данные о корабле недоступны.');
+    expect(briefing).not.toContain('Корабль: #System');
+    expect(briefing).not.toContain('Базовый EHP: 0');
+    expect(briefing).not.toContain('Align: 0s');
+  });
+
   it('includes route analysis and recent kill details for active systems', async () => {
     callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string) => {
       if (operation === 'get_universe_system_jumps') {

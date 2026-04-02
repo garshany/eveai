@@ -249,6 +249,7 @@ const SURVIVAL_TEXT: Record<ShipAssessment['survivalChance'], string> = {
   POSSIBLE: '\u{1F7E1} Базовая живучесть средняя (с фитом будет выше)',
   SAFE: '\u{1F7E2} Высокая базовая живучесть',
 };
+const UNKNOWN_SHIP_TEXT = 'Оценка корпуса: данные о корабле недоступны.';
 
 function jumpWord(n: number): string {
   const mod10 = n % 10;
@@ -389,7 +390,7 @@ function formatBriefing(
   lines.push(`\u{1F6F0}\u{FE0F} Предполет | ${action.emoji} ${action.label}`);
   lines.push('');
   lines.push(`Маршрут: ${originName} → ${destName} (${jumps} прыжков)`);
-  lines.push(`Корабль: ${ship.shipName} | Базовый EHP: ${ship.ehp.toLocaleString('ru-RU')} | Align: ${ship.alignTime}s`);
+  lines.push(buildShipLine(ship));
   lines.push(`Сейчас: ${buildCurrentLine(originName, currentSystem)}`);
   lines.push(`Впереди: ${buildAheadLine(aheadSystems, destinationSystem, routeSystems, db)}`);
   lines.push(`Действие: ${action.action}`);
@@ -409,9 +410,32 @@ function formatBriefing(
     lines.push('');
   }
 
-  lines.push(`Оценка корпуса: ${SURVIVAL_TEXT[ship.survivalChance]}`);
+  lines.push(buildSurvivalLine(ship));
 
   return lines.join('\n');
+}
+
+function hasUsableShipAssessment(ship: ShipAssessment): boolean {
+  if (!Number.isFinite(ship.shipTypeId) || ship.shipTypeId <= 0) return false;
+  if (!Number.isFinite(ship.ehp) || ship.ehp <= 0) return false;
+  if (!Number.isFinite(ship.alignTime) || ship.alignTime <= 0) return false;
+  const normalizedName = ship.shipName.trim();
+  if (!normalizedName || normalizedName.startsWith('#') || /^Type\s+\d+$/i.test(normalizedName)) return false;
+  return true;
+}
+
+function buildShipLine(ship: ShipAssessment): string {
+  if (!hasUsableShipAssessment(ship)) {
+    return 'Корабль: неизвестен | Базовая оценка недоступна';
+  }
+  return `Корабль: ${ship.shipName} | Базовый EHP: ${ship.ehp.toLocaleString('ru-RU')} | Align: ${ship.alignTime}s`;
+}
+
+function buildSurvivalLine(ship: ShipAssessment): string {
+  if (!hasUsableShipAssessment(ship)) {
+    return UNKNOWN_SHIP_TEXT;
+  }
+  return `Оценка корпуса: ${SURVIVAL_TEXT[ship.survivalChance]}`;
 }
 
 type PreflightAction = {
