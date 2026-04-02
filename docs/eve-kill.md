@@ -144,6 +144,8 @@ ZKILL_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com)
 Pre-flight briefing for `plan_route` should stay operational:
 - top block: `Сейчас`, `Впереди`, `Действие`
 - support block: `Активность`, short `Анализ`, and several `Последние киллы` from the selected route
+- only killmails whose actual `killmail_time` is still inside the briefing window should influence this snapshot; stale zKB rows must be dropped
+- destination-local activity should be treated as arrival intel, not as the nearest transit threat ahead
 - live monitor keeps ESP/digest updates separate from the one-time pre-flight snapshot
 
 ### Other kill tools

@@ -23,6 +23,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
   db.close();
 });
 
@@ -163,6 +164,142 @@ describe('generateBriefing', () => {
     expect(briefing).toContain('Анализ:');
     expect(briefing).toContain('Последние киллы:');
     expect(briefing).toContain('Victim One <- Attacker One');
+  });
+
+  it('drops stale killmails whose actual killmail_time is older than the briefing window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-02T16:24:00Z'));
+
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string) => {
+      if (operation === 'get_universe_system_jumps') {
+        return { ok: true, status: 200, cached: false, headers: {}, data: [] };
+      }
+
+      if (operation === 'get_killmails_killmail_id_killmail_hash') {
+        return {
+          ok: true,
+          status: 200,
+          cached: false,
+          headers: {},
+          data: {
+            killmail_time: '2026-04-02T14:59:00Z',
+            victim: { ship_type_id: 587, character_id: 9001 },
+            attackers: [{ character_id: 9002, final_blow: true }],
+          },
+        };
+      }
+
+      if (operation === 'post_universe_names') {
+        return {
+          ok: true,
+          status: 200,
+          cached: false,
+          headers: {},
+          data: [
+            { id: 9001, name: 'Victim One' },
+            { id: 9002, name: 'Attacker One' },
+          ],
+        };
+      }
+
+      return { ok: false, status: 404, error: `Unexpected operation: ${operation}` };
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.includes('systemID/30002660')) {
+        return {
+          ok: true,
+          json: async () => [{
+            killmail_id: 134200010,
+            zkb: { hash: 'hash-stale', totalValue: 42000000, npc: false, solo: false },
+          }],
+        };
+      }
+
+      return { ok: true, json: async () => [] };
+    }));
+
+    const briefing = await generateBriefing(
+      db,
+      [30002659, 30002660, 30000142],
+      'Dodixie',
+      'Jita',
+      2116626188,
+      587,
+    );
+
+    expect(briefing).toContain('Предполет | 🟢 ВЫХОДИ');
+    expect(briefing).not.toContain('Активность:');
+    expect(briefing).not.toContain('Последние киллы:');
+    expect(briefing).not.toContain('Victim One');
+  });
+
+  it('treats destination-only activity as arrival intel instead of a transit threat ahead', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-02T16:24:00Z'));
+
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string) => {
+      if (operation === 'get_universe_system_jumps') {
+        return { ok: true, status: 200, cached: false, headers: {}, data: [] };
+      }
+
+      if (operation === 'get_killmails_killmail_id_killmail_hash') {
+        return {
+          ok: true,
+          status: 200,
+          cached: false,
+          headers: {},
+          data: {
+            killmail_time: '2026-04-02T15:28:00Z',
+            victim: { ship_type_id: 587, character_id: 9001 },
+            attackers: [{ character_id: 9002, final_blow: true }],
+          },
+        };
+      }
+
+      if (operation === 'post_universe_names') {
+        return {
+          ok: true,
+          status: 200,
+          cached: false,
+          headers: {},
+          data: [
+            { id: 9001, name: 'Victim One' },
+            { id: 9002, name: 'Attacker One' },
+          ],
+        };
+      }
+
+      return { ok: false, status: 404, error: `Unexpected operation: ${operation}` };
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.includes('systemID/30000142')) {
+        return {
+          ok: true,
+          json: async () => [{
+            killmail_id: 134200011,
+            zkb: { hash: 'hash-destination', totalValue: 12000000, npc: false, solo: false },
+          }],
+        };
+      }
+
+      return { ok: true, json: async () => [] };
+    }));
+
+    const briefing = await generateBriefing(
+      db,
+      [30002659, 30002660, 30000142],
+      'Dodixie',
+      'Jita',
+      2116626188,
+      587,
+    );
+
+    expect(briefing).toContain('Впереди: Midpoint — транзит тихий; в Jita локально единичное убийство 56 мин назад.');
+    expect(briefing).toContain('Анализ: старт тихий; между Dodixie и Jita транзитных PvP-точек нет; в цели Jita локально единичное убийство 56 мин назад.');
+    expect(briefing).toContain('Jita [цель] — 56м назад');
+    expect(briefing).not.toContain('Jita через 2 прыжка');
   });
 
   it('scans the whole selected route instead of truncating a late dangerous system', async () => {

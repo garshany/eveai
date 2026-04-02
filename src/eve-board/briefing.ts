@@ -21,6 +21,7 @@ import type { RouteStats, DangerEvent, ThreatLevel, KillPattern, ShipAssessment 
 
 /** Systems with sec >= 1.0 are fully safe — skip scanning. */
 const SAFE_SEC_THRESHOLD = 1.0;
+const BRIEFING_SCAN_WINDOW_MINUTES = 60;
 
 // ---------------------------------------------------------------------------
 // zKB fetch (direct — EVE-KILL killlist doesn't filter by system_id)
@@ -321,9 +322,12 @@ export async function generateBriefing(
       if (pvpKills.length === 0) { scanResults.push(null); continue; }
 
       const enrichedKills = await enrichZkbKills(db, pvpKills);
-      const pattern = analyzeKillPattern(enrichedKills, sys.id, sys.name, sys.sec);
+      const freshKills = enrichedKills.filter(isKillWithinBriefingWindow);
+      if (freshKills.length === 0) { scanResults.push(null); continue; }
+
+      const pattern = analyzeKillPattern(freshKills, sys.id, sys.name, sys.sec);
       const threat = scoreThreat(pattern, ship);
-      scanResults.push({ sys, pattern, enrichedKills, threat });
+      scanResults.push({ sys, pattern, enrichedKills: freshKills, threat });
     } catch (err) {
       console.error(`[briefing] scan error ${sys.name}:`, (err as Error).message);
       scanResults.push(null);
@@ -378,21 +382,28 @@ function formatBriefing(
   const jumps = Math.max(routeSystems.length - 1, 0);
   const lines: string[] = [];
   const action = assessPreflightAction(ship, dangerSystems, gankWindow);
-  const currentSystem = dangerSystems.find((system) => system.name === originName) ?? null;
-  const aheadSystems = dangerSystems
-    .filter((system) => system.name !== originName)
-    .sort((left, right) => left.routeIndex - right.routeIndex);
+  const currentSystem = getCurrentDangerSystem(dangerSystems);
+  const aheadSystems = getTransitDangerSystems(dangerSystems, routeSystems);
+  const destinationSystem = getDestinationDangerSystem(dangerSystems, routeSystems);
 
   lines.push(`\u{1F6F0}\u{FE0F} Предполет | ${action.emoji} ${action.label}`);
   lines.push('');
   lines.push(`Маршрут: ${originName} → ${destName} (${jumps} прыжков)`);
   lines.push(`Корабль: ${ship.shipName} | Базовый EHP: ${ship.ehp.toLocaleString('ru-RU')} | Align: ${ship.alignTime}s`);
   lines.push(`Сейчас: ${buildCurrentLine(originName, currentSystem)}`);
-  lines.push(`Впереди: ${buildAheadLine(aheadSystems, routeSystems, db)}`);
+  lines.push(`Впереди: ${buildAheadLine(aheadSystems, destinationSystem, routeSystems, db)}`);
   lines.push(`Действие: ${action.action}`);
   lines.push('');
 
-  const supportLines = buildSupportLines(db, dangerSystems, jumpMap, gankWindow, routeSystems);
+  const supportLines = buildSupportLines(
+    db,
+    dangerSystems,
+    jumpMap,
+    gankWindow,
+    routeSystems,
+    originName,
+    destName,
+  );
   if (supportLines.length > 0) {
     lines.push(...supportLines);
     lines.push('');
@@ -478,11 +489,12 @@ function buildCurrentLine(originName: string, currentSystem: DangerSystemInfo | 
 
   const minutesAgo = minutesSinceIso(currentSystem.pattern.latestKillTime);
   const timePart = minutesAgo === null ? 'недавно' : `${minutesAgo} мин назад`;
-  return `${originName} — ${currentSystem.pattern.killCount} PvP за маршрутным окном, последнее ${timePart}; устойчивого лагеря не видно.`;
+  return `${originName} — ${currentSystem.pattern.killCount} PvP за последний час, последнее ${timePart}; устойчивого лагеря не видно.`;
 }
 
 function buildAheadLine(
   aheadSystems: DangerSystemInfo[],
+  destinationSystem: DangerSystemInfo | null,
   routeSystems: number[],
   db: Db,
 ): string {
@@ -490,6 +502,17 @@ function buildAheadLine(
     const nearest = aheadSystems[0]!;
     const distance = Math.max(nearest.routeIndex, 0);
     return `${nearest.name} через ${distance} ${jumpWord(distance)} — ${nearest.threatReason.toLowerCase()}.`;
+  }
+
+  if (destinationSystem) {
+    const nextSystems = routeSystems
+      .slice(1, -1)
+      .slice(0, 3)
+      .map((systemId) => resolveSystemName(db, systemId));
+    const transitPart = nextSystems.length > 0
+      ? `${nextSystems.join(', ')} — транзит тихий`
+      : 'между системами транзит тихий';
+    return `${transitPart}; в ${destinationSystem.name} ${describeDestinationSignal(destinationSystem)}.`;
   }
 
   const nextSystems = routeSystems
@@ -509,18 +532,20 @@ function buildSupportLines(
   jumpMap: Map<number, number>,
   gankWindow: { isOpen: boolean; reason: string },
   routeSystems: number[],
+  originName: string,
+  destName: string,
 ): string[] {
   const lines: string[] = [];
+  const orderedSystems = getSupportSystemsInRouteOrder(dangerSystems, routeSystems);
 
-  if (dangerSystems.length > 0) {
-    const topSystems = [...dangerSystems]
-      .sort((left, right) => left.routeIndex - right.routeIndex)
+  if (orderedSystems.length > 0) {
+    const topSystems = orderedSystems
       .slice(0, 3)
-      .map((system) => `${system.name}: ${system.pattern.killCount} kills`);
+      .map((system) => `${formatSystemLabel(system, routeSystems)}: ${system.pattern.killCount} PvP`);
     lines.push(`Активность: ${topSystems.join(' | ')}`);
-    lines.push(`Анализ: ${buildRouteAnalysis(dangerSystems)}`);
+    lines.push(`Анализ: ${buildRouteAnalysis(dangerSystems, routeSystems, originName, destName)}`);
 
-    const recentKillLines = buildRecentKillLines(dangerSystems);
+    const recentKillLines = buildRecentKillLines(dangerSystems, routeSystems);
     if (recentKillLines.length > 0) {
       lines.push('Последние киллы:');
       lines.push(...recentKillLines);
@@ -546,39 +571,50 @@ function buildSupportLines(
   return lines;
 }
 
-function buildRouteAnalysis(dangerSystems: DangerSystemInfo[]): string {
-  const currentSystem = dangerSystems.find((system) => system.routeIndex === 0) ?? null;
-  const aheadSystems = dangerSystems
-    .filter((system) => system.routeIndex > 0)
-    .sort((left, right) => left.routeIndex - right.routeIndex);
-  const nearestAhead = aheadSystems[0] ?? null;
-  const farSystems = aheadSystems.slice(1);
+function buildRouteAnalysis(
+  dangerSystems: DangerSystemInfo[],
+  routeSystems: number[],
+  originName: string,
+  destName: string,
+): string {
+  const currentSystem = getCurrentDangerSystem(dangerSystems);
+  const transitAheadSystems = getTransitDangerSystems(dangerSystems, routeSystems);
+  const destinationSystem = getDestinationDangerSystem(dangerSystems, routeSystems);
+  const nearestAhead = transitAheadSystems[0] ?? null;
+  const farSystems = transitAheadSystems.slice(1);
 
   const parts: string[] = [];
   if (currentSystem) {
     parts.push(`стартовый шум в ${currentSystem.name}`);
   } else {
-    parts.push('стартовая система тихая');
+    parts.push('старт тихий');
   }
 
   if (nearestAhead) {
-    parts.push(`ближайшая PvP-точка ${nearestAhead.name} через ${nearestAhead.routeIndex} ${jumpWord(nearestAhead.routeIndex)}`);
+    parts.push(`ближайшая транзитная PvP-точка ${nearestAhead.name} через ${nearestAhead.routeIndex} ${jumpWord(nearestAhead.routeIndex)}`);
   } else {
-    parts.push('впереди по маршруту свежих PvP-точек нет');
+    parts.push(`между ${originName} и ${destName} транзитных PvP-точек нет`);
   }
 
   if (farSystems.length > 0) {
     parts.push(`дальше ещё ${farSystems.length} фоновых точек без явного camp-паттерна`);
   }
 
+  if (destinationSystem) {
+    parts.push(`в цели ${destinationSystem.name} ${describeDestinationSignal(destinationSystem)}`);
+  }
+
   return parts.join('; ') + '.';
 }
 
-function buildRecentKillLines(dangerSystems: DangerSystemInfo[]): string[] {
+function buildRecentKillLines(
+  dangerSystems: DangerSystemInfo[],
+  routeSystems: number[],
+): string[] {
   const lines: string[] = [];
-  for (const system of [...dangerSystems].sort((left, right) => left.routeIndex - right.routeIndex).slice(0, 3)) {
+  for (const system of getSupportSystemsInRouteOrder(dangerSystems, routeSystems).slice(0, 3)) {
     for (const kill of system.recentKills.slice(0, 2)) {
-      lines.push(`  ${formatKillLine(system.name, kill)}`);
+      lines.push(`  ${formatKillLine(formatSystemLabel(system, routeSystems), kill)}`);
       if (lines.length >= 6) return lines;
     }
   }
@@ -602,6 +638,71 @@ function formatKillAge(value: string | undefined): string {
   if (minutes === null) return 'недавно';
   if (minutes < 1) return 'только что';
   return `${minutes}м назад`;
+}
+
+function isKillWithinBriefingWindow(kill: KilllistItem): boolean {
+  const minutes = kill.killmail_time ? minutesSinceIso(kill.killmail_time) : null;
+  return minutes === null || minutes <= BRIEFING_SCAN_WINDOW_MINUTES;
+}
+
+function getCurrentDangerSystem(dangerSystems: DangerSystemInfo[]): DangerSystemInfo | null {
+  return dangerSystems.find((system) => system.routeIndex === 0) ?? null;
+}
+
+function getDestinationDangerSystem(
+  dangerSystems: DangerSystemInfo[],
+  routeSystems: number[],
+): DangerSystemInfo | null {
+  const destinationIndex = routeSystems.length - 1;
+  return dangerSystems.find((system) => system.routeIndex === destinationIndex) ?? null;
+}
+
+function getTransitDangerSystems(
+  dangerSystems: DangerSystemInfo[],
+  routeSystems: number[],
+): DangerSystemInfo[] {
+  const destinationIndex = routeSystems.length - 1;
+  return dangerSystems
+    .filter((system) => system.routeIndex > 0 && system.routeIndex < destinationIndex)
+    .sort((left, right) => left.routeIndex - right.routeIndex);
+}
+
+function getSupportSystemsInRouteOrder(
+  dangerSystems: DangerSystemInfo[],
+  routeSystems: number[],
+): DangerSystemInfo[] {
+  const systems: DangerSystemInfo[] = [];
+  const currentSystem = getCurrentDangerSystem(dangerSystems);
+  const transitSystems = getTransitDangerSystems(dangerSystems, routeSystems);
+  const destinationSystem = getDestinationDangerSystem(dangerSystems, routeSystems);
+
+  if (currentSystem) systems.push(currentSystem);
+  systems.push(...transitSystems);
+  if (destinationSystem) systems.push(destinationSystem);
+
+  return systems;
+}
+
+function formatSystemLabel(
+  system: DangerSystemInfo,
+  routeSystems: number[],
+): string {
+  if (system.routeIndex === 0) return `${system.name} [старт]`;
+  if (system.routeIndex === routeSystems.length - 1) return `${system.name} [цель]`;
+  return system.name;
+}
+
+function describeDestinationSignal(system: DangerSystemInfo): string {
+  if (system.threatLevel === 'LOW') {
+    return `локально ${lowercaseFirst(system.threatReason)}`;
+  }
+  return lowercaseFirst(system.threatReason);
+}
+
+function lowercaseFirst(value: string): string {
+  const trimmed = value.trim().replace(/\.$/, '');
+  if (!trimmed) return trimmed;
+  return trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
 }
 
 function minutesSinceIso(value: string): number | null {
