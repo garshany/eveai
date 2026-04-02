@@ -136,7 +136,7 @@ async function fetchZkbSystemKills(systemId: number): Promise<ZkbFeedItem[]> {
   }
   lastZkbCall = Date.now();
 
-  const url = `${config.zkill.baseUrl}kills/systemID/${systemId}/pastSeconds/1800/`;
+  const url = `${config.zkill.baseUrl}kills/systemID/${systemId}/pastSeconds/3600/`;
   try {
     const res = await fetch(url, {
       headers: { Accept: 'application/json', 'Accept-Encoding': 'gzip', 'User-Agent': config.zkill.userAgent },
