@@ -12,6 +12,16 @@ export type MovementProfile = {
   geographic_spread: number;
 };
 
+export type ReturnHubProfile = {
+  hubs: Array<{
+    system_id: number;
+    system_name: string;
+    in_degree: number;
+    return_count: number;
+    hub_score: number;
+  }>;
+};
+
 export type DeploymentProfile = {
   deployments: Array<{
     from_region: string;
@@ -304,5 +314,56 @@ export function detectDeployments(db: Db, kills: OsintKillmail[]): DeploymentPro
     current_region: currentRegionResult,
     region_stability: Math.round(region_stability * 100) / 100,
     moves_count: deployments.length,
+  };
+}
+
+export function detectReturnHubs(db: Db, kills: OsintKillmail[]): ReturnHubProfile {
+  const empty: ReturnHubProfile = { hubs: [] };
+  const sorted = sortByTime(kills);
+  if (sorted.length < 2) return empty;
+
+  // Build transition graph: for each consecutive pair in different systems,
+  // record {from_system → to_system}
+  const incomingSources = new Map<number, Set<number>>();  // target → set of unique sources
+  const incomingCounts = new Map<number, number>();         // target → total incoming transitions
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1].solar_system_id!;
+    const curr = sorted[i].solar_system_id!;
+    if (prev === curr) continue;
+
+    if (!incomingSources.has(curr)) incomingSources.set(curr, new Set());
+    incomingSources.get(curr)!.add(prev);
+    incomingCounts.set(curr, (incomingCounts.get(curr) ?? 0) + 1);
+  }
+
+  // Score each system
+  const scored: Array<{ system_id: number; in_degree: number; return_count: number; hub_score: number }> = [];
+
+  for (const [systemId, sources] of incomingSources) {
+    const in_degree = sources.size;
+    if (in_degree < 2) continue; // need at least 2 different source systems
+    const return_count = incomingCounts.get(systemId) ?? 0;
+    const hub_score = in_degree * Math.log2(return_count + 1);
+    scored.push({ system_id: systemId, in_degree, return_count, hub_score });
+  }
+
+  scored.sort((a, b) => b.hub_score - a.hub_score);
+  const top = scored.slice(0, 5);
+
+  if (top.length === 0) return empty;
+
+  // Resolve system names
+  const systemIds = collectSystemIds(kills);
+  const sdeMap = resolveSystemsBatch(db, systemIds);
+
+  return {
+    hubs: top.map((s) => ({
+      system_id: s.system_id,
+      system_name: sdeMap.get(s.system_id)?.system_name ?? `System ${s.system_id}`,
+      in_degree: s.in_degree,
+      return_count: s.return_count,
+      hub_score: Math.round(s.hub_score * 100) / 100,
+    })),
   };
 }

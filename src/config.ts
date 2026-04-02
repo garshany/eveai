@@ -95,7 +95,7 @@ export const config = {
     baseUrl: optional('ZKILL_BASE_URL', 'https://zkillboard.com/api/'),
     timeoutMs: optionalInt('ZKILL_TIMEOUT_MS', 8000),
     cacheTtlSeconds: optionalInt('ZKILL_CACHE_TTL_SECONDS', 300),
-    maxPastSeconds: optionalInt('ZKILL_MAX_PAST_SECONDS', 604800),
+    maxPastSeconds: optionalInt('ZKILL_MAX_PAST_SECONDS', 7776000),
     userAgent: optional('ZKILL_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://eveonline-ai.ru/; +https://github.com/garshany/eveai)'),
   },
   eveKill: {

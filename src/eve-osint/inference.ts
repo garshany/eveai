@@ -3,7 +3,7 @@ import { config } from '../config.js';
 import { callEsiOperation } from '../eve/esi-client.js';
 import { getEntityDetail, getEntityMembers } from '../eve-kill/client.js';
 import { analyzeOsintGraphPatterns } from './llm.js';
-import { analyzeMovement, detectDeployments } from './movement.js';
+import { analyzeMovement, detectDeployments, detectReturnHubs } from './movement.js';
 import { analyzeShipProfile, analyzeFleetProfile } from './ships.js';
 import { detectAlts, analyzeVulnerability } from './social.js';
 import { analyzeTemporalProfile, reconstructSessions } from './temporal.js';
@@ -92,6 +92,19 @@ type MemberStats = {
   appearances: number;
 };
 
+type NpcSystemMetrics = {
+  systemId: number;
+  count: number;
+  uniqueDays: Set<string>;
+};
+
+type SoloLossMetrics = {
+  systemId: number;
+  count: number;
+  uniqueDays: Set<string>;
+  totalValue: number;
+};
+
 type CollectedEvidence = {
   kills: OsintKillmail[];
   systems: Map<number, SystemMetrics>;
@@ -102,6 +115,8 @@ type CollectedEvidence = {
   adjacency: Map<number, Set<number>>;
   timezones: Map<string, number>;
   locations: Map<string, number>;
+  npcSystems: Map<number, NpcSystemMetrics>;
+  soloLossSystems: Map<number, SoloLossMetrics>;
   filtered: {
     npc: number;
     awox: number;
@@ -161,8 +176,10 @@ export async function executeOsintInferHome(
   const fleetProfile = analyzeFleetProfile(evidence.kills, args.id);
   const movementProfile = analyzeMovement(db, evidence.kills);
   const deploymentProfile = detectDeployments(db, evidence.kills);
+  const returnHubs = detectReturnHubs(db, evidence.kills);
   const altProfile = detectAlts(evidence.kills, args.scope, args.id);
   const vulnerabilityProfile = analyzeVulnerability(evidence.kills);
+  const homeHypotheses = buildHomeHypothesis(db, evidence, returnHubs.hubs);
 
   const llmPatternAnalysis = args.includeLlmPatternAnalysis
     ? await analyzeOsintGraphPatterns({
@@ -219,6 +236,10 @@ export async function executeOsintInferHome(
         characters_analyzed: altProfile.characters_analyzed,
         suspected_alts_count: altProfile.suspected_alts.length,
       },
+      home_hypotheses: homeHypotheses.slice(0, 3),
+      return_hubs: returnHubs.hubs.slice(0, 3),
+      npc_ratting_systems: evidence.npcSystems.size,
+      total_npc_kills: [...evidence.npcSystems.values()].reduce((s, n) => s + n.count, 0),
     })
     : null;
 
@@ -231,6 +252,8 @@ export async function executeOsintInferHome(
     source_window_days: evidence.sourceWindowDays,
     kill_count: evidence.kills.length,
     hypotheses,
+    home_hypotheses: homeHypotheses,
+    return_hubs: returnHubs,
     activity_cluster: cluster,
     temporal: temporalProfile,
     sessions: sessionProfile,
@@ -240,6 +263,19 @@ export async function executeOsintInferHome(
     deployments: deploymentProfile,
     alt_detection: altProfile,
     vulnerability: vulnerabilityProfile,
+    npc_activity: {
+      systems_with_ratting: evidence.npcSystems.size,
+      total_npc_kills: [...evidence.npcSystems.values()].reduce((s, n) => s + n.count, 0),
+      top_ratting_systems: [...evidence.npcSystems.values()]
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5)
+        .map((n) => ({
+          system_id: n.systemId,
+          system_name: resolveSystemName(db, n.systemId) ?? `system:${n.systemId}`,
+          npc_kills: n.count,
+          unique_days: n.uniqueDays.size,
+        })),
+    },
     member_analysis: {
       total_members_observed: evidence.members.size,
       members_analyzed: memberSummary.length,
@@ -280,6 +316,8 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
   const graphEdges = new Map<string, GraphEdge>();
   const timezones = new Map<string, number>();
   const locations = new Map<string, number>();
+  const npcSystems = new Map<number, NpcSystemMetrics>();
+  const soloLossSystems = new Map<number, SoloLossMetrics>();
   const filtered = { npc: 0, awox: 0, incomplete: 0 };
 
   const pastSeconds = Math.max(86_400, Math.min(args.windowDays * 86_400, config.zkill.maxPastSeconds));
@@ -297,18 +335,31 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
   for (const kill of deduped.values()) {
     const timeMs = kill.killmail_time ? new Date(kill.killmail_time).getTime() : 0;
     if (timeMs > 0 && timeMs < cutoffMs) continue;
+    const systemId = typeof kill.solar_system_id === 'number' ? kill.solar_system_id : null;
+    if (!systemId || !kill.killmail_time) {
+      filtered.incomplete += 1;
+      continue;
+    }
     if (kill.is_npc) {
       filtered.npc += 1;
+      const dayKey = kill.killmail_time.slice(0, 10);
+      const npc = npcSystems.get(systemId) ?? { systemId, count: 0, uniqueDays: new Set<string>() };
+      npc.count += 1;
+      npc.uniqueDays.add(dayKey);
+      npcSystems.set(systemId, npc);
       continue;
     }
     if (kill.is_awox) {
       filtered.awox += 1;
       continue;
     }
-    const systemId = typeof kill.solar_system_id === 'number' ? kill.solar_system_id : null;
-    if (!systemId || !kill.killmail_time) {
-      filtered.incomplete += 1;
-      continue;
+    if (kill.activity === 'losses' && kill.attacker_count >= 1 && kill.attacker_count <= 3) {
+      const dayKey = kill.killmail_time.slice(0, 10);
+      const solo = soloLossSystems.get(systemId) ?? { systemId, count: 0, uniqueDays: new Set<string>(), totalValue: 0 };
+      solo.count += 1;
+      solo.uniqueDays.add(dayKey);
+      solo.totalValue += kill.total_value ?? 0;
+      soloLossSystems.set(systemId, solo);
     }
 
     const systemName = resolveSystemName(db, systemId) ?? `system:${systemId}`;
@@ -387,6 +438,8 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
     adjacency,
     timezones,
     locations,
+    npcSystems,
+    soloLossSystems,
     filtered,
     sourceWindowDays,
   };
@@ -932,6 +985,88 @@ function mergeUncertainty(
     items.push('LLM graph pattern analysis unavailable or skipped; result is deterministic-only.');
   }
   return items;
+}
+
+function buildHomeHypothesis(
+  db: Db,
+  evidence: CollectedEvidence,
+  returnHubs: Array<{ system_id: number; system_name: string; hub_score: number; in_degree: number; return_count: number }>,
+): Array<Record<string, unknown>> {
+  const candidates = new Map<number, {
+    systemId: number; systemName: string; regionName: string | null;
+    npcScore: number; soloLossScore: number; hubScore: number;
+    weeklyStability: number; totalScore: number;
+    reasons: string[];
+  }>();
+
+  const allSystemIds = new Set([
+    ...evidence.npcSystems.keys(),
+    ...evidence.soloLossSystems.keys(),
+    ...returnHubs.map((h) => h.system_id),
+  ]);
+
+  for (const systemId of allSystemIds) {
+    const systemName = resolveSystemName(db, systemId) ?? `system:${systemId}`;
+    const { regionName } = resolveSystemRegion(db, systemId);
+    const reasons: string[] = [];
+
+    const npc = evidence.npcSystems.get(systemId);
+    const npcScore = npc ? npc.uniqueDays.size * 3.0 + npc.count * 0.8 : 0;
+    if (npc) reasons.push(`${npc.count} NPC kills across ${npc.uniqueDays.size} days (ratting activity)`);
+
+    const solo = evidence.soloLossSystems.get(systemId);
+    const soloLossScore = solo ? solo.uniqueDays.size * 2.5 + solo.count * 1.5 : 0;
+    if (solo) reasons.push(`${solo.count} solo losses (caught during PvE)`);
+
+    const hub = returnHubs.find((h) => h.system_id === systemId);
+    const hubScore = hub ? hub.hub_score * 1.2 : 0;
+    if (hub) reasons.push(`return hub: ${hub.in_degree} source systems, ${hub.return_count} returns`);
+
+    const pvpSystem = evidence.systems.get(systemId);
+    const allDays = new Set<string>();
+    if (npc) for (const d of npc.uniqueDays) allDays.add(d);
+    if (solo) for (const d of solo.uniqueDays) allDays.add(d);
+    if (pvpSystem) for (const d of pvpSystem.uniqueDays) allDays.add(d);
+    const sortedDays = [...allDays].sort();
+    let weeklyStability = 0;
+    if (sortedDays.length >= 2) {
+      const weeks = new Set(sortedDays.map((d) => {
+        const date = new Date(d);
+        const yearDay = Math.floor((date.getTime() - new Date(date.getFullYear(), 0, 1).getTime()) / 86_400_000);
+        return `${date.getFullYear()}-W${Math.floor(yearDay / 7)}`;
+      }));
+      weeklyStability = Math.min(1, weeks.size / Math.max(1, evidence.sourceWindowDays / 7));
+      if (weeks.size >= 2) reasons.push(`active ${weeks.size} weeks (stable presence)`);
+    }
+
+    const totalScore = npcScore + soloLossScore + hubScore + weeklyStability * 2.0;
+    if (totalScore < 1) continue;
+
+    candidates.set(systemId, {
+      systemId, systemName, regionName,
+      npcScore, soloLossScore, hubScore, weeklyStability, totalScore, reasons,
+    });
+  }
+
+  const ranked = [...candidates.values()].sort((a, b) => b.totalScore - a.totalScore).slice(0, 3);
+  if (ranked.length === 0) return [];
+
+  const maxScore = ranked[0].totalScore;
+  return ranked.map((c) => ({
+    kind: 'home_system' as const,
+    system_id: c.systemId,
+    system_name: c.systemName,
+    region_name: c.regionName,
+    confidence: Number(Math.max(0.15, Math.min(0.95, (c.totalScore / maxScore) * 0.7 + c.weeklyStability * 0.2)).toFixed(2)),
+    score: Number(c.totalScore.toFixed(2)),
+    signals: {
+      npc_score: Number(c.npcScore.toFixed(2)),
+      solo_loss_score: Number(c.soloLossScore.toFixed(2)),
+      hub_score: Number(c.hubScore.toFixed(2)),
+      weekly_stability: Number(c.weeklyStability.toFixed(2)),
+    },
+    reasons: c.reasons,
+  }));
 }
 
 function emptyGraphDigest(args: OsintInferenceArgs): GraphDigest {

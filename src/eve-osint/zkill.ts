@@ -63,8 +63,8 @@ export type OsintKillmail = {
   location_label: string | null;
 };
 
-const MAX_FEED_PAGES = 4;
-const MAX_ENRICHED_KILLS = 120;
+const MAX_FEED_PAGES = 10;
+const MAX_ENRICHED_KILLS = 250;
 
 export async function fetchEntityActivityFeed(
   db: Db,
