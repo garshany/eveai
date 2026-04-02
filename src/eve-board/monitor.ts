@@ -20,6 +20,7 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { callEsiOperation } from '../eve/esi-client.js';
+import { getEveCapabilities } from '../eve/capabilities.js';
 import type { KilllistItem } from '../eve-kill/client.js';
 import { analyzeKillPattern, scoreThreat, assessShip } from './threat.js';
 import type {
@@ -248,6 +249,9 @@ export function startRouteMonitor(
 
   saveMonitor(db, monitor);
 
+  // Record capability snapshot so ESI calls don't get 428
+  void getEveCapabilities(db, 'route-monitor', { userId: 0, chatId }).catch(() => {});
+
   const instance: MonitorInstance = {
     monitor,
     sender,
@@ -331,6 +335,8 @@ export function restoreMonitors(db: Db, sender: NotifySender): void {
     const shipName = String(row.ship_name ?? 'Unknown');
 
     console.log(`${LOG} restoring monitor chat=${chatId} route=${routeSystems.length} systems`);
+    // Prime capabilities snapshot before starting ESI polls
+    void getEveCapabilities(db, 'route-monitor-restore', { userId: 0, chatId }).catch(() => {});
     startRouteMonitor(db, chatId, characterId, routeSystems, shipTypeId, shipName, sender);
   }
 }
