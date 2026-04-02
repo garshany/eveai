@@ -15,7 +15,7 @@ import {
   type HeartbeatState,
 } from './heartbeat-config.js';
 import type { UserContext } from '../auth/user-resolver.js';
-import { eveKillWs } from '../eve-kill/ws.js';
+
 
 const HEARTBEAT_CRON = '*/5 * * * *'; // every 5 minutes, checks per-user intervals internally
 const WALLET_CHANGE_THRESHOLD = 10_000_000; // 10M ISK minimum change to notify
@@ -79,19 +79,6 @@ async function processUserHeartbeat(
   const checks = parseChecks(row.checks_json);
   const state = parseState(row.state_json);
   const findings: string[] = [];
-
-  // Ensure EVE-KILL WS topics are subscribed for killmail tracking
-  if (checks.includes('killmails') && eveKillWs.isConnected()) {
-    const charTopics = [
-      `victim.${row.character_id}`,
-      `attacker.${row.character_id}`,
-    ];
-    const active = new Set(eveKillWs.getActiveTopics());
-    const missing = charTopics.filter((t) => !active.has(t));
-    if (missing.length > 0) {
-      eveKillWs.subscribe(missing);
-    }
-  }
 
   console.log('[heartbeat] user=%d char=%d: running %d checks: %s', row.user_id, row.character_id, checks.length, checks.join(','));
 
@@ -350,24 +337,7 @@ async function checkKillmails(
   const details: string[] = [];
   const seenIds = new Set<number>();
 
-  // 1. Check EVE-KILL WebSocket buffer first (real-time, no API call needed)
-  if (eveKillWs.isConnected()) {
-    const wsKills = eveKillWs.getRecentForCharacter(characterId);
-    for (const km of wsKills) {
-      if (km.killmail_id > lastId && !seenIds.has(km.killmail_id)) {
-        seenIds.add(km.killmail_id);
-        if (details.length < 3) {
-          const isLoss = km.victim?.character_id === characterId;
-          const ship = km.victim?.ship_name ?? sdeName(db, km.victim?.ship_type_id ?? 0);
-          const system = km.system_name ?? '?';
-          const value = km.total_value ? ` (${(km.total_value / 1e6).toFixed(0)}M ISK)` : '';
-          details.push(`${isLoss ? 'Потерян' : 'Уничтожен'} ${ship} в ${system}${value}`);
-        }
-      }
-    }
-  }
-
-  // 2. Also check ESI for killmails the WS might have missed
+  // Check ESI for killmails
   const result = await callEsiOperation<Array<{ killmail_id: number; killmail_hash: string }>>(
     db, 'get_characters_character_id_killmails_recent', { character_id: characterId }, ctx,
   );
@@ -402,8 +372,7 @@ async function checkKillmails(
 
   const total = seenIds.size;
   const extra = total > 3 ? `\n...и ещё ${total - 3}` : '';
-  const source = eveKillWs.isConnected() ? ' (live + ESI)' : '';
-  return `[KILLMAILS] ${total} новых${source}:\n${details.join('\n')}${extra}`;
+  return `[KILLMAILS] ${total} новых:\n${details.join('\n')}${extra}`;
 }
 
 // ── ORDERS ──

@@ -86,8 +86,11 @@ export async function startZkbWs(dbInstance: Db, sender: NotifySender): Promise<
     console.error(`${LOG} failed to get sequence:`, (err as Error).message);
   }
 
-  const watchCount = (dbInstance.prepare('SELECT COUNT(DISTINCT topic) as c FROM kill_watches').get() as { c: number }).c;
-  console.log(`${LOG} started seq=${seq}, ${watchCount} watches`);
+  let watchCount = 0;
+  try {
+    watchCount = (dbInstance.prepare('SELECT COUNT(DISTINCT topic) as c FROM kill_watches').get() as { c: number }).c;
+  } catch { /* table may not exist yet */ }
+  console.log(`${LOG} started at seq=${seq}, ${watchCount} watched topics`);
 
   schedule(DELAY_NEXT_MS);
 }
@@ -108,7 +111,12 @@ export function unsubscribeTopics(_topics: string[]): void { /* */ }
 
 function schedule(delay: number): void {
   if (!running) return;
-  timer = setTimeout(() => void poll(), delay);
+  timer = setTimeout(() => {
+    poll().catch((err) => {
+      console.error(`${LOG} poll error (will retry):`, (err as Error).message);
+      schedule(DELAY_EMPTY_MS);
+    });
+  }, delay);
 }
 
 async function poll(): Promise<void> {
@@ -149,15 +157,19 @@ async function poll(): Promise<void> {
     killsProcessed++;
 
     // Log progress periodically
-    if (killsProcessed === 1 || killsProcessed % 500 === 0) {
+    if (killsProcessed === 1 || killsProcessed % 100 === 0) {
       console.log(`${LOG} processed ${killsProcessed} kills, seq=${seq}`);
     }
 
     // Skip NPC
     if (kill.zkb?.npc) continue;
 
-    // Match against watches
-    matchKill(db, kill);
+    // Match against watches (protected — DB errors must not crash the poller)
+    try {
+      matchKill(db, kill);
+    } catch (err) {
+      console.error(`${LOG} matchKill error kill=${kill.killmail_id}:`, (err as Error).message);
+    }
 
     // 100ms between requests per docs
     await sleep(DELAY_NEXT_MS);

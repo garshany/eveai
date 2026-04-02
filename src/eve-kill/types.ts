@@ -222,11 +222,8 @@ export type KillIntelArgs = {
 
 export type EveKillConfig = {
   baseUrl: string;
-  wsUrl: string;
   timeoutMs: number;
   cacheTtlSeconds: number;
   maxQueryLimit: number;
   userAgent: string;
-  wsEnabled: boolean;
-  wsBufferSize: number;
 };
