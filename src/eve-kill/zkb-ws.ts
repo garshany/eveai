@@ -1,276 +1,243 @@
 /**
- * zKillboard WebSocket — real-time kill notifications.
+ * zKillboard R2Z2 — official real-time kill stream.
+ * WebSocket deprecated, RedisQ sunset May 2026, R2Z2 is the replacement.
  *
- * URL: wss://zkillboard.com/websocket/
- * Requires ws package for custom headers (User-Agent, Origin).
+ * Protocol (per https://github.com/zKillboard/zKillboard/wiki/API-(R2Z2)):
+ *   GET /ephemeral/sequence.json → current sequence
+ *   GET /ephemeral/{seq}.json → killmail data (ESI + zkb)
+ *   On 200: sleep 100ms, seq++
+ *   On 404: sleep 6000ms minimum (no new kills yet)
+ *   Rate limit: 20 req/s, User-Agent required
  *
- * Channels:
- *   system:{id}     — kills in specific system
- *   character:{id}  — kills involving character
- *   region:{id}     — kills in region
- *   all:*           — all kills (littlekill format)
- *
- * Message format (littlekill):
- *   { action: "littlekill", killID, character_id, corporation_id,
- *     alliance_id, ship_type_id, group_id, url, channel }
+ * Filters locally against kill_watches DB.
  */
 
-import WebSocket from 'ws';
 import type { Db } from '../db/sqlite.js';
+import { config } from '../config.js';
 
-const LOG = '[zkb-ws]';
-const WS_URL = 'wss://zkillboard.com/websocket/';
-const RECONNECT_MAX_MS = 300_000;
+const LOG = '[zkb-r2z2]';
+const BASE = 'https://r2z2.zkillboard.com/ephemeral';
+const DELAY_NEXT_MS = 100;      // 100ms between successful fetches (10 req/s)
+const DELAY_EMPTY_MS = 6_000;   // 6s on 404 per docs
+const MAX_CATCH_UP = 50;        // max kills per poll cycle before yielding
+const MAX_KILL_AGE_MS = 10 * 60 * 1000;
+const DEDUP_TTL_MS = 120_000;
 
 type NotifySender = (chatId: number, text: string) => void;
 
-type LittleKill = {
-  action: 'littlekill';
-  killID: number;
-  character_id?: number;
-  corporation_id?: number;
-  alliance_id?: number;
-  ship_type_id?: number;
-  group_id?: number;
-  url?: string;
-  channel?: string;
+type R2Z2Kill = {
+  killmail_id: number;
+  hash?: string;
+  sequence_id?: number;
+  esi?: {
+    killmail_time?: string;
+    solar_system_id?: number;
+    victim?: {
+      character_id?: number;
+      corporation_id?: number;
+      alliance_id?: number;
+      ship_type_id?: number;
+    };
+    attackers?: Array<{
+      character_id?: number;
+      final_blow?: boolean;
+    }>;
+  };
+  zkb?: {
+    totalValue?: number;
+    npc?: boolean;
+    solo?: boolean;
+  };
 };
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
-let ws: WebSocket | null = null;
-let reconnectDelay = 1000;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let closed = false;
-let connected = false;
+let seq = 0;
+let timer: ReturnType<typeof setTimeout> | null = null;
+let db: Db | null = null;
+let send: NotifySender | null = null;
+let running = false;
+let killsProcessed = 0;
 
-let watchDb: Db | null = null;
-let sender: NotifySender | null = null;
-
-const activeChannels = new Set<string>();
-
-// Dedup
 const recentNotifs = new Map<string, number>();
-const DEDUP_TTL_MS = 120_000;
 
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-export function startZkbWs(db: Db, notifySender: NotifySender): void {
-  watchDb = db;
-  sender = notifySender;
-  closed = false;
+export async function startZkbWs(dbInstance: Db, sender: NotifySender): Promise<void> {
+  db = dbInstance;
+  send = sender;
+  running = true;
 
-  // Load existing watches → build channels
-  const rows = db.prepare('SELECT DISTINCT topic FROM kill_watches').all() as Array<{ topic: string }>;
-  for (const { topic } of rows) {
-    const ch = topicToChannel(topic);
-    if (ch) activeChannels.add(ch);
+  // Get starting sequence
+  try {
+    const res = await fetch(`${BASE}/sequence.json`, {
+      headers: { 'User-Agent': config.zkill.userAgent },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      const data = await res.json() as { sequence: number };
+      seq = data.sequence;
+    }
+  } catch (err) {
+    console.error(`${LOG} failed to get sequence:`, (err as Error).message);
   }
 
-  console.log(`${LOG} initializing with ${activeChannels.size} channels`);
-  connect();
+  const watchCount = (dbInstance.prepare('SELECT COUNT(DISTINCT topic) as c FROM kill_watches').get() as { c: number }).c;
+  console.log(`${LOG} started seq=${seq}, ${watchCount} watches`);
+
+  schedule(DELAY_NEXT_MS);
 }
 
 export function stopZkbWs(): void {
-  closed = true;
-  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  if (ws) { try { ws.close(1000); } catch { /* */ } ws = null; }
-  connected = false;
-  console.log(`${LOG} stopped`);
+  running = false;
+  if (timer) { clearTimeout(timer); timer = null; }
+  console.log(`${LOG} stopped (processed ${killsProcessed} kills)`);
 }
 
+// No-op — R2Z2 is global stream, no per-topic subscription
+export function subscribeTopics(_topics: string[]): void { /* */ }
+export function unsubscribeTopics(_topics: string[]): void { /* */ }
+
 // ---------------------------------------------------------------------------
-// Topic ↔ Channel mapping
+// Poll loop
 // ---------------------------------------------------------------------------
 
-function topicToChannel(topic: string): string | null {
-  const [type, id] = topic.split('.');
-  if (!type || !id) return null;
-  switch (type) {
-    case 'system': return `system:${id}`;
-    case 'region': return `region:${id}`;
-    case 'victim':
-    case 'attacker': return `character:${id}`;
-    default: return null;
-  }
+function schedule(delay: number): void {
+  if (!running) return;
+  timer = setTimeout(() => void poll(), delay);
 }
 
-export function subscribeTopics(topics: string[]): void {
-  for (const topic of topics) {
-    const ch = topicToChannel(topic);
-    if (!ch || activeChannels.has(ch)) continue;
-    activeChannels.add(ch);
-    if (connected && ws) {
-      ws.send(JSON.stringify({ action: 'sub', channel: ch }));
-      console.log(`${LOG} sub ${ch}`);
-    }
-  }
-}
+async function poll(): Promise<void> {
+  if (!running || !db || !send) return;
 
-export function unsubscribeTopics(topics: string[]): void {
-  for (const topic of topics) {
-    const ch = topicToChannel(topic);
-    if (!ch || !activeChannels.has(ch)) continue;
-    activeChannels.delete(ch);
-    if (connected && ws) {
-      ws.send(JSON.stringify({ action: 'unsub', channel: ch }));
-    }
-  }
-}
+  let fetched = 0;
 
-// ---------------------------------------------------------------------------
-// WebSocket
-// ---------------------------------------------------------------------------
+  while (fetched < MAX_CATCH_UP) {
+    const nextSeq = seq + 1;
+    let kill: R2Z2Kill | null = null;
 
-function connect(): void {
-  if (closed || ws) return;
-
-  console.log(`${LOG} connecting...`);
-  ws = new WebSocket(WS_URL, {
-    headers: {
-      'User-Agent': 'EVEAIBOT/1.0 garshany80@gmail.com',
-      'Origin': 'https://zkillboard.com',
-    },
-  });
-
-  ws.on('open', () => {
-    connected = true;
-    reconnectDelay = 1000;
-    console.log(`${LOG} connected`);
-
-    // Subscribe all channels
-    for (const ch of activeChannels) {
-      ws!.send(JSON.stringify({ action: 'sub', channel: ch }));
-    }
-    if (activeChannels.size > 0) {
-      console.log(`${LOG} subscribed ${activeChannels.size} channels`);
-    }
-  });
-
-  ws.on('message', (data) => {
     try {
-      const msg = JSON.parse(data.toString()) as Record<string, unknown>;
-      if (msg.action === 'littlekill') {
-        handleLittleKill(msg as unknown as LittleKill);
+      const res = await fetch(`${BASE}/${nextSeq}.json`, {
+        headers: { 'User-Agent': config.zkill.userAgent },
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (res.status === 404) {
+        // No more kills — wait 6s per docs
+        schedule(DELAY_EMPTY_MS);
+        return;
       }
-    } catch { /* ignore parse errors */ }
-  });
 
-  ws.on('close', (code) => {
-    connected = false;
-    ws = null;
-    if (!closed) {
-      console.log(`${LOG} disconnected (${code}), reconnecting in ${Math.round(reconnectDelay / 1000)}s`);
-      scheduleReconnect();
+      if (!res.ok) {
+        // Rate limit or error — back off
+        schedule(res.status === 429 ? 10_000 : DELAY_EMPTY_MS);
+        return;
+      }
+
+      kill = await res.json() as R2Z2Kill;
+    } catch {
+      schedule(DELAY_EMPTY_MS);
+      return;
     }
-  });
 
-  ws.on('error', (err) => {
-    console.error(`${LOG} error: ${err.message}`);
-  });
+    seq = nextSeq;
+    fetched++;
+    killsProcessed++;
+
+    // Log progress periodically
+    if (killsProcessed === 1 || killsProcessed % 500 === 0) {
+      console.log(`${LOG} processed ${killsProcessed} kills, seq=${seq}`);
+    }
+
+    // Skip NPC
+    if (kill.zkb?.npc) continue;
+
+    // Match against watches
+    matchKill(db, kill);
+
+    // 100ms between requests per docs
+    await sleep(DELAY_NEXT_MS);
+  }
+
+  // Yielded after MAX_CATCH_UP — continue immediately
+  schedule(0);
 }
 
-function scheduleReconnect(): void {
-  if (closed || reconnectTimer) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
-    connect();
-  }, reconnectDelay);
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 // ---------------------------------------------------------------------------
-// Kill handling
+// Match + notify
 // ---------------------------------------------------------------------------
 
-function handleLittleKill(kill: LittleKill): void {
-  if (!watchDb || !sender) return;
+function matchKill(database: Db, kill: R2Z2Kill): void {
+  const esi = kill.esi;
+  if (!esi) return;
 
-  const channel = kill.channel;
-  if (!channel) return;
+  // Skip old
+  if (esi.killmail_time) {
+    const age = Date.now() - new Date(esi.killmail_time).getTime();
+    if (age > MAX_KILL_AGE_MS || age < -60_000) return;
+  }
 
-  // Map channel back to our topic format to find watchers
-  // channel = "system:30000142" or "character:268946627" or "all:*"
-  const topics = channelToTopics(channel, kill);
+  const topics: string[] = [];
+  if (esi.solar_system_id) topics.push(`system.${esi.solar_system_id}`);
+  if (esi.victim?.character_id) topics.push(`victim.${esi.victim.character_id}`);
+  for (const atk of esi.attackers ?? []) {
+    if (atk.character_id) topics.push(`attacker.${atk.character_id}`);
+  }
   if (topics.length === 0) return;
 
   const placeholders = topics.map(() => '?').join(',');
-  const watchers = watchDb.prepare(
+  const watchers = database.prepare(
     `SELECT DISTINCT chat_id FROM kill_watches WHERE topic IN (${placeholders})`,
   ).all(...topics) as Array<{ chat_id: number }>;
 
   if (watchers.length === 0) return;
 
-  // Format alert
-  const shipName = resolveType(watchDb, kill.ship_type_id ?? null) ?? '?';
-  const systemName = channelSystemName(watchDb, channel);
-  const url = kill.url ?? `https://zkillboard.com/kill/${kill.killID}/`;
+  // Format
+  const value = kill.zkb?.totalValue ? Math.round(kill.zkb.totalValue / 1_000_000) : 0;
+  const shipName = resolveType(database, esi.victim?.ship_type_id ?? null) ?? '?';
+  const systemName = resolveSystem(database, esi.solar_system_id ?? 0);
+  const soloTag = kill.zkb?.solo ? ' [SOLO]' : '';
+  const text = `🔴 Kill in ${systemName}${soloTag}: ${shipName} (${value}M ISK)\nhttps://zkillboard.com/kill/${kill.killmail_id}/`;
 
-  const text = `🔴 Kill in ${systemName}: ${shipName}\n${url}`;
-
-  // Dedup + send
+  // Dedup
   const now = Date.now();
   if (recentNotifs.size > 500) {
     for (const [k, ts] of recentNotifs) { if (now - ts > DEDUP_TTL_MS) recentNotifs.delete(k); }
   }
 
   for (const { chat_id } of watchers) {
-    const key = `${chat_id}:${kill.killID}`;
+    const key = `${chat_id}:${kill.killmail_id}`;
     if (recentNotifs.has(key)) continue;
     recentNotifs.set(key, now);
-    try { sender!(chat_id, text); } catch { /* */ }
+    try { send!(chat_id, text); } catch { /* */ }
   }
 
-  console.log(`${LOG} kill ${kill.killID} via ${channel} → ${watchers.length} chats`);
-}
-
-function channelToTopics(channel: string, kill: LittleKill): string[] {
-  const [type, id] = channel.split(':');
-  if (!type || !id) return [];
-
-  switch (type) {
-    case 'system': return [`system.${id}`];
-    case 'region': return [`region.${id}`];
-    case 'character': {
-      // character channel fires for both kills and losses
-      // Check if this character is victim or attacker
-      const topics: string[] = [];
-      if (kill.character_id?.toString() === id) {
-        topics.push(`victim.${id}`, `attacker.${id}`);
-      }
-      return topics.length > 0 ? topics : [`victim.${id}`, `attacker.${id}`];
-    }
-    default: return [];
-  }
-}
-
-function channelSystemName(db: Db, channel: string): string {
-  const [type, id] = channel.split(':');
-  if (type === 'system' && id) {
-    return resolveSystem(db, Number(id));
-  }
-  return channel;
+  console.log(`${LOG} kill ${kill.killmail_id} in ${systemName} → ${watchers.length} chats`);
 }
 
 // ---------------------------------------------------------------------------
-// SDE helpers
+// SDE
 // ---------------------------------------------------------------------------
 
 const typeCache = new Map<number, string | null>();
-function resolveType(db: Db, typeId: number | null): string | null {
+function resolveType(database: Db, typeId: number | null): string | null {
   if (!typeId) return null;
   if (typeCache.has(typeId)) return typeCache.get(typeId)!;
-  const row = db.prepare('SELECT name FROM sde_types WHERE type_id = ?').get(typeId) as { name: string } | undefined;
+  const row = database.prepare('SELECT name FROM sde_types WHERE type_id = ?').get(typeId) as { name: string } | undefined;
   const name = row?.name ?? null;
   typeCache.set(typeId, name);
   return name;
 }
 
-function resolveSystem(db: Db, systemId: number): string {
-  const row = db.prepare('SELECT name FROM sde_systems WHERE system_id = ?').get(systemId) as { name: string } | undefined;
+function resolveSystem(database: Db, systemId: number): string {
+  const row = database.prepare('SELECT name FROM sde_systems WHERE system_id = ?').get(systemId) as { name: string } | undefined;
   return row?.name ?? `System ${systemId}`;
 }
