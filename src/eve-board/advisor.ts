@@ -554,8 +554,7 @@ export function buildRouteTacticalAssessment(
 
   const nearbySystems = digest.systemsAhead.filter((system) => system.jumpsFromPilot >= 0 && system.jumpsFromPilot <= 2);
   const nearbyGateCamp = nearbySystems.some((system) =>
-    system.activeCamp
-    || system.gateKills.some((gate) => gate.recentKills > 0 || gate.killCount >= 2),
+    system.gateKills.some((gate) => gate.recentKills > 0 || gate.killCount >= 2),
   );
   const hotCurrent = currentSystem !== null && ACTIONABLE_LEVELS.has(currentSystem.threatLevel);
   const hotTransit = transitSystems.some((system) =>
@@ -573,12 +572,9 @@ export function buildRouteTacticalAssessment(
   else if (digest.overallThreat !== 'LOW' || gankerIntel.length > 0) state = 'WINDOW_OPEN';
   else state = 'CLEAR';
 
-  const freshestIntelMinutes = getFreshestIntelMinutes(digest);
   let window: TacticalWindow;
   if (pursuit || nearbyGateCamp || hotCurrent || hotTransit || nearbyMovingGankers) {
     window = 'CLOSED';
-  } else if (freshestIntelMinutes !== null && freshestIntelMinutes >= 15) {
-    window = 'OPEN';
   } else if (digest.overallThreat !== 'LOW' || gankerIntel.length > 0 || hasRecentIntel(digest)) {
     window = 'TIGHT';
   } else {
@@ -1040,14 +1036,6 @@ function hasRecentIntel(digest: RouteThreatDigest): boolean {
     || system.gankerCount > 0
     || system.jumpSpike !== null,
   );
-}
-
-function getFreshestIntelMinutes(digest: RouteThreatDigest): number | null {
-  const values = [...digest.systemsAhead, ...digest.systemsBehind]
-    .map((system) => system.latestKillMinutes)
-    .filter((value): value is number => value !== null && Number.isFinite(value));
-  if (values.length === 0) return null;
-  return Math.min(...values);
 }
 
 function formatTacticalState(state: TacticalState): string {
