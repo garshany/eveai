@@ -556,17 +556,10 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     const currentIdx = monitor.routeSystems.indexOf(monitor.currentSystemId);
     if (currentIdx < 0) return;
 
-    // Full route scan: current + ahead (up to MAX_SYSTEMS_AHEAD) + behind (up to MAX_SYSTEMS_BEHIND)
-    const systemsAhead = monitor.routeSystems.slice(
-      currentIdx + 1,
-      currentIdx + 1 + MAX_SYSTEMS_AHEAD,
-    );
-    const systemsBehind = monitor.routeSystems.slice(
-      Math.max(0, currentIdx - MAX_SYSTEMS_BEHIND),
-      currentIdx,
-    );
-    const currentSystem = [monitor.currentSystemId];
-    const allScanSystems = [...currentSystem, ...systemsAhead, ...systemsBehind];
+    // Scan ALL systems on the route — no range limit
+    const allScanSystems = [...monitor.routeSystems];
+    const systemsAhead = monitor.routeSystems.slice(currentIdx + 1);
+    const systemsBehind = monitor.routeSystems.slice(0, currentIdx);
     if (allScanSystems.length === 0) return;
 
     // Scan ALL systems directly via zKB (ESI system_kills has 1h cache, misses recent kills)
