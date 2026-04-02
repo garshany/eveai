@@ -46,6 +46,7 @@ import { executeOsintInferHome } from '../eve-osint/inference.js';
 import { executeAnalyzeLocal } from '../eve-local/analyzer.js';
 import { executeAnalyzeScan } from '../eve-scan/analyzer.js';
 import { executeIntelNote } from '../eve-intel/notes.js';
+import { assessShip } from '../eve-board/threat.js';
 
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_WEB_SEARCHES_PER_TURN = 2;
@@ -412,7 +413,13 @@ async function fetchLiveContext(
         shipTypeId: shipResult.data.ship_type_id,
         shipTypeName: shipType,
       };
-      parts.push(`Корабль: ${shipResult.data.ship_name} (${shipType}), type_id=${shipResult.data.ship_type_id}`);
+      // Enrich with hull assessment (EHP, align, class) for tactical context
+      const assessment = assessShip(db, shipResult.data.ship_type_id);
+      parts.push(
+        `Корабль: ${shipResult.data.ship_name} (${shipType}), type_id=${shipResult.data.ship_type_id}`
+        + `, класс=${assessment.shipClass}, base_ehp=${assessment.ehp}, align=${assessment.alignTime}s, warp=${assessment.warpSpeed}AU/s`
+        + (assessment.isHighValueTarget ? ', HIGH_VALUE_TARGET' : ''),
+      );
     }
 
     return {
@@ -1335,7 +1342,11 @@ type StaticAggregateIntent = {
 
 export function deriveLiveContextNeeds(goal: string): LiveContextNeeds {
   const normalized = goal.toLowerCase();
-  const ship = /(мой корабль|мой шип|на чем я|на чём я|какой у меня корабль|какой у меня шип|my ship|what ship|летаю)/u.test(normalized);
+  const ship = /(мой корабль|мой шип|на чем я|на чём я|какой у меня корабль|какой у меня шип|my ship|what ship|летаю)/u.test(normalized)
+    // Scan / intel / threat triggers — need ship for tactical context
+    || /\b(d-?scan|дскан|скан|fleet comp|флит|угроз|threat|hostile|враг|intel|разведк|гейткемп|gatecamp|кемп|пвп|pvp|ганк|gank)\b/u.test(normalized)
+    // Paste detection: tab-separated lines likely a scan paste
+    || (normalized.includes('\t') && normalized.split('\n').length >= 3);
   const location = ship
     || /\b(где я|мой регион|моя система|мо[её] созвездие|my region|my system|my constellation|current region|current system|current constellation|отсюда|from here|here|здесь)\b/u.test(normalized)
     || /\b(маршрут|route|автопилот|autopilot)\b/u.test(normalized)

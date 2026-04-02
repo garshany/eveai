@@ -49,8 +49,8 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('<osint_rules>');
     expect(prompt).toContain('residence/staging inference');
 
-    // Prompt grows with new tool rules (scan_analysis + intel_note). Track size to avoid unbounded bloat.
-    expect(prompt.length).toBeLessThan(20000);
+    // Prompt grows with new tool rules (scan_analysis + intel_note + ship_context). Track size to avoid unbounded bloat.
+    expect(prompt.length).toBeLessThan(22000);
   });
 
   it('appends profile and summary when provided', () => {
