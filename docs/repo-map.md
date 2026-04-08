@@ -21,7 +21,7 @@ Use it when you need to find the right file or folder before reading implementat
 
 ### `src/agent/`
 
-- `native-responses.ts`: OpenAI-compatible runtime loop
+- `native-responses.ts`: OpenAI-compatible runtime loop, including SSE function-call reconstruction from `response.function_call_arguments.done`
 - `executor.ts`: tool execution, continuation, persistence
 - `planner.ts` / `replanner.ts`: plan generation and adjustment
 - `compact.ts`: history reduction and compaction

@@ -113,6 +113,43 @@ describe('parseSse + streamed outputs', () => {
     expect(events[0]?.event).toBe('response.output_text.delta');
     expect(__test__.extractStreamedOutputText(events)).toBe('Yo');
   });
+
+  it('extracts function calls from response.function_call_arguments.done events', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    const { __test__ } = await import('../../src/agent/native-responses.js');
+
+    const raw = [
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"plan_route","arguments":""}}',
+      '',
+      'event: response.function_call_arguments.delta',
+      'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"origin\\":\\"Jita\\""}',
+      '',
+      'event: response.function_call_arguments.done',
+      'data: {"type":"response.function_call_arguments.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"plan_route","arguments":"{\\"origin\\":\\"Jita\\",\\"destination\\":\\"Amarr\\"}"}}',
+      '',
+      'event: response.completed',
+      'data: {"response":{"id":"resp_fc","output":[]}}',
+      '',
+    ].join('\n');
+
+    const events = __test__.parseSse(raw);
+    expect(__test__.collectDoneItems(events)).toEqual([
+      {
+        type: 'function_call',
+        id: 'fc_1',
+        call_id: 'call_1',
+        name: 'plan_route',
+        arguments: '{"origin":"Jita","destination":"Amarr"}',
+      },
+    ]);
+  });
 });
 
 describe('createNativeResponse request body', () => {
@@ -193,5 +230,42 @@ describe('createNativeResponse request body', () => {
     });
 
     expect(body).not.toHaveProperty('prompt_cache_key');
+  });
+
+  it('uses done items when response.completed.output is empty', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"echo_city","arguments":"{\\"city\\":\\"Jita\\"}"}}',
+      '',
+      'event: response.completed',
+      'data: {"response":{"id":"resp_done_only","output":[]}}',
+      '',
+    ].join('\n'), { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage, extractFunctionCalls } = await import('../../src/agent/native-responses.js');
+
+    const result = await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+    });
+
+    expect(result.id).toBe('resp_done_only');
+    expect(result.output.map((item) => item.type)).toEqual(['function_call']);
+    expect(extractFunctionCalls(result.output)).toEqual([
+      {
+        callId: 'call_1',
+        name: 'echo_city',
+        argumentsText: '{"city":"Jita"}',
+      },
+    ]);
   });
 });

@@ -149,7 +149,12 @@ export async function createNativeResponse(input: {
   const events = parseSse(rawText);
   const completedPayload = findCompletedPayload(events);
   const doneItems = collectDoneItems(events);
-  const output = completedPayload?.output ?? doneItems;
+  const completedOutput = Array.isArray(completedPayload?.output)
+    ? completedPayload.output
+    : null;
+  const output = completedOutput && completedOutput.length > 0
+    ? completedOutput
+    : doneItems;
   const outputTextFromItems = extractOutputText(output);
   const outputTextFromStream = extractStreamedOutputText(events);
   const outputText = completedPayload?.output_text
@@ -342,11 +347,23 @@ function extractStreamedOutputText(events: NativeSseEvent[]): string {
 
 function collectDoneItems(events: NativeSseEvent[]): NativeResponseOutputItem[] {
   const output: NativeResponseOutputItem[] = [];
+  const seen = new Set<string>();
   for (const event of events) {
-    if (event.event !== 'response.output_item.done') continue;
-    const data = event.data as { item?: NativeResponseOutputItem; output_item?: NativeResponseOutputItem } | null;
+    if (
+      event.event !== 'response.output_item.done'
+      && event.event !== 'response.function_call_arguments.done'
+    ) {
+      continue;
+    }
+    const data = event.data as {
+      item?: NativeResponseOutputItem;
+      output_item?: NativeResponseOutputItem;
+    } | null;
     const item = data?.item ?? data?.output_item ?? null;
     if (item && typeof item === 'object' && typeof item.type === 'string') {
+      const key = String(item.call_id ?? item.id ?? `${item.type}:${output.length}`);
+      if (seen.has(key)) continue;
+      seen.add(key);
       output.push(item);
     }
   }
