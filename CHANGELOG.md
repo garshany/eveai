@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-04-09
+
+### Fixed
+
+- **ChatGPT proxy compatibility**: Removed `max_output_tokens`, `prompt_cache_retention`, `user`, and `reasoning.summary` parameters that ChatGPT WS backend rejects as unsupported, causing prewarm failures and 90s timeouts on all requests.
+- **Node.js 22 upgrade on prod**: Updated from Node.js 18.19.1 to 22.22.2 LTS, fixing `crypto is not defined` errors in `jose` JWT library (EVE SSO token verification).
+- **README updated**: Added EVE-KILL, EVE-Scout, OSINT, scan analysis, intel tools to project documentation.
+
 ## [2.1.0] - 2026-04-09
 
 ### Agent Intelligence & Autonomy
