@@ -25,6 +25,12 @@ export type RouteBriefingSnapshotKill = {
   attacker_count?: number;
 };
 
+export type RouteBriefingSnapshotGateCamp = {
+  connectedSystemName: string;
+  killCount: number;
+  recentKills: number;
+};
+
 export type RouteBriefingSnapshotSystem = {
   systemId: number;
   name: string;
@@ -32,6 +38,7 @@ export type RouteBriefingSnapshotSystem = {
   kills_1h: number;
   total_value_m: number;
   recentKills: RouteBriefingSnapshotKill[];
+  gate_camps?: RouteBriefingSnapshotGateCamp[];
 };
 
 // ---------------------------------------------------------------------------
@@ -102,6 +109,7 @@ type DangerSystemInfo = {
   recentKills: KilllistItem[];
   threatLevel: ThreatLevel;
   threatReason: string;
+  gate_camps: RouteBriefingSnapshotGateCamp[];
 };
 
 export async function generateBriefingFromSnapshot(
@@ -178,6 +186,7 @@ function buildDangerSystemsFromSnapshot(
         .sort((left, right) => (right.killmail_time ?? '').localeCompare(left.killmail_time ?? '')),
       threatLevel: threat.level,
       threatReason: threat.reason,
+      gate_camps: snapshot.gate_camps ?? [],
     });
   }
 
@@ -357,7 +366,9 @@ function buildCurrentLine(originName: string, currentSystem: DangerSystemInfo | 
 
   const minutesAgo = minutesSinceIso(currentSystem.pattern.latestKillTime);
   const timePart = minutesAgo === null ? 'недавно' : `${minutesAgo} мин назад`;
-  return `${originName} — ${currentSystem.pattern.killCount} PvP за последний час, последнее ${timePart}; устойчивого лагеря не видно.`;
+  const campBrief = formatGateCampBrief(currentSystem.gate_camps);
+  const campSuffix = campBrief ? `; ${campBrief}` : '; устойчивого лагеря не видно';
+  return `${originName} — ${currentSystem.pattern.killCount} PvP за последний час, последнее ${timePart}${campSuffix}.`;
 }
 
 function buildAheadLine(
@@ -556,10 +567,20 @@ function formatSystemLabel(
 }
 
 function describeDestinationSignal(system: DangerSystemInfo): string {
+  const campPart = formatGateCampBrief(system.gate_camps);
   if (system.threatLevel === 'LOW') {
-    return `локально ${lowercaseFirst(system.threatReason)}`;
+    const base = `локально ${lowercaseFirst(system.threatReason)}`;
+    return campPart ? `${base}; ${campPart}` : base;
   }
-  return lowercaseFirst(system.threatReason);
+  const base = lowercaseFirst(system.threatReason);
+  return campPart ? `${base}; ${campPart}` : base;
+}
+
+function formatGateCampBrief(camps: RouteBriefingSnapshotGateCamp[]): string {
+  if (camps.length === 0) return '';
+  const top = camps[0];
+  const fresh = top.recentKills > 0 ? ', свежий' : '';
+  return `гейткемп на гейте → ${top.connectedSystemName} (${top.killCount} kill${fresh})`;
 }
 
 function lowercaseFirst(value: string): string {

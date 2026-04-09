@@ -216,6 +216,11 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
           final_blow_character_name: kill.attacker ?? undefined,
           attacker_count: 1,
         })),
+        gate_camps: system.gate_camps.map((gc) => ({
+          connectedSystemName: gc.connectedSystemName,
+          killCount: gc.killCount,
+          recentKills: gc.recentKills,
+        })),
       }));
       const briefing = await generateBriefingFromSnapshot(
         db,
