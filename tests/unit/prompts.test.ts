@@ -46,7 +46,7 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('<verbosity_controls>');
     expect(prompt).toContain('<completeness_contract>');
     expect(prompt).toContain('<missing_context_gating>');
-    expect(prompt).toContain('<osint_rules>');
+    expect(prompt).toContain('<reasoning>');
     expect(prompt).toContain('residence/staging inference');
 
     // Prompt grows with new tool rules (scan_analysis + intel_note + ship_context). Track size to avoid unbounded bloat.
