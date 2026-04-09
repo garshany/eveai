@@ -35,43 +35,43 @@ git push origin master
 
 Текущий production server:
 
-- host: `144.31.223.134`
-- user: `root`
-- password: `AA1Ctpe=S8hb9fJ)`
+- host: `158.160.220.215`
+- user: `garshany`
+- auth: SSH key (no password)
 - app dir: `/opt/eveai`
 
 Подключение по SSH:
 
 ```bash
-ssh root@144.31.223.134
+ssh garshany@158.160.220.215
 ```
 
 Non-interactive доступ (для скриптов и агентов):
 
 ```bash
-sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134
+ssh -o StrictHostKeyChecking=no garshany@158.160.220.215
 ```
 
 ### Быстрые проверки на проде
 
 Статус приложения:
 ```bash
-sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 "pm2 status eveai"
+ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 "pm2 status eveai"
 ```
 
 Логи (последние 50 строк):
 ```bash
-sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 "pm2 logs eveai --lines 50 --nostream"
+ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 "pm2 logs eveai --lines 50 --nostream"
 ```
 
 Heartbeat логи:
 ```bash
-sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 "pm2 logs eveai --lines 50 --nostream" 2>&1 | grep '\[heartbeat\]'
+ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 "pm2 logs eveai --lines 50 --nostream" 2>&1 | grep '\[heartbeat\]'
 ```
 
 БД запрос (пример — heartbeat config):
 ```bash
-sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 "cd /opt/eveai && node -e \"
+ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 "cd /opt/eveai && node -e \"
 const Database = require('/opt/eveai/node_modules/better-sqlite3');
 const db = new Database('./data/eve-agent.db', { readonly: true });
 console.log(JSON.stringify(db.prepare('SELECT * FROM heartbeat_config').all(), null, 2));
@@ -82,14 +82,14 @@ db.close();
 ### Быстрый деплой из feature-ветки
 
 ```bash
-sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 \
+ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 \
   "cd /opt/eveai && git pull origin BRANCH && npm run build:server && pm2 restart eveai"
 ```
 
 ### Рестарт
 
 ```bash
-sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134 "pm2 restart eveai"
+ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 "pm2 restart eveai"
 ```
 
 ## Deployment Flow
@@ -105,7 +105,7 @@ sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.13
 Базовый деплой:
 
 ```bash
-ssh root@144.31.223.134
+ssh garshany@158.160.220.215
 cd /opt/eveai
 git fetch origin
 git checkout master
@@ -118,7 +118,7 @@ pm2 restart eveai --update-env
 Proxy после обновления бинаря:
 
 ```bash
-ssh root@144.31.223.134
+ssh garshany@158.160.220.215
 cd /opt/codex_proxy
 cargo build --release
 systemctl restart eveai-codex-proxy
@@ -174,7 +174,7 @@ pm2 restart eveai --update-env
 Установка или восстановление unit на проде:
 
 ```bash
-ssh root@144.31.223.134
+ssh garshany@158.160.220.215
 install -m 644 /opt/eveai/deploy/systemd/eveai-codex-proxy.service /etc/systemd/system/eveai-codex-proxy.service
 systemctl daemon-reload
 systemctl enable --now eveai-codex-proxy
@@ -217,7 +217,7 @@ Proxy читает все `*.json` в директории auth-path. На пр�
 Порядок обновления auth:
 
 ```bash
-ssh root@144.31.223.134
+ssh garshany@158.160.220.215
 mkdir -p /root/.codex/auth
 ts=$(date +%Y%m%dT%H%M%S)
 mkdir -p /root/.codex/auth-backup-$ts

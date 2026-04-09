@@ -71,14 +71,14 @@ Browser → Fastify → auth callback + dashboard + health → same SQLite
 SSH доступ для проверок и деплоя:
 
 ```bash
-sshpass -p 'AA1Ctpe=S8hb9fJ)' ssh -o StrictHostKeyChecking=no root@144.31.223.134
+ssh -o StrictHostKeyChecking=no garshany@158.160.220.215
 ```
 
-- host: `144.31.223.134`, user: `root`, app dir: `/opt/eveai`
-- Process manager: `pm2` (app), `systemd` (codex proxy, nginx)
-- Логи: `pm2 logs eveai --lines 50 --nostream`
-- Рестарт: `pm2 restart eveai`
-- Деплой: `cd /opt/eveai && git pull origin BRANCH && npm run build:server && pm2 restart eveai`
+- host: `158.160.220.215`, user: `garshany`, app dir: `/opt/eveai`
+- Process manager: direct node (nohup), `systemd` (codex proxy, nginx)
+- Логи: `tail -100 /tmp/eveai.log`
+- Рестарт: `kill $(pgrep -f 'node.*dist/app.js') && cd /opt/eveai && nohup node dist/app.js > /tmp/eveai.log 2>&1 &`
+- Деплой: собрать tarball локально, scp на сервер, распаковать в /opt/eveai, npm ci, перезапустить
 - Подробный runbook: `docs/deployment.md`
 
 ## Documentation
