@@ -6,6 +6,8 @@ import { config } from '../config.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { startRouteMonitor } from '../eve-board/monitor.js';
 import { generateBriefingFromSnapshot } from '../eve-board/briefing.js';
+import { attributeKillsToGates } from '../eve-board/analytics.js';
+import type { GateKill } from '../eve-board/types.js';
 
 type RouteFlag = 'secure' | 'shortest' | 'insecure';
 
@@ -49,6 +51,7 @@ type DangerSystem = {
   npc: number;
   total_value_m: number;
   kills: RecentKill[];
+  gate_camps: GateKill[];
 };
 
 type RouteVariant = {
@@ -381,7 +384,15 @@ function buildSelectedRouteKillSummary(route: RouteVariant): string[] {
 
   const lines = ['zKB срез:'];
   for (const system of route.danger_systems.slice(0, 2)) {
-    lines.push(`- ${escapeHtml(system.name)} ${system.sec.toFixed(1)}: ${system.kills_1h} PvP, ${system.total_value_m}M`);
+    const campLabel = system.gate_camps.length > 0
+      ? ` \u{26A0}\u{FE0F} CAMP`
+      : '';
+    lines.push(`- ${escapeHtml(system.name)} ${system.sec.toFixed(1)}: ${system.kills_1h} PvP, ${system.total_value_m}M${campLabel}`);
+    if (system.gate_camps.length > 0) {
+      for (const gc of system.gate_camps.slice(0, 2)) {
+        lines.push(`  \u{1F6A7} Гейт → ${escapeHtml(gc.connectedSystemName)}: ${gc.killCount} kill(s)${gc.recentKills > 0 ? ', свежие!' : ''}`);
+      }
+    }
     for (const kill of system.kills.slice(0, 2)) {
       const victimShip = escapeHtml(kill.victim_ship ?? '?');
       const victim = escapeHtml(kill.victim ?? '?');
@@ -666,6 +677,7 @@ async function scanSystemDanger(
     attackerCharId: number | null; attackerCorpId: number | null; attackerShipTypeId: number | null;
     valueM: number;
     isNpc: boolean;
+    position: { x: number; y: number; z: number } | null;
   };
   const rawKills: RawKill[] = [];
   let eidx = 0;
@@ -681,6 +693,9 @@ async function scanSystemDanger(
         const victim = asRec(km.victim);
         const attackers = Array.isArray(km.attackers) ? km.attackers as Record<string, unknown>[] : [];
         const fb = attackers.find((a) => a.final_blow === true) ?? attackers[0] ?? {};
+        const victimPos = asRec(victim.position);
+        const pos = typeof victimPos.x === 'number' && typeof victimPos.y === 'number' && typeof victimPos.z === 'number'
+          ? { x: victimPos.x, y: victimPos.y, z: victimPos.z } : null;
         rawKills.push({
           systemId, killmailId: item.killmail_id,
           time: typeof km.killmail_time === 'string' ? km.killmail_time : null,
@@ -690,6 +705,7 @@ async function scanSystemDanger(
           attackerShipTypeId: numOrNull(fb.ship_type_id),
           valueM: Math.round((item.zkb?.totalValue ?? 0) / 1_000_000),
           isNpc: item.zkb?.npc === true,
+          position: pos,
         });
       } catch { /* skip */ }
     }
@@ -728,6 +744,14 @@ async function scanSystemDanger(
       url: `https://zkillboard.com/kill/${rk.killmailId}/`,
     }));
 
+    const gateCamps = attributeKillsToGates(
+      db,
+      systemId,
+      systemKills
+        .filter((rk) => rk.position)
+        .map((rk) => ({ position: rk.position!, killmail_id: rk.killmailId, killmail_time: rk.time ?? undefined })),
+    );
+
     dangerMap.set(systemId, {
       systemId,
       name: info?.name ?? `ID:${systemId}`,
@@ -737,10 +761,12 @@ async function scanSystemDanger(
       npc: npcCount,
       total_value_m: totalValueM,
       kills,
+      gate_camps: gateCamps,
     });
   }
 
-  console.log('[danger_scan] result: %d danger systems', dangerMap.size);
+  const campCount = [...dangerMap.values()].reduce((sum, ds) => sum + ds.gate_camps.length, 0);
+  console.log('[danger_scan] result: %d danger systems, %d gate camp(s)', dangerMap.size, campCount);
   return dangerMap;
 }
 
