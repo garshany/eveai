@@ -10,7 +10,8 @@ import { attributeKillsToGates } from '../eve-board/analytics.js';
 import type { GateKill } from '../eve-board/types.js';
 import { findBestTheraShortcut, type TheraShortcut } from './thera-scout.js';
 
-type RouteFlag = 'secure' | 'shortest' | 'insecure' | 'thera_shortcut';
+type EsiRouteFlag = 'secure' | 'shortest' | 'insecure';
+type RouteFlag = EsiRouteFlag | 'thera_shortcut';
 
 // ---------------------------------------------------------------------------
 // Route monitor sender — set once from app.ts at boot time
@@ -56,7 +57,7 @@ type DangerSystem = {
 };
 
 type RouteVariant = {
-  flag: RouteFlag;
+  flag: EsiRouteFlag;
   system_ids: number[];
   jumps: number;
   min_sec: number;
@@ -120,7 +121,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
   }
 
   // 2. Fetch routes (all 3 variants) in parallel
-  const flags: RouteFlag[] = ['secure', 'shortest', 'insecure'];
+  const flags: EsiRouteFlag[] = ['secure', 'shortest', 'insecure'];
   const routeResults = await Promise.all(
     flags.map((flag) => fetchRoute(db, originInfo.id, destInfo.id, flag, args.avoid ?? [], ctx)),
   );
@@ -206,12 +207,24 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
   const characterId = linked?.characterId ?? 0;
   const chatId = ctx.chatId ?? ctx.userId;
 
-  // Get the preferred route's system IDs for the selected route
-  const preferredRoute = args.prefer
-    ? routes.find((r) => r.flag === args.prefer) ?? routes[0]
-    : routes.find((r) => r.flag === 'secure') ?? routes[0];
-  const prefIndex = flags.indexOf(preferredRoute.flag);
-  const monitorSystemIds = routeResults[prefIndex] ?? [];
+  // Get the preferred route's system IDs for monitoring
+  let monitorSystemIds: number[];
+  let preferredRoute: RouteVariant;
+  if (args.prefer === 'thera_shortcut' && theraShortcut) {
+    // For WH shortcut: build monitor path from entry + exit legs
+    preferredRoute = routes.find((r) => r.flag === 'shortest') ?? routes[0];
+    const [entryLeg, exitLeg] = await Promise.all([
+      fetchRoute(db, originInfo.id, theraShortcut.entry_system_id, 'shortest', [], ctx),
+      fetchRoute(db, theraShortcut.exit_system_id, destInfo.id, 'shortest', [], ctx),
+    ]);
+    monitorSystemIds = [...(entryLeg ?? []), ...(exitLeg ?? [])];
+  } else {
+    preferredRoute = args.prefer
+      ? routes.find((r) => r.flag === args.prefer) ?? routes[0]
+      : routes.find((r) => r.flag === 'secure') ?? routes[0];
+    const prefIndex = flags.indexOf(preferredRoute.flag);
+    monitorSystemIds = routeResults[prefIndex] ?? [];
+  }
 
   if (characterId > 0 && monitorSystemIds.length > 0) {
     // Fetch current ship info for threat assessment
@@ -556,7 +569,7 @@ async function fetchRoute(
   db: Db,
   originId: number,
   destId: number,
-  flag: RouteFlag,
+  flag: EsiRouteFlag,
   avoid: number[],
   ctx: UserContext,
 ): Promise<number[] | null> {
@@ -653,7 +666,7 @@ async function setShortcutAutopilot(
 }
 
 function buildRouteVariant(
-  flag: RouteFlag,
+  flag: EsiRouteFlag,
   systemIds: number[],
   systemInfoMap: Map<number, SystemInfo>,
   dangerMap: Map<number, DangerSystem>,
