@@ -197,9 +197,14 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     }
   }
 
-  let formattedSummary = formatRouteSummary(originInfo, destInfo, routes, autopilotMode, args.prefer === 'thera_shortcut' ? 'shortest' : args.prefer);
+  let formattedSummary = formatRouteSummary(
+    originInfo, destInfo, routes, autopilotMode,
+    args.prefer === 'thera_shortcut' ? 'shortest' : args.prefer,
+    theraShortcut,
+    args.prefer === 'thera_shortcut',
+  );
 
-  if (theraShortcut) {
+  if (theraShortcut && args.prefer !== 'thera_shortcut') {
     formattedSummary += '\n\n' + formatTheraShortcut(theraShortcut);
   }
 
@@ -308,6 +313,8 @@ function formatRouteSummary(
   routes: RouteVariant[],
   autopilotMode: AutopilotMode,
   preferFlag?: RouteFlag,
+  theraShortcut?: TheraShortcut | null,
+  theraSelected?: boolean,
 ): string {
   if (routes.length === 0) return 'Маршруты не найдены.';
 
@@ -317,31 +324,43 @@ function formatRouteSummary(
     ?? routes.find((route) => route.flag === 'secure')
     ?? routes[0];
   const dangerCount = preferred.danger_systems.length;
-  const alternativeHint = describeAlternativeHint(routes, preferred);
 
-  // Header
+  // Header — when thera_shortcut is selected, show it as the chosen route
   lines.push(`<b>${esc(origin.name)} → ${esc(dest.name)}</b>`);
-  const riskEmoji = describeRouteRiskEmoji(preferred, dangerCount);
-  lines.push(`${riskEmoji} Выбран: ${esc(preferred.flag)} | ${preferred.jumps} прыжков | мин. сек: ${preferred.min_sec.toFixed(1)} | киллов/ч: ${preferred.total_kills_1h} | потери: ${preferred.total_value_m}M`);
-  lines.push(`Автопилот: ${esc(describeAutopilotMode(autopilotMode))} (${esc(preferred.flag)})`);
-  if (alternativeHint) {
-    lines.push(alternativeHint);
+  if (theraSelected && theraShortcut) {
+    lines.push(`\u{1F300} Выбран: WH шорткат | ${theraShortcut.total_jumps} прыжков (через Thera, экономия ${theraShortcut.saved_jumps})`);
+    lines.push(`Автопилот: ${esc(describeAutopilotMode(autopilotMode))}`);
+  } else {
+    const riskEmoji = describeRouteRiskEmoji(preferred, dangerCount);
+    lines.push(`${riskEmoji} Выбран: ${esc(preferred.flag)} | ${preferred.jumps} прыжков | мин. сек: ${preferred.min_sec.toFixed(1)} | киллов/ч: ${preferred.total_kills_1h} | потери: ${preferred.total_value_m}M`);
+    lines.push(`Автопилот: ${esc(describeAutopilotMode(autopilotMode))} (${esc(preferred.flag)})`);
+    const alternativeHint = describeAlternativeHint(routes, preferred);
+    if (alternativeHint) {
+      lines.push(alternativeHint);
+    }
   }
 
-  // Route comparison table — keep compact as a secondary layer.
-  if (routes.length > 1) {
-    lines.push('');
-    lines.push('<code>');
-    lines.push('         прыж  сек   kills');
-    for (const route of routes) {
-      const marker = route.flag === preferred.flag ? '>' : ' ';
-      lines.push(`${marker}${formatVariantRow(route)}`);
-    }
-    lines.push('</code>');
+  // Route comparison table — include WH shortcut row when available
+  lines.push('');
+  lines.push('<code>');
+  lines.push('         прыж  сек   kills');
+  for (const route of routes) {
+    const isSelected = !theraSelected && route.flag === preferred.flag;
+    const marker = isSelected ? '>' : ' ';
+    lines.push(`${marker}${formatVariantRow(route)}`);
   }
+  if (theraShortcut) {
+    const marker = theraSelected ? '>' : ' ';
+    lines.push(`${marker}thera   ${String(theraShortcut.total_jumps).padStart(3)}  ${theraShortcut.entry_class === 'hs' ? '0.5' : '-1.0'}     -`);
+  }
+  lines.push('</code>');
 
   lines.push('');
-  lines.push(`Ключевые точки: <code>${esc(buildRoutePreview(preferred))}</code>`);
+  if (theraSelected && theraShortcut) {
+    lines.push(formatTheraShortcut(theraShortcut));
+  } else {
+    lines.push(`Ключевые точки: <code>${esc(buildRoutePreview(preferred))}</code>`);
+  }
 
   const zkbLines = buildSelectedRouteKillSummary(preferred);
   if (zkbLines.length > 0) {
