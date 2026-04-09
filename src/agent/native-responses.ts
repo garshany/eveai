@@ -152,9 +152,15 @@ export async function createNativeResponse(input: {
   const completedOutput = Array.isArray(completedPayload?.output)
     ? completedPayload.output
     : null;
-  const output = completedOutput && completedOutput.length > 0
+  let output = completedOutput && completedOutput.length > 0
     ? completedOutput
     : doneItems;
+  if (output.length === 0) {
+    output = reconstructFunctionCallsFromStream(events);
+    if (output.length > 0) {
+      console.log('[api] reconstructed %d function call(s) from stream events', output.length);
+    }
+  }
   const outputTextFromItems = extractOutputText(output);
   const outputTextFromStream = extractStreamedOutputText(events);
   const outputText = completedPayload?.output_text
@@ -448,6 +454,38 @@ export const __test__ = {
   findCompletedPayload,
   RESPONSES_TIMEOUT_MS,
 };
+
+function reconstructFunctionCallsFromStream(events: NativeSseEvent[]): NativeResponseOutputItem[] {
+  const partials = new Map<string, Record<string, unknown>>();
+  for (const event of events) {
+    const data = event.data as Record<string, unknown> | null;
+    if (!data) continue;
+    if (event.event === 'response.output_item.added' || event.event === 'response.output_item.done') {
+      const item = (data.item ?? data.output_item) as Record<string, unknown> | undefined;
+      const candidate = item?.type === 'function_call' ? item : null;
+      if (candidate?.call_id) {
+        const callId = String(candidate.call_id);
+        const existing = partials.get(callId) ?? {};
+        partials.set(callId, { ...existing, ...candidate, type: 'function_call' });
+      }
+    }
+    if (event.event === 'response.function_call_arguments.done' && data.call_id) {
+      const callId = String(data.call_id);
+      const existing = partials.get(callId) ?? {};
+      partials.set(callId, {
+        ...existing,
+        type: 'function_call',
+        call_id: callId,
+        arguments: String(data.arguments ?? existing.arguments ?? '{}'),
+        name: existing.name ?? data.name,
+        id: existing.id ?? data.item_id ?? callId,
+      });
+    }
+  }
+  return [...partials.values()]
+    .filter((p) => p.name && p.call_id)
+    .map((p) => p as NativeResponseOutputItem);
+}
 
 function collectToolSearchNames(value: unknown, paths: Set<string>): void {
   if (!value || typeof value !== 'object') return;
