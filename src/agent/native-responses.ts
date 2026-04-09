@@ -94,13 +94,13 @@ export async function createNativeResponse(input: {
 }): Promise<NativeResponseResult> {
   const baseUrl = normalizeBaseUrl(config.openai.baseUrl);
   const effectiveEffort = input.reasoningEffort ?? config.openai.reasoningEffort;
+  const maxTokens = input.maxOutputTokens || config.openai.maxOutputTokens || 0;
   const bodyPayload: Record<string, unknown> = {
       model: input.model ?? config.openai.model,
       instructions: input.instructions,
       input: input.items,
       previous_response_id: input.previousResponseId ?? undefined,
       prompt_cache_key: input.promptCacheKey ?? undefined,
-      prompt_cache_retention: '24h',
       tools: input.tools,
       tool_choice: 'auto',
       parallel_tool_calls: input.parallelToolCalls ?? false,
@@ -110,9 +110,11 @@ export async function createNativeResponse(input: {
       store: false,
       stream: true,
       include: [],
-      user: input.chatId ? `tg-${input.chatId}` : undefined,
-      max_output_tokens: input.maxOutputTokens ?? config.openai.maxOutputTokens ?? undefined,
     };
+  // Only send optional parameters when explicitly configured — ChatGPT proxy
+  // rejects unknown/unsupported parameters with a 400 error.
+  if (maxTokens > 0) bodyPayload.max_output_tokens = maxTokens;
+  if (input.chatId) bodyPayload.user = `tg-${input.chatId}`;
   if (input.truncation) {
     bodyPayload.truncation = input.truncation;
   }
