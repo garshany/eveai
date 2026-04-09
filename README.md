@@ -31,11 +31,26 @@ Telegram-first AI assistant for EVE Online. Ask questions in natural language, g
 ### Universe (public, no auth needed)
 - System, region, constellation info with security status
 - Route planning with real-time danger analysis (kills, gate camps, ISK lost)
+- Thera/Turnur wormhole shortcut routes via EVE-Scout
 - Market prices across regions, buy/sell spread, volume
 - Ship & module stats via dogma attributes (DPS, tank, speed, cap, fitting)
 - Blueprint materials, manufacturing time, invention
 - Incursions, Faction Warfare, sovereignty, wars
-- zKillboard: PvP stats, fit research, player activity
+
+### PvP Intel & Analysis
+- **EVE-KILL**: kill feed, PvP stats, entity stats, battle reports
+- **D-Scan / Fleet / Local parser**: paste any scan, get AI tactical intel (doctrine detection, threat assessment, counter-strategies)
+- **OSINT home detection**: 8-layer profiling to detect residence/staging systems
+- **Intel notebook**: persistent personal notes with tags (hostile, friendly, structure, wormhole, route, market)
+- Fit research from kill data (observed fits, not theorycrafting)
+
+### Wormhole Navigation (EVE-Scout)
+- WH-aware routing through Thera/Turnur shortcuts
+- Active WH connections (signatures) from Thera/Turnur
+- Metaliminal storms and space oddities
+- WH type encyclopedia (mass, lifetime, source/target classes)
+- WH system search by J-code or class
+- Nearest highsec from any null/low/WH system
 
 ### Corporation (with roles)
 - Members, roles, titles
@@ -55,7 +70,8 @@ Telegram-first AI assistant for EVE Online. Ask questions in natural language, g
 ### General Knowledge
 - EVE mechanics from built-in knowledge + web search
 - Fit building and analysis with real dogma stats
-- Route planning with autopilot integration
+- Ship-aware tactical context (live EHP, align time, active fitting)
+- Route planning with autopilot integration and gate camp detection
 - Any question — EVE or not
 
 ---
@@ -84,6 +100,8 @@ Telegram-first AI assistant for EVE Online. Ask questions in natural language, g
 |-----|-------|-----------|
 | **EVE ESI** | 100+ endpoints — character, corp, market, universe, industry, fleet | REST, OAuth2, ETag cache |
 | **EVE SSO** | Character auth, JWT validation, token refresh | OAuth2 PKCE |
+| **EVE-KILL** | Kill feed, PvP stats, entity stats, battle reports | REST, WebSocket |
+| **EVE-Scout** | WH navigation — Thera/Turnur routes, signatures, storms, WH types | REST |
 | **zKillboard** | Kill feed, PvP stats, fit research | REST, ESI enrichment |
 | **OpenAI Responses API** | GPT-5.4 model, tool calling, prompt caching | WebSocket (sticky routing, prewarm) |
 | **EVE SDE** | Static game data — items, ships, systems, blueprints, dogma | Local SQLite |
@@ -100,16 +118,18 @@ Telegram Chat                          Browser
      |                                    |
   Agent Runtime ---- SQLite DB ---- Auth / Dashboard
      |
-  +--+--+--+--+--+
-  |  |  |  |  |  |
- SDE ESI zKB MKT RT WEB
+  +--+--+--+--+--+--+--+
+  |  |  |  |  |  |  |  |
+ SDE ESI EKL SCT MKT RT OSINT WEB
 ```
 
 - **SDE** — local SQLite with 51K items, dogma, blueprints, systems
 - **ESI** — live EVE API with OAuth2, caching, retries
-- **zKB** — zKillboard kill feed + ESI enrichment
+- **EKL** — EVE-KILL kill feed, entity stats, battle reports
+- **SCT** — EVE-Scout WH navigation (Thera/Turnur routes, signatures, storms)
 - **MKT** — market orders & prices (batch up to 30 items)
-- **RT** — route planner with danger scan
+- **RT** — route planner with danger scan and gate camp detection
+- **OSINT** — home system inference (8-layer profiling)
 - **WEB** — web search fallback
 
 ### Hard Constraints
@@ -123,21 +143,22 @@ Telegram Chat                          Browser
 
 ---
 
-## Agent Tools (8 active + 176 deferred)
+## Agent Tools (14 active + 176 deferred)
 
-The model sees **8 full tools** with complete schemas. 176 ESI/zKill functions are hidden behind **50 namespace stubs** (name + description only) and loaded on demand via `tool_search` — matching OpenAI's recommendation to keep the active tool set small.
+The model sees **14 full tools** with complete schemas. 176 ESI/EVE-KILL/EVE-Scout functions are hidden behind namespace stubs and loaded on demand via `tool_search`.
 
 **Always available (full schema):**
-`sde_sql` `count_universe_objects` `plan_route` `batch_market_prices` `web_search` `update_plan` `get_eve_capabilities` `heartbeat_config`
+`sde_sql` `count_universe_objects` `plan_route` `batch_market_prices` `web_search` `update_plan` `get_eve_capabilities` `heartbeat_config` `analyze_scan` `analyze_local` `osint_infer_home` `intel_note` `set_active_fit` `route_monitor`
 
-**Deferred namespaces (50, resolved via `tool_search`):**
+**Deferred namespaces (resolved via `tool_search`):**
 
 | Category | Namespaces | Endpoints |
 |----------|-----------|-----------|
 | Character | `eve_character_profile` `skills` `assets` `wallet` `mail` `messaging` `industry` `orders_contracts` `location` `killmails` `contacts` `calendar` `fittings` `notifications` `planets` `research_activity` `search` | 54 |
 | Corporation | `eve_corporation_profile` `membership` `wallet` `assets` `industry_contracts` `killmails` `structures` `contacts_standings` `roles_titles` `authenticated_market_structures` | 38 |
 | Universe & Public | `eve_universe_types` `celestials` `reference` `eve_public_market_orders` `market_reference` `contracts` `killmails` `wars` `incursions` `sovereignty` `faction_warfare` `dogma` | 62 |
-| PvP & Fleet | `eve_zkill` `fleet_roster` `fleet_structure` `eve_ui` | 22 |
+| PvP & Fleet | `eve_kill` `fleet_roster` `fleet_structure` `eve_ui` | 22 |
+| Wormholes | `eve_scout` (scout_route, scout_signatures, scout_observations, scout_wormhole_types, scout_systems) | 5 |
 
 ---
 
@@ -149,8 +170,12 @@ Developer prompt optimized per [GPT-5.4 prompting guide](https://developers.open
 - **Tool source hierarchy**: SDE > count > market > route > ESI > zKill > web_search
 - **Anti-laziness rules**: always verify stats, prices, skills via tools — never from memory
 - **Dogma query pattern**: ready-to-use SQL JOIN for ship/module attribute lookup
+- **Reasoning strategy**: goal decomposition, data planning, dependency ordering before first tool call
+- **Self-correction**: validate tool results for logic errors, completeness, contradictions
+- **Proactive enrichment**: auto-enrich with security status, Jita comparison, intel notes
 - **Verification loop**: correctness, grounding, format check before every response
-- **Prompt size**: ~4K tokens (optimized from 6K)
+- **Dynamic reasoning effort**: low for greetings, medium default, high for complex analysis
+- **Prompt size**: ~5K tokens
 
 ---
 
@@ -226,4 +251,4 @@ npm run db:migrate  # run SQLite migrations
 
 ## Status
 
-**v2.0.0** — current release. Telegram-first, single-process, GPT-5.4 powered, ESI-backed, SQLite-backed, with explicit auth/transport boundaries, background monitoring, and WebSocket proxy with session recovery.
+**v2.1.0** — current release. Telegram-first, single-process, GPT-5.4 powered. EVE-KILL + EVE-Scout + OSINT + scan analysis + intel notebook. Dynamic reasoning effort, async I/O, gate camp detection, Thera wormhole shortcuts. [Full changelog](./CHANGELOG.md).
