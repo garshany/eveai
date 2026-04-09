@@ -8,6 +8,7 @@ import { startRouteMonitor } from '../eve-board/monitor.js';
 import { generateBriefingFromSnapshot } from '../eve-board/briefing.js';
 import { attributeKillsToGates } from '../eve-board/analytics.js';
 import type { GateKill } from '../eve-board/types.js';
+import { findBestTheraShortcut, type TheraShortcut } from './thera-scout.js';
 
 type RouteFlag = 'secure' | 'shortest' | 'insecure';
 
@@ -168,6 +169,19 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
   }
 
   let formattedSummary = formatRouteSummary(originInfo, destInfo, routes, autopilotMode, args.prefer);
+
+  // 7. Check for Thera wormhole shortcut (non-blocking)
+  const shortestRoute = routes.reduce((best, r) => r.jumps < best.jumps ? r : best, routes[0]);
+  if (shortestRoute && shortestRoute.jumps >= 8) {
+    try {
+      const thera = await findBestTheraShortcut(db, originInfo.id, destInfo.id, shortestRoute.jumps);
+      if (thera) {
+        formattedSummary += '\n\n' + formatTheraShortcut(thera);
+      }
+    } catch (err) {
+      console.log('[plan_route] Thera shortcut check failed: %s', err instanceof Error ? err.message : String(err));
+    }
+  }
 
   const linked = getLinkedCharacter(db, ctx);
   const characterId = linked?.characterId ?? 0;
@@ -846,4 +860,28 @@ function describeAutopilotMode(mode: AutopilotMode): string {
   if (mode === 'exact_route') return 'выставлен';
   if (mode === 'destination_only') return 'точка назначения выставлена';
   return 'нет';
+}
+
+const SHIP_SIZE_LABELS: Record<string, string> = {
+  small: 'фригаты',
+  medium: 'крейсера',
+  large: 'BS/BC',
+  xlarge: 'кэпиталы',
+};
+
+function formatTheraShortcut(thera: TheraShortcut): string {
+  const esc = escapeHtml;
+  const lines: string[] = [];
+  const minHours = Math.min(thera.entry_remaining_hours, thera.exit_remaining_hours);
+  const lifeLabel = minHours <= 0 ? 'EOL \u{26A0}\u{FE0F}' : minHours <= 4 ? `~${minHours}ч` : 'свежая';
+  const shipLabel = SHIP_SIZE_LABELS[thera.max_ship_size] ?? thera.max_ship_size;
+
+  lines.push(`\u{1F300} <b>Шорткат через Thera: ~${thera.total_jumps} прыжков</b> (экономия ${thera.saved_jumps})`);
+  lines.push(
+    `  Вход: ${esc(thera.entry_system)} (${thera.entry_class}, ${thera.entry_jumps}j от старта)`
+    + ` → Thera → `
+    + `Выход: ${esc(thera.exit_system)} (${thera.exit_class}, ${thera.exit_jumps}j до цели)`,
+  );
+  lines.push(`  WH: ${lifeLabel}, макс ${shipLabel} | Данные: EVE-Scout`);
+  return lines.join('\n');
 }
