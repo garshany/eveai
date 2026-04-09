@@ -34,6 +34,7 @@ describe('agent tools', () => {
     expect(functionNames).not.toContain('get_characters_character_id_assets');
     expect(functionNames).not.toContain('get_universe_systems_system_id');
     expect(namespaceNames).toContain('eve_kill');
+    expect(namespaceNames).toContain('eve_scout');
     expect(namespaceNames).toContain('eve_character_assets');
     expect(namespaceNames).toContain('eve_public_market_orders');
     expect(namespaceNames).toContain('eve_authenticated_market_structures');
@@ -48,6 +49,16 @@ describe('agent tools', () => {
         && tool.tools.some((entry) => entry.name === 'kill_feed'),
       ),
     ).toBe(true);
+
+    const eveScoutNamespace = namespaces.find((tool) => tool.name === 'eve_scout');
+    expect(eveScoutNamespace).toBeDefined();
+    expect(eveScoutNamespace?.description).toContain('wormhole');
+    expect(eveScoutNamespace?.tools.some((tool) => tool.name === 'scout_route')).toBe(true);
+    expect(eveScoutNamespace?.tools.some((tool) => tool.name === 'scout_signatures')).toBe(true);
+    expect(eveScoutNamespace?.tools.some((tool) => tool.name === 'scout_observations')).toBe(true);
+    expect(eveScoutNamespace?.tools.some((tool) => tool.name === 'scout_wormhole_types')).toBe(true);
+    expect(eveScoutNamespace?.tools.some((tool) => tool.name === 'scout_systems')).toBe(true);
+    expect(eveScoutNamespace?.tools.every((tool) => tool.defer_loading === true)).toBe(true);
 
     // get_markets_region_id_orders lives inside eve_public_market_orders namespace
     const marketNamespace = namespaces.find((tool) => tool.name === 'eve_public_market_orders');

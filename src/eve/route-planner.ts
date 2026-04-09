@@ -174,7 +174,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
   const shortestRoute = routes.reduce((best, r) => r.jumps < best.jumps ? r : best, routes[0]);
   if (shortestRoute && shortestRoute.jumps >= 8) {
     try {
-      const thera = await findBestTheraShortcut(db, originInfo.id, destInfo.id, shortestRoute.jumps);
+      const thera = await findBestTheraShortcut(db, originInfo.id, destInfo.id, shortestRoute.jumps, originInfo.name, destInfo.name);
       if (thera) {
         formattedSummary += '\n\n' + formatTheraShortcut(thera);
       }

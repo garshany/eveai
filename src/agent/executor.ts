@@ -19,6 +19,7 @@ import {
   isIntelNoteTool,
   isSetActiveFitTool,
   isRouteMonitorTool,
+  isEveScoutToolName,
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
 import { updatePlan } from './planner.js';
@@ -38,6 +39,8 @@ import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
 import { getThreadSummary, runPreTurnCompact, needsMidTurnCompaction, runMidTurnCompact } from './compact.js';
 import { executeEveKillTool } from '../eve-kill/executor.js';
+import { executeEveScoutTool } from '../eve/eve-scout-executor.js';
+import type { EveScoutToolName } from '../eve/eve-scout-tools.js';
 import type { EveKillToolName } from '../eve-kill/tools.js';
 import { executeHeartbeatConfig } from '../scheduled/heartbeat-config.js';
 import type { HeartbeatConfigArgs } from '../scheduled/heartbeat-config.js';
@@ -955,6 +958,12 @@ async function executeToolCall(
     }
     const result = await executeEveKillTool(db, name as EveKillToolName, args, ctx.chatId ?? ctx.userId);
     console.log('[eve-kill] %s completed (call #%d)', name, webSearchState.eveKillCallCount);
+    return result;
+  }
+
+  if (isEveScoutToolName(name)) {
+    const result = await executeEveScoutTool(db, name as EveScoutToolName, args);
+    console.log('[eve-scout] %s completed', name);
     return result;
   }
 

@@ -1,6 +1,7 @@
 import type { Db } from '../db/sqlite.js';
 import { loadEsiCatalog, listEsiNamespaces } from '../eve/esi-catalog.js';
 import { buildEveKillNamespace, isEveKillToolName } from '../eve-kill/tools.js';
+import { buildEveScoutNamespace, isEveScoutToolName } from '../eve/eve-scout-tools.js';
 import type { NativeFunctionTool, NativeTool } from './native-responses.js';
 
 const SDE_SQL_TOOL_NAME = 'sde_sql';
@@ -427,6 +428,7 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
     INTEL_NOTE_TOOL,
     SET_ACTIVE_FIT_TOOL,
     buildEveKillNamespace(),
+    buildEveScoutNamespace(),
     ...(await listEsiNamespaces()),
   ];
 }
@@ -456,10 +458,11 @@ export function isSdeSqlTool(name: string): boolean {
 }
 
 export function isDeferredLookupToolName(name: string): boolean {
-  return isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
+  return isEveKillToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
 }
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
+export { isEveScoutToolName } from '../eve/eve-scout-tools.js';
 
 const MAX_SDE_ROWS = 50;
 const SDE_OBJECT_CACHE = new WeakMap<Db, Set<string>>();
@@ -1240,7 +1243,7 @@ export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'u
   if (name === 'update_plan') {
     return 'write';
   }
-  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name)) {
+  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();
