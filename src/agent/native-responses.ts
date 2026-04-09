@@ -89,23 +89,29 @@ export async function createNativeResponse(input: {
   truncation?: string;
   contextManagement?: Array<{ type: string; compact_threshold: number }>;
   chatId?: number;
+  reasoningEffort?: string;
+  maxOutputTokens?: number;
 }): Promise<NativeResponseResult> {
   const baseUrl = normalizeBaseUrl(config.openai.baseUrl);
+  const effectiveEffort = input.reasoningEffort ?? config.openai.reasoningEffort;
   const bodyPayload: Record<string, unknown> = {
       model: input.model ?? config.openai.model,
       instructions: input.instructions,
       input: input.items,
       previous_response_id: input.previousResponseId ?? undefined,
       prompt_cache_key: input.promptCacheKey ?? undefined,
+      prompt_cache_retention: '24h',
       tools: input.tools,
       tool_choice: 'auto',
       parallel_tool_calls: input.parallelToolCalls ?? false,
-      reasoning: config.openai.reasoningEffort
-        ? { effort: config.openai.reasoningEffort }
+      reasoning: effectiveEffort
+        ? { effort: effectiveEffort, summary: 'concise' }
         : undefined,
       store: false,
       stream: true,
       include: [],
+      user: input.chatId ? `tg-${input.chatId}` : undefined,
+      max_output_tokens: input.maxOutputTokens ?? config.openai.maxOutputTokens ?? undefined,
     };
   if (input.truncation) {
     bodyPayload.truncation = input.truncation;
@@ -171,13 +177,19 @@ export async function createNativeResponse(input: {
 
   const toolSearchPaths = extractToolSearchPaths(output);
 
-  // Debug: log usage and tool_search activity
+  // Debug: log usage, reasoning summary, and tool_search activity
   const usage = (completedPayload as Record<string, unknown> | null)?.usage as Record<string, unknown> | undefined;
   if (usage) {
     console.log('[usage] input=%s output=%s total=%s cached=%s reasoning=%s',
       usage.input_tokens ?? '?', usage.output_tokens ?? '?', usage.total_tokens ?? '?',
       (usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens ?? '0',
       (usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens ?? '0');
+  }
+
+  // Log reasoning summary if present (enabled by reasoning.summary='concise')
+  const reasoningSummary = extractReasoningSummary(output);
+  if (reasoningSummary) {
+    console.log('[reasoning] %s', reasoningSummary.slice(0, 500));
   }
 
   const toolSearchItems = output.filter((item) => item.type === 'tool_search_output');
@@ -505,6 +517,19 @@ function collectToolSearchNames(value: unknown, paths: Set<string>): void {
       collectToolSearchNames(entry, paths);
     }
   }
+}
+
+function extractReasoningSummary(items: NativeResponseOutputItem[]): string | null {
+  for (const item of items) {
+    if (item.type === 'reasoning' || item.type === 'reasoning_summary') {
+      const summary = Array.isArray(item.summary)
+        ? (item.summary as Array<{ text?: string }>).map((s) => s.text ?? '').join('')
+        : typeof item.summary === 'string' ? item.summary : null;
+      if (summary) return summary;
+      if (typeof item.text === 'string' && item.text) return item.text;
+    }
+  }
+  return null;
 }
 
 function extractErrorMessage(raw: string): string | null {

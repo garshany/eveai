@@ -48,9 +48,12 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('<missing_context_gating>');
     expect(prompt).toContain('<reasoning>');
     expect(prompt).toContain('residence/staging inference');
+    expect(prompt).toContain('<reasoning_strategy>');
+    expect(prompt).toContain('<self_correction>');
+    expect(prompt).toContain('<proactive_enrichment>');
 
-    // Prompt grows with new tool rules (scan_analysis + intel_note + ship_context + eve_scout). Track size to avoid unbounded bloat.
-    expect(prompt.length).toBeLessThan(24000);
+    // Prompt grows with new tool rules (scan_analysis + intel_note + ship_context + eve_scout + reasoning_strategy + self_correction + proactive_enrichment). Track size to avoid unbounded bloat.
+    expect(prompt.length).toBeLessThan(25500);
   });
 
   it('appends profile and summary when provided', () => {

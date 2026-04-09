@@ -44,6 +44,7 @@ export const config = {
     baseUrl: optional('OPENAI_BASE_URL', ''),
     apiMode: optional('OPENAI_API_MODE', 'native_responses'),
     reasoningEffort: optional('OPENAI_REASONING_EFFORT', 'medium'),
+    maxOutputTokens: optionalInt('OPENAI_MAX_OUTPUT_TOKENS', 0),
     store: optional('OPENAI_STORE', 'true') === 'true',
     compactThreshold: optionalInt('OPENAI_COMPACT_THRESHOLD', 0),
     modelContextWindow: optionalInt('OPENAI_MODEL_CONTEXT_WINDOW', 200_000),

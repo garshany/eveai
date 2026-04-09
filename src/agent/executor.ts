@@ -496,6 +496,8 @@ async function runNativeAgentLoop(
     isSimpleStaticAggregateCountGoal(goal) ? 'static_aggregate' : 'full',
   );
   const webSearchState = createWebSearchState();
+  const reasoningEffort = classifyReasoningEffort(goal);
+  console.log('[executor] reasoning effort=%s for goal="%s"', reasoningEffort, goal.slice(0, 60));
 
   const continuation = planConversationContinuation(db, threadId);
   let pendingItems: NativeInputItem[] = continuation.items;
@@ -539,6 +541,7 @@ async function runNativeAgentLoop(
         truncation: 'auto',
         contextManagement,
         chatId,
+        reasoningEffort,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1697,6 +1700,54 @@ function isRecentSqliteTimestamp(value: string | null, maxAgeMs: number): boolea
   return (Date.now() - millis) <= maxAgeMs;
 }
 
+/**
+ * Classify user message complexity to select optimal reasoning effort.
+ * Returns 'low' for trivial messages, 'medium' for standard, 'high' for complex analysis.
+ */
+export function classifyReasoningEffort(goal: string): string {
+  const lower = goal.toLowerCase().trim();
+  const len = lower.length;
+
+  // Trivial: greetings, very short messages, simple social exchanges
+  if (len < 30) {
+    if (/^(привет|здравствуй|хай|hi|hello|hey|yo|ку|хей|здорово|дарова|gg|пока|спасибо|thx|thanks|ok|ок|да|нет|ладно|хорошо|понял|ясно)\b/u.test(lower)) {
+      return 'low';
+    }
+    if (/^(что ты умеешь|помощь|help|\/start|\/help)\s*$/u.test(lower)) {
+      return 'low';
+    }
+  }
+
+  // Static aggregate counts → low effort (simple DB lookup)
+  if (isSimpleStaticAggregateCountGoal(goal)) {
+    return 'low';
+  }
+
+  // Complex: multi-entity analysis, scans, OSINT, tactical assessment, market comparison
+  const complexPatterns = [
+    /анализ|analyze|analysis|проанализируй/u,
+    /d-scan|dscan|дскан|флит|fleet comp/u,
+    /local\s+scan|локал|кто в локале/u,
+    /osint|резиденц|staging|откуда летает/u,
+    /сравни|сравнение|compare|vs\s+/u,
+    /доктрин|doctrine|counter|контр/u,
+    /рассчитай|calculate|dps|ehp|танк/u,
+    /маршрут.*опасн|route.*danger|threat/u,
+    /фит.*для|build.*fit|fitting/u,
+  ];
+  if (complexPatterns.some((p) => p.test(lower))) {
+    return 'high';
+  }
+
+  // Long pastes (D-Scan, fleet comp, local list) → high
+  const lineCount = goal.split('\n').length;
+  if (lineCount > 10) {
+    return 'high';
+  }
+
+  return 'medium';
+}
+
 export const __test__ = {
   buildSmartContext,
   buildToolStateRecoveryContext,
@@ -1714,6 +1765,7 @@ export const __test__ = {
   formatCountNoun,
   planConversationContinuation,
   isRecentSqliteTimestamp,
+  classifyReasoningEffort,
 };
 
 function compactToolResult(value: unknown): unknown {
