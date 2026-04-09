@@ -49,8 +49,8 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('<reasoning>');
     expect(prompt).toContain('residence/staging inference');
 
-    // Prompt grows with new tool rules (scan_analysis + intel_note + ship_context). Track size to avoid unbounded bloat.
-    expect(prompt.length).toBeLessThan(22000);
+    // Prompt grows with new tool rules (scan_analysis + intel_note + ship_context + eve_scout). Track size to avoid unbounded bloat.
+    expect(prompt.length).toBeLessThan(24000);
   });
 
   it('appends profile and summary when provided', () => {
