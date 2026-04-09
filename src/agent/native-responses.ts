@@ -105,16 +105,16 @@ export async function createNativeResponse(input: {
       tool_choice: 'auto',
       parallel_tool_calls: input.parallelToolCalls ?? false,
       reasoning: effectiveEffort
-        ? { effort: effectiveEffort, summary: 'concise' }
+        ? { effort: effectiveEffort }
         : undefined,
       store: false,
       stream: true,
       include: [],
     };
-  // Only send optional parameters when explicitly configured — ChatGPT proxy
-  // rejects unknown/unsupported parameters with a 400 error.
+  // Only send optional parameters when explicitly configured.
+  // ChatGPT proxy rejects unknown parameters (user, max_output_tokens,
+  // prompt_cache_retention, reasoning.summary) with a 400 error.
   if (maxTokens > 0) bodyPayload.max_output_tokens = maxTokens;
-  if (input.chatId) bodyPayload.user = `tg-${input.chatId}`;
   if (input.truncation) {
     bodyPayload.truncation = input.truncation;
   }
