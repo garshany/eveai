@@ -910,7 +910,7 @@ async function executeToolCall(
       destination: String(args.destination ?? ''),
       set_autopilot: args.set_autopilot !== false,
       avoid: Array.isArray(args.avoid) ? args.avoid.filter((v): v is number => typeof v === 'number') : [],
-      prefer: args.prefer === 'shortest' || args.prefer === 'insecure' ? args.prefer : 'secure',
+      prefer: args.prefer === 'shortest' || args.prefer === 'insecure' || args.prefer === 'thera_shortcut' ? args.prefer : 'secure',
     };
     const routeResult = await planRoute(db, routeArgs, ctx);
     console.log('[plan_route] origin=%s dest=%s routes=%d autopilot=%s error=%s',

@@ -10,7 +10,7 @@ import { attributeKillsToGates } from '../eve-board/analytics.js';
 import type { GateKill } from '../eve-board/types.js';
 import { findBestTheraShortcut, type TheraShortcut } from './thera-scout.js';
 
-type RouteFlag = 'secure' | 'shortest' | 'insecure';
+type RouteFlag = 'secure' | 'shortest' | 'insecure' | 'thera_shortcut';
 
 // ---------------------------------------------------------------------------
 // Route monitor sender — set once from app.ts at boot time
@@ -67,7 +67,7 @@ type RouteVariant = {
   systems: string[];
 };
 
-type AutopilotMode = 'none' | 'exact_route' | 'destination_only';
+type AutopilotMode = 'none' | 'exact_route' | 'destination_only' | 'wh_shortcut';
 
 export type PlanRouteResult = {
   ok: boolean;
@@ -150,10 +150,10 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     }
   }
 
-  // 6. Set autopilot for the preferred route
+  // 6. Set autopilot for the preferred route (skip for thera_shortcut — handled below)
   let autopilotSet = false;
   let autopilotMode: AutopilotMode = 'none';
-  if (args.set_autopilot !== false && routes.length > 0) {
+  if (args.set_autopilot !== false && args.prefer !== 'thera_shortcut' && routes.length > 0) {
     const preferred = args.prefer
       ? routes.find((r) => r.flag === args.prefer) ?? routes[0]
       : routes.find((r) => r.flag === 'secure') ?? routes[0];
@@ -168,19 +168,38 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     }
   }
 
-  let formattedSummary = formatRouteSummary(originInfo, destInfo, routes, autopilotMode, args.prefer);
-
-  // 7. Check for Thera wormhole shortcut (non-blocking)
+  // 7. Check for Thera wormhole shortcut
+  let theraShortcut: TheraShortcut | null = null;
   const shortestRoute = routes.reduce((best, r) => r.jumps < best.jumps ? r : best, routes[0]);
   if (shortestRoute && shortestRoute.jumps >= 8) {
     try {
-      const thera = await findBestTheraShortcut(db, originInfo.id, destInfo.id, shortestRoute.jumps, originInfo.name, destInfo.name);
-      if (thera) {
-        formattedSummary += '\n\n' + formatTheraShortcut(thera);
-      }
+      theraShortcut = await findBestTheraShortcut(db, originInfo.id, destInfo.id, shortestRoute.jumps, originInfo.name, destInfo.name);
     } catch (err) {
       console.log('[plan_route] Thera shortcut check failed: %s', err instanceof Error ? err.message : String(err));
     }
+  }
+
+  // 7b. If prefer=thera_shortcut, set autopilot waypoints for the WH route
+  if (args.prefer === 'thera_shortcut' && args.set_autopilot !== false && theraShortcut) {
+    const shortcutAutopilot = await setShortcutAutopilot(
+      db, originInfo.id, theraShortcut.entry_system_id, theraShortcut.exit_system_id, destInfo.id, ctx,
+    );
+    autopilotSet = shortcutAutopilot.ok;
+    autopilotMode = shortcutAutopilot.mode;
+  } else if (args.prefer === 'thera_shortcut' && !theraShortcut) {
+    // Fallback: no shortcut available, set shortest route instead
+    const fallbackRoute = routeResults[flags.indexOf('shortest')] ?? routeResults[0];
+    if (fallbackRoute && fallbackRoute.length > 0 && args.set_autopilot !== false) {
+      const autopilot = await setAutopilotRoute(db, fallbackRoute, destInfo.id, ctx);
+      autopilotSet = autopilot.ok;
+      autopilotMode = autopilot.mode;
+    }
+  }
+
+  let formattedSummary = formatRouteSummary(originInfo, destInfo, routes, autopilotMode, args.prefer === 'thera_shortcut' ? 'shortest' : args.prefer);
+
+  if (theraShortcut) {
+    formattedSummary += '\n\n' + formatTheraShortcut(theraShortcut);
   }
 
   const linked = getLinkedCharacter(db, ctx);
@@ -597,6 +616,42 @@ async function setAutopilotRoute(
   return { ok: false, mode: 'none' };
 }
 
+/**
+ * Set autopilot waypoints for a WH shortcut route:
+ *   origin → entry_system (gates) → [manual WH → Thera → manual WH] → exit_system → destination (gates)
+ *
+ * Sets 3 waypoints: entry_system, exit_system, destination.
+ */
+async function setShortcutAutopilot(
+  db: Db,
+  _originId: number,
+  entrySystemId: number,
+  exitSystemId: number,
+  destinationId: number,
+  ctx: UserContext,
+): Promise<{ ok: boolean; mode: AutopilotMode }> {
+  await getEveCapabilities(db, 'route_autopilot', ctx);
+
+  const waypoints = [entrySystemId, exitSystemId, destinationId];
+  try {
+    for (let i = 0; i < waypoints.length; i++) {
+      const result = await callEsiOperation(db, 'post_ui_autopilot_waypoint', {
+        destination_id: waypoints[i],
+        clear_other_waypoints: i === 0,
+        add_to_beginning: false,
+      }, ctx);
+      if (!result.ok) {
+        throw new Error(result.error);
+      }
+    }
+    console.log('[plan_route] WH shortcut autopilot set: entry=%d exit=%d dest=%d', entrySystemId, exitSystemId, destinationId);
+    return { ok: true, mode: 'wh_shortcut' };
+  } catch (err) {
+    console.log('[plan_route] WH shortcut autopilot failed: %s', err instanceof Error ? err.message : String(err));
+    return { ok: false, mode: 'none' };
+  }
+}
+
 function buildRouteVariant(
   flag: RouteFlag,
   systemIds: number[],
@@ -858,6 +913,7 @@ function minutesSinceIso(value: string): number | null {
 
 function describeAutopilotMode(mode: AutopilotMode): string {
   if (mode === 'exact_route') return 'выставлен';
+  if (mode === 'wh_shortcut') return 'выставлен (WH шорткат: вход → выход → цель)';
   if (mode === 'destination_only') return 'точка назначения выставлена';
   return 'нет';
 }

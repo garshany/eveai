@@ -120,7 +120,7 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
         origin: { type: 'string', description: 'Origin system name or ID. Use "current" to use the current location from prompt context.' },
         destination: { type: 'string', description: 'Destination system name or ID' },
         set_autopilot: { type: ['boolean', 'null'], description: 'Set autopilot to the preferred route (default true)' },
-        prefer: { type: ['string', 'null'], enum: ['secure', 'shortest', 'insecure', null], description: 'Which route to prefer for autopilot (default: secure)' },
+        prefer: { type: ['string', 'null'], enum: ['secure', 'shortest', 'insecure', 'thera_shortcut', null], description: 'Which route to prefer for autopilot. thera_shortcut sets waypoints for WH shortcut: entry system → exit system → destination (default: secure)' },
       },
       required: ['origin', 'destination', 'set_autopilot', 'prefer'],
       additionalProperties: false,
