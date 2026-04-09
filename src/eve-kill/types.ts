@@ -226,4 +226,6 @@ export type EveKillConfig = {
   cacheTtlSeconds: number;
   maxQueryLimit: number;
   userAgent: string;
+  retryMaxAttempts: number;
+  backoffMaxMs: number;
 };

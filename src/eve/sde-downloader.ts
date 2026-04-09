@@ -23,9 +23,11 @@ import { config } from '../config.js';
 
 const SDE_URL = 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip';
 
+const SDE_DOWNLOAD_TIMEOUT_MS = 5 * 60_000; // 5 minutes for ~100MB download
+
 async function downloadFile(url: string, dest: string): Promise<void> {
   console.log(`[sde-download] Downloading ${url}...`);
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(SDE_DOWNLOAD_TIMEOUT_MS) });
   if (!res.ok) {
     throw new Error(`Failed to download SDE: HTTP ${res.status} ${res.statusText}`);
   }

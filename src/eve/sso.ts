@@ -5,7 +5,7 @@ import { getUserTelegramChatId } from '../auth/user-resolver.js';
 import { decryptStoredSecret, encryptStoredSecret } from '../auth/secret-storage.js';
 import { deleteUserProfileArtifact } from './user-profile-storage.js';
 import { getEveSsoMetadata, verifyEveAccessToken } from './sso-auth.js';
-import { fetchWithTimeout } from './http.js';
+import { fetchRetrying } from './http.js';
 
 interface TokenResponse {
   access_token: string;
@@ -310,7 +310,7 @@ async function refreshAccessToken(
   let res: Response;
   try {
     const metadata = await getEveSsoMetadata();
-    res = await fetchWithTimeout(metadata.token_endpoint, {
+    res = await fetchRetrying(metadata.token_endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -322,14 +322,14 @@ async function refreshAccessToken(
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
       }),
-    }, config.eve.requestTimeoutMs);
+    }, { maxAttempts: 2, backoffMaxMs: 3000, timeoutMs: config.eve.requestTimeoutMs });
   } catch (error) {
     console.error('[sso] Token refresh request failed:', (error as Error).message);
     return null;
   }
 
   if (!res.ok) {
-    console.error('[sso] Token refresh failed:', await res.text());
+    console.error('[sso] Token refresh failed: HTTP %d for character=%d', res.status, account.character_id);
     return null;
   }
 

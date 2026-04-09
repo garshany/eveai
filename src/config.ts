@@ -97,6 +97,8 @@ export const config = {
     cacheTtlSeconds: optionalInt('ZKILL_CACHE_TTL_SECONDS', 300),
     maxPastSeconds: optionalInt('ZKILL_MAX_PAST_SECONDS', 604800),
     userAgent: optional('ZKILL_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://eveonline-ai.ru/; +https://github.com/garshany/eveai)'),
+    retryMaxAttempts: optionalInt('ZKILL_RETRY_MAX_ATTEMPTS', 3),
+    backoffMaxMs: optionalInt('ZKILL_BACKOFF_MAX_MS', 10000),
   },
   eveKill: {
     baseUrl: optional('EVE_KILL_BASE_URL', 'https://eve-kill.com/api/'),
@@ -104,6 +106,16 @@ export const config = {
     cacheTtlSeconds: optionalInt('EVE_KILL_CACHE_TTL_SECONDS', 300),
     maxQueryLimit: optionalInt('EVE_KILL_MAX_QUERY_LIMIT', 100),
     userAgent: optional('EVE_KILL_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://eveonline-ai.ru/; +https://github.com/garshany/eveai)'),
+    retryMaxAttempts: optionalInt('EVE_KILL_RETRY_MAX_ATTEMPTS', 3),
+    backoffMaxMs: optionalInt('EVE_KILL_BACKOFF_MAX_MS', 10000),
+  },
+  eveScout: {
+    baseUrl: optional('EVE_SCOUT_BASE_URL', 'https://api.eve-scout.com/v2/public/'),
+    timeoutMs: optionalInt('EVE_SCOUT_TIMEOUT_MS', 8000),
+    cacheTtlSeconds: optionalInt('EVE_SCOUT_CACHE_TTL_SECONDS', 300),
+    userAgent: optional('EVE_SCOUT_USER_AGENT', 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://eveonline-ai.ru/; +https://github.com/garshany/eveai)'),
+    retryMaxAttempts: optionalInt('EVE_SCOUT_RETRY_MAX_ATTEMPTS', 2),
+    backoffMaxMs: optionalInt('EVE_SCOUT_BACKOFF_MAX_MS', 5000),
   },
   compact: {
     maxInputChars: optionalInt('COMPACT_MAX_INPUT_CHARS', 20000),

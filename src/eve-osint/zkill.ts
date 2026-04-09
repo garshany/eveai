@@ -1,5 +1,6 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
+import { fetchRetrying } from '../eve/http.js';
 import { callEsiOperation } from '../eve/esi-client.js';
 
 export type ZkillEntityScope = 'character' | 'corporation' | 'alliance';
@@ -192,15 +193,21 @@ async function fetchEntityFeedPage(
 
   const url = new URL(path, config.zkill.baseUrl.endsWith('/') ? config.zkill.baseUrl : `${config.zkill.baseUrl}/`);
   try {
-    const response = await fetch(url, {
+    const response = await fetchRetrying(url, {
       headers: {
         Accept: 'application/json',
         'Accept-Encoding': 'gzip',
         'User-Agent': config.zkill.userAgent,
       },
-      signal: AbortSignal.timeout(config.zkill.timeoutMs),
+    }, {
+      maxAttempts: config.zkill.retryMaxAttempts,
+      backoffMaxMs: config.zkill.backoffMaxMs,
+      timeoutMs: config.zkill.timeoutMs,
     });
-    if (!response.ok) return [];
+    if (!response.ok) {
+      console.warn('[zkill] feed %s → %d', path, response.status);
+      return [];
+    }
     const payload = await response.json();
     if (!Array.isArray(payload)) return [];
     const items = payload.filter((item: unknown): item is ZkbFeedItem =>
@@ -208,7 +215,8 @@ async function fetchEntityFeedPage(
     );
     writeCache(db, cacheKey, items, computeTtl(args.pastSeconds));
     return items;
-  } catch {
+  } catch (err) {
+    console.warn('[zkill] feed %s failed: %s', path, (err as Error).message);
     return [];
   }
 }

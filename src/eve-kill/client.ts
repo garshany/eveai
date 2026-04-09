@@ -5,6 +5,7 @@
 
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
+import { fetchRetrying } from '../eve/http.js';
 import type {
   EveKillKillmail,
   QueryRequest,
@@ -31,6 +32,10 @@ export function getEveKillConfig(): EveKillConfig {
 
 type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string; status?: number };
 
+function retryOpts(cfg: EveKillConfig) {
+  return { maxAttempts: cfg.retryMaxAttempts, backoffMaxMs: cfg.backoffMaxMs, timeoutMs: cfg.timeoutMs };
+}
+
 async function apiGet<T>(path: string, params?: Record<string, string | number>): Promise<ApiResult<T>> {
   const cfg = getEveKillConfig();
   const base = cfg.baseUrl.endsWith('/') ? cfg.baseUrl : `${cfg.baseUrl}/`;
@@ -42,20 +47,21 @@ async function apiGet<T>(path: string, params?: Record<string, string | number>)
   }
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchRetrying(url, {
       headers: {
         Accept: 'application/json',
         'Accept-Encoding': 'gzip',
         'User-Agent': cfg.userAgent,
       },
-      signal: AbortSignal.timeout(cfg.timeoutMs),
-    });
+    }, retryOpts(cfg));
     if (!res.ok) {
+      console.warn('[eve-kill] GET %s → %d', path, res.status);
       return { ok: false, error: `EVE-KILL HTTP ${res.status}`, status: res.status };
     }
     const data = await res.json() as T;
     return { ok: true, data };
   } catch (err) {
+    console.warn('[eve-kill] GET %s failed: %s', path, (err as Error).message);
     return { ok: false, error: `EVE-KILL request failed: ${(err as Error).message}` };
   }
 }
@@ -66,7 +72,7 @@ async function apiPost<T>(path: string, body: unknown): Promise<ApiResult<T>> {
   const url = new URL(path.replace(/^\/+/, ''), base);
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchRetrying(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -75,14 +81,15 @@ async function apiPost<T>(path: string, body: unknown): Promise<ApiResult<T>> {
         'User-Agent': cfg.userAgent,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(cfg.timeoutMs),
-    });
+    }, retryOpts(cfg));
     if (!res.ok) {
+      console.warn('[eve-kill] POST %s → %d', path, res.status);
       return { ok: false, error: `EVE-KILL HTTP ${res.status}`, status: res.status };
     }
     const data = await res.json() as T;
     return { ok: true, data };
   } catch (err) {
+    console.warn('[eve-kill] POST %s failed: %s', path, (err as Error).message);
     return { ok: false, error: `EVE-KILL request failed: ${(err as Error).message}` };
   }
 }
