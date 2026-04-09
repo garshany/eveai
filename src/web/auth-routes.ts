@@ -169,7 +169,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       // Build UserContext for linking
       const ctx: UserContext = chatId ? { userId, chatId } : { userId };
 
-      reassignCharacterOwnership(db, ctx.userId, characterId);
+      await reassignCharacterOwnership(db, ctx.userId, characterId);
       linkCharacterToChat(db, ctx, characterId);
 
       void refreshUserProfile(db, ctx)
@@ -280,7 +280,7 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#39;');
 }
 
-function reassignCharacterOwnership(db: Db, userId: number, characterId: number): void {
+async function reassignCharacterOwnership(db: Db, userId: number, characterId: number): Promise<void> {
   const staleLinks = db.prepare(`
     SELECT chat_id, user_id
     FROM eve_character_links
@@ -295,7 +295,7 @@ function reassignCharacterOwnership(db: Db, userId: number, characterId: number)
       db.prepare('UPDATE users SET active_character_id = NULL WHERE user_id = ? AND active_character_id = ?')
         .run(link.user_id, characterId);
     }
-    deleteUserProfileArtifact({ userId: link.user_id ?? 0, chatId: link.chat_id }, characterId);
+    await deleteUserProfileArtifact({ userId: link.user_id ?? 0, chatId: link.chat_id }, characterId);
   }
 
   db.prepare('DELETE FROM eve_character_links WHERE character_id = ? AND COALESCE(user_id, 0) != ?')

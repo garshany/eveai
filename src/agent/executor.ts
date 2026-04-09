@@ -288,7 +288,7 @@ export async function handleAgentMessage(
   ensureThreadOwnership(db, threadId, ctx);
 
   const linked = getLinkedCharacter(db, ctx);
-  let userProfile = readUserProfile(db, ctx);
+  let userProfile = await readUserProfile(db, ctx);
 
   // Guard: if character is linked but profile file is missing, try to refresh it
   if (linked && !userProfile) {
@@ -299,7 +299,7 @@ export async function handleAgentMessage(
         new Promise<null>((resolve) => setTimeout(() => resolve(null), PROFILE_GUARD_TIMEOUT_MS)),
       ]);
       if (result && result.ok) {
-        userProfile = readUserProfile(db, ctx);
+        userProfile = await readUserProfile(db, ctx);
       }
     } catch {
       // proceed without profile
@@ -863,7 +863,7 @@ async function executeToolCall(
   }
 
   if (isSetActiveFitTool(name)) {
-    return writeManualFitting(db, ctx, String(args.fitting ?? ''));
+    return await writeManualFitting(db, ctx, String(args.fitting ?? ''));
   }
 
   if (isHeartbeatConfigTool(name)) {

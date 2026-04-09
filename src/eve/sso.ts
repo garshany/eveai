@@ -193,7 +193,7 @@ export function setActiveCharacter(db: Db, ctx: UserContext, characterId: number
   return true;
 }
 
-export function unlinkCharacter(db: Db, ctx: UserContext, characterId: number): boolean {
+export async function unlinkCharacter(db: Db, ctx: UserContext, characterId: number): Promise<boolean> {
   backfillLegacyOwnership(db, ctx);
 
   let deleted = false;
@@ -220,7 +220,7 @@ export function unlinkCharacter(db: Db, ctx: UserContext, characterId: number): 
     }
   }
 
-  deleteUserProfileArtifact(ctx, characterId);
+  await deleteUserProfileArtifact(ctx, characterId);
   cleanupDetachedCharacter(db, characterId);
   return true;
 }

@@ -73,7 +73,7 @@ export function registerApiRoutes(app: FastifyInstance, db: Db): void {
 
     const chatId = getUserTelegramChatId(db, userId) ?? undefined;
     const ctx: UserContext = { userId, chatId };
-    const ok = unlinkCharacter(db, ctx, characterId);
+    const ok = await unlinkCharacter(db, ctx, characterId);
 
     if (!ok) {
       return reply.status(404).send({ error: 'Character not linked to this user' });

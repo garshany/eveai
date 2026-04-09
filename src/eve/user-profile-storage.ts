@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { dirname, join, parse } from 'node:path';
 import { config } from '../config.js';
 import type { UserContext } from '../auth/user-resolver.js';
@@ -18,9 +18,7 @@ export function resolveUserProfilePath(ctx: UserContext, characterId: number): s
   return join(pathInfo.dir || dirname(base), `${stem}_${identifier}_${characterId}.md`);
 }
 
-export function deleteUserProfileArtifact(ctx: UserContext, characterId: number): void {
+export async function deleteUserProfileArtifact(ctx: UserContext, characterId: number): Promise<void> {
   const path = resolveUserProfilePath(ctx, characterId);
-  if (existsSync(path)) {
-    rmSync(path, { force: true });
-  }
+  await rm(path, { force: true });
 }

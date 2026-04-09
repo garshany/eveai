@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { config } from '../config.js';
 import type { NativeFunctionTool, NativeNamespaceTool } from '../agent/native-responses.js';
@@ -242,10 +242,11 @@ async function loadEsiCatalogInternal(): Promise<Map<string, EsiOperationMeta>> 
 async function loadSwaggerSpec(): Promise<SwaggerSpec> {
   const cachePath = config.esi?.catalogCachePath ?? './data/cache/esi-swagger.json';
   if (isTestEnvironment()) {
-    if (!existsSync(cachePath)) {
+    try {
+      return JSON.parse(await readFile(cachePath, 'utf-8')) as SwaggerSpec;
+    } catch {
       throw new Error(`ESI swagger cache is missing: ${cachePath}`);
     }
-    return JSON.parse(readFileSync(cachePath, 'utf-8')) as SwaggerSpec;
   }
 
   try {
@@ -258,26 +259,27 @@ async function loadSwaggerSpec(): Promise<SwaggerSpec> {
     }, config.esi.requestTimeoutMs);
     if (res.ok) {
       const json = await res.json() as SwaggerSpec;
-      writeCache(cachePath, JSON.stringify(json));
+      await writeCache(cachePath, JSON.stringify(json));
       return json;
     }
   } catch {
     // fall back to local cache
   }
 
-  if (!existsSync(cachePath)) {
+  try {
+    return JSON.parse(await readFile(cachePath, 'utf-8')) as SwaggerSpec;
+  } catch {
     throw new Error(`ESI swagger cache is missing: ${cachePath}`);
   }
-  return JSON.parse(readFileSync(cachePath, 'utf-8')) as SwaggerSpec;
 }
 
 function isTestEnvironment(): boolean {
   return process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
 }
 
-function writeCache(path: string, data: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, data);
+async function writeCache(path: string, data: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, data);
 }
 
 function resolveParameter(

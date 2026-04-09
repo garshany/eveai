@@ -3,7 +3,7 @@
  * format it for AI context, and persist to USER.md.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFile, writeFile, access } from 'node:fs/promises';
 import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from './esi-client.js';
 import type { UserContext } from '../auth/user-resolver.js';
@@ -113,7 +113,7 @@ export async function resolveActiveFitting(
     const fittingText = lines.join('\n');
 
     // Persist to USER.md
-    persistActiveFitting(db, ctx, fittingText);
+    await persistActiveFitting(db, ctx, fittingText);
 
     return fittingText;
   } catch (err) {
@@ -128,13 +128,17 @@ export async function resolveActiveFitting(
 
 const SECTION_MARKER = '## Active Fitting';
 
-function persistActiveFitting(db: Db, ctx: UserContext, fittingText: string): void {
+async function persistActiveFitting(db: Db, ctx: UserContext, fittingText: string): Promise<void> {
   const characterId = getLinkedCharacter(db, ctx)?.characterId;
   if (!characterId) return;
   const path = resolveUserProfilePath(ctx, characterId);
-  if (!existsSync(path)) return;
+  try {
+    await access(path);
+  } catch {
+    return; // file doesn't exist
+  }
 
-  let content = readFileSync(path, 'utf-8');
+  let content = await readFile(path, 'utf-8');
 
   const newSection = `${SECTION_MARKER}\n\`\`\`\n${fittingText}\n\`\`\``;
 
@@ -158,7 +162,7 @@ function persistActiveFitting(db: Db, ctx: UserContext, fittingText: string): vo
     }
   }
 
-  writeFileSync(path, content);
+  await writeFile(path, content);
   console.log('[active-fitting] persisted to USER.md');
 }
 
@@ -166,12 +170,16 @@ function persistActiveFitting(db: Db, ctx: UserContext, fittingText: string): vo
 // Manual fitting override — user pastes an EFT fit via chat
 // ---------------------------------------------------------------------------
 
-export function writeManualFitting(db: Db, ctx: UserContext, fittingText: string): { ok: boolean; error?: string } {
+export async function writeManualFitting(db: Db, ctx: UserContext, fittingText: string): Promise<{ ok: boolean; error?: string }> {
   const characterId = getLinkedCharacter(db, ctx)?.characterId;
   if (!characterId) return { ok: false, error: 'No character linked.' };
   const path = resolveUserProfilePath(ctx, characterId);
-  if (!existsSync(path)) return { ok: false, error: 'USER.md not found. Refresh profile first.' };
+  try {
+    await access(path);
+  } catch {
+    return { ok: false, error: 'USER.md not found. Refresh profile first.' };
+  }
 
-  persistActiveFitting(db, ctx, fittingText.trim());
+  await persistActiveFitting(db, ctx, fittingText.trim());
   return { ok: true };
 }

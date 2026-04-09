@@ -452,7 +452,7 @@ async function replyFormatted(ctx: Context, text: string): Promise<void> {
 async function maybeRefreshUserProfile(db: Db, ctx: UserContext): Promise<void> {
   const refreshSeconds = config.userProfile.refreshSeconds;
   if (!refreshSeconds || refreshSeconds <= 0) return;
-  const profile = readUserProfile(db, ctx);
+  const profile = await readUserProfile(db, ctx);
   if (!profile) {
     void refreshUserProfile(db, ctx).catch(() => {});
     return;
@@ -533,7 +533,7 @@ async function refreshAndSummarize(
       new Promise<null>((resolve) => setTimeout(() => resolve(null), PROFILE_REFRESH_TIMEOUT_MS)),
     ]);
     if (result && result.ok) {
-      profileContent = readUserProfile(db, userCtx);
+      profileContent = await readUserProfile(db, userCtx);
     }
   } catch {
     // profile will refresh later on next message

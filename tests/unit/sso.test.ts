@@ -225,7 +225,7 @@ describe('getAccessToken', () => {
 });
 
 describe('unlinkCharacter', () => {
-  it('removes tokens and profile artifact when the last character link is deleted', () => {
+  it('removes tokens and profile artifact when the last character link is deleted', async () => {
     db.prepare("INSERT INTO users (user_id, display_name, active_character_id, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))")
       .run(7, 'Pilot', 12345);
     db.prepare("INSERT INTO telegram_accounts (telegram_user_id, user_id, username, first_name, created_at) VALUES (?, ?, ?, ?, datetime('now'))")
@@ -241,7 +241,7 @@ describe('unlinkCharacter', () => {
     writeFileSync(profilePath, 'profile');
     db.prepare('UPDATE users SET active_character_id = ? WHERE user_id = ?').run(12345, 7);
 
-    expect(unlinkCharacter(db, { userId: 7, chatId: 77 }, 12345)).toBe(true);
+    expect(await unlinkCharacter(db, { userId: 7, chatId: 77 }, 12345)).toBe(true);
     expect(db.prepare('SELECT * FROM eve_accounts WHERE character_id = ?').get(12345)).toBeUndefined();
     expect(existsSync(profilePath)).toBe(false);
   });

@@ -46,11 +46,11 @@ afterEach(() => {
 });
 
 describe('readUserProfile', () => {
-  it('reads only the profile file for the current chat and character pair', () => {
+  it('reads only the profile file for the current chat and character pair', async () => {
     writeFileSync(join(profileDir, 'USER_10_7001.md'), 'profile for chat 10');
 
-    expect(readUserProfile(db, { userId: 0, chatId: 10 })).toBe('profile for chat 10');
-    expect(readUserProfile(db, { userId: 0, chatId: 11 })).toBeNull();
+    expect(await readUserProfile(db, { userId: 0, chatId: 10 })).toBe('profile for chat 10');
+    expect(await readUserProfile(db, { userId: 0, chatId: 11 })).toBeNull();
   });
 
   it('keeps full gameplay detail in USER.md while sanitizing text fields', () => {

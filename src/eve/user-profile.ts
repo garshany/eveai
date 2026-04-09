@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from './esi-client.js';
@@ -9,13 +9,15 @@ import { resolveUserProfilePath } from './user-profile-storage.js';
 
 type JsonResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
-export function readUserProfile(db: Db, ctx: UserContext): string | null {
+export async function readUserProfile(db: Db, ctx: UserContext): Promise<string | null> {
   const characterId = getLinkedCharacter(db, ctx)?.characterId ?? null;
   if (!characterId) return null;
   const path = resolveUserProfilePath(ctx, characterId);
-  if (existsSync(path)) {
-    const content = readFileSync(path, 'utf-8').trim();
+  try {
+    const content = (await readFile(path, 'utf-8')).trim();
     if (content.length > 0) return content;
+  } catch {
+    // file doesn't exist
   }
   return null;
 }
@@ -171,10 +173,8 @@ export async function refreshUserProfile(db: Db, ctx: UserContext): Promise<Json
 
   const path = resolveUserProfilePath(ctx, characterId);
   const dir = dirname(path);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  writeFileSync(path, markdown);
+  await mkdir(dir, { recursive: true });
+  await writeFile(path, markdown);
   return { ok: true, data: { path } };
 }
 
