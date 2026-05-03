@@ -41,7 +41,7 @@ Key applied guidance:
 - AC6 PASS: tool guidance is consolidated near tool source hierarchy, decision rules, and domain outcomes without changing tool schemas or runtime orchestration.
 - AC7 PASS: prompt tests now assert outcome-first order, static-before-dynamic ordering, important invariants, and prompt size regression.
 - AC8 PASS: local validation commands passed.
-- AC9 PENDING: production commit, push, deploy, and production verification will be recorded after deployment.
+- AC9 PASS: commit was pushed, deployed to production, and production verification passed.
 
 ## Local Validation
 
@@ -67,4 +67,44 @@ git diff --check: PASS
 
 ## Deployment
 
-Pending. This evidence will be updated after commit, push, production deploy, and production verification.
+Commit deployed:
+
+```text
+3ca526b Apply GPT-5.5 prompt guidance
+```
+
+Production deployment command completed:
+
+```text
+cd /opt/eveai
+tar -xf /tmp/eveai-gpt55-prompt-3ca526b.tar
+npm ci
+npm run build
+pm2 restart eveai --update-env
+```
+
+Production verification passed:
+
+```text
+grep -n '<mission_and_success>' src/agent/prompts.ts
+7:<mission_and_success>
+
+grep -n '<sde_schema>' src/agent/prompts.ts
+111: prompt += `\n\n<sde_schema>\n${SDE_SCHEMA}\n</sde_schema>`;
+
+pm2 status eveai
+eveai online
+
+curl -fsS http://127.0.0.1:3000/health
+status ok; telegram_bot ok; database ok; client_assets ok; openai_proxy ok
+
+npm run smoke
+[ok] env
+[ok] proxy_health
+[ok] proxy_models
+[ok] app_health
+
+grep production config
+src/config.ts: model default gpt-5.5
+.env: OPENAI_MODEL=gpt-5.5
+```
