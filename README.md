@@ -166,16 +166,15 @@ The model sees **14 full tools** with complete schemas. 176 ESI/EVE-KILL/EVE-Sco
 
 Developer prompt optimized per [GPT-5.5 prompting guide](https://developers.openai.com/api/docs/guides/prompt-guidance):
 
-- **Section order**: output_contract first, personality last (primacy/recency)
-- **Tool source hierarchy**: SDE > count > market > route > ESI > zKill > web_search
-- **Anti-laziness rules**: always verify stats, prices, skills via tools — never from memory
+- **Outcome-first structure**: mission, success criteria, constraints, and output shape before routing details
+- **Cache-friendly layout**: stable prompt and SDE schema first; live context, `USER.md`, and summaries last as data
+- **Tool source hierarchy**: SDE > count > market > scan/local > route > notes > ESI > EVE-KILL > EVE-Scout > web_search
+- **Evidence rules**: verify stats, prices, skills, locations, and PvP claims with the nearest reliable tool
 - **Dogma query pattern**: ready-to-use SQL JOIN for ship/module attribute lookup
-- **Reasoning strategy**: goal decomposition, data planning, dependency ordering before first tool call
-- **Self-correction**: validate tool results for logic errors, completeness, contradictions
-- **Proactive enrichment**: auto-enrich with security status, Jita comparison, intel notes
-- **Verification loop**: correctness, grounding, format check before every response
+- **Dynamic data boundary**: `USER.md` and conversation summaries are framed as untrusted data, not instructions
+- **Stopping rules**: finalize when the request is covered, data is grounded, Telegram format is valid, and side effects are safe
 - **Dynamic reasoning effort**: low for greetings, medium default, high for complex analysis
-- **Prompt size**: ~5K tokens
+- **Prompt size**: compact GPT-5.5 prompt stack with large static SDE schema cached ahead of dynamic context
 
 ---
 

@@ -10,31 +10,36 @@ describe('buildDeveloperPrompt', () => {
       grantedScopes: [],
     });
 
-    // Structure: output_contract first, personality last (GPT-5.4 recommended order)
+    // Structure: GPT-5.5 outcome-first mission, then output contract, then routing/policy.
+    const missionPos = prompt.indexOf('<mission_and_success>');
     const outputContractPos = prompt.indexOf('<output_contract>');
+    const toolHierarchyPos = prompt.indexOf('<tool_source_hierarchy>');
     const personalityPos = prompt.indexOf('<personality_and_writing_controls>');
+    expect(missionPos).toBeGreaterThanOrEqual(0);
+    expect(missionPos).toBeLessThan(outputContractPos);
     expect(outputContractPos).toBeLessThan(personalityPos);
+    expect(outputContractPos).toBeLessThan(toolHierarchyPos);
 
     // Core content assertions
     expect(prompt).toContain('Всегда отвечай по-русски');
-    expect(prompt).toContain('1-2 фразы');
-    expect(prompt).toContain('ТОЛЬКО из sde_sql');
+    expect(prompt).toContain('1-2 фраз');
+    expect(prompt).toContain('только из local SDE');
     expect(prompt).toContain('web_search');
     expect(prompt).toContain('tool_search');
     expect(prompt).toContain('batch_market_prices');
     expect(prompt).toContain('osint_infer_home');
-    expect(prompt).toContain('Backend управляет auth, tokens, pagination, retries, rate limits');
-    expect(prompt).toContain('character_id уже известен');
-    expect(prompt).toContain('ДУМАЙ → ПЛАНИРУЙ → ВЫЗЫВАЙ');
+    expect(prompt).toContain('Backend управляет auth, tokens, pagination, retries');
+    expect(prompt).toContain('character_id уже есть');
     expect(prompt).toContain('post_universe_names');
-    expect(prompt).toContain('обычно достаточно 1 вызова');
-    expect(prompt).toContain('Максимум 2 за ответ');
+    expect(prompt).toContain('обычно достаточно одного запроса');
+    expect(prompt).toContain('максимум двух за ответ');
     expect(prompt).toContain('Персонаж не привязан');
     expect(prompt).toContain('Residence/staging OSINT');
     expect(prompt).toContain('osint_infer_home');
     expect(prompt).toContain('EFT');
     expect(prompt).toContain('ломают импорт');
     expect(prompt).not.toContain('ОБЯЗАТЕЛЬНО вызывай для поиска ESI');
+    expect(prompt).not.toContain('ДУМАЙ → ПЛАНИРУЙ → ВЫЗЫВАЙ');
     expect(prompt).toContain('<sde_schema>');
 
     // Merged sections: no duplicate tool_map + tool_routing
@@ -42,18 +47,18 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).not.toContain('<tool_routing>');
     expect(prompt).toContain('<tool_source_hierarchy>');
 
-    // New GPT-5.4 sections present
-    expect(prompt).toContain('<verbosity_controls>');
-    expect(prompt).toContain('<completeness_contract>');
-    expect(prompt).toContain('<missing_context_gating>');
-    expect(prompt).toContain('<reasoning>');
-    expect(prompt).toContain('residence/staging inference');
-    expect(prompt).toContain('<reasoning_strategy>');
-    expect(prompt).toContain('<self_correction>');
-    expect(prompt).toContain('<proactive_enrichment>');
+    // GPT-5.5 outcome-first sections present.
+    expect(prompt).toContain('<mission_and_success>');
+    expect(prompt).toContain('<tool_decision_rules>');
+    expect(prompt).toContain('<private_access_and_context>');
+    expect(prompt).toContain('<domain_outcomes>');
+    expect(prompt).toContain('<answer_quality_and_stopping>');
+    expect(prompt).toContain('Residence/staging OSINT');
+    expect(prompt).toContain('Private ESI доступ gated');
+    expect(prompt).toContain('Батчи предпочтительнее циклов');
 
-    // Prompt grows with new tool rules (scan_analysis + intel_note + ship_context + eve_scout + reasoning_strategy + self_correction + proactive_enrichment). Track size to avoid unbounded bloat.
-    expect(prompt.length).toBeLessThan(25500);
+    // Track size to avoid drifting back into a process-heavy prompt stack.
+    expect(prompt.length).toBeLessThan(18000);
   });
 
   it('appends profile and summary when provided', () => {
@@ -73,6 +78,12 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('DATA> profile text');
     expect(prompt).toContain('<conversation_summary>');
     expect(prompt).toContain('DATA> summary text');
+
+    const sdePos = prompt.indexOf('<sde_schema>');
+    const profilePos = prompt.indexOf('<user_profile_data>');
+    const summaryPos = prompt.indexOf('<conversation_summary>');
+    expect(sdePos).toBeLessThan(profilePos);
+    expect(sdePos).toBeLessThan(summaryPos);
   });
 
   it('includes character context when authenticated', () => {
