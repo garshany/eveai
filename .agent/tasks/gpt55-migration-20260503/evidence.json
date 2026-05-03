@@ -48,6 +48,19 @@
     }
   },
   "deployment": {
-    "status": "pending"
+    "status": "PASS",
+    "committed_revision": "055516b",
+    "pushed": true,
+    "method": "git archive tarball extracted over /opt/eveai",
+    "server": "garshany@158.160.220.215",
+    "app_dir": "/opt/eveai",
+    "checks": {
+      "pm2": "PASS: eveai online, version 2.1.1",
+      "env_model": "PASS: OPENAI_MODEL=gpt-5.5",
+      "source_default": "PASS: src/config.ts fallback gpt-5.5",
+      "health": "PASS: http://127.0.0.1:3000/health status ok",
+      "smoke": "PASS: env, proxy_health, proxy_models, app_health",
+      "responses_ping": "PASS: /v1/responses model gpt-5.5 returned pong"
+    }
   }
 }

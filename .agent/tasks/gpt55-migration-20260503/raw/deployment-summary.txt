@@ -1,0 +1,36 @@
+git push
+Initial SSH push to git@github.com timed out on port 22.
+HTTPS push succeeded:
+  9bceea4..055516b  master -> master
+
+production deploy
+Server: garshany@158.160.220.215
+Path: /opt/eveai
+Method: git archive HEAD -> /tmp/eveai-gpt55-055516b.tar -> extract over /opt/eveai
+Commands completed:
+  npm ci
+  npm run build
+  pm2 restart eveai --update-env
+
+pm2
+eveai online, version 2.1.1, pid 3030719 after restart.
+
+model verification
+/opt/eveai/.env: OPENAI_MODEL=gpt-5.5
+/opt/eveai/src/config.ts: model fallback gpt-5.5
+
+health and smoke
+curl -fsS http://127.0.0.1:3000/health:
+  status ok; telegram_bot ok; database ok; client_assets ok; openai_proxy ok
+npm run smoke:
+  env ok
+  proxy_health ok
+  proxy_models ok
+  app_health ok
+
+direct Responses ping
+POST http://127.0.0.1:8080/v1/responses with model gpt-5.5 returned:
+  response.created model="gpt-5.5"
+  reasoning.effort="medium"
+  output_text.done text="pong"
+  response.completed status="completed"

@@ -33,4 +33,12 @@
 
 ## Deployment Status
 
-- Pending until commit, push, and production deployment complete.
+- Commit `055516b` was pushed to `origin/master` via HTTPS after SSH port 22 to GitHub timed out.
+- Production `/opt/eveai` is not a git checkout, so deployment used `git archive HEAD` to build `/tmp/eveai-gpt55-055516b.tar`, copied it to the server, and extracted it over `/opt/eveai` without deleting `.env` or data.
+- Production deploy commands completed: `npm ci`, `npm run build`, and `pm2 restart eveai --update-env`.
+- PM2 verification: `eveai` is online, version `2.1.1`, pid `3030719` after restart.
+- Production `.env` verification: `OPENAI_MODEL=gpt-5.5`.
+- Production source verification: `/opt/eveai/src/config.ts` defaults `OPENAI_MODEL` to `gpt-5.5`.
+- Production health: `curl -fsS http://127.0.0.1:3000/health` returned `status:"ok"` with database, client assets, Telegram bot, and OpenAI proxy OK.
+- Production smoke: `npm run smoke` passed env, proxy health, proxy models, and public app health.
+- Production model ping: direct proxy `/v1/responses` request with `"model":"gpt-5.5"` returned SSE events with `model:"gpt-5.5"`, `reasoning.effort:"medium"`, and output text `pong`.
