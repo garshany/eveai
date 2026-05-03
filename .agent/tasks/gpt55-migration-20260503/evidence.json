@@ -1,0 +1,53 @@
+{
+  "task_id": "gpt55-migration-20260503",
+  "target_model": "gpt-5.5",
+  "official_docs": {
+    "latest_model_url": "https://developers.openai.com/api/docs/guides/latest-model.md",
+    "migration_guide_url": "https://developers.openai.com/api/docs/guides/upgrading-to-gpt-5p5.md",
+    "prompting_guide_url": "https://developers.openai.com/api/docs/guides/prompt-guidance.md",
+    "latest_model": "gpt-5.5"
+  },
+  "changed_surfaces": [
+    "src/config.ts",
+    ".env.example",
+    "README.md",
+    "docs/RELIABILITY.md",
+    "docs/skills-protocol.md",
+    "tests/unit/osint-inference.test.ts",
+    ".agent/tasks/gpt55-migration-20260503/spec.md",
+    ".agent/tasks/gpt55-migration-20260503/evidence.md",
+    ".agent/tasks/gpt55-migration-20260503/evidence.json"
+  ],
+  "compatibility": {
+    "responses_api": "pass",
+    "reasoning_effort": "preserved-medium",
+    "tool_heavy_flow": "pass",
+    "phase_review": "uses previous_response_id; no manual assistant-item replay retrofit required",
+    "prompt_rewrite": "not-needed"
+  },
+  "validation": {
+    "targeted_tests": {
+      "command": "npm run test -- tests/unit/prompts.test.ts tests/unit/native-responses.test.ts tests/unit/warm-cold-path.test.ts tests/unit/smoke.test.ts",
+      "status": "PASS",
+      "tests": 29
+    },
+    "full_check": {
+      "command": "npm run check",
+      "status": "PASS",
+      "test_files": 43,
+      "tests": 239,
+      "includes": ["tsc --noEmit", "vitest run", "eslint src/ --max-warnings 0"]
+    },
+    "build": {
+      "command": "npm run build",
+      "status": "PASS"
+    },
+    "diff_check": {
+      "command": "git diff --check",
+      "status": "PASS"
+    }
+  },
+  "deployment": {
+    "status": "pending"
+  }
+}

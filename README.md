@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/EVE%20Online-AI%20Assistant-1a1a2e?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iI2ZmZmZmZiI+PHBhdGggZD0iTTEyIDJMMyA3djEwbDkgNSA5LTVIN0wzLTVWN2w5LTV6Ii8+PC9zdmc+&logoColor=white" alt="EVE AI" />
   <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram" />
-  <img src="https://img.shields.io/badge/GPT--5.4-Responses%20API-412991?style=for-the-badge&logo=openai&logoColor=white" alt="GPT-5.4" />
+  <img src="https://img.shields.io/badge/GPT--5.5-Responses%20API-412991?style=for-the-badge&logo=openai&logoColor=white" alt="GPT-5.5" />
   <img src="https://img.shields.io/badge/TypeScript-Strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/github/v/tag/garshany/eveai?style=for-the-badge&label=release&color=green" alt="Release" />
 </p>
@@ -80,7 +80,7 @@ Telegram-first AI assistant for EVE Online. Ask questions in natural language, g
 
 | Layer | Technology |
 |-------|-----------|
-| AI Model | GPT-5.4 via OpenAI Responses API (WebSocket transport) |
+| AI Model | GPT-5.5 via OpenAI Responses API (WebSocket transport) |
 | Bot Framework | grammY (Telegram long polling) |
 | Web Server | Fastify (auth, dashboard, health) |
 | Database | SQLite (better-sqlite3) — single file, zero ops |
@@ -103,7 +103,7 @@ Telegram-first AI assistant for EVE Online. Ask questions in natural language, g
 | **EVE-KILL** | Kill feed, PvP stats, entity stats, battle reports | REST, WebSocket |
 | **EVE-Scout** | WH navigation — Thera/Turnur routes, signatures, storms, WH types | REST |
 | **zKillboard** | Kill feed, PvP stats, fit research | REST, ESI enrichment |
-| **OpenAI Responses API** | GPT-5.4 model, tool calling, prompt caching | WebSocket (sticky routing, prewarm) |
+| **OpenAI Responses API** | GPT-5.5 model, tool calling, prompt caching | WebSocket (sticky routing, prewarm) |
 | **EVE SDE** | Static game data — items, ships, systems, blueprints, dogma | Local SQLite |
 | **Telegram Bot API** | User interaction, message delivery, heartbeat notifications | Long polling |
 
@@ -164,7 +164,7 @@ The model sees **14 full tools** with complete schemas. 176 ESI/EVE-KILL/EVE-Sco
 
 ## Prompt Engineering
 
-Developer prompt optimized per [GPT-5.4 prompting guide](https://developers.openai.com/api/docs/guides/prompt-guidance):
+Developer prompt optimized per [GPT-5.5 prompting guide](https://developers.openai.com/api/docs/guides/prompt-guidance):
 
 - **Section order**: output_contract first, personality last (primacy/recency)
 - **Tool source hierarchy**: SDE > count > market > route > ESI > zKill > web_search
@@ -251,4 +251,4 @@ npm run db:migrate  # run SQLite migrations
 
 ## Status
 
-**v2.1.0** — current release. Telegram-first, single-process, GPT-5.4 powered. EVE-KILL + EVE-Scout + OSINT + scan analysis + intel notebook. Dynamic reasoning effort, async I/O, gate camp detection, Thera wormhole shortcuts. [Full changelog](./CHANGELOG.md).
+**v2.1.0** — current release. Telegram-first, single-process, GPT-5.5 powered. EVE-KILL + EVE-Scout + OSINT + scan analysis + intel notebook. Dynamic reasoning effort, async I/O, gate camp detection, Thera wormhole shortcuts. [Full changelog](./CHANGELOG.md).

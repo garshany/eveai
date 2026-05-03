@@ -19,6 +19,10 @@ const llmMocks = vi.hoisted(() => ({
   createNativeResponse: vi.fn(),
 }));
 
+function isoDaysAgo(days: number): string {
+  return new Date(Date.now() - days * 86_400_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
 vi.mock('../../src/eve-kill/client.js', () => ({
   getEntityDetail: eveKillMocks.getEntityDetail,
   getEntityMembers: eveKillMocks.getEntityMembers,
@@ -97,13 +101,13 @@ describe('osint inference', () => {
     zkillMocks.fetchEntityActivityFeed.mockImplementation(async (_db: Database.Database, args: Record<string, unknown>) => {
       if (args.activity === 'kills') {
         return [
-          { activity: 'kills', killmail_id: 2, killmail_time: '2026-03-29T12:00:00Z', solar_system_id: 30007001, total_value: 2_500_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 7001, victim_corporation_id: 6001, victim_alliance_id: 7701, final_blow_character_id: 9001, final_blow_corporation_id: 4001, final_blow_alliance_id: 9901, attackers: [{ character_id: 9001, corporation_id: 4001, alliance_id: 9901, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
-          { activity: 'kills', killmail_id: 3, killmail_time: '2026-03-28T12:00:00Z', solar_system_id: 30007002, total_value: 1_200_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 7002, victim_corporation_id: 6002, victim_alliance_id: 7702, final_blow_character_id: 9002, final_blow_corporation_id: 4001, final_blow_alliance_id: 9901, attackers: [{ character_id: 9002, corporation_id: 4001, alliance_id: 9901, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
-          { activity: 'kills', killmail_id: 4, killmail_time: '2026-03-27T12:00:00Z', solar_system_id: 30000142, total_value: 500_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 7003, victim_corporation_id: 6003, victim_alliance_id: 7703, final_blow_character_id: 9002, final_blow_corporation_id: 4001, final_blow_alliance_id: 9901, attackers: [{ character_id: 9002, corporation_id: 4001, alliance_id: 9901, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'highsec' },
+          { activity: 'kills', killmail_id: 2, killmail_time: isoDaysAgo(2), solar_system_id: 30007001, total_value: 2_500_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 7001, victim_corporation_id: 6001, victim_alliance_id: 7701, final_blow_character_id: 9001, final_blow_corporation_id: 4001, final_blow_alliance_id: 9901, attackers: [{ character_id: 9001, corporation_id: 4001, alliance_id: 9901, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
+          { activity: 'kills', killmail_id: 3, killmail_time: isoDaysAgo(3), solar_system_id: 30007002, total_value: 1_200_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 7002, victim_corporation_id: 6002, victim_alliance_id: 7702, final_blow_character_id: 9002, final_blow_corporation_id: 4001, final_blow_alliance_id: 9901, attackers: [{ character_id: 9002, corporation_id: 4001, alliance_id: 9901, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
+          { activity: 'kills', killmail_id: 4, killmail_time: isoDaysAgo(4), solar_system_id: 30000142, total_value: 500_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 7003, victim_corporation_id: 6003, victim_alliance_id: 7703, final_blow_character_id: 9002, final_blow_corporation_id: 4001, final_blow_alliance_id: 9901, attackers: [{ character_id: 9002, corporation_id: 4001, alliance_id: 9901, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'highsec' },
         ];
       }
       return [
-        { activity: 'losses', killmail_id: 1, killmail_time: '2026-03-30T12:00:00Z', solar_system_id: 30007001, total_value: 900_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 9001, victim_corporation_id: 4001, victim_alliance_id: 9901, final_blow_character_id: 8001, final_blow_corporation_id: 5001, final_blow_alliance_id: 8801, attackers: [{ character_id: 8001, corporation_id: 5001, alliance_id: 8801, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
+        { activity: 'losses', killmail_id: 1, killmail_time: isoDaysAgo(1), solar_system_id: 30007001, total_value: 900_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 9001, victim_corporation_id: 4001, victim_alliance_id: 9901, final_blow_character_id: 8001, final_blow_corporation_id: 5001, final_blow_alliance_id: 8801, attackers: [{ character_id: 8001, corporation_id: 5001, alliance_id: 8801, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
       ];
     });
     esiMocks.callEsiOperation.mockImplementation(async (_db: Database.Database, operation: string, _args: Record<string, unknown>) => {
@@ -166,9 +170,9 @@ describe('osint inference', () => {
     eveKillMocks.getEntityMembers.mockResolvedValue({ ok: true, data: [] });
     zkillMocks.fetchEntityActivityFeed.mockImplementation(async (_db: Database.Database, args: Record<string, unknown>) => {
       if (args.activity === 'kills') {
-        return [{ activity: 'kills', killmail_id: 2, killmail_time: '2026-03-29T12:00:00Z', solar_system_id: 30007001, total_value: 120_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 8002, victim_corporation_id: 6002, attackers: [{ character_id: 7001, corporation_id: 5001, final_blow: true }], zkb_labels: ['tz:us'], tz_label: 'us', location_label: 'nullsec' }];
+        return [{ activity: 'kills', killmail_id: 2, killmail_time: isoDaysAgo(2), solar_system_id: 30007001, total_value: 120_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 8002, victim_corporation_id: 6002, attackers: [{ character_id: 7001, corporation_id: 5001, final_blow: true }], zkb_labels: ['tz:us'], tz_label: 'us', location_label: 'nullsec' }];
       }
-      return [{ activity: 'losses', killmail_id: 1, killmail_time: '2026-03-30T12:00:00Z', solar_system_id: 30007001, total_value: 180_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 7001, victim_corporation_id: 5001, attackers: [{ character_id: 8001, corporation_id: 6001, final_blow: true }], zkb_labels: ['tz:us'], tz_label: 'us', location_label: 'nullsec' }];
+      return [{ activity: 'losses', killmail_id: 1, killmail_time: isoDaysAgo(1), solar_system_id: 30007001, total_value: 180_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 7001, victim_corporation_id: 5001, attackers: [{ character_id: 8001, corporation_id: 6001, final_blow: true }], zkb_labels: ['tz:us'], tz_label: 'us', location_label: 'nullsec' }];
     });
     esiMocks.callEsiOperation.mockImplementation(async (_db: Database.Database, operation: string, _args: Record<string, unknown>) => {
       if (operation === 'post_universe_names') {
@@ -200,12 +204,12 @@ describe('osint inference', () => {
     zkillMocks.fetchEntityActivityFeed.mockImplementation(async (_db: Database.Database, args: Record<string, unknown>) => {
       if (args.activity === 'kills') {
         return [
-          { activity: 'kills', killmail_id: 2, killmail_time: '2026-03-29T12:00:00Z', solar_system_id: 30007001, total_value: 600_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 9002, victim_corporation_id: 6002, attackers: [{ character_id: 9201, corporation_id: 8001, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
-          { activity: 'kills', killmail_id: 3, killmail_time: '2026-03-28T12:00:00Z', solar_system_id: 30007002, total_value: 700_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 9003, victim_corporation_id: 6003, attackers: [{ character_id: 9202, corporation_id: 8001, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
-          { activity: 'kills', killmail_id: 4, killmail_time: '2026-03-27T12:00:00Z', solar_system_id: 30000142, total_value: 900_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 9004, victim_corporation_id: 6004, attackers: [{ character_id: 9203, corporation_id: 8001, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'highsec' },
+          { activity: 'kills', killmail_id: 2, killmail_time: isoDaysAgo(2), solar_system_id: 30007001, total_value: 600_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 9002, victim_corporation_id: 6002, attackers: [{ character_id: 9201, corporation_id: 8001, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
+          { activity: 'kills', killmail_id: 3, killmail_time: isoDaysAgo(3), solar_system_id: 30007002, total_value: 700_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 9003, victim_corporation_id: 6003, attackers: [{ character_id: 9202, corporation_id: 8001, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
+          { activity: 'kills', killmail_id: 4, killmail_time: isoDaysAgo(4), solar_system_id: 30000142, total_value: 900_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 9004, victim_corporation_id: 6004, attackers: [{ character_id: 9203, corporation_id: 8001, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'highsec' },
         ];
       }
-      return [{ activity: 'losses', killmail_id: 1, killmail_time: '2026-03-30T12:00:00Z', solar_system_id: 30007001, total_value: 500_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 9001, victim_corporation_id: 8001, attackers: [{ character_id: 9101, corporation_id: 5001, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' }];
+      return [{ activity: 'losses', killmail_id: 1, killmail_time: isoDaysAgo(1), solar_system_id: 30007001, total_value: 500_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 9001, victim_corporation_id: 8001, attackers: [{ character_id: 9101, corporation_id: 5001, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' }];
     });
     esiMocks.callEsiOperation.mockImplementation(async (_db: Database.Database, operation: string, _args: Record<string, unknown>) => {
       if (operation === 'post_universe_names') {

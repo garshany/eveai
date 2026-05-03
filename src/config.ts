@@ -40,7 +40,7 @@ export const config = {
   },
   openai: {
     apiKey: required('OPENAI_API_KEY'),
-    model: optional('OPENAI_MODEL', 'gpt-5.4'),
+    model: optional('OPENAI_MODEL', 'gpt-5.5'),
     baseUrl: optional('OPENAI_BASE_URL', ''),
     apiMode: optional('OPENAI_API_MODE', 'native_responses'),
     reasoningEffort: optional('OPENAI_REASONING_EFFORT', 'medium'),

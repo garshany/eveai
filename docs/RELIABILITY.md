@@ -19,7 +19,7 @@
 
 ## Skills Execution Model
 
-- skills work through a function tool `"shell"` on gpt-5.4, not `type: "local_shell"` or `type: "shell"` (both rejected by ChatGPT backend)
+- skills work through a function tool `"shell"` on `gpt-5.5` and current GPT-5.x Codex models, not `type: "local_shell"` or `type: "shell"` (both rejected by ChatGPT backend)
 - skill metadata (name, description, path) is injected into `instructions`; the model reads `SKILL.md` via the shell tool and follows its instructions
 - the client must execute shell commands in a sandboxed environment with timeouts and output caps
 - full protocol reference: [skills-protocol.md](./skills-protocol.md)

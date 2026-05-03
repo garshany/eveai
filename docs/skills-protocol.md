@@ -25,9 +25,9 @@ The ChatGPT Codex backend (`chatgpt.com/backend-api/codex/responses`) rejects al
 
 These formats only work via `api.openai.com` with a regular OpenAI API key.
 
-## What Works: Function Tool `"shell"` (gpt-5.4 Pattern)
+## What Works: Function Tool `"shell"` (GPT-5.x Pattern)
 
-This is how the official Codex CLI implements skills with gpt-5.4. The model calls a regular function tool, the client executes the command locally.
+This is how the official Codex CLI implements skills with current GPT-5.x models. The model calls a regular function tool, the client executes the command locally.
 
 ### Tool Definition
 
@@ -86,7 +86,7 @@ Use the shell tool to execute commands locally.
 4. Model -> message: "144 + 377 = 521"
 ```
 
-gpt-5.4 is smart enough to combine `cat SKILL.md && ls` into a single call, reducing round-trips from 4 to 3.
+GPT-5.x models can combine `cat SKILL.md && ls` into a single call, reducing round-trips from 4 to 3.
 
 ### Input Format for Tool Loop
 
@@ -137,6 +137,7 @@ No parameters on the tool. The model outputs `local_shell_call` items, and the c
 
 | Model | Function tool `"shell"` | Native `local_shell` |
 |-------|------------------------|---------------------|
+| gpt-5.5 | **works** | not supported |
 | gpt-5.4 | **works** | not supported |
 | gpt-5.4-mini | **works** | not supported |
 | gpt-5.3-codex | **works** | not supported |
@@ -177,7 +178,7 @@ The client executes shell commands from the model. Mandatory safeguards:
 
 ## Codex CLI Tool Catalog (All Work Through Proxy as Function Tools)
 
-Everything below is a standard `type: "function"` tool. The model calls it, the client executes and returns the result. All tested and confirmed working on gpt-5.4 through the Codex proxy on 2026-03-30.
+Everything below is a standard `type: "function"` tool. The model calls it, the client executes and returns the result. This is the active GPT-5.x-compatible path through the Codex proxy.
 
 ### shell -- Local Command Execution
 
