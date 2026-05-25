@@ -108,9 +108,10 @@ PvP killboard integration (EVE-KILL, replaces zKillboard). See `docs/eve-kill.md
 
 ## Deployment And Operations
 
-- `deploy/systemd/eveai-backend.service`: backend service unit
-- `deploy/systemd/eveai-codex-proxy.service`: proxy service unit
-- `docs/deployment.md`: production runbook
+- `deploy/systemd/eveai.service`: generic self-host systemd unit
+- `scripts/export-public.sh`: clean public export helper that excludes local/private state
+- `docs/deployment.md`: generic self-host deployment guide
+- `docs/open-source-release.md`: public release/history-safety checklist
 - `data/`: local DBs, SDE inputs, cached swagger, generated user snapshots
 
 ## Repo-Local Knowledge
@@ -127,7 +128,7 @@ PvP killboard integration (EVE-KILL, replaces zKillboard). See `docs/eve-kill.md
 - `skills/eve-esi/SKILL.md`: ESI workflow skill
 - `skills/eve-planning/SKILL.md`: planning workflow skill
 - `skills/eve-sde/SKILL.md`: SDE workflow skill
-- `docs/skills-protocol.md`: how skills work through Codex proxy (tool types, model compatibility, execution flow)
+- `docs/skills-protocol.md`: local development notes for optional skill-style tool workflows
 - `.agent/tasks/`: repo-task-proof-loop task artifacts
 
 ## Read This Next

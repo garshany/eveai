@@ -186,7 +186,7 @@ describe('warm/cold path DB operations', () => {
       type: 'message',
       role: 'user',
     });
-    expect(JSON.stringify(items[3])).toContain('Proxy-side tool state was lost');
+    expect(JSON.stringify(items[3])).toContain('Provider-side tool state was lost');
   });
 
   it('resolves system live context through constellation and region', async () => {

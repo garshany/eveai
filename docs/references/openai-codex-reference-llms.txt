@@ -17,6 +17,6 @@ Primary URLs:
 - https://agentskills.io/specification
 
 Notes:
-- Skills API (type: "shell" + environment.skills) does NOT work through Codex proxy ChatGPT backend
-- Working approach: function tool "shell" + skill metadata in instructions (see docs/skills-protocol.md)
+- Runtime tools in this app are ordinary Responses API function tools executed by the Node.js process.
+- Local skills under `skills/` are maintainer workflow docs, not a production dependency.
 - Codex CLI source for skills: https://github.com/openai/codex/blob/main/codex-rs/tools/src/local_tool.rs

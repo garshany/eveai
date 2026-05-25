@@ -1,384 +1,158 @@
-# Deployment Runbook
+# Self-Host Deployment Guide
 
-Этот файл описывает текущий production deployment для `garshany/eveai`.
+This guide describes a generic deployment model for running your own EVE AI Agent instance. Keep real server addresses, SSH users, certificates, tokens, and operator runbooks outside this repository.
 
-## GitHub
+## Production Shape
 
-Для операций с репозиторием использовать `gh`, а не ручное копирование URL, когда это возможно.
+Recommended baseline:
 
-Проверка авторизации:
+- one Node.js process running `dist/app.js`
+- SQLite database on local disk
+- Telegram grammY long polling, not webhooks
+- Fastify bound to localhost or a private interface unless you intentionally expose the dashboard
+- optional reverse proxy such as Caddy, nginx, or a platform load balancer for HTTPS
+- no Redis, Postgres, background workers, or queue system
 
-```bash
-gh auth status
-```
-
-Клонирование:
-
-```bash
-gh repo clone garshany/eveai
-cd eveai
-```
-
-Проверка remote:
+## Build
 
 ```bash
-git remote -v
-```
-
-Пуш в основной репозиторий:
-
-```bash
-git push origin master
-```
-
-## Server Access
-
-Текущий production server:
-
-- host: `158.160.220.215`
-- user: `garshany`
-- auth: SSH key (no password)
-- app dir: `/opt/eveai`
-
-Подключение по SSH:
-
-```bash
-ssh garshany@158.160.220.215
-```
-
-Non-interactive доступ (для скриптов и агентов):
-
-```bash
-ssh -o StrictHostKeyChecking=no garshany@158.160.220.215
-```
-
-### Быстрые проверки на проде
-
-Статус приложения:
-```bash
-ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 "pm2 status eveai"
-```
-
-Логи (последние 50 строк):
-```bash
-ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 "pm2 logs eveai --lines 50 --nostream"
-```
-
-Heartbeat логи:
-```bash
-ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 "pm2 logs eveai --lines 50 --nostream" 2>&1 | grep '\[heartbeat\]'
-```
-
-БД запрос (пример — heartbeat config):
-```bash
-ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 "cd /opt/eveai && node -e \"
-const Database = require('/opt/eveai/node_modules/better-sqlite3');
-const db = new Database('./data/eve-agent.db', { readonly: true });
-console.log(JSON.stringify(db.prepare('SELECT * FROM heartbeat_config').all(), null, 2));
-db.close();
-\""
-```
-
-### Быстрый деплой из feature-ветки
-
-```bash
-ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 \
-  "cd /opt/eveai && git pull origin BRANCH && npm run build:server && pm2 restart eveai"
-```
-
-### Рестарт
-
-```bash
-ssh -o StrictHostKeyChecking=no garshany@158.160.220.215 "pm2 restart eveai"
-```
-
-## Deployment Flow
-
-Целевое production состояние:
-
-- `eveai` backend управляется через `pm2`
-- `codex-openai-proxy` управляется через `systemd`
-- `nginx` управляется через `systemd`
-
-Если proxy запущен отдельным root-процессом без supervisor, это drift. Его нужно вернуть под `systemd`, а не добавлять во второй process tree через `pm2`.
-
-Базовый деплой:
-
-```bash
-ssh garshany@158.160.220.215
-cd /opt/eveai
-git fetch origin
-git checkout master
-git pull --ff-only origin master
-npm ci
+npm install
+cp .env.example .env
+npm run setup
 npm run build
-pm2 restart eveai --update-env
+npm run db:migrate
+npm start
 ```
 
-Proxy после обновления бинаря:
+## Required Environment
+
+At minimum configure:
+
+```env
+TELEGRAM_BOT_TOKEN=...
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-5.5
+OPENAI_RESPONSE_STATE_MODE=stateless
+EVE_CLIENT_ID=...
+EVE_CLIENT_SECRET=...
+AUTH_SECRET_KEY=...
+EVE_CALLBACK_URL=https://your-domain.example/auth/eve/callback
+WEB_BASE_URL=https://your-domain.example
+DEFAULT_MARKET_REGION_ID=10000002
+DEFAULT_MARKET_REGION_NAME="The Forge"
+ESI_USER_AGENT=EVEAI/2.1 (+https://github.com/your-org/eveai; contact=you@example.com)
+```
+
+Generate `AUTH_SECRET_KEY` with:
 
 ```bash
-ssh garshany@158.160.220.215
-cd /opt/codex_proxy
-cargo build --release
-systemctl restart eveai-codex-proxy
-systemctl status eveai-codex-proxy --no-pager
+openssl rand -base64 32
 ```
 
-Если каталог ещё не создан:
+## EVE Developer Portal
 
-```bash
-gh repo clone garshany/eveai /opt/eveai
-cd /opt/eveai
-npm ci
-npm run build
+Create an application at <https://developers.eveonline.com/> and configure the callback URL to match `EVE_CALLBACK_URL`.
+
+For local development:
+
+```text
+http://localhost:3000/auth/eve/callback
 ```
 
-## Environment
+For a public deployment:
 
-Основной runtime config:
-
-- `/opt/eveai/.env`
-
-Важные production значения:
-
-- `WEB_BASE_URL=https://eveonline-ai.ru`
-- `EVE_CALLBACK_URL=https://eveonline-ai.ru/auth/eve/callback`
-- `OPENAI_BASE_URL=http://127.0.0.1:8080/v1`
-- `ESI_USER_AGENT=EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)`
-- `SSO_REQUEST_TIMEOUT_MS=8000`
-- `ESI_REQUEST_TIMEOUT_MS=8000`
-- `ESI_RETRY_MAX_ATTEMPTS=3`
-
-После изменения `.env`:
-
-```bash
-pm2 restart eveai --update-env
+```text
+https://your-domain.example/auth/eve/callback
 ```
 
-## Codex Proxy
+## Model Provider
 
-Предпочтительный supervisor для proxy: `systemd`, не `pm2`.
+The app talks to an OpenAI-compatible Responses API endpoint.
 
-Почему:
+Use official OpenAI by default:
 
-- proxy является инфраструктурным dependency для backend, а не частью Node.js runtime
-- `systemd` поднимает процесс после reboot без отдельной PM2 ecosystem
-- `journalctl` удобнее для диагностики раннего старта и auth-проблем
-- backend можно перезапускать отдельно через `pm2`, не трогая proxy
-
-Текущий service template в репозитории:
-
-- `deploy/systemd/eveai-codex-proxy.service`
-
-Установка или восстановление unit на проде:
-
-```bash
-ssh garshany@158.160.220.215
-install -m 644 /opt/eveai/deploy/systemd/eveai-codex-proxy.service /etc/systemd/system/eveai-codex-proxy.service
-systemctl daemon-reload
-systemctl enable --now eveai-codex-proxy
-systemctl status eveai-codex-proxy --no-pager
+```env
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_RESPONSE_STATE_MODE=stateless
 ```
 
-Проверка:
+For compatible gateways, keep `OPENAI_RESPONSE_STATE_MODE=stateless` unless the provider explicitly supports stored `previous_response_id` continuation. Stateless mode sends the previous `function_call` item together with `function_call_output`, which avoids provider-side response-state assumptions.
 
-```bash
-systemctl status eveai-codex-proxy --no-pager
-journalctl -u eveai-codex-proxy -n 100 --no-pager
-curl -fsS http://127.0.0.1:8080/health
+Use `server` mode only when the provider supports stored Responses state:
+
+```env
+OPENAI_RESPONSE_STATE_MODE=server
 ```
 
-## Codex Proxy Auth Rotation
+## Reverse Proxy
 
-Proxy читает все `*.json` в директории auth-path. На проде активная директория:
+A reverse proxy is optional but recommended for HTTPS dashboard access and secure cookies.
 
-- `/root/.codex/auth/`
+Generic Caddy example:
 
-Важно:
+```caddyfile
+your-domain.example {
+  reverse_proxy 127.0.0.1:3000
+}
+```
 
-- не оставлять протухшие `*.json` в `/root/.codex/auth/`
-- backup хранить вне активной директории, иначе proxy подхватит старые credentials
-- в проде держать один активный auth-файл, если не нужна осознанная ротация между несколькими аккаунтами
-- никогда не коммитить auth JSON или токены в репозиторий
+Generic nginx example:
 
-Минимальный поддерживаемый формат auth-файла:
+```nginx
+server {
+  listen 443 ssl http2;
+  server_name your-domain.example;
 
-```json
-{
-  "auth_mode": "chatgpt",
-  "tokens": {
-    "access_token": "REDACTED",
-    "account_id": "REDACTED"
+  location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
   }
 }
 ```
 
-Порядок обновления auth:
+## systemd Example
+
+Copy and adapt the generic unit at `deploy/systemd/eveai.service` if you deploy on a Linux host with systemd.
+
+Install example:
 
 ```bash
-ssh garshany@158.160.220.215
-mkdir -p /root/.codex/auth
-ts=$(date +%Y%m%dT%H%M%S)
-mkdir -p /root/.codex/auth-backup-$ts
-mv /root/.codex/auth/*.json /root/.codex/auth-backup-$ts/ 2>/dev/null || true
-cat > /root/.codex/auth/prod-primary.json <<'JSON'
-{
-  "auth_mode": "chatgpt",
-  "tokens": {
-    "access_token": "REDACTED",
-    "account_id": "REDACTED"
-  }
-}
-JSON
-chmod 600 /root/.codex/auth/prod-primary.json
-systemctl restart eveai-codex-proxy
+sudo install -m 644 deploy/systemd/eveai.service /etc/systemd/system/eveai.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now eveai
+sudo systemctl status eveai --no-pager
 ```
 
-Проверка после rotation:
+## Health And Smoke Checks
+
+Run the app and then verify:
 
 ```bash
-curl -fsS http://127.0.0.1:8080/health
-curl -sS -N \
-  -H 'Content-Type: application/json' \
-  -X POST http://127.0.0.1:8080/v1/responses \
-  -d '{"model":"gpt-5.4","instructions":"You are a concise assistant.","input":[{"role":"user","content":[{"type":"input_text","text":"Reply with the single word pong."}]}]}' \
-  | sed -n '1,40p'
-pm2 status eveai
-curl -fsS http://127.0.0.1:8000/health
-pm2 logs eveai --lines 50 --nostream
-```
-
-Успешный признак:
-
-- proxy отвечает `200 OK` на `POST /v1/responses`
-- stream содержит `response.completed`
-- `eveai` перестаёт писать `token_expired`
-
-## Skills Through Codex Proxy
-
-Skills (SKILL.md bundles) work through the proxy via a function tool `"shell"`, not the official `type: "shell"` API format (rejected by ChatGPT backend).
-
-The model calls `shell(["bash", "-lc", "cat /path/to/SKILL.md"])`, the app executes locally and returns output. Full protocol: [docs/skills-protocol.md](./skills-protocol.md).
-
-Quick verification on prod:
-
-```bash
-curl -sS -H 'Content-Type: application/json' \
-  -X POST http://127.0.0.1:8080/v1/responses \
-  -d '{
-    "model": "gpt-5.4",
-    "instructions": "You have a skill: basic-math at /tmp/skills/basic-math. Read SKILL.md first.",
-    "input": [{"role":"user","content":[{"type":"input_text","text":"Add 2+2 using the skill"}]}],
-    "tools": [{"type":"function","name":"shell","description":"Run a local command.","parameters":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"}}},"required":["command"]}}],
-    "store": false, "stream": false
-  }'
-```
-
-Expected: `function_call` with `shell(["bash","-lc","cat /tmp/skills/basic-math/SKILL.md"])`.
-
-## Process Model
-
-Приложение:
-
-- process manager: `pm2`
-- process name: `eveai`
-
-Проверка:
-
-```bash
-pm2 status eveai
-pm2 logs eveai --lines 100
-```
-
-Codex proxy:
-
-- process manager: `systemd`
-- service name: `eveai-codex-proxy`
-- binary dir: `/opt/codex_proxy`
-- auth dir: `/root/.codex/auth/`
-
-Проверка:
-
-```bash
-systemctl status eveai-codex-proxy --no-pager
-journalctl -u eveai-codex-proxy -n 100 --no-pager
-```
-
-Reverse proxy:
-
-- service: `nginx`
-- config: `/etc/nginx/sites-available/eveai`
-
-Проверка:
-
-```bash
-systemctl status nginx --no-pager
-journalctl -u nginx -n 100 --no-pager
-nginx -t
-```
-
-## URLs
-
-HTTP:
-
-- `http://eveonline-ai.ru` (redirect → HTTPS)
-
-HTTPS:
-
-- `https://eveonline-ai.ru`
-- `https://eveonline-ai.ru/health`
-
-## SSL
-
-Сертификат выпускается для `eveonline-ai.ru` через `certbot`.
-
-Полезные команды:
-
-```bash
-certbot certificates
-certbot renew --dry-run --no-random-sleep-on-renew
-openssl x509 -in /etc/letsencrypt/live/eveonline-ai.ru/fullchain.pem -noout -issuer -dates -subject
-```
-
-Deploy hook reload'ит nginx после renewal (`systemctl reload nginx`).
-
-## Health Checks
-
-Локально на сервере:
-
-```bash
-curl http://127.0.0.1:8000/health
-curl -sk https://127.0.0.1:4443/health
-```
-
-Снаружи:
-
-```bash
-curl -I http://eveonline-ai.ru
-curl -sI https://eveonline-ai.ru/health
-```
-
-Smoke:
-
-```bash
-cd /opt/eveai
+curl -fsS http://127.0.0.1:3000/health
 npm run smoke
 ```
 
-## EVE SSO
+`npm run smoke` checks required env vars, the configured model `/responses` endpoint, and the app health endpoint.
 
-В EVE Developer Portal redirect URI должен совпадать точно:
+## Operations
 
-```text
-https://eveonline-ai.ru/auth/eve/callback
-```
+- Keep `.env`, SQLite databases, SDE data, logs, and generated user profiles out of git.
+- Back up `data/` if you need to preserve local users, sessions, EVE links, cache, and notes.
+- Rotate `AUTH_SECRET_KEY` only with an explicit session/token migration plan; it derives storage keys for protected local secrets.
+- Never publish tokens, SSH details, IP addresses, real domains, private reverse-proxy paths, or production runbooks in this repository.
 
-Если URI отличается, логин через EVE SSO будет отклонён до callback.
+## Open-Source Publishing Checklist
 
-## ESI Runtime Notes
+Before making a fork public:
 
-- ESI requests must continue sending both `User-Agent` and `X-Compatibility-Date`
-- the app now revalidates cached GETs with `ETag` / `If-None-Match`
-- the client does bounded retry for `429`, `420`, and transient `5xx`
-- if an `X-Pages` endpoint requires more pages than `ESI_MAX_PAGES`, the app fails the request instead of silently truncating data
+1. Rotate any token, password, SSH key, or provider credential that ever appeared in chat logs, commits, CI logs, or local docs.
+2. Publish from a clean sanitized export or rewrite history; do not expose a repo history that previously contained secrets or private infrastructure.
+3. Run a current-tree secret scan and a history scan.
+4. Confirm `.env`, `.env.*`, `data/`, `.agent/`, `.claude/`, local hooks, logs, and database files are ignored.
+5. Confirm public docs describe self-hosting only.

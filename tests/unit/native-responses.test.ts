@@ -232,6 +232,18 @@ describe('createNativeResponse request body', () => {
     expect(body).not.toHaveProperty('prompt_cache_key');
   });
 
+  it('converts response function calls into stateless continuation input items', async () => {
+    const { buildFunctionCallInputItems } = await import('../../src/agent/native-responses.js');
+
+    expect(buildFunctionCallInputItems([
+      { type: 'reasoning', id: 'rs_1' },
+      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'echo_city', arguments: '{"name":"Jita"}', status: 'completed' },
+      { type: 'message', content: [{ type: 'output_text', text: 'ignored' }] },
+    ])).toEqual([
+      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'echo_city', arguments: '{"name":"Jita"}', status: 'completed' },
+    ]);
+  });
+
   it('uses done items when response.completed.output is empty', async () => {
     process.env.ALLOWED_TELEGRAM_USER_ID = '1';
     process.env.TELEGRAM_BOT_TOKEN = 'test';

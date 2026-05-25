@@ -125,7 +125,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `client/src/`: React landing page and dashboard
 - `tests/unit/`: module and policy regression coverage
 - `tests/integration/`: auth and Telegram seam coverage
-- `deploy/systemd/`: production service units
+- `deploy/systemd/`: generic self-host service examples
 
 ## Knowledge Map
 

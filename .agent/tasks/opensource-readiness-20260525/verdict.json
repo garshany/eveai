@@ -1,0 +1,12 @@
+{
+  "overall_verdict": "PASS",
+  "criteria": [
+    { "id": "AC1", "status": "PASS" },
+    { "id": "AC2", "status": "PASS" },
+    { "id": "AC3", "status": "PASS" },
+    { "id": "AC4", "status": "PASS" },
+    { "id": "AC5", "status": "PASS" },
+    { "id": "AC6", "status": "PASS" },
+    { "id": "AC7", "status": "PASS" }
+  ]
+}

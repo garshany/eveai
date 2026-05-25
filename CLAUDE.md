@@ -14,7 +14,7 @@ npm test                   # vitest run
 npm test:watch             # vitest watch mode
 npm run lint               # eslint src/ --max-warnings 0
 npm run lint:fix           # eslint auto-fix
-npm run smoke              # Smoke tests: env, proxy, app health
+npm run smoke              # Smoke tests: env, model endpoint, app health
 npm run db:migrate         # Run SQLite migrations
 npm run setup              # Download + load SDE data
 ```
@@ -66,20 +66,9 @@ Browser → Fastify → auth callback + dashboard + health → same SQLite
 - X-Pages collections fail closed (no silent truncation)
 - ESI field whitelisting in `src/agent/executor.ts`
 
-## Production Server
+## Self-Hosting
 
-SSH доступ для проверок и деплоя:
-
-```bash
-ssh -o StrictHostKeyChecking=no garshany@158.160.220.215
-```
-
-- host: `158.160.220.215`, user: `garshany`, app dir: `/opt/eveai`
-- Process manager: direct node (nohup), `systemd` (codex proxy, nginx)
-- Логи: `tail -100 /tmp/eveai.log`
-- Рестарт: `kill $(pgrep -f 'node.*dist/app.js') && cd /opt/eveai && nohup node dist/app.js > /tmp/eveai.log 2>&1 &`
-- Деплой: собрать tarball локально, scp на сервер, распаковать в /opt/eveai, npm ci, перезапустить
-- Подробный runbook: `docs/deployment.md`
+This public repo must not contain private production server details. Use [docs/deployment.md](./docs/deployment.md) for generic self-host deployment guidance, and keep operator-specific notes in ignored local files such as `.env` or private runbooks outside the repository.
 
 ## Documentation
 
@@ -89,7 +78,7 @@ ssh -o StrictHostKeyChecking=no garshany@158.160.220.215
 - `docs/DESIGN.md` — doc structure rules
 - `docs/PRODUCT_SENSE.md` — product intent and non-goals
 - `docs/SECURITY.md`, `docs/RELIABILITY.md` — operational contracts
-- `docs/deployment.md` — production runbook
+- `docs/deployment.md` — generic self-host deployment guide
 - `docs/generated/db-schema.md` — SQLite schema reference
 
 When behavior changes, update the matching doc in `docs/` in the same change.

@@ -1,0 +1,21 @@
+[Unit]
+Description=EVE AI Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust these paths for your server before installing.
+WorkingDirectory=/srv/eveai
+EnvironmentFile=/srv/eveai/.env
+ExecStart=/usr/bin/node /srv/eveai/dist/app.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/srv/eveai/data
+
+[Install]
+WantedBy=multi-user.target

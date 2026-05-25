@@ -26,6 +26,7 @@ import { updatePlan } from './planner.js';
 import { BULK_FILTER_OPERATIONS } from '../eve/esi-catalog.js';
 import { getActiveMonitor, stopRouteMonitor } from '../eve-board/monitor.js';
 import {
+  buildFunctionCallInputItems,
   buildFunctionCallOutputs,
   createNativeResponse,
   extractFunctionCalls,
@@ -500,13 +501,19 @@ async function runNativeAgentLoop(
   console.log('[executor] reasoning effort=%s for goal="%s"', reasoningEffort, goal.slice(0, 60));
 
   const continuation = planConversationContinuation(db, threadId);
-  let pendingItems: NativeInputItem[] = continuation.items;
-  let previousResponseId: string | null = continuation.previousResponseId;
+  const useServerResponseState = config.openai.responseStateMode === 'server';
+  let pendingItems: NativeInputItem[] = useServerResponseState
+    ? continuation.items
+    : buildSmartContext(db, threadId);
+  let previousResponseId: string | null = useServerResponseState
+    ? continuation.previousResponseId
+    : null;
   console.log(
-    '[executor] context: mode=%s items=%d prevId=%s',
+    '[executor] context: mode=%s state=%s items=%d prevId=%s',
     continuation.mode,
-    continuation.items.length,
-    continuation.previousResponseId ?? 'none',
+    useServerResponseState ? 'server' : 'stateless',
+    pendingItems.length,
+    previousResponseId ?? 'none',
   );
 
   // Build context management for native compaction
@@ -663,12 +670,12 @@ async function runNativeAgentLoop(
     if (toolCalls.length === 0) {
       if (response.outputText.trim()) {
         storeAssistantMessage(db, threadId, response.outputText);
-        saveLastResponseId(db, threadId, response.id);
+        saveLastResponseId(db, threadId, useServerResponseState ? response.id : null);
         console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
           iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, response.outputText.length);
         return { text: response.outputText, peakInputTokens };
       }
-      if (response.toolSearchPaths.length > 0 && response.id) {
+      if (response.toolSearchPaths.length > 0 && response.id && useServerResponseState) {
         previousResponseId = response.id;
         pendingItems = [];
         continue;
@@ -677,7 +684,7 @@ async function runNativeAgentLoop(
       const eventTypes = [...new Set(response.rawEvents.map((evt) => evt.event))];
       console.log('[executor] empty response details id=%s outputTypes=%j events=%j',
         response.id ?? 'none', outputTypes, eventTypes);
-      if (response.id && emptyResponseRetries < 2) {
+      if (response.id && emptyResponseRetries < 2 && useServerResponseState) {
         emptyResponseRetries += 1;
         console.log('[executor] empty response, retrying (%d/2) prevId=%s', emptyResponseRetries, response.id);
         previousResponseId = response.id;
@@ -750,15 +757,23 @@ async function runNativeAgentLoop(
       }
     }
 
-    if (!response.id) {
-      const message = 'Не удалось продолжить tool loop: proxy не вернул response id.';
+    if (useServerResponseState && !response.id) {
+      const message = 'Не удалось продолжить tool loop: provider did not return response id.';
       storeAssistantMessage(db, threadId, message);
       saveLastResponseId(db, threadId, null);
       return { text: message, peakInputTokens };
     }
 
-    previousResponseId = response.id;
-    pendingItems = buildFunctionCallOutputs(outputs);
+    if (useServerResponseState) {
+      previousResponseId = response.id;
+      pendingItems = buildFunctionCallOutputs(outputs);
+    } else {
+      previousResponseId = null;
+      pendingItems = [
+        ...buildFunctionCallInputItems(response.output),
+        ...buildFunctionCallOutputs(outputs),
+      ];
+    }
 
     // Anti-loop: if same tool called N+ times in a row, inject a nudge
     if (consecutiveSameToolCount >= MAX_CONSECUTIVE_SAME_TOOL) {
@@ -1169,7 +1184,7 @@ async function fetchEveUni(query: string): Promise<Array<{ title: string; url: s
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WEB_SEARCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url.toString(), { signal: controller.signal, headers: { 'User-Agent': 'EVEAIBOT/1.0 (+https://eveonline-ai.ru/)' } });
+    const res = await fetch(url.toString(), { signal: controller.signal, headers: { 'User-Agent': 'EVEAI/2.1 (+https://github.com/example/eveai; contact=operator@example.com)' } });
     if (!res.ok) return [];
     const data = await res.json() as { query?: { search?: Array<{ title?: string; snippet?: string }> } };
     return (data?.query?.search ?? [])
@@ -1269,7 +1284,7 @@ function buildToolStateRecoveryContext(db: Db, threadId: string): NativeInputIte
     role: 'user',
     content: [{
       type: 'input_text',
-      text: '[system] Proxy-side tool state was lost after tool execution. Use the recovered tool results above to answer if they are sufficient. If more work is still required, continue from this cold context and avoid repeating the same tool call loop.',
+      text: '[system] Provider-side tool state was lost after tool execution. Use the recovered tool results above to answer if they are sufficient. If more work is still required, continue from this cold context and avoid repeating the same tool call loop.',
     }],
   });
   return items;
@@ -1325,12 +1340,12 @@ function shouldRecoverFromToolStateMismatch(
 /** Errors that indicate a broken continuation chain — recoverable via cold restart. */
 const WS_RETRIABLE_PATTERNS = [
   'not found',                          // "Previous response with id ... not found"
-  'ws_transport_error',                 // proxy WS transport failure
+  'ws_transport_error',                 // provider transport failure
   'ws closed',                          // server closed WebSocket
   'ws timeout',                         // idle timeout
   'ws idle timeout',                    // per-frame idle timeout
   'ws error',                           // generic WS error
-  'connection_limit_reached',           // server WS connection limit (codex-specific)
+  'connection_limit_reached',           // provider connection limit
   'connection reset',                   // TCP reset
   'socket hang up',                     // Node undici socket error
   'econnrefused',                       // connection refused

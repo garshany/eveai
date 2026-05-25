@@ -18,6 +18,7 @@ const REQUIRED_ENV_VARS = [
 ] as const;
 
 const REQUEST_TIMEOUT_MS = 5_000;
+const MODEL_REQUEST_TIMEOUT_MS = 30_000;
 
 export async function runSmokeChecks(): Promise<{ ok: boolean; checks: SmokeCheck[] }> {
   const checks: SmokeCheck[] = [];
@@ -36,6 +37,7 @@ export async function runSmokeChecks(): Promise<{ ok: boolean; checks: SmokeChec
     });
   }
 
+  checks.push(await checkOpenAiResponses());
   checks.push(await checkAppHealth(resolveAppBaseUrl()));
 
   return {
@@ -157,11 +159,62 @@ async function checkHttpOk(name: string, url: string): Promise<SmokeCheck> {
   };
 }
 
-async function fetchWithTimeout(url: string): Promise<{ ok: boolean; detail: string; body: string }> {
+async function checkOpenAiResponses(): Promise<SmokeCheck> {
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) {
+    return { name: 'model_responses', status: 'skip', detail: 'OPENAI_API_KEY is not set' };
+  }
+
+  const baseUrl = normalizeBaseUrl(process.env.OPENAI_BASE_URL) || 'https://api.openai.com/v1';
+  const model = process.env.OPENAI_MODEL?.trim() || 'gpt-5.5';
+  const url = `${baseUrl}/responses`;
+  const payload = {
+    model,
+    instructions: 'Reply with the single word pong.',
+    input: [{
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'ping' }],
+    }],
+    stream: true,
+    store: false,
+  };
+
+  const result = await fetchWithTimeout(url, {
+    timeoutMs: MODEL_REQUEST_TIMEOUT_MS,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+    },
+  });
+
+  if (!result.ok) {
+    return { name: 'model_responses', status: 'fail', detail: result.detail };
+  }
+  if (!/response\.(completed|done)|output_text/.test(result.body)) {
+    return {
+      name: 'model_responses',
+      status: 'fail',
+      detail: `${url} returned HTTP 200 but did not look like a streamed Responses API result`,
+    };
+  }
+
+  return { name: 'model_responses', status: 'ok', detail: `${url} accepted model ${model}` };
+}
+
+async function fetchWithTimeout(
+  url: string,
+  options: { timeoutMs?: number; init?: RequestInit } = {},
+): Promise<{ ok: boolean; detail: string; body: string }> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { ...options.init, signal: controller.signal });
     const body = await response.text();
     if (!response.ok) {
       return {
@@ -179,7 +232,7 @@ async function fetchWithTimeout(url: string): Promise<{ ok: boolean; detail: str
     if ((error as Error).name === 'AbortError') {
       return {
         ok: false,
-        detail: `${url} timed out after ${REQUEST_TIMEOUT_MS}ms`,
+        detail: `${url} timed out after ${timeoutMs}ms`,
         body: '',
       };
     }

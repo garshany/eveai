@@ -1,0 +1,23 @@
+{
+  "status": "PASS",
+  "acceptance_criteria": [
+    { "id": "AC1", "status": "PASS", "evidence": ["docs/open-source-release.md", "scripts/export-public.sh", "SECURITY.md", "README.md"] },
+    { "id": "AC2", "status": "PASS", "evidence": ["src/agent/executor.ts", "src/agent/native-responses.ts", "src/config.ts", "raw/bothub-stateless-live.txt", "tests/unit/native-responses.test.ts"] },
+    { "id": "AC3", "status": "PASS", "evidence": ["raw/leak-export-scan.txt", "docs/deployment.md", "AGENTS.md", "CLAUDE.md"] },
+    { "id": "AC4", "status": "PASS", "evidence": ["README.md", "docs/deployment.md", ".env.example"] },
+    { "id": "AC5", "status": "PASS", "evidence": [".env.example", ".gitignore", "src/smoke.ts", "src/config.ts"] },
+    { "id": "AC6", "status": "PASS", "evidence": ["deploy/systemd/eveai.service", "git status deletions for old deploy units"] },
+    { "id": "AC7", "status": "PASS", "evidence": ["raw/check.txt", "raw/bothub-stateless-live.txt", "raw/leak-export-scan.txt"] }
+  ],
+  "checks": {
+    "npm_run_check": "PASS: 43 files / 240 tests / lint",
+    "bothub_stateless_live": "PASS",
+    "current_surface_leak_scan": "PASS: no matches",
+    "public_export_leak_scan": "PASS: no matches",
+    "public_export_helper": "PASS",
+    "clean_public_git_repo": "PASS: /tmp/eveai-public-release initialized and committed",
+    "export_script_syntax": "PASS",
+    "final_public_repo_audit": "PASS"
+  },
+  "residual_operational_requirement": "Rotate exposed external credentials before publishing; this cannot be done from the repository."
+}

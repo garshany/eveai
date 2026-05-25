@@ -22,7 +22,8 @@ Read the smallest document that answers the current question. Start here, then d
 - [QUALITY_SCORE.md](./QUALITY_SCORE.md): scored view of domain quality and major gaps
 - [RELIABILITY.md](./RELIABILITY.md): runtime failure model and operational checks
 - [SECURITY.md](./SECURITY.md): auth, secret, and web protection rules
-- [deployment.md](./deployment.md): production server runbook
+- [deployment.md](./deployment.md): generic self-host deployment guide
+- [open-source-release.md](./open-source-release.md): clean public release and history-safety checklist
 - [heartbeat.md](./heartbeat.md): periodic background checks and notifications system
 - [osint.md](./osint.md): probabilistic residence/staging inference from activity graphs
 

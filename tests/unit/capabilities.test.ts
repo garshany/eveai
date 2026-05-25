@@ -17,7 +17,7 @@ vi.mock('../../src/config.js', () => ({
       specUrl: 'https://esi.evetech.net/latest/swagger.json',
       catalogCachePath: './data/cache/esi-swagger.json',
       compatibilityDate: '2026-03-15',
-      userAgent: 'EVEAIBOT/1.0 (garshany80@gmail.com; +https://github.com/garshany/eveai)',
+      userAgent: 'EVEAI/2.1 (+https://github.com/example/eveai; contact=operator@example.com)',
       maxPages: 5,
       backoffMaxSeconds: 10,
       requestTimeoutMs: 5000,

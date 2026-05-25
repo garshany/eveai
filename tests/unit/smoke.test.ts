@@ -44,6 +44,9 @@ describe('runSmokeChecks', () => {
     process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1';
 
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === 'https://api.openai.com/v1/responses') {
+        return new Response('event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_x\",\"output_text\":\"pong\"}}\n\n', { status: 200 });
+      }
       if (url === 'http://127.0.0.1:3000/health') {
         return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
       }
@@ -73,6 +76,9 @@ describe('runSmokeChecks', () => {
       }
       if (url === 'http://localhost:8088/v1/models') {
         return new Response('{}', { status: 200 });
+      }
+      if (url === 'http://localhost:8088/v1/responses') {
+        return new Response('model unavailable', { status: 503 });
       }
       if (url === 'http://127.0.0.1:3000/health') {
         return new Response(JSON.stringify({ status: 'degraded' }), { status: 200 });

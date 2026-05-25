@@ -2,6 +2,7 @@ import { config } from '../config.js';
 
 export type NativeInputItem =
   | NativeInputMessage
+  | NativeFunctionCallItem
   | NativeFunctionCallOutputItem;
 
 export type NativeInputMessage = {
@@ -11,6 +12,16 @@ export type NativeInputMessage = {
     type: 'input_text' | 'output_text';
     text: string;
   }>;
+};
+
+export type NativeFunctionCallItem = {
+  type: 'function_call';
+  call_id: string;
+  name: string;
+  arguments: string;
+  id?: string;
+  status?: string;
+  [key: string]: unknown;
 };
 
 export type NativeFunctionCallOutputItem = {
@@ -245,6 +256,21 @@ export function buildFunctionCallOutputs(
     call_id: entry.callId,
     output: entry.output,
   }));
+}
+
+export function buildFunctionCallInputItems(
+  output: NativeResponseOutputItem[],
+): NativeFunctionCallItem[] {
+  return output
+    .filter((item) => item.type === 'function_call')
+    .map((item) => ({
+      ...item,
+      type: 'function_call' as const,
+      call_id: String(item.call_id ?? item.id ?? ''),
+      name: String(item.name ?? ''),
+      arguments: String(item.arguments ?? '{}'),
+    }))
+    .filter((item) => item.call_id && item.name);
 }
 
 export function extractFunctionCalls(
