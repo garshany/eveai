@@ -1,0 +1,312 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Space Grotesk", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+  --color-void: #05070e;
+}
+
+:root {
+  color-scheme: dark;
+  --font-display-stack: "Space Grotesk", "Segoe UI", sans-serif;
+  --font-mono-stack: "IBM Plex Mono", "SFMono-Regular", monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #05070e;
+  color: rgba(255, 255, 255, 0.94);
+  font-family: var(--font-display-stack);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+#root {
+  isolation: isolate;
+}
+
+.eyebrow {
+  font-family: var(--font-mono-stack);
+  font-size: 0.72rem;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: rgba(103, 232, 249, 0.45);
+}
+
+/* EVE Nebula — deep space glow */
+.nebula {
+  background:
+    radial-gradient(ellipse 120% 60% at 15% 20%, rgba(20, 60, 120, 0.35), transparent 55%),
+    radial-gradient(ellipse 80% 50% at 75% 15%, rgba(90, 30, 100, 0.25), transparent 50%),
+    radial-gradient(ellipse 100% 80% at 50% 80%, rgba(10, 40, 80, 0.3), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 85% 70%, rgba(120, 50, 30, 0.15), transparent 45%),
+    radial-gradient(ellipse 50% 30% at 30% 60%, rgba(20, 80, 100, 0.2), transparent 40%);
+  animation: nebulaDrift 60s ease-in-out infinite;
+  opacity: 0.8;
+}
+
+/* Starfield — bright stars */
+.starfield {
+  background-image:
+    radial-gradient(circle at 10% 20%, rgba(255,255,255,0.5) 0 1px, transparent 1.2px),
+    radial-gradient(circle at 30% 55%, rgba(255,255,255,0.3) 0 0.8px, transparent 1px),
+    radial-gradient(circle at 72% 18%, rgba(200,220,255,0.45) 0 1.2px, transparent 1.5px),
+    radial-gradient(circle at 85% 65%, rgba(255,255,255,0.4) 0 0.8px, transparent 1px),
+    radial-gradient(circle at 55% 80%, rgba(255,255,255,0.25) 0 0.8px, transparent 1px),
+    radial-gradient(circle at 40% 35%, rgba(200,230,255,0.3) 0 0.6px, transparent 0.8px),
+    radial-gradient(circle at 18% 70%, rgba(255,255,255,0.2) 0 0.8px, transparent 1px),
+    radial-gradient(circle at 65% 42%, rgba(255,255,255,0.35) 0 1px, transparent 1.2px);
+  animation: drift 40s linear infinite;
+  opacity: 0.7;
+}
+
+/* Starfield deep layer — faint distant stars */
+.starfield-deep {
+  background-image:
+    radial-gradient(circle at 5% 45%, rgba(255,255,255,0.15) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 22% 12%, rgba(255,255,255,0.12) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 48% 38%, rgba(255,255,255,0.18) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 62% 72%, rgba(255,255,255,0.1) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 78% 28%, rgba(255,255,255,0.14) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 88% 88%, rgba(255,255,255,0.12) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 35% 90%, rgba(255,255,255,0.16) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 92% 48%, rgba(200,220,255,0.13) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 15% 85%, rgba(255,255,255,0.11) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 50% 15%, rgba(255,255,255,0.14) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 70% 55%, rgba(200,230,255,0.1) 0 0.5px, transparent 0.7px),
+    radial-gradient(circle at 42% 62%, rgba(255,255,255,0.12) 0 0.5px, transparent 0.7px);
+  animation: drift 80s linear infinite reverse;
+  opacity: 0.5;
+}
+
+/* Star map grid overlay — faint hex-like lines */
+.star-map-grid {
+  background-image:
+    linear-gradient(0deg, rgba(56, 189, 248, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.025) 1px, transparent 1px);
+  background-size: 80px 80px;
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, rgba(0,0,0,0.5), transparent 70%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, rgba(0,0,0,0.5), transparent 70%);
+}
+
+.hero-haze {
+  background:
+    linear-gradient(90deg, rgba(5, 7, 14, 0.92) 0%, rgba(5, 7, 14, 0.78) 38%, rgba(5, 7, 14, 0.52) 60%, rgba(5, 7, 14, 0.82) 100%),
+    linear-gradient(180deg, rgba(5, 7, 14, 0.06) 0%, rgba(5, 7, 14, 0.74) 85%, rgba(5, 7, 14, 0.96) 100%);
+}
+
+.hero-ring {
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.015),
+    0 0 80px rgba(34, 211, 238, 0.08);
+}
+
+.hero-ring-a {
+  animation: ringDrift 18s linear infinite;
+}
+
+.hero-ring-b {
+  animation: ringDriftReverse 24s linear infinite;
+}
+
+.hero-sun {
+  background:
+    radial-gradient(circle, rgba(250, 204, 21, 0.38) 0%, rgba(249, 115, 22, 0.14) 32%, rgba(14, 165, 233, 0.08) 55%, transparent 72%);
+  filter: blur(8px);
+  opacity: 0.75;
+}
+
+.hero-gridline {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.14), transparent);
+}
+
+.hero-panel {
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.cta-shell {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.02)),
+    radial-gradient(circle at top right, rgba(34, 211, 238, 0.08), transparent 35%);
+  backdrop-filter: blur(18px);
+}
+
+.tactical-map {
+  position: relative;
+  height: 12rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1.5rem;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(56, 189, 248, 0.18), transparent 22%),
+    radial-gradient(circle at 80% 24%, rgba(245, 158, 11, 0.15), transparent 20%),
+    linear-gradient(0deg, rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(2, 6, 23, 0.92), rgba(3, 10, 24, 0.86));
+  background-size:
+    auto,
+    auto,
+    46px 46px,
+    46px 46px,
+    auto;
+}
+
+.tactical-route {
+  position: absolute;
+  left: 15%;
+  top: 54%;
+  width: 62%;
+  height: 2px;
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.14), rgba(250, 204, 21, 0.82), rgba(251, 146, 60, 0.24));
+  transform: rotate(-12deg);
+  box-shadow: 0 0 18px rgba(250, 204, 21, 0.35);
+}
+
+.tactical-node {
+  position: absolute;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 0 16px rgba(255,255,255,0.3);
+}
+
+.node-a {
+  left: 16%;
+  top: 61%;
+}
+
+.node-b {
+  left: 34%;
+  top: 50%;
+  background: rgba(125, 211, 252, 0.9);
+}
+
+.node-c {
+  left: 55%;
+  top: 45%;
+  background: rgba(250, 204, 21, 0.95);
+}
+
+.node-d {
+  left: 74%;
+  top: 34%;
+  background: rgba(251, 146, 60, 0.94);
+}
+
+/* Reveal on scroll */
+.reveal-panel,
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(20px);
+  transition:
+    opacity 600ms ease,
+    transform 600ms ease;
+}
+
+.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+
+@keyframes drift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(-1%, 0.8%, 0);
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes nebulaDrift {
+  0%, 100% {
+    opacity: 0.8;
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  33% {
+    opacity: 0.7;
+    transform: scale(1.02) translate3d(0.5%, -0.3%, 0);
+  }
+  66% {
+    opacity: 0.85;
+    transform: scale(0.99) translate3d(-0.3%, 0.5%, 0);
+  }
+}
+
+@keyframes ringDrift {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ringDriftReverse {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@media (max-width: 768px) {
+  .hero-haze {
+    background:
+      linear-gradient(180deg, rgba(5, 7, 14, 0.78) 0%, rgba(5, 7, 14, 0.9) 64%, rgba(5, 7, 14, 0.97) 100%);
+  }
+
+  .hero-sun {
+    right: -20%;
+    top: 16%;
+    width: 18rem;
+    height: 18rem;
+    opacity: 0.56;
+  }
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .nebula,
+  .starfield,
+  .starfield-deep,
+  .hero-ring-a,
+  .hero-ring-b,
+  .reveal-panel,
+  [data-reveal] {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+}

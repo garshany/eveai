@@ -1,0 +1,10 @@
+Telegram references used by this repo:
+
+- Telegram Bot API
+- Telegram bot FAQ
+- Telegram Login Widget verification behavior
+
+Primary URLs:
+- https://core.telegram.org/bots/api
+- https://core.telegram.org/bots/faq
+- https://core.telegram.org/widgets/login

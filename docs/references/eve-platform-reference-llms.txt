@@ -1,0 +1,13 @@
+EVE platform references used by this repo:
+
+- ESI overview and endpoint behavior
+- EVE SSO OAuth flow
+- static data documentation
+- ESI rate limiting and pagination notes
+
+Primary URLs:
+- https://developers.eveonline.com/docs/services/esi/overview/
+- https://developers.eveonline.com/docs/services/sso/
+- https://developers.eveonline.com/docs/services/static-data/
+- https://developers.eveonline.com/docs/services/esi/rate-limiting/
+- https://developers.eveonline.com/docs/services/esi/pagination/x-pages/
