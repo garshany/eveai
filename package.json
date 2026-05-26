@@ -1,8 +1,26 @@
 {
-  "name": "eve-agent",
-  "version": "2.1.1",
-  "description": "Multi-user EVE Online agent with Telegram, EVE SSO, native ESI tools, and local SDE",
+  "name": "eveonline-ai",
+  "version": "2.1.5",
+  "description": "Self-hosted Telegram-first AI assistant for EVE Online using OpenAI Responses API, EVE SSO, ESI, and local SDE",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/garshany/eveonline_ai.git"
+  },
+  "homepage": "https://github.com/garshany/eveonline_ai#readme",
+  "bugs": {
+    "url": "https://github.com/garshany/eveonline_ai/issues"
+  },
+  "keywords": [
+    "eve-online",
+    "telegram-bot",
+    "openai",
+    "responses-api",
+    "esi",
+    "sqlite",
+    "sde"
+  ],
   "engines": {
     "node": ">=20.0.0"
   },
@@ -24,7 +42,9 @@
     "sde:load": "tsx src/eve/sde-loader.ts",
     "sde:download": "tsx src/eve/sde-downloader.ts",
     "setup": "npm run sde:download && npm run sde:load",
-    "smoke": "tsx src/smoke.ts"
+    "smoke": "tsx src/smoke.ts",
+    "smoke:openai": "tsx scripts/openai-smoke.ts",
+    "smoke:eve-tool": "tsx scripts/eve-tool-smoke.ts"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.6",

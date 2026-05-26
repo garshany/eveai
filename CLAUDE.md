@@ -104,13 +104,11 @@ Hard rules:
 - Fixers should make the smallest defensible diff.
 
 Installed workflow agents:
-- `.claude/agents/task-spec-freezer.md`
-- `.claude/agents/task-builder.md`
-- `.claude/agents/task-verifier.md`
-- `.claude/agents/task-fixer.md`
+- `.codex/agents/task-spec-freezer.toml`
+- `.codex/agents/task-builder.toml`
+- `.codex/agents/task-verifier.toml`
+- `.codex/agents/task-fixer.toml`
 
 Claude Code note:
-- If `init` just created or refreshed these files during a running Claude Code session, start a new Claude Code session before relying on the updated agent list.
-- Use `/agents` to inspect the available agents.
-- Keep this block in the root `CLAUDE.md`. If the workflow needs longer repo guidance, prefer `@path` imports or `.claude/rules/*.md` instead of expanding this block.
+- Keep this block in the root `CLAUDE.md`. If the workflow needs longer repo guidance, prefer linked docs under `docs/` instead of expanding this block.
 <!-- repo-task-proof-loop:end -->

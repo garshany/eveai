@@ -16,7 +16,7 @@ EVE Agent is an internet-exposed, multi-user, Telegram-first Node.js application
   - `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/PRODUCT_SENSE.md`, `README.md`
 - Out of scope:
   - Telegram, EVE SSO, ESI, OpenAI-compatible backend, and zKillboard provider internals
-  - Nginx, PM2, OS hardening, and cloud perimeter controls except where repo docs explicitly affect runtime assumptions
+  - Nginx, process-manager, OS hardening, and cloud perimeter controls except where repo docs explicitly affect runtime assumptions
   - CI/build/test-only code except as supporting evidence
 - Explicit assumptions:
   - Production is intended to support many users, not only a single allowlisted Telegram user. Evidence: `README.md`, `docs/PRODUCT_SENSE.md`, optional allowlist in `src/config.ts` and `src/telegram/access.ts`.

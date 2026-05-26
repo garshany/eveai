@@ -39,7 +39,7 @@ describe('warm/cold path DB operations', () => {
     db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(1);
     db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)").run('t1', 1);
 
-    const row = db.prepare('SELECT last_response_id FROM agent_threads WHERE thread_id = ?').get('t1') as any;
+    const row = db.prepare('SELECT last_response_id FROM agent_threads WHERE thread_id = ?').get('t1') as { last_response_id: string | null };
     expect(row.last_response_id).toBeNull();
   });
 
@@ -50,7 +50,7 @@ describe('warm/cold path DB operations', () => {
     db.prepare("UPDATE agent_threads SET last_response_id = ? WHERE thread_id = ?")
       .run('resp_abc123', 't1');
 
-    const row = db.prepare('SELECT last_response_id FROM agent_threads WHERE thread_id = ?').get('t1') as any;
+    const row = db.prepare('SELECT last_response_id FROM agent_threads WHERE thread_id = ?').get('t1') as { last_response_id: string | null };
     expect(row.last_response_id).toBe('resp_abc123');
   });
 
@@ -96,7 +96,7 @@ describe('warm/cold path DB operations', () => {
     db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'Покажи кошелек');
 
     const { __test__ } = await import('../../src/agent/executor.js');
-    const continuation = __test__.planConversationContinuation(db as never, 't1');
+    const continuation = __test__.planConversationContinuation(db, 't1');
 
     expect(continuation.mode).toBe('warm');
     expect(continuation.previousResponseId).toBe('resp_abc123');
@@ -120,7 +120,7 @@ describe('warm/cold path DB operations', () => {
     db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'Новый вопрос');
 
     const { __test__ } = await import('../../src/agent/executor.js');
-    const continuation = __test__.planConversationContinuation(db as never, 't1');
+    const continuation = __test__.planConversationContinuation(db, 't1');
 
     expect(continuation.mode).toBe('cold');
     expect(continuation.previousResponseId).toBeNull();
@@ -163,7 +163,7 @@ describe('warm/cold path DB operations', () => {
       }));
 
     const { __test__ } = await import('../../src/agent/executor.js');
-    const items = __test__.buildToolStateRecoveryContext(db as never, 't1');
+    const items = __test__.buildToolStateRecoveryContext(db, 't1');
 
     expect(items[0]).toEqual({
       type: 'message',
@@ -214,7 +214,7 @@ describe('warm/cold path DB operations', () => {
     }));
 
     const { __test__ } = await import('../../src/agent/executor.js');
-    const context = __test__.resolveSystemLocationContext(db as never, 30000142);
+    const context = __test__.resolveSystemLocationContext(db, 30000142);
 
     expect(context).toEqual({
       systemName: 'Jita',

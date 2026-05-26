@@ -81,6 +81,9 @@ TELEGRAM_BOT_TOKEN=...
 OPENAI_API_KEY=...
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-5.5
+OPENAI_REASONING_EFFORT=medium
+OPENAI_TEXT_VERBOSITY=low
+OPENAI_RESPONSE_LANGUAGE=Russian
 OPENAI_RESPONSE_STATE_MODE=stateless
 EVE_CLIENT_ID=...
 EVE_CLIENT_SECRET=...
@@ -97,8 +100,12 @@ Generate `AUTH_SECRET_KEY` with:
 openssl rand -base64 32
 ```
 
-Model state mode:
+Model provider defaults:
 
+- `OPENAI_MODEL=gpt-5.5` uses the current OpenAI latest-model guidance for tool-heavy Responses API agents.
+- `OPENAI_REASONING_EFFORT=medium` is the balanced starting point; evaluate `low` for latency-sensitive deployments.
+- `OPENAI_TEXT_VERBOSITY=low` keeps Telegram answers compact; set `medium` if your community wants longer explanations.
+- `OPENAI_RESPONSE_LANGUAGE=Russian` sets the default final-answer language. Aliases like `ru`, `русский`, `en`, `English`, and custom language names are accepted; an explicit user request can override it for that answer.
 - `OPENAI_RESPONSE_STATE_MODE=stateless` is the default and is recommended for OpenAI-compatible gateways that do not retain `previous_response_id` state.
 - `OPENAI_RESPONSE_STATE_MODE=server` is only for providers that support stored Responses continuation.
 
@@ -110,10 +117,34 @@ npm run dev         # concurrent watch mode
 npm run check       # typecheck + tests + lint
 npm test            # vitest
 npm run smoke       # env, model endpoint, app health checks
+npm run smoke:openai # authenticated /v1/responses probe
+npm run smoke:eve-tool # authenticated model + EVE SDE tool probe
 npm run db:migrate  # run SQLite migrations
 npm run setup       # download and load SDE data
 npm start           # run built app
 ```
+
+## Runtime Smoke Test
+
+Authenticated OpenAI smoke test:
+
+```bash
+OPENAI_API_KEY=... npm run smoke:openai
+```
+
+EVE tool smoke test:
+
+```bash
+OPENAI_API_KEY=... npm run smoke:eve-tool
+```
+
+For a DB-only SDE tool check without calling the model:
+
+```bash
+EVE_TOOL_SMOKE_MODE=direct npm run smoke:eve-tool
+```
+
+For OpenAI-compatible providers, also set `OPENAI_BASE_URL`. The scripts print only sanitized endpoint/model/tool metadata and answer previews. They never log API keys.
 
 ## Self-Hosting
 
@@ -127,6 +158,7 @@ See [docs/deployment.md](./docs/deployment.md) for a generic production deployme
 - [docs/SECURITY.md](./docs/SECURITY.md): security rules and current gaps.
 - [docs/RELIABILITY.md](./docs/RELIABILITY.md): reliability model.
 - [docs/deployment.md](./docs/deployment.md): generic self-host guide.
+- [docs/openai-integration.md](./docs/openai-integration.md): OpenAI Responses API and GPT-5.5 configuration.
 - [docs/generated/db-schema.md](./docs/generated/db-schema.md): SQLite schema reference.
 
 ## Open-Source Safety Notice

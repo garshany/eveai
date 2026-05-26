@@ -1,0 +1,27 @@
+{
+  "status": "PASS",
+  "url": "http://127.0.0.1:32891/health",
+  "httpStatus": 200,
+  "body": {
+    "status": "ok",
+    "timestamp": "2026-05-25T16:21:11.238Z",
+    "checks": {
+      "telegram_bot": {
+        "status": "ok"
+      },
+      "database": {
+        "status": "ok"
+      },
+      "client_assets": {
+        "status": "ok",
+        "details": {
+          "manifest": "/home/antipedik/eveai/dist/client/.vite/manifest.json",
+          "entry": "assets/main-CeKMZ2bG.js"
+        }
+      },
+      "openai_proxy": {
+        "status": "skipped"
+      }
+    }
+  }
+}

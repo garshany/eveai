@@ -9,6 +9,7 @@ import { generateBriefingFromSnapshot } from '../eve-board/briefing.js';
 import { attributeKillsToGates } from '../eve-board/analytics.js';
 import type { GateKill } from '../eve-board/types.js';
 import { findBestTheraShortcut, type TheraShortcut } from './thera-scout.js';
+import { escapeHtml, escapeHtmlAttribute } from './route-formatting.js';
 
 type EsiRouteFlag = 'secure' | 'shortest' | 'insecure';
 type RouteFlag = EsiRouteFlag | 'thera_shortcut';
@@ -386,16 +387,6 @@ function describeRouteRiskEmoji(route: RouteVariant, dangerSystems: number): str
   return '\u{1F7E2}'; // green circle
 }
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function escapeHtmlAttribute(text: string): string {
-  return escapeHtml(text).replace(/"/g, '&quot;');
-}
 
 function describeAlternativeHint(routes: RouteVariant[], preferred: RouteVariant): string | null {
   const candidates = routes.filter((route) => route.flag !== preferred.flag);

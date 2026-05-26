@@ -1,0 +1,27 @@
+
+> eve-agent@2.1.1 test
+> vitest run warm-cold-path static-aggregate moon-count sde
+
+
+ RUN  v3.2.4 /home/antipedik/eveai
+
+ ✓ tests/unit/sde.test.ts (15 tests) 37ms
+ ✓ tests/unit/moon-count.test.ts (2 tests) 199ms
+ ✓ tests/unit/sde-sql-security.test.ts (12 tests) 23ms
+stdout | tests/unit/static-aggregate.test.ts > static aggregate helpers > can answer a current-region aggregate question before entering the model loop
+[executor] static-aggregate-fast-path object=systems target=region:The Forge answer=40 chars
+
+ ✓ tests/unit/warm-cold-path.test.ts (12 tests) 313ms
+stdout | tests/unit/static-aggregate.test.ts > static aggregate helpers > can answer a bare-name aggregate question before entering the model loop
+[executor] static-aggregate-fast-path object=stations target=system:Jita answer=35 chars
+
+stdout | tests/unit/static-aggregate.test.ts > static aggregate helpers > can answer a current-constellation moon question before entering the model loop
+[executor] static-aggregate-fast-path object=moons target=constellation:Kimotoro answer=70 chars
+
+ ✓ tests/unit/static-aggregate.test.ts (11 tests) 316ms
+
+ Test Files  5 passed (5)
+      Tests  52 passed (52)
+   Start at  19:10:53
+   Duration  542ms (transform 442ms, setup 0ms, collect 525ms, tests 888ms, environment 1ms, prepare 265ms)
+

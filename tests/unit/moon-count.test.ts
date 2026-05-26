@@ -73,7 +73,7 @@ describe('executeUniverseObjectCount (moon counting, consolidated from count_moo
     seedUniverse();
     const { executeUniverseObjectCount } = await import('../../src/agent/tools.js');
 
-    expect(executeUniverseObjectCount(db as never, {
+    expect(executeUniverseObjectCount(db, {
       target_kind: 'system',
       target_name: 'jita',
       object_kind: 'moons',
@@ -96,7 +96,7 @@ describe('executeUniverseObjectCount (moon counting, consolidated from count_moo
     seedUniverse();
     const { executeUniverseObjectCount } = await import('../../src/agent/tools.js');
 
-    expect(executeUniverseObjectCount(db as never, {
+    expect(executeUniverseObjectCount(db, {
       target_kind: 'region',
       target_name: 'The Forge',
       object_kind: 'moons',

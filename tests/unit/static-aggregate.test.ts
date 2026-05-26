@@ -79,7 +79,7 @@ describe('executeUniverseObjectCount', () => {
   it('counts systems inside a region', async () => {
     const { executeUniverseObjectCount } = await import('../../src/agent/tools.js');
 
-    expect(executeUniverseObjectCount(db as never, {
+    expect(executeUniverseObjectCount(db, {
       target_kind: 'region',
       target_name: 'The Forge',
       object_kind: 'systems',
@@ -95,7 +95,7 @@ describe('executeUniverseObjectCount', () => {
   it('counts planets inside a constellation', async () => {
     const { executeUniverseObjectCount } = await import('../../src/agent/tools.js');
 
-    expect(executeUniverseObjectCount(db as never, {
+    expect(executeUniverseObjectCount(db, {
       target_kind: 'constellation',
       target_name: 'Kimotoro',
       object_kind: 'planets',
@@ -111,7 +111,7 @@ describe('executeUniverseObjectCount', () => {
   it('counts stations inside a system', async () => {
     const { executeUniverseObjectCount } = await import('../../src/agent/tools.js');
 
-    expect(executeUniverseObjectCount(db as never, {
+    expect(executeUniverseObjectCount(db, {
       target_kind: 'system',
       target_name: 'Jita',
       object_kind: 'stations',
@@ -127,7 +127,7 @@ describe('executeUniverseObjectCount', () => {
   it('counts asteroid belts inside a system', async () => {
     const { executeUniverseObjectCount } = await import('../../src/agent/tools.js');
 
-    expect(executeUniverseObjectCount(db as never, {
+    expect(executeUniverseObjectCount(db, {
       target_kind: 'system',
       target_name: 'Jita',
       object_kind: 'asteroid_belts',
@@ -176,7 +176,7 @@ describe('static aggregate helpers', () => {
   it('parses current-location and explicit static aggregate intents', async () => {
     const { __test__ } = await import('../../src/agent/executor.js');
 
-    expect(__test__.parseStaticAggregateIntent(db as never, 'Сколько систем в моем регионе?', {
+    expect(__test__.parseStaticAggregateIntent(db, 'Сколько систем в моем регионе?', {
       systemName: 'Jita',
       security: 0.9,
       constellationName: 'Kimotoro',
@@ -187,25 +187,25 @@ describe('static aggregate helpers', () => {
       targetName: 'The Forge',
     });
 
-    expect(__test__.parseStaticAggregateIntent(db as never, 'Сколько станций в системе Jita?', null)).toEqual({
+    expect(__test__.parseStaticAggregateIntent(db, 'Сколько станций в системе Jita?', null)).toEqual({
       objectKind: 'stations',
       targetKind: 'system',
       targetName: 'Jita',
     });
 
-    expect(__test__.parseStaticAggregateIntent(db as never, 'Сколько систем в The Forge?', null)).toEqual({
+    expect(__test__.parseStaticAggregateIntent(db, 'Сколько систем в The Forge?', null)).toEqual({
       objectKind: 'systems',
       targetKind: 'region',
       targetName: 'The Forge',
     });
 
-    expect(__test__.parseStaticAggregateIntent(db as never, 'How many systems are in The Forge?', null)).toEqual({
+    expect(__test__.parseStaticAggregateIntent(db, 'How many systems are in The Forge?', null)).toEqual({
       objectKind: 'systems',
       targetKind: 'region',
       targetName: 'The Forge',
     });
 
-    expect(__test__.parseStaticAggregateIntent(db as never, 'Сколько лун в моем созвездии?', {
+    expect(__test__.parseStaticAggregateIntent(db, 'Сколько лун в моем созвездии?', {
       systemName: 'Jita',
       security: 0.9,
       constellationName: 'Kimotoro',
@@ -265,7 +265,7 @@ describe('static aggregate helpers', () => {
     db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)").run('t1', 1);
 
     const answer = __test__.tryHandleStaticAggregateFastPath(
-      db as never,
+      db,
       't1',
       'Сколько систем в моем регионе?',
       {
@@ -287,7 +287,7 @@ describe('static aggregate helpers', () => {
     db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)").run('t2', 2);
 
     const answer = __test__.tryHandleStaticAggregateFastPath(
-      db as never,
+      db,
       't2',
       'Сколько станций в Jita?',
       null,
@@ -304,7 +304,7 @@ describe('static aggregate helpers', () => {
     db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)").run('t3', 3);
 
     const answer = __test__.tryHandleStaticAggregateFastPath(
-      db as never,
+      db,
       't3',
       'Сколько лун в моем созвездии?',
       {

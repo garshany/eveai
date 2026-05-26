@@ -1,0 +1,61 @@
+
+> eve-agent@2.1.1 test
+> vitest run executor-fields web-search-guard warm-cold-path static-aggregate
+
+
+ RUN  v3.2.4 /home/antipedik/eveai
+
+ ❯ tests/unit/web-search-guard.test.ts (4 tests | 2 failed) 4ms
+   ✓ web search guard > normalizes site filters and punctuation 1ms
+   ✓ web search guard > detects materially similar queries 0ms
+   × web search guard > allows at most two web searches in one turn 2ms
+     → MAX_WEB_SEARCHES_PER_TURN is not defined
+   × web search guard > blocks exact duplicate queries immediately 0ms
+     → MAX_WEB_SEARCHES_PER_TURN is not defined
+stdout | tests/unit/static-aggregate.test.ts > static aggregate helpers > can answer a current-region aggregate question before entering the model loop
+[executor] === DONE (static-aggregate-fast-path) object=systems target=region:The Forge answer=40 chars ===
+
+stdout | tests/unit/static-aggregate.test.ts > static aggregate helpers > can answer a bare-name aggregate question before entering the model loop
+[executor] === DONE (static-aggregate-fast-path) object=stations target=system:Jita answer=35 chars ===
+
+stdout | tests/unit/static-aggregate.test.ts > static aggregate helpers > can answer a current-constellation moon question before entering the model loop
+[executor] === DONE (static-aggregate-fast-path) object=moons target=constellation:Kimotoro answer=70 chars ===
+
+ ✓ tests/unit/warm-cold-path.test.ts (12 tests) 272ms
+ ✓ tests/unit/static-aggregate.test.ts (11 tests) 272ms
+ ✓ tests/unit/executor-fields.test.ts (26 tests) 27ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/unit/web-search-guard.test.ts > web search guard > allows at most two web searches in one turn
+ReferenceError: MAX_WEB_SEARCHES_PER_TURN is not defined
+ ❯ registerWebSearch src/agent/web-search.ts:29:23
+     27| 
+     28|   const hasSimilarPrior = prior.some((entry) => areSimilarWebSearchQue…
+     29|   if (prior.length >= MAX_WEB_SEARCHES_PER_TURN || (prior.length >= 2 …
+       |                       ^
+     30|     return {
+     31|       allowed: false,
+ ❯ tests/unit/web-search-guard.test.ts:28:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  tests/unit/web-search-guard.test.ts > web search guard > blocks exact duplicate queries immediately
+ReferenceError: MAX_WEB_SEARCHES_PER_TURN is not defined
+ ❯ registerWebSearch src/agent/web-search.ts:29:23
+     27| 
+     28|   const hasSimilarPrior = prior.some((entry) => areSimilarWebSearchQue…
+     29|   if (prior.length >= MAX_WEB_SEARCHES_PER_TURN || (prior.length >= 2 …
+       |                       ^
+     30|     return {
+     31|       allowed: false,
+ ❯ tests/unit/web-search-guard.test.ts:44:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 3 passed (4)
+      Tests  2 failed | 51 passed (53)
+   Start at  19:05:30
+   Duration  528ms (transform 323ms, setup 0ms, collect 795ms, tests 575ms, environment 0ms, prepare 240ms)
+

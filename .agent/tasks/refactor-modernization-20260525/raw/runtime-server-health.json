@@ -1,0 +1,28 @@
+{
+  "status": "FAIL",
+  "url": "http://127.0.0.1:41701/health",
+  "httpStatus": 503,
+  "body": {
+    "status": "degraded",
+    "timestamp": "2026-05-25T16:20:55.258Z",
+    "checks": {
+      "telegram_bot": {
+        "status": "ok"
+      },
+      "database": {
+        "status": "ok"
+      },
+      "client_assets": {
+        "status": "ok",
+        "details": {
+          "manifest": "/home/antipedik/eveai/dist/client/.vite/manifest.json",
+          "entry": "assets/main-CeKMZ2bG.js"
+        }
+      },
+      "openai_proxy": {
+        "status": "failed",
+        "error": "Health probe returned HTTP 404"
+      }
+    }
+  }
+}

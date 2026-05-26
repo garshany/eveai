@@ -24,7 +24,6 @@ import { callEsiOperation } from '../eve/esi-client.js';
 import { getEveCapabilities, hasFreshCapabilitySnapshot } from '../eve/capabilities.js';
 import type { KilllistItem } from '../eve-kill/client.js';
 import { getKillmailBatch } from '../eve-kill/client.js';
-import type { EveKillKillmail } from '../eve-kill/types.js';
 import { analyzeKillPattern, scoreThreat, assessShip } from './threat.js';
 import type {
   RouteMonitor,
@@ -49,6 +48,14 @@ import {
   formatIntelMessage,
 } from './advisor.js';
 import type { UserContext } from '../auth/user-resolver.js';
+import {
+  collectNewKillmailIds,
+  extractKillPosition,
+  shouldSendDigestHeartbeat as shouldSendDigestHeartbeatWithInterval,
+  type KillPosition,
+} from './monitor-helpers.js';
+
+export { collectNewKillmailIds, extractKillPosition } from './monitor-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -177,7 +184,6 @@ type EnrichResult = {
   attackers: ExtractedAttacker[];
   positions: Map<number, KillPosition>;
 };
-type KillPosition = { x: number; y: number; z: number };
 
 /**
  * Enrich zKB items with ESI killmail data and return KilllistItem[] for analyzeKillPattern.
@@ -308,16 +314,6 @@ async function fetchKillPositions(db: Db, killmailIds: number[]): Promise<Map<nu
   }
 }
 
-export function extractKillPosition(killmail: EveKillKillmail): KillPosition | null {
-  const raw = killmail as Record<string, unknown>;
-  const nested = asRec(raw.position);
-  const x = numOrNull(raw.x) ?? numOrNull(nested.x);
-  const y = numOrNull(raw.y) ?? numOrNull(nested.y);
-  const z = numOrNull(raw.z) ?? numOrNull(nested.z);
-  if (x === null || y === null || z === null) return null;
-  return { x, y, z };
-}
-
 /** Batch-resolve character names via ESI post_universe_names (max 100 per call). */
 async function resolveCharacterNames(db: Db, ids: Set<number>): Promise<Map<number, string>> {
   const map = new Map<number, string>();
@@ -349,13 +345,6 @@ function zkbToKilllistFallback(item: ZkbFeedItem): KilllistItem {
   };
 }
 
-function asRec(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function numOrNull(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
 
 /** Resolve type name and group name from SDE for a given type_id. */
 function resolveTypeGroup(
@@ -377,19 +366,6 @@ function resolveTypeGroup(
 // ---------------------------------------------------------------------------
 
 export const activeMonitors = new Map<number, MonitorInstance>();
-
-export function collectNewKillmailIds(
-  seenKillmailIds: Set<number>,
-  kills: Array<{ killmail_id: number }>,
-): Set<number> {
-  const fresh = new Set<number>();
-  for (const kill of kills) {
-    if (seenKillmailIds.has(kill.killmail_id)) continue;
-    seenKillmailIds.add(kill.killmail_id);
-    fresh.add(kill.killmail_id);
-  }
-  return fresh;
-}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -943,23 +919,7 @@ export function shouldSendDigestHeartbeat(
   digest: RouteThreatDigest,
   gankerCount: number,
 ): boolean {
-  if (Date.now() - lastDigestTime < DIGEST_HEARTBEAT_MS) {
-    return false;
-  }
-
-  if (digest.overallThreat !== 'LOW') {
-    return true;
-  }
-
-  const systems = [...digest.systemsAhead, ...digest.systemsBehind];
-  if (gankerCount > 0) return true;
-
-  return systems.some((system) =>
-    system.recentKills.length > 0
-    || system.gateKills.length > 0
-    || system.gankerCount > 0
-    || system.jumpSpike !== null,
-  );
+  return shouldSendDigestHeartbeatWithInterval(lastDigestTime, digest, gankerCount, DIGEST_HEARTBEAT_MS);
 }
 
 // ---------------------------------------------------------------------------

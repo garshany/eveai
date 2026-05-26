@@ -1,0 +1,154 @@
+{
+  "status": "PASS",
+  "totalRequests": 12,
+  "tools": [
+    "update_plan",
+    "count_universe_objects",
+    "sde_sql",
+    "route_monitor",
+    "intel_note",
+    "analyze_scan",
+    "set_active_fit",
+    "heartbeat_config",
+    "get_eve_capabilities",
+    "web_search",
+    "plan_route",
+    "osint_infer_home"
+  ],
+  "results": [
+    {
+      "index": 1,
+      "request": "Составь план ответа",
+      "tool": "update_plan",
+      "ok": true,
+      "resultPreview": "{\"requestId\":\"runtime-parity-request\",\"goal\":\"Составь план ответа\",\"status\":\"active\",\"steps\":[{\"id\":\"a\",\"title\":\"Check\",\"status\":\"done\",\"depends_on\":[],\"notes\":\"runtime parity\"}]}",
+      "resultChars": 179,
+      "fetchCalls": [],
+      "elapsedMs": 1
+    },
+    {
+      "index": 2,
+      "request": "Сколько систем в регионе The Forge?",
+      "tool": "count_universe_objects",
+      "ok": true,
+      "resultPreview": "{\"ok\":true,\"object_kind\":\"systems\",\"count\":2,\"target_kind\":\"region\",\"target_name\":\"The Forge\",\"region_id\":10000002}",
+      "resultChars": 115,
+      "fetchCalls": [],
+      "elapsedMs": 0
+    },
+    {
+      "index": 3,
+      "request": "Найди type_id для Rifter",
+      "tool": "sde_sql",
+      "ok": true,
+      "resultPreview": "{\"ok\":true,\"rows\":[{\"type_id\":587,\"name\":\"Rifter\"}],\"count\":1,\"error\":null}",
+      "resultChars": 75,
+      "fetchCalls": [],
+      "elapsedMs": 1
+    },
+    {
+      "index": 4,
+      "request": "Статус мониторинга маршрута",
+      "tool": "route_monitor",
+      "ok": true,
+      "resultPreview": "{\"ok\":true,\"active\":false,\"message\":\"Нет активного мониторинга маршрута.\"}",
+      "resultChars": 74,
+      "fetchCalls": [],
+      "elapsedMs": 0
+    },
+    {
+      "index": 5,
+      "request": "Запомни заметку по Jita",
+      "tool": "intel_note",
+      "ok": true,
+      "resultPreview": "{\"ok\":true,\"note_id\":1,\"system\":\"Jita\",\"region\":\"The Forge\",\"entity\":null,\"tag\":\"general\"}",
+      "resultChars": 90,
+      "fetchCalls": [],
+      "elapsedMs": 0
+    },
+    {
+      "index": 6,
+      "request": "Разбери d-scan",
+      "tool": "analyze_scan",
+      "ok": true,
+      "resultPreview": "{\"ok\":true,\"scan_type\":\"dscan\",\"total_objects\":2,\"resolved\":0,\"categories\":{},\"fleet_profile\":{\"combat_ships\":0,\"logistics\":0,\"ewar\":0,\"tackle\":0,\"capitals\":0,\"industrials\":0,\"scouts\":0,\"estimated_type\":\"solo\",\"logi_ratio\":null},\"grid\":{\"on_grid\":1,\"off_grid\":1}}",
+      "resultChars": 263,
+      "fetchCalls": [],
+      "elapsedMs": 1
+    },
+    {
+      "index": 7,
+      "request": "Сохрани активный фит",
+      "tool": "set_active_fit",
+      "ok": true,
+      "resultPreview": "{\"ok\":true}",
+      "resultChars": 11,
+      "fetchCalls": [],
+      "elapsedMs": 1
+    },
+    {
+      "index": 8,
+      "request": "Покажи heartbeat config",
+      "tool": "heartbeat_config",
+      "ok": true,
+      "resultPreview": "{\"ok\":true,\"enabled\":false,\"interval\":\"1 ч\",\"interval_seconds\":3600,\"checks\":[\"mail\"],\"available_checks\":[\"mail\",\"skills\",\"wallet\",\"industry\",\"contracts\",\"killmails\",\"orders\",\"notifications\",\"pi\"],\"last_run_at\":null,\"character\":\"Runtime Pilot\"}",
+      "resultChars": 244,
+      "fetchCalls": [],
+      "elapsedMs": 0
+    },
+    {
+      "index": 9,
+      "request": "Какие приватные ESI доступны?",
+      "tool": "get_eve_capabilities",
+      "ok": true,
+      "resultPreview": "{\"authenticated\":true,\"characterId\":95465499,\"characterName\":\"Runtime Pilot\",\"grantedScopes\":[\"esi-location.read_location.v1\",\"esi-ui.write_waypoint.v1\"],\"allowedNamespaces\":[\"esi_alliances_corporations\",\"esi_alliances_icons\",\"esi_alliances_root\",\"esi_characters_affiliation\",\"esi_characters_corporationhistory\",\"esi_characters_location\",\"esi_characters_portrait\",\"esi_characters_root\",\"esi_contracts_public\",\"esi_corporations_alliancehistory\",\"esi_corporations_icons\",\"esi_corporations_npccorps\",\"es",
+      "resultChars": 5665,
+      "fetchCalls": [],
+      "elapsedMs": 12
+    },
+    {
+      "index": 10,
+      "request": "Что такое stargate?",
+      "tool": "web_search",
+      "ok": true,
+      "resultPreview": "{\"ok\":true,\"results\":[{\"title\":\"Stargate\",\"url\":\"https://wiki.eveuniversity.org/Stargate\",\"snippet\":\"Travel between systems.\",\"source\":\"EVE University Wiki\"}],\"error\":null}",
+      "resultChars": 172,
+      "fetchCalls": [
+        "https://wiki.eveuniversity.org/api.php?action=query&list=search&format=json&utf8=1&srlimit=5&srsearch=EVE+Online+stargate+mechanics"
+      ],
+      "elapsedMs": 10
+    },
+    {
+      "index": 11,
+      "request": "Построй маршрут Jita -> Perimeter",
+      "tool": "plan_route",
+      "ok": true,
+      "resultPreview": "{\"ok\":true,\"origin\":{\"id\":30000142,\"name\":\"Jita\",\"sec\":0.9,\"region\":\"The Forge\"},\"destination\":{\"id\":30000144,\"name\":\"Perimeter\",\"sec\":1,\"region\":\"The Forge\"},\"autopilot_set\":false,\"autopilot_mode\":\"none\",\"formatted_summary\":\"<b>Jita → Perimeter</b>\\n🟢 Выбран: secure | 1 прыжков | мин. сек: 0.9 | киллов/ч: 0 | потери: 0M\\nАвтопилот: нет (secure)\\n\\n<code>\\n         прыж  сек   kills\\n>secure    1  0.9     0\\n</code>\\n\\nКлючевые точки: <code>Jita → Perimeter</code>\\n\\nzKB срез: на выбранной трас",
+      "resultChars": 1130,
+      "fetchCalls": [
+        "https://mock.esi.local/latest/route/30000142/30000144/?flag=secure",
+        "https://mock.esi.local/latest/route/30000142/30000144/?flag=shortest",
+        "https://mock.esi.local/latest/route/30000142/30000144/?flag=insecure",
+        "https://mock.zkill.local/api/kills/systemID/30000142/pastSeconds/3600/",
+        "https://mock.zkill.local/api/kills/systemID/30000144/pastSeconds/3600/",
+        "https://mock.esi.local/latest/universe/system_jumps/"
+      ],
+      "elapsedMs": 4
+    },
+    {
+      "index": 12,
+      "request": "OSINT по корпорации",
+      "tool": "osint_infer_home",
+      "ok": true,
+      "resultPreview": "{\"ok\":true,\"scope\":\"corporation\",\"id\":123,\"entity_name\":null,\"window_days\":7,\"source_window_days\":7,\"hypotheses\":[],\"activity_cluster\":null,\"member_analysis\":{\"total_members_observed\":0,\"members_analyzed\":0,\"core_members\":[]},\"graph_digest\":{\"entity\":{\"scope\":\"corporation\",\"id\":123},\"window_days\":7,\"kill_count\":0,\"top_regions\":[],\"top_systems\":[],\"clusters\":[],\"core_members\":[],\"signals\":{\"split_theater\":0,\"roaming_bias\":0,\"hub_bias\":0,\"member_concentration\":0,\"timezone_dispersion\":0,\"single_day",
+      "resultChars": 706,
+      "fetchCalls": [
+        "https://mock.eve-kill.local/api/corporations/123",
+        "https://mock.esi.local/latest/universe/names/",
+        "https://mock.zkill.local/api/kills/corporationID/123/pastSeconds/604800/",
+        "https://mock.zkill.local/api/losses/corporationID/123/pastSeconds/604800/"
+      ],
+      "elapsedMs": 2
+    }
+  ]
+}

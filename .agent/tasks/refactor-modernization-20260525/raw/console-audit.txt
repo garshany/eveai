@@ -1,0 +1,197 @@
+src/eve-osint/zkill.ts:208:      console.warn('[zkill] feed %s → %d', path, response.status);
+src/eve-osint/zkill.ts:219:    console.warn('[zkill] feed %s failed: %s', path, (err as Error).message);
+src/agent/native-responses.ts:136:  console.log('[api] POST %s/responses — payload %d chars, %d tools, %d input items, prevId=%s',
+src/agent/native-responses.ts:180:      console.log('[api] reconstructed %d function call(s) from stream events', output.length);
+src/agent/native-responses.ts:196:    console.log('[usage] input=%s output=%s total=%s cached=%s reasoning=%s',
+src/agent/native-responses.ts:205:    console.log('[reasoning] %s', reasoningSummary.slice(0, 500));
+src/agent/native-responses.ts:210:    console.log('[tool_search] paths: %j', toolSearchPaths);
+src/agent/native-responses.ts:215:    console.log('[calls] %s', fnCalls.map((c) => c.name).join(', '));
+src/agent/native-responses.ts:438:      console.log('[api] stream error event=%s data=%s', event.event, JSON.stringify(data)?.slice(0, 500));
+src/eve-osint/llm.ts:58:    console.warn('[eve-osint] LLM pattern analysis failed: %s', (error as Error).message);
+src/agent/compact.ts:106:  console.log('[compact] pre-turn: total_tokens=%d >= limit=%d, compacting',
+src/agent/compact.ts:134:  console.log('[compact] mid-turn: compacting thread=%s', threadId.slice(0, 12));
+src/agent/compact.ts:159:      console.warn('[compact] attempt %d/%d failed: %s',
+src/agent/compact.ts:167:  console.error('[compact] all %d attempts failed for thread=%s', COMPACT_MAX_RETRIES + 1, threadId.slice(0, 12));
+src/agent/compact.ts:245:  console.log('[compact] thread=%s summarized %d messages, kept %d, summary=%d chars, tokens reset',
+src/agent/executor.ts:207:  console.log('[batch_market] region=%d types=%d ids=%j', regionId, typeIds.length, typeIds);
+src/agent/executor.ts:238:  console.log('[batch_market] done items=%d result=%d chars', results.length, totalChars);
+src/agent/executor.ts:263:  console.log('[esi]   auto-stripped redundant fields=%j (values known from request args)', redundant);
+src/agent/executor.ts:444:    console.warn('[executor] live context unavailable: %s', message);
+src/agent/executor.ts:501:  console.log('[executor] reasoning effort=%s for goal="%s"', reasoningEffort, goal.slice(0, 60));
+src/agent/executor.ts:511:  console.log(
+src/agent/executor.ts:536:  console.log('[executor] === NEW REQUEST chat=%d thread=%s goal="%s" ===', chatId, threadId.slice(0, 12), goal.slice(0, 80));
+src/agent/executor.ts:562:        console.warn('[executor] tool state lost, switching to cold recovery context: %s', message);
+src/agent/executor.ts:575:      console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d reasoning=%d',
+src/agent/executor.ts:589:      console.warn('[executor] silent context loss detected: warm mode with cached=0, falling back to cold recovery');
+src/agent/executor.ts:610:        console.log('[executor] mid-turn compaction: input=%d >= autoCompactLimit at iteration=%d',
+src/agent/executor.ts:624:          console.error('[executor] mid-turn compaction failed:', compactError);
+src/agent/executor.ts:638:        console.warn('[executor] tool state lost in response payload, switching to cold recovery context: %s', response.error.message);
+src/agent/executor.ts:641:      console.error('[executor] model error:', response.error.message);
+src/agent/executor.ts:645:      console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
+src/agent/executor.ts:651:      console.log('[executor] iteration=%d toolSearchPaths=%j', iteration, response.toolSearchPaths);
+src/agent/executor.ts:674:        console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
+src/agent/executor.ts:685:      console.log('[executor] empty response details id=%s outputTypes=%j events=%j',
+src/agent/executor.ts:689:        console.log('[executor] empty response, retrying (%d/2) prevId=%s', emptyResponseRetries, response.id);
+src/agent/executor.ts:725:      console.log('[tool] %s args=%s raw=%d chars sent=%d chars',
+src/agent/executor.ts:737:      console.log('[executor] === DONE (deterministic-count) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
+src/agent/executor.ts:754:        console.log('[executor] === DONE (route-shortcircuit) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
+src/agent/executor.ts:780:      console.log('[executor] anti-loop: %s called %d times consecutively, injecting nudge', lastToolName, consecutiveSameToolCount);
+src/agent/executor.ts:793:  console.log('[executor] === DONE (timeout) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
+src/agent/executor.ts:829:      console.log('[web_search] blocked reason=%s query=%s', guard.reason, query);
+src/agent/executor.ts:837:    console.log('[web_search] query=%s', query);
+src/agent/executor.ts:839:    console.log('[web_search] ok=%s results=%d', result.ok, result.results.length);
+src/agent/executor.ts:934:    console.log('[plan_route] origin=%s dest=%s routes=%d autopilot=%s error=%s',
+src/agent/executor.ts:938:      console.log('[plan_route]   %s: %d jumps, kills_1h=%d, danger_systems=%d, safe=%d, value=%dM',
+src/agent/executor.ts:974:      console.log('[eve-kill] blocked: limit %d reached (call #%d)', MAX_EVE_KILL_CALLS_PER_TURN, webSearchState.eveKillCallCount);
+src/agent/executor.ts:978:    console.log('[eve-kill] %s completed (call #%d)', name, webSearchState.eveKillCallCount);
+src/agent/executor.ts:984:    console.log('[eve-scout] %s completed', name);
+src/agent/executor.ts:1016:      console.log('[esi] %s bulk filter: %d/%d rows matched by %s in %j', name, (esiResult.data as unknown[]).length, before, bulkSpec.filterKey, filterIds);
+src/agent/executor.ts:1039:    console.log('[esi] %s rows=%d status=%s cached=%s', name, rowCount, esiResult.status, esiResult.cached ?? false);
+src/agent/executor.ts:1040:    console.log('[esi]   fields_requested=%j whitelist=%j', requestedFields, whitelistFields);
+src/agent/executor.ts:1041:    console.log('[esi]   raw_fields=%j', rawKeys);
+src/agent/executor.ts:1042:    console.log('[esi]   final=%j dropped=%j', keptKeys, droppedKeys);
+src/agent/executor.ts:1043:    console.log('[esi]   raw=%d chars final=%d chars saved=%d%%', rawChars, finalChars, savedPct);
+src/agent/executor.ts:1045:    console.log('[esi] %s status=%s ok=%s error=%s',
+src/agent/executor.ts:1595:  console.log('[executor] === DONE (static-aggregate-fast-path) object=%s target=%s:%s answer=%d chars ===',
+src/eve-board/advisor.ts:72:    console.error('[route-advisor] LLM call failed:', err);
+src/eve-board/advisor.ts:319:    console.error('[route-intel] LLM call failed, falling back to template:', err);
+src/app.ts:16:  console.log('[app] Starting EVE Agent...');
+src/app.ts:21:  console.log('[app] Database ready');
+src/app.ts:32:      console.log(`[app] Bot username resolved: @${me.username}`);
+src/app.ts:34:      console.warn('[app] Failed to resolve bot username:', err);
+src/app.ts:41:      console.error('[route-monitor] Telegram send failed:', err);
+src/app.ts:44:  console.log('[app] Route monitor sender configured');
+src/app.ts:50:  console.log(`[app] HTTP server listening on ${config.server.host}:${config.server.port}`);
+src/app.ts:53:  console.log('[app] Starting Telegram bot...');
+src/app.ts:57:    console.warn('[app] Telegram deleteWebhook failed:', err);
+src/app.ts:61:  console.log('[app] Heartbeat scheduler started');
+src/app.ts:66:      console.error('[kill-watch] Telegram send failed:', err);
+src/app.ts:80:    console.log('[app] Shutting down...');
+src/app.ts:92:      console.log('[app] Telegram bot started (long polling)');
+src/app.ts:96:    console.error('[app] Bot start failed:', err);
+src/app.ts:110:  console.error('[app] Fatal error:', err);
+src/eve-board/monitor.ts:145:      if (res.status === 429) console.warn(`${LOG} zKB rate limited for system ${systemId}`);
+src/eve-board/monitor.ts:479:  console.log(
+src/eve-board/monitor.ts:525:    console.error(`${LOG} failed to send stop notification chat=${chatId}:`, (err as Error).message);
+src/eve-board/monitor.ts:528:  console.log(`${LOG} stopped chat=${chatId} reason=${reason} elapsed=${minutes}min`);
+src/eve-board/monitor.ts:552:    console.log(`${LOG} restoring monitor chat=${chatId} route=${routeSystems.length} systems`);
+src/eve-board/monitor.ts:576:      console.log(`${LOG} location: ESI failed — ${errInfo}`);
+src/eve-board/monitor.ts:605:      console.log(`${LOG} chat=${monitor.chatId} arrived at destination`);
+src/eve-board/monitor.ts:612:    console.log(`${LOG} chat=${monitor.chatId} jumped to ${sysName} (${remaining} left)`);
+src/eve-board/monitor.ts:614:    console.error(`${LOG} location poll error chat=${monitor.chatId}:`, (err as Error).message);
+src/eve-board/monitor.ts:653:    console.log(
+src/eve-board/monitor.ts:824:    console.log(`${LOG} kill scan done: ${monitor.stats.killsSeen} total kills seen, ${totalThreats} threats`);
+src/eve-board/monitor.ts:849:    console.error(`${LOG} kill scan error chat=${monitor.chatId}:`, (err as Error).message);
+src/eve-board/monitor.ts:900:      console.log(`${LOG} digest skipped (no change) chat=${monitor.chatId} kills=${monitor.stats.killsSeen} threat=${digest.overallThreat}`);
+src/eve-board/monitor.ts:927:      console.log(
+src/eve-board/monitor.ts:933:    console.log(
+src/eve-board/monitor.ts:937:    console.error(`${LOG} digest error chat=${monitor.chatId}:`, (err as Error).message);
+src/eve-board/monitor.ts:1016:      console.log(`${LOG} chat=${monitor.chatId} DEATH detected via ESI km=${latest.killmail_id}`);
+src/eve-board/monitor.ts:1056:    console.error(`${LOG} online poll error chat=${monitor.chatId}:`, (err as Error).message);
+src/eve-board/monitor.ts:1103:          console.log(
+src/eve-board/monitor.ts:1131:    console.error(`${LOG} jump poll error chat=${inst.monitor.chatId}:`, (err as Error).message);
+src/eve-board/monitor.ts:1333:    console.log(`${LOG} subscribed ${topics.length} route watches for chat=${chatId}`);
+src/eve-board/monitor.ts:1359:  console.log(`${LOG} unsubscribed ${topics.length} route watches for chat=${chatId}`);
+src/eve-intel/notes.ts:134:  console.log(`[intel_note] saved note #${result.lastInsertRowid} for user=${userId}, system=${systemName ?? 'none'}, tag=${tag}`);
+src/eve-local/analyzer.ts:169:  console.log(`[analyze_local] Parsing ${names.length} names, period=${days}d`);
+src/eve-local/analyzer.ts:189:  console.log(
+src/eve-local/analyzer.ts:230:      console.log(`[analyze_local] Warning: failed to resolve entity names: ${namesResult.error}`);
+src/eve-local/analyzer.ts:253:  console.log(`[analyze_local] Fetching kill stats for ${pilotRecords.length} pilots...`);
+src/eve-local/analyzer.ts:275:    console.log(`[analyze_local] Fetching top ships for ${activePvpers.length} active PvPers...`);
+src/eve-local/analyzer.ts:381:  console.log(
+src/smoke.ts:252:    console.log(`${prefix} ${check.name}: ${check.detail}`);
+src/telegram/handlers.ts:370:        console.log(`[handler] message chat_id=${chatId} user_id=${userCtx.userId} len=${text.length}`);
+src/telegram/handlers.ts:381:      console.error('[handler] Agent error:', err);
+src/telegram/handlers.ts:430:  console.log('[clear] chat=%d cleared %d threads (proxy sessions expire via TTL)', chatId, threads.length);
+src/scheduled/heartbeat-worker.ts:26:  console.log('[heartbeat] Starting heartbeat worker');
+src/scheduled/heartbeat-worker.ts:31:      console.error('[heartbeat] tick error:', err);
+src/scheduled/heartbeat-worker.ts:40:    console.log('[heartbeat] Stopped');
+src/scheduled/heartbeat-worker.ts:58:      console.error('[heartbeat] user=%d char=%d error:', row.user_id, row.character_id, err);
+src/scheduled/heartbeat-worker.ts:83:  console.log('[heartbeat] user=%d char=%d: running %d checks: %s', row.user_id, row.character_id, checks.length, checks.join(','));
+src/scheduled/heartbeat-worker.ts:90:        console.log('[heartbeat] check=%s: found something', check);
+src/scheduled/heartbeat-worker.ts:93:      console.error('[heartbeat] check=%s user=%d error:', check, row.user_id, err);
+src/scheduled/heartbeat-worker.ts:98:  console.log('[heartbeat] saving state: %s', JSON.stringify(Object.keys(state)));
+src/scheduled/heartbeat-worker.ts:105:    console.log('[heartbeat] user=%d char=%d: nothing new', row.user_id, row.character_id);
+src/scheduled/heartbeat-worker.ts:114:    console.log('[heartbeat] user=%d char=%d: sent %d findings', row.user_id, row.character_id, findings.length);
+src/scheduled/heartbeat-worker.ts:116:    console.error('[heartbeat] telegram send failed user=%d:', row.user_id, err);
+src/scheduled/heartbeat-worker.ts:484:    console.error('[heartbeat] model summarize failed:', err);
+src/eve-scan/analyzer.ts:402:  console.log(`[analyze_scan] D-Scan: ${entries.length} entries`);
+src/eve-scan/analyzer.ts:466:  console.log(`[analyze_scan] Fleet: ${raw.length} entries`);
+src/eve-scan/analyzer.ts:534:  console.log(`[analyze_scan] type=${scanType}, lines=${lines.length}`);
+src/telegram/bot.ts:14:    console.warn('[bot] Unsupported TELEGRAM_PROXY scheme. Use http(s):// or socks5h://');
+src/telegram/bot.ts:17:    console.log(`[bot] Telegram proxy enabled: ${redactProxyUrl(proxyUrl!)}`);
+src/telegram/bot.ts:42:      console.warn(`[bot] Access denied for user_id=${userId ?? 'unknown'}`);
+src/telegram/bot.ts:61:    console.warn('[bot] setMyCommands failed:', err);
+src/telegram/bot.ts:65:    console.error('[bot] Error:', err.message);
+src/eve-kill/zkb-ws.ts:96:    console.error(`${LOG} failed to get sequence:`, (err as Error).message);
+src/eve-kill/zkb-ws.ts:103:  console.log(`${LOG} started at seq=${seq}, ${watchCount} watched topics`);
+src/eve-kill/zkb-ws.ts:111:  console.log(`${LOG} stopped (processed ${killsProcessed} kills)`);
+src/eve-kill/zkb-ws.ts:126:      console.error(`${LOG} poll error (will retry):`, (err as Error).message);
+src/eve-kill/zkb-ws.ts:153:        console.warn(`${LOG} seq=${nextSeq} status=${res.status}, backing off`);
+src/eve-kill/zkb-ws.ts:160:      console.error(`${LOG} fetch error:`, (err as Error).message);
+src/eve-kill/zkb-ws.ts:171:      console.log(`${LOG} processed ${killsProcessed} kills, seq=${seq}`);
+src/eve-kill/zkb-ws.ts:181:      console.error(`${LOG} matchKill error kill=${kill.killmail_id}:`, (err as Error).message);
+src/eve-kill/zkb-ws.ts:243:  console.log(`${LOG} kill ${kill.killmail_id} in ${systemName} → ${watchers.length} chats`);
+src/eve-kill/watch.ts:37:  console.log(`${LOG} added: chat=${chatId} topic=${topic} label=${label}`);
+src/eve-kill/watch.ts:50:  console.log(`${LOG} removed: chat=${chatId} topic=${topic}`);
+src/eve-kill/watch.ts:64:  console.log(`${LOG} removed all: chat=${chatId} count=${result.changes}`);
+src/eve-kill/client.ts:58:      console.warn('[eve-kill] GET %s → %d', path, res.status);
+src/eve-kill/client.ts:64:    console.warn('[eve-kill] GET %s failed: %s', path, (err as Error).message);
+src/eve-kill/client.ts:86:      console.warn('[eve-kill] POST %s → %d', path, res.status);
+src/eve-kill/client.ts:92:    console.warn('[eve-kill] POST %s failed: %s', path, (err as Error).message);
+src/web/auth-routes.ts:139:        console.error('[auth] Token exchange failed:', errBody);
+src/web/auth-routes.ts:178:            console.warn(`[auth] USER.md refresh skipped: ${result.error}`);
+src/web/auth-routes.ts:180:            console.log(`[auth] USER.md updated: ${result.data.path}`);
+src/web/auth-routes.ts:184:          console.warn(`[auth] USER.md refresh failed: ${(err as Error).message}`);
+src/web/auth-routes.ts:187:      console.log(`[auth] Character linked: ${payload.name} (${characterId}), ${scopes.length} scopes, user_id=${ctx.userId}`);
+src/web/auth-routes.ts:199:      console.error('[auth] Callback error:', err);
+src/db/diagnose-links.ts:26:    console.log(`DB not found: ${dbPath}`);
+src/db/diagnose-links.ts:58:    console.log(`DB: ${dbPath}`);
+src/db/diagnose-links.ts:59:    console.log(`telegram_sessions=${sessions.length}`);
+src/db/diagnose-links.ts:60:    console.log(`eve_character_links=${links.length}`);
+src/db/diagnose-links.ts:61:    console.log(`orphan_eve_accounts=${orphanAccounts.length}`);
+src/db/diagnose-links.ts:62:    console.log('');
+src/db/diagnose-links.ts:81:      console.log(
+src/db/diagnose-links.ts:84:      console.log(`  linked_characters: ${linkedText}`);
+src/db/diagnose-links.ts:88:      console.log('');
+src/db/diagnose-links.ts:89:      console.log('orphan_eve_accounts:');
+src/db/diagnose-links.ts:91:        console.log(`  ${account.character_name} (${account.character_id})`);
+src/db/migrations.ts:237:  console.log('[migrations] Done');
+src/eve/sso-auth.ts:61:    console.warn(`[sso] Falling back to default SSO metadata: ${(error as Error).message}`);
+src/eve/sde-downloader.ts:29:  console.log(`[sde-download] Downloading ${url}...`);
+src/eve/sde-downloader.ts:40:  console.log(`[sde-download] Saved to ${dest}`);
+src/eve/sde-downloader.ts:44:  console.log(`[sde-download] Extracting to ${destDir}...`);
+src/eve/sde-downloader.ts:52:    console.log('[sde-download] unzip not found, trying python3...');
+src/eve/sde-downloader.ts:74:  console.log('[sde-download] Done. Now run: npm run sde:load');
+src/eve/sde-downloader.ts:78:  console.error('[sde-download] Error:', err);
+src/eve/sso.ts:48:    console.warn(
+src/eve/sso.ts:327:    console.error('[sso] Token refresh request failed:', (error as Error).message);
+src/eve/sso.ts:332:    console.error('[sso] Token refresh failed: HTTP %d for character=%d', res.status, account.character_id);
+src/eve/active-fitting.ts:120:    console.warn('[active-fitting] failed:', (err as Error).message);
+src/eve/active-fitting.ts:166:  console.log('[active-fitting] persisted to USER.md');
+src/eve/sde-loader.ts:277:      console.warn(`[sde-loader] Cannot read directory ${dir}: ${(err as Error).message}`);
+src/eve/sde-loader.ts:293:    console.log(`  [skip] ${loader.filePatterns.join(' / ')} -- not found`);
+src/eve/sde-loader.ts:297:  console.log(`  [load] ${basename(filePath)} from ${filePath}`);
+src/eve/sde-loader.ts:386:    console.warn(`  [warn] ${basename(filePath)}: ${skipped} lines skipped (malformed)`);
+src/eve/sde-loader.ts:429:  console.log(`  [load] ${basename(filePath)} into sde_raw_records`);
+src/eve/sde-loader.ts:471:  console.log(`[sde-loader] Loading SDE from ${sdeDir}`);
+src/eve/sde-loader.ts:474:    console.error(`[sde-loader] Directory not found: ${sdeDir}`);
+src/eve/sde-loader.ts:475:    console.error('[sde-loader] Run "npm run sde:download" first.');
+src/eve/sde-loader.ts:489:      console.log(`  [done] ${loader.table}: ${count} records`);
+src/eve/sde-loader.ts:508:      console.log(`  [done] sde_raw_records:${datasetName}: ${count} records`);
+src/eve/sde-loader.ts:519:  console.log(`[sde-loader] Done. Total: ${totalRecords} records loaded.`);
+src/eve/sde-loader.ts:523:  console.error('[sde-loader] Error:', err);
+src/eve/eve-scout-client.ts:141:      console.warn('[eve-scout] GET %s -> %d', path, res.status);
+src/eve/eve-scout-client.ts:147:    console.warn('[eve-scout] GET %s failed: %s', path, (err as Error).message);
+src/eve/eve-scout-client.ts:169:      console.warn('[eve-scout] POST %s -> %d', path, res.status);
+src/eve/eve-scout-client.ts:175:    console.warn('[eve-scout] POST %s failed: %s', path, (err as Error).message);
+src/eve/route-planner.ts:179:      console.log('[plan_route] Thera shortcut check failed: %s', err instanceof Error ? err.message : String(err));
+src/eve/route-planner.ts:250:      console.log('[plan_route] ship fetch failed: %s', err instanceof Error ? err.message : String(err));
+src/eve/route-planner.ts:289:      console.log('[plan_route] briefing generation failed: %s', err instanceof Error ? err.message : String(err));
+src/eve/route-planner.ts:635:    console.log('[plan_route] exact autopilot ESI failed: %s', err instanceof Error ? err.message : String(err));
+src/eve/route-planner.ts:647:  console.log('[plan_route] destination autopilot ESI failed: %s', fallback.error);
+src/eve/route-planner.ts:679:    console.log('[plan_route] WH shortcut autopilot set: entry=%d exit=%d dest=%d', entrySystemId, exitSystemId, destinationId);
+src/eve/route-planner.ts:682:    console.log('[plan_route] WH shortcut autopilot failed: %s', err instanceof Error ? err.message : String(err));
+src/eve/route-planner.ts:752:  console.log('[danger_scan] scanning %d systems via zKillboard', ids.length);
+src/eve/route-planner.ts:767:    console.log('[danger_scan] no kills found');
+src/eve/route-planner.ts:875:  console.log('[danger_scan] result: %d danger systems, %d gate camp(s)', dangerMap.size, campCount);

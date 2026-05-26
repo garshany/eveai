@@ -1,0 +1,26 @@
+
+> eve-agent@2.1.1 test
+> vitest run tools sde-sql-security moon-count static-aggregate
+
+
+ RUN  v3.2.4 /home/antipedik/eveai
+
+ ✓ tests/unit/moon-count.test.ts (2 tests) 160ms
+ ✓ tests/unit/tools.test.ts (2 tests) 185ms
+ ✓ tests/unit/sde-sql-security.test.ts (12 tests) 20ms
+stdout | tests/unit/static-aggregate.test.ts > static aggregate helpers > can answer a current-region aggregate question before entering the model loop
+[executor] === DONE (static-aggregate-fast-path) object=systems target=region:The Forge answer=40 chars ===
+
+stdout | tests/unit/static-aggregate.test.ts > static aggregate helpers > can answer a bare-name aggregate question before entering the model loop
+[executor] === DONE (static-aggregate-fast-path) object=stations target=system:Jita answer=35 chars ===
+
+stdout | tests/unit/static-aggregate.test.ts > static aggregate helpers > can answer a current-constellation moon question before entering the model loop
+[executor] === DONE (static-aggregate-fast-path) object=moons target=constellation:Kimotoro answer=70 chars ===
+
+ ✓ tests/unit/static-aggregate.test.ts (11 tests) 290ms
+
+ Test Files  4 passed (4)
+      Tests  27 passed (27)
+   Start at  19:03:05
+   Duration  485ms (transform 290ms, setup 0ms, collect 321ms, tests 655ms, environment 0ms, prepare 207ms)
+

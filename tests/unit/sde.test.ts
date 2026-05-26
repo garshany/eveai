@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
-import { querySde } from '../../src/eve/sde.js';
+import { querySde, type SdeRequest } from '../../src/eve/sde.js';
 
 let db: Database.Database;
 
@@ -334,7 +334,8 @@ describe('querySde', () => {
   });
 
   it('rejects invalid entity', () => {
-    const result = querySde(db, { entity: 'invalid' as any, lookup_mode: 'by_id', value: '1', limit: 1 });
+    const invalidRequest = { entity: 'invalid', lookup_mode: 'by_id', value: '1', limit: 1 } as unknown as SdeRequest;
+    const result = querySde(db, invalidRequest);
     expect(result.ok).toBe(false);
     expect(result.error).toContain('Unknown entity');
   });

@@ -1,29 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-
-type PageKind = 'landing' | 'dashboard' | 'handoff';
+import { exchangeHandoffToken, fetchProfile, postDashboardAction } from './api';
+import { readConfig } from './config';
+import type { AppConfig, ProfileResponse } from './types';
 
 interface RootProps {
   root: HTMLElement;
-}
-
-interface AppConfig {
-  page: PageKind;
-  botUsername: string;
-  authUrl: string;
-  botLink: string;
-}
-
-interface ProfileCharacter {
-  characterId: number;
-  characterName: string;
-  portrait: string;
-  isActive: boolean;
-}
-
-interface ProfileResponse {
-  displayName: string;
-  telegramUsername?: string;
-  characters: ProfileCharacter[];
 }
 
 interface CommandSample {
@@ -686,13 +667,12 @@ function DashboardPage() {
     setError('');
 
     try {
-      const response = await fetch('/api/me');
-      if (!response.ok) {
+      const nextProfile = await fetchProfile();
+      if (nextProfile === null) {
         window.location.href = '/';
         return;
       }
 
-      const nextProfile = (await response.json()) as ProfileResponse;
       setProfile(nextProfile);
     } catch {
       setError('Не удалось загрузить профиль.');
@@ -702,15 +682,11 @@ function DashboardPage() {
   }
 
   async function post(path: string) {
-    const response = await fetch(path, { method: 'POST' });
-    if (response.status === 401) {
+    const ok = await postDashboardAction(path);
+    if (!ok) {
       window.location.href = '/';
-      return false;
     }
-    if (!response.ok) {
-      throw new Error(`Request failed with status ${response.status}`);
-    }
-    return true;
+    return ok;
   }
 
   async function activateCharacter(characterId: number) {
@@ -917,26 +893,7 @@ function HandoffPage({ config }: { config: AppConfig }) {
       window.history.replaceState(null, '', window.location.pathname);
 
       try {
-        const response = await fetch(config.authUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ token }),
-        });
-
-        if (!response.ok) {
-          let message = `Request failed with status ${response.status}`;
-          try {
-            const payload = await response.json() as { error?: string };
-            if (payload.error) {
-              message = payload.error;
-            }
-          } catch {
-            // keep fallback message
-          }
-          throw new Error(message);
-        }
+        await exchangeHandoffToken(config.authUrl, token);
 
         if (!cancelled) {
           window.location.replace('/app');
@@ -1007,19 +964,4 @@ function DashMetric({ value, label }: { value: string | number; label: string })
       <div className="mt-2 font-mono text-[11px] uppercase tracking-[0.24em] text-white/45">{label}</div>
     </div>
   );
-}
-
-function readConfig(root: HTMLElement): AppConfig {
-  const page = root.dataset.page === 'dashboard'
-    ? 'dashboard'
-    : root.dataset.page === 'handoff'
-      ? 'handoff'
-      : 'landing';
-
-  return {
-    page,
-    botUsername: root.dataset.botUsername ?? '',
-    authUrl: root.dataset.authUrl ?? '',
-    botLink: root.dataset.botLink ?? '',
-  };
 }

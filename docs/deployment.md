@@ -33,6 +33,8 @@ TELEGRAM_BOT_TOKEN=...
 OPENAI_API_KEY=...
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-5.5
+OPENAI_REASONING_EFFORT=medium
+OPENAI_TEXT_VERBOSITY=low
 OPENAI_RESPONSE_STATE_MODE=stateless
 EVE_CLIENT_ID=...
 EVE_CLIENT_SECRET=...
@@ -74,8 +76,13 @@ Use official OpenAI by default:
 
 ```env
 OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-5.5
+OPENAI_REASONING_EFFORT=medium
+OPENAI_TEXT_VERBOSITY=low
 OPENAI_RESPONSE_STATE_MODE=stateless
 ```
+
+The integration uses the Responses API with streaming, function tools, `store=false`, prompt cache keys, and stateless tool-call replay by default. The replay path preserves assistant output item fields such as `phase`, which GPT-5.5 guidance requires when manually passing output items back between turns.
 
 For compatible gateways, keep `OPENAI_RESPONSE_STATE_MODE=stateless` unless the provider explicitly supports stored `previous_response_id` continuation. Stateless mode sends the previous `function_call` item together with `function_call_output`, which avoids provider-side response-state assumptions.
 

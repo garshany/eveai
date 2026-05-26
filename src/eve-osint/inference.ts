@@ -8,17 +8,9 @@ import { analyzeShipProfile, analyzeFleetProfile } from './ships.js';
 import { detectAlts, analyzeVulnerability } from './social.js';
 import { analyzeTemporalProfile, reconstructSessions } from './temporal.js';
 import { fetchEntityActivityFeed, type OsintKillmail } from './zkill.js';
+import type { OsintInferenceArgs, OsintScope } from './types.js';
 
-export type OsintScope = 'character' | 'corporation' | 'alliance';
-
-export type OsintInferenceArgs = {
-  scope: OsintScope;
-  id: number;
-  windowDays: number;
-  includeMemberAnalysis: boolean;
-  includeGraph: boolean;
-  includeLlmPatternAnalysis: boolean;
-};
+export type { OsintInferenceArgs, OsintScope } from './types.js';
 
 type SystemMetrics = {
   systemId: number;

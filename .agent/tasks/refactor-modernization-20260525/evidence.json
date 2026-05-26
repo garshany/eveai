@@ -1,0 +1,45 @@
+{
+  "status": "PASS",
+  "task_id": "refactor-modernization-20260525",
+  "checks": {
+    "full_check": {
+      "status": "PASS",
+      "artifact": ".agent/tasks/refactor-modernization-20260525/raw/full-check-rerun.txt",
+      "summary": "44 test files passed, 242 tests passed, eslint passed with max-warnings 0"
+    },
+    "full_build": {
+      "status": "PASS",
+      "artifact": ".agent/tasks/refactor-modernization-20260525/raw/full-build-rerun.txt"
+    },
+    "server_health": {
+      "status": "PASS",
+      "artifact": ".agent/tasks/refactor-modernization-20260525/raw/runtime-server-health-rerun.json"
+    },
+    "runtime_tool_parity": {
+      "status": "PASS",
+      "artifact": ".agent/tasks/refactor-modernization-20260525/raw/runtime-tool-parity-result.json",
+      "requests": 12,
+      "tools": [
+        "update_plan",
+        "count_universe_objects",
+        "sde_sql",
+        "route_monitor",
+        "intel_note",
+        "analyze_scan",
+        "set_active_fit",
+        "heartbeat_config",
+        "get_eve_capabilities",
+        "web_search",
+        "plan_route",
+        "osint_infer_home"
+      ]
+    }
+  },
+  "separate_migrations_deferred": [
+    "dependency/framework upgrades",
+    "ESI compatibility-date or generated-client migration",
+    "legacy auth/session compatibility removal",
+    "structured logging backend replacement",
+    "workers/queues/Redis/Postgres/webhooks architecture changes"
+  ]
+}

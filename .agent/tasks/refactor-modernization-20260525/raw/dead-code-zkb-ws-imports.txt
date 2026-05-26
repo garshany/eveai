@@ -1,0 +1,17 @@
+docs/eve-kill.md:26:File: `src/eve-kill/zkb-ws.ts` (named for historical reasons, now R2Z2).
+docs/eve-kill.md:172:| `zkb-ws.ts` | R2Z2 kill stream poller (primary real-time source) |
+src/eve-board/monitor.ts:40:import { subscribeTopics, unsubscribeTopics } from '../eve-kill/zkb-ws.js';
+src/eve-board/monitor.ts:1332:    subscribeTopics(topics);
+src/eve-board/monitor.ts:1355:      unsubscribeTopics([topic]);
+src/eve-kill/watch.ts:3: * CRUD for kill_watches table. Notifications handled by zkb-ws.ts.
+src/eve-kill/watch.ts:7:import { subscribeTopics, unsubscribeTopics } from './zkb-ws.js';
+src/eve-kill/watch.ts:36:  subscribeTopics([topic]);
+src/eve-kill/watch.ts:48:    unsubscribeTopics([topic]);
+src/eve-kill/watch.ts:61:    if (!others) unsubscribeTopics([topic]);
+src/app.ts:10:import { startZkbWs, stopZkbWs } from './eve-kill/zkb-ws.js';
+src/app.ts:71:  startZkbWs(db, sendKillAlert);
+src/app.ts:81:    stopZkbWs();
+src/eve-kill/zkb-ws.ts:80:export async function startZkbWs(dbInstance: Db, sender: NotifySender): Promise<void> {
+src/eve-kill/zkb-ws.ts:108:export function stopZkbWs(): void {
+src/eve-kill/zkb-ws.ts:115:export function subscribeTopics(_topics: string[]): void { /* */ }
+src/eve-kill/zkb-ws.ts:116:export function unsubscribeTopics(_topics: string[]): void { /* */ }

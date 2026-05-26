@@ -1,0 +1,104 @@
+docs/SECURITY.md:25:- EVE callback accepts only live `auth_requests` state and marks it used; legacy `telegram_sessions.oauth_state` is not accepted on the live callback path
+docs/SECURITY.md:26:- Telegram-to-web handoff completes through a fragment-carried one-time token and `POST /auth/tg-handoff/exchange`, so the bearer token is not placed in server-observed query strings
+docs/SECURITY.md:31:- live user-scoped EVE ownership resolves from `user_id` when available; user-scoped paths do not fall back to legacy `chat_id`
+docs/SECURITY.md:32:- legacy ownership rows are backfilled in place only to attach old rows to the current `user_id`, not to keep mixed live authorization logic
+docs/open-source-release.md:52:- Model-provider compatibility must be documented through environment variables, not private proxy instructions.
+docs/QUALITY_SCORE.md:8:| Auth and identity | 4 | callback, auth storage, session, and route tests exist | ownership and legacy-path cleanup still coexist |
+docs/QUALITY_SCORE.md:9:| ESI transport | 4 | retry, caching, compatibility date, and capability logic are explicit | operation surface is large and catalog drift risk remains |
+docs/QUALITY_SCORE.md:19:- reduce duplication between legacy chat-based identity paths and current user-based identity paths
+tests/unit/frontend-handoff.test.ts:30:describe('frontend handoff page', () => {
+tests/unit/frontend-handoff.test.ts:31:  it('serves a dedicated handoff shell without embedding a query token', async () => {
+tests/unit/frontend-handoff.test.ts:36:    const res = await app.inject({ method: 'GET', url: '/auth/tg-handoff' });
+tests/unit/frontend-handoff.test.ts:40:    expect(res.body).toContain('data-page="handoff"');
+tests/unit/frontend-handoff.test.ts:41:    expect(res.body).toContain('data-auth-url="http://localhost:3000/auth/tg-handoff/exchange"');
+docs/deployment.md:71:The app talks to an OpenAI-compatible Responses API endpoint.
+docs/deployment.md:80:For compatible gateways, keep `OPENAI_RESPONSE_STATE_MODE=stateless` unless the provider explicitly supports stored `previous_response_id` continuation. Stateless mode sends the previous `function_call` item together with `function_call_output`, which avoids provider-side response-state assumptions.
+tests/unit/esi-client.test.ts:19:      compatibilityDate: '2026-03-15',
+tests/unit/esi-client.test.ts:29:    web: { baseUrl: 'http://localhost:3000', sessionTtlHours: 720, handoffTtlSeconds: 300 },
+tests/unit/sde-sql-security.test.ts:16:  db.prepare('INSERT INTO web_sessions (session_id, user_id, expires_at) VALUES (?, ?, datetime(\'now\', \'+1 day\'))').run('sess-1', 1);
+tests/unit/sde-sql-security.test.ts:98:    'web_sessions',
+tests/unit/user-profile.test.ts:17:    web: { baseUrl: 'http://localhost:3000', sessionTtlHours: 720, handoffTtlSeconds: 300 },
+docs/generated/db-schema.md:9:- `web_sessions`
+tests/unit/sso.test.ts:26:    web: { baseUrl: 'http://localhost:3000', sessionTtlHours: 720, handoffTtlSeconds: 300 },
+src/config.ts:63:    compatibilityDate: optional('ESI_COMPATIBILITY_DATE', '2026-03-15'),
+src/config.ts:77:    handoffTtlSeconds: optionalInt('TG_HANDOFF_TTL_SECONDS', 300),
+tests/unit/auth-storage.test.ts:13:    web: { baseUrl: 'https://eve.example.com', sessionTtlHours: 720, handoffTtlSeconds: 300 },
+tests/unit/auth-storage.test.ts:24:import { createHandoffToken, consumeHandoffToken } from '../../src/auth/handoff.js';
+tests/unit/auth-storage.test.ts:43:    const row = db.prepare('SELECT session_id FROM web_sessions WHERE user_id = ?').get(1) as { session_id: string };
+tests/unit/auth-storage.test.ts:63:  it('stores handoff tokens as protected digests while preserving one-time consumption', () => {
+tests/unit/auth-storage.test.ts:65:    const row = db.prepare("SELECT state FROM auth_requests WHERE type = 'tg_handoff'").get() as { state: string };
+tests/unit/auth-storage.test.ts:73:  it('still resolves legacy plaintext session and handoff rows', () => {
+tests/unit/auth-storage.test.ts:75:      INSERT INTO web_sessions (session_id, user_id, expires_at, created_at)
+tests/unit/auth-storage.test.ts:77:    `).run('legacy-session', 1);
+tests/unit/auth-storage.test.ts:80:      VALUES (?, 'tg_handoff', ?, ?, datetime('now'), datetime('now', '+300 seconds'))
+tests/unit/auth-storage.test.ts:81:    `).run('legacy-handoff', 1, 99);
+tests/unit/auth-storage.test.ts:83:    expect(resolveWebSessionUser(db, 'legacy-session')).toBe(1);
+tests/unit/auth-storage.test.ts:84:    expect(consumeHandoffToken(db, 'legacy-handoff')).toBe(1);
+tests/unit/capabilities.test.ts:19:      compatibilityDate: '2026-03-15',
+tests/unit/capabilities.test.ts:29:    web: { baseUrl: 'http://localhost:3000', sessionTtlHours: 720, handoffTtlSeconds: 300 },
+docs/product-specs/identity-and-linking.md:8:- active character state can exist on both user and chat compatibility paths
+tests/unit/auth-routes.test.ts:29:    web: { baseUrl: 'http://localhost:3000', sessionTtlHours: 720, handoffTtlSeconds: 300 },
+tests/unit/auth-routes.test.ts:166:  it('GET /auth/eve/callback rejects legacy telegram_sessions oauth_state fallback', async () => {
+tests/unit/auth-routes.test.ts:169:    db.prepare("INSERT INTO telegram_sessions (chat_id, username, oauth_state) VALUES (0, 'web', 'state-0')").run();
+tests/unit/auth-routes.test.ts:262:  it('POST /auth/tg-handoff/exchange creates a session without query bearer tokens', async () => {
+tests/unit/auth-routes.test.ts:268:    const token = createAuthRequestToken(db, 'tg_handoff', 1, { chatId: 99, ttlSeconds: 300 });
+tests/unit/auth-routes.test.ts:272:      url: '/auth/tg-handoff/exchange',
+tests/unit/auth-routes.test.ts:282:      url: '/auth/tg-handoff/exchange',
+docs/product-specs/web-dashboard.md:22:- `GET /auth/tg-handoff`
+docs/product-specs/web-dashboard.md:23:- `POST /auth/tg-handoff/exchange`
+docs/product-specs/web-dashboard.md:29:- the Telegram bot opens `/auth/tg-handoff#token=...`
+docs/product-specs/web-dashboard.md:30:- the browser reads the fragment locally, clears it from the address bar, and exchanges it with `POST /auth/tg-handoff/exchange`
+docs/product-specs/web-dashboard.md:31:- the handoff token must not be carried in a query string
+docs/repo-map.md:24:- `native-responses.ts`: OpenAI-compatible runtime loop, including SSE function-call reconstruction from `response.function_call_arguments.done`
+docs/repo-map.md:38:- `handoff.ts`: Telegram-to-web handoff token flow
+docs/repo-map.md:89:- `auth-routes.ts`: Telegram login, EVE callback, logout, handoff
+docs/exec-plans/completed/index.md:7:- [security-hardening-full.md](./security-hardening-full.md): multi-user auth isolation, Telegram ingress hardening, prompt-safe profile context, fragment-based web handoff, and retained-state cleanup from the threat model.
+docs/exec-plans/completed/security-hardening-full.md:11:- multi-user authorization drift between `user_id` and legacy `chat_id`
+docs/exec-plans/completed/security-hardening-full.md:14:- Telegram-to-web handoff token exposure
+docs/exec-plans/completed/security-hardening-full.md:19:1. Remove live auth reliance on legacy `oauth_state` and make user ownership authoritative.
+docs/exec-plans/completed/security-hardening-full.md:21:3. Move handoff completion from query-bearer flow to fragment plus POST exchange.
+docs/exec-plans/completed/security-hardening-full.md:28:- live EVE callback now accepts only `auth_requests` state and no longer trusts legacy `telegram_sessions.oauth_state`
+docs/exec-plans/completed/security-hardening-full.md:29:- user-scoped live paths anchor ownership to `user_id`, with migration/backfill used only to attach legacy rows
+docs/exec-plans/completed/security-hardening-full.md:31:- bot-to-web handoff now uses a fragment token plus `POST /auth/tg-handoff/exchange`
+docs/skills-protocol.md:12:For OpenAI-compatible providers that do not retain server-side response state, the app uses stateless continuation: the next request includes the prior `function_call` item and its matching `function_call_output`. This is controlled by:
+src/auth/session.ts:11:    "INSERT INTO web_sessions (session_id, user_id, expires_at, created_at) VALUES (?, ?, datetime('now', '+' || ? || ' hours'), datetime('now'))",
+src/auth/session.ts:12:  ).run(protectOpaqueToken(sessionId, 'web_session'), userId, ttlHours);
+src/auth/session.ts:17:  const [protectedSessionId, legacySessionId] = opaqueTokenCandidates(sessionId, 'web_session');
+src/auth/session.ts:18:  db.prepare('DELETE FROM web_sessions WHERE session_id IN (?, ?)').run(protectedSessionId, legacySessionId);
+src/auth/session.ts:22:  db.prepare("DELETE FROM web_sessions WHERE expires_at <= datetime('now')").run();
+src/auth/session.ts:27:  const [protectedSessionId, legacySessionId] = opaqueTokenCandidates(sessionId, 'web_session');
+src/auth/session.ts:30:    FROM web_sessions
+src/auth/session.ts:35:  `).get(protectedSessionId, legacySessionId, protectedSessionId) as { user_id: number } | undefined;
+src/telegram/handlers.ts:13:import { createHandoffToken } from '../auth/handoff.js';
+src/telegram/handlers.ts:267:  // /web -- generate handoff token and send inline button
+src/telegram/handlers.ts:274:    const url = `${config.web.baseUrl}/auth/tg-handoff#token=${encodeURIComponent(token)}`;
+src/web/auth-routes.ts:18:import { consumeHandoffToken } from '../auth/handoff.js';
+src/web/auth-routes.ts:204:  // POST /auth/tg-handoff/exchange -- one-time token from bot -> web session
+src/web/auth-routes.ts:205:  app.post<{ Body: { token?: string } }>('/auth/tg-handoff/exchange', async (req, reply) => {
+src/web/auth-routes.ts:213:      return reply.status(403).send({ error: 'Invalid or expired handoff token' });
+src/auth/telegram-login.ts:51:  const [protectedNonce, legacyNonce] = opaqueTokenCandidates(nonce, 'telegram_login_nonce');
+src/auth/telegram-login.ts:58:  `).run(protectedNonce, legacyNonce);
+src/auth/auth-request.ts:5:type AuthRequestType = 'eve_sso' | 'tg_handoff';
+src/auth/auth-request.ts:45:  const [protectedToken, legacyToken] = opaqueTokenCandidates(token, authRequestPurpose(type));
+src/auth/auth-request.ts:55:  `).get(type, protectedToken, legacyToken, protectedToken) as AuthRequestRow | undefined;
+src/auth/auth-request.ts:61:  const [protectedToken, legacyToken] = opaqueTokenCandidates(token, authRequestPurpose(type));
+src/auth/auth-request.ts:67:  `).run(type, protectedToken, legacyToken);
+docs/exec-plans/active/refactor-modernization-20260525.md:12:| Dead-code audit | Deprecated and legacy-looking paths coexist with live code. | Record import graph and remove only proven-unused code. | `rg` import evidence, typecheck, tests. |
+docs/exec-plans/active/refactor-modernization-20260525.md:25:- ESI generated client or compatibility-date updates.
+docs/exec-plans/active/refactor-modernization-20260525.md:26:- Removing legacy auth/session compatibility rows.
+src/web/frontend.ts:79:  app.get('/auth/tg-handoff', async (_req, reply) => {
+src/web/frontend.ts:85:          page: 'handoff',
+src/web/frontend.ts:87:          authUrl: `${config.web.baseUrl}/auth/tg-handoff/exchange`,
+src/web/frontend.ts:94:  options: { page: 'landing' | 'dashboard' | 'handoff'; title: string; authUrl: string },
+src/auth/handoff.ts:6:  return createAuthRequestToken(db, 'tg_handoff', userId, {
+src/auth/handoff.ts:8:    ttlSeconds: config.web.handoffTtlSeconds,
+src/auth/handoff.ts:13:  const row = findPendingAuthRequest(db, 'tg_handoff', token);
+src/auth/handoff.ts:15:  markAuthRequestUsed(db, 'tg_handoff', token);
+docs/exec-plans/tech-debt-tracker.md:6:- Reduce remaining legacy auth compatibility paths once user-based ownership is fully stable.
+src/db/migrations.ts:228:  db.prepare('UPDATE telegram_sessions SET oauth_state = NULL WHERE oauth_state IS NOT NULL').run();
+src/db/schema.ts:20:CREATE TABLE IF NOT EXISTS web_sessions (
+src/db/schema.ts:26:CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
+src/db/schema.ts:30:  type         TEXT NOT NULL CHECK (type IN ('eve_sso', 'tg_handoff')),
+src/db/schema.ts:50:  oauth_state  TEXT,
+src/eve/esi-catalog.ts:257:        'X-Compatibility-Date': config.esi.compatibilityDate,
+src/eve/esi-client.ts:205:    'X-Compatibility-Date': config.esi.compatibilityDate,
