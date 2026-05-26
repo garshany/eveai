@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.1.3] - 2026-05-26
+
+### Added
+
+- Added `npm run smoke:openai` for authenticated `/v1/responses` runtime checks without logging API keys.
+
 ## [2.1.2] - 2026-05-26
 
 ### Changed

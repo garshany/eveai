@@ -50,6 +50,9 @@ Run:
 ```bash
 npm run check
 npm run smoke
+npm run smoke:openai
 ```
 
 `npm run check` validates type safety, unit/integration tests, linting, and Responses payload regressions. `npm run smoke` checks required environment variables, the model `/responses` endpoint, and app health.
+
+The authenticated smoke script sends a minimal streaming `POST /responses` request using env vars and prints only sanitized response metadata.

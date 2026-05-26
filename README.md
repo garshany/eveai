@@ -115,10 +115,21 @@ npm run dev         # concurrent watch mode
 npm run check       # typecheck + tests + lint
 npm test            # vitest
 npm run smoke       # env, model endpoint, app health checks
+npm run smoke:openai # authenticated /v1/responses probe
 npm run db:migrate  # run SQLite migrations
 npm run setup       # download and load SDE data
 npm start           # run built app
 ```
+
+## Runtime Smoke Test
+
+Authenticated OpenAI smoke test:
+
+```bash
+OPENAI_API_KEY=... npm run smoke:openai
+```
+
+For OpenAI-compatible providers, also set `OPENAI_BASE_URL`. The script prints only sanitized endpoint, model, response id prefix, and output preview. It never logs the API key.
 
 ## Self-Hosting
 
