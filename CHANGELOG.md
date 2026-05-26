@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.1.4] - 2026-05-26
+
+### Added
+
+- Added `npm run smoke:eve-tool` for EVE SDE tool smoke checks.
+- Added `EVE_TOOL_SMOKE_MODE=direct` for DB-only tool validation without a model call.
+
+### Verified
+
+- Local direct tool smoke resolved Raven from the SQLite SDE through `sde_sql`.
+- Full local check and production build passed after adding the smoke command.
+
 ## [2.1.3] - 2026-05-26
 
 ### Added

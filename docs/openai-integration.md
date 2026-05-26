@@ -51,8 +51,11 @@ Run:
 npm run check
 npm run smoke
 npm run smoke:openai
+npm run smoke:eve-tool
 ```
 
 `npm run check` validates type safety, unit/integration tests, linting, and Responses payload regressions. `npm run smoke` checks required environment variables, the model `/responses` endpoint, and app health.
 
 The authenticated smoke script sends a minimal streaming `POST /responses` request using env vars and prints only sanitized response metadata.
+
+`npm run smoke:eve-tool` runs the real agent loop on a copied SQLite database and requires the model to call an EVE SDE tool before returning a final answer. Use `EVE_TOOL_SMOKE_MODE=direct` to validate only the DB-backed tool path without a model call.

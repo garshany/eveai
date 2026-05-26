@@ -116,6 +116,7 @@ npm run check       # typecheck + tests + lint
 npm test            # vitest
 npm run smoke       # env, model endpoint, app health checks
 npm run smoke:openai # authenticated /v1/responses probe
+npm run smoke:eve-tool # authenticated model + EVE SDE tool probe
 npm run db:migrate  # run SQLite migrations
 npm run setup       # download and load SDE data
 npm start           # run built app
@@ -129,7 +130,19 @@ Authenticated OpenAI smoke test:
 OPENAI_API_KEY=... npm run smoke:openai
 ```
 
-For OpenAI-compatible providers, also set `OPENAI_BASE_URL`. The script prints only sanitized endpoint, model, response id prefix, and output preview. It never logs the API key.
+EVE tool smoke test:
+
+```bash
+OPENAI_API_KEY=... npm run smoke:eve-tool
+```
+
+For a DB-only SDE tool check without calling the model:
+
+```bash
+EVE_TOOL_SMOKE_MODE=direct npm run smoke:eve-tool
+```
+
+For OpenAI-compatible providers, also set `OPENAI_BASE_URL`. The scripts print only sanitized endpoint/model/tool metadata and answer previews. They never log API keys.
 
 ## Self-Hosting
 

@@ -1,6 +1,6 @@
 {
   "name": "eveonline-ai",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "description": "Self-hosted Telegram-first AI assistant for EVE Online using OpenAI Responses API, EVE SSO, ESI, and local SDE",
   "type": "module",
   "license": "MIT",
@@ -43,7 +43,8 @@
     "sde:download": "tsx src/eve/sde-downloader.ts",
     "setup": "npm run sde:download && npm run sde:load",
     "smoke": "tsx src/smoke.ts",
-    "smoke:openai": "tsx scripts/openai-smoke.ts"
+    "smoke:openai": "tsx scripts/openai-smoke.ts",
+    "smoke:eve-tool": "tsx scripts/eve-tool-smoke.ts"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.6",
