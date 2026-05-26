@@ -161,6 +161,12 @@ See [docs/deployment.md](./docs/deployment.md) for a generic production deployme
 - [docs/openai-integration.md](./docs/openai-integration.md): OpenAI Responses API and GPT-5.5 configuration.
 - [docs/generated/db-schema.md](./docs/generated/db-schema.md): SQLite schema reference.
 
+## Contributing
+
+Contributions are welcome. Start with [CONTRIBUTING.md](./CONTRIBUTING.md), keep PRs focused, and run `npm run check` when feasible. Good first areas include documentation, reproducible bug fixes, prompt tests, EVE SDE lookups, Telegram formatting, and self-hosting troubleshooting.
+
+Please do not include secrets, private deployment notes, server IPs, logs, database files, or SDE dumps in issues or pull requests.
+
 ## Open-Source Safety Notice
 
 If you are publishing a fork that previously contained private deployment files or secrets, do not make that repository public as-is. Publish from a clean sanitized export or rewrite history, rotate exposed credentials, and run a secret scan before release.

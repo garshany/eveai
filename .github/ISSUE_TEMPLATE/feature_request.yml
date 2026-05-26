@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest a focused improvement for the self-hosted EVE AI assistant
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem or EVE workflow should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the smallest useful change.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agent / prompts
+        - EVE SDE
+        - ESI / auth
+        - Telegram bot
+        - Web dashboard
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and data access
+      description: Does this need private ESI data, write actions, new secrets, or external services?
+    validations:
+      required: true
