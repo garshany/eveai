@@ -46,6 +46,7 @@ export const config = {
     responseStateMode: optional('OPENAI_RESPONSE_STATE_MODE', 'stateless'),
     reasoningEffort: optional('OPENAI_REASONING_EFFORT', 'medium'),
     textVerbosity: optional('OPENAI_TEXT_VERBOSITY', 'low'),
+    responseLanguage: optional('OPENAI_RESPONSE_LANGUAGE', 'Russian'),
     maxOutputTokens: optionalInt('OPENAI_MAX_OUTPUT_TOKENS', 0),
     store: optional('OPENAI_STORE', 'true') === 'true',
     compactThreshold: optionalInt('OPENAI_COMPACT_THRESHOLD', 0),

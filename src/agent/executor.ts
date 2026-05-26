@@ -235,6 +235,7 @@ export async function handleAgentMessage(
     userProfile,
     liveContext?.summary ?? null,
     promptMode,
+    config.openai.responseLanguage,
   );
 
   const result = await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt);

@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.1.5] - 2026-05-26
+
+### Changed
+
+- Rewrote the main developer prompt in English using documented prompt-structure guidance.
+- Added `OPENAI_RESPONSE_LANGUAGE` to control the default final-answer language from env.
+
+### Verified
+
+- Prompt unit tests cover language alias normalization and response-language prompt injection.
+- Full local check passed: TypeScript, Vitest, and ESLint.
+
 ## [2.1.4] - 2026-05-26
 
 ### Added

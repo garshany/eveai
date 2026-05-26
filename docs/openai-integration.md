@@ -30,6 +30,7 @@ OPENAI_API_MODE=native_responses
 OPENAI_RESPONSE_STATE_MODE=stateless
 OPENAI_REASONING_EFFORT=medium
 OPENAI_TEXT_VERBOSITY=low
+OPENAI_RESPONSE_LANGUAGE=Russian
 OPENAI_MAX_OUTPUT_TOKENS=0
 OPENAI_COMPACT_THRESHOLD=0
 OPENAI_MODEL_CONTEXT_WINDOW=200000
@@ -41,6 +42,7 @@ OPENAI_MODEL_CONTEXT_WINDOW=200000
 - `prompt_cache_key` is forwarded when available.
 - `phase` is preserved on replayed function-call output items instead of being stripped.
 - If an OpenAI-compatible gateway rejects `text.verbosity`, unset `OPENAI_TEXT_VERBOSITY` and rerun `npm run check` plus `npm run smoke` against that gateway.
+- `OPENAI_RESPONSE_LANGUAGE` is injected into the developer prompt as a dedicated response-language instruction. Use values like `ru`, `русский`, `en`, `English`, or a custom language name.
 - The model must not see tokens, refresh flow internals, pagination internals, retries, or secrets; those stay in backend code.
 
 ## Validation
