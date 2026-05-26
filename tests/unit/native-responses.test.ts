@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+beforeEach(() => {
+  vi.resetModules();
+  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1';
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -187,6 +192,43 @@ describe('createNativeResponse request body', () => {
     expect(body?.context_management).toEqual([{ type: 'compaction', compact_threshold: 1234 }]);
   });
 
+  it('sends the GPT-5.5 Responses tuning parameters configured for Telegram', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    process.env.OPENAI_MODEL = 'gpt-5.5';
+    process.env.OPENAI_REASONING_EFFORT = 'medium';
+    process.env.OPENAI_TEXT_VERBOSITY = 'low';
+
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"resp_gpt55","output_text":"ok","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+
+    await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+    });
+
+    expect(body?.model).toBe('gpt-5.5');
+    expect(body?.reasoning).toEqual({ effort: 'medium' });
+    expect(body?.text).toEqual({ verbosity: 'low' });
+    expect(body?.store).toBe(false);
+    expect(body?.stream).toBe(true);
+  });
+
   it('forwards prompt_cache_key to the proxy', async () => {
     let body: Record<string, unknown> | null = null;
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
@@ -232,15 +274,15 @@ describe('createNativeResponse request body', () => {
     expect(body).not.toHaveProperty('prompt_cache_key');
   });
 
-  it('converts response function calls into stateless continuation input items', async () => {
+  it('converts response function calls into stateless continuation input items without dropping phase', async () => {
     const { buildFunctionCallInputItems } = await import('../../src/agent/native-responses.js');
 
     expect(buildFunctionCallInputItems([
       { type: 'reasoning', id: 'rs_1' },
-      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'echo_city', arguments: '{"name":"Jita"}', status: 'completed' },
+      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'echo_city', arguments: '{"name":"Jita"}', status: 'completed', phase: 'final' },
       { type: 'message', content: [{ type: 'output_text', text: 'ignored' }] },
     ])).toEqual([
-      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'echo_city', arguments: '{"name":"Jita"}', status: 'completed' },
+      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'echo_city', arguments: '{"name":"Jita"}', status: 'completed', phase: 'final' },
     ]);
   });
 

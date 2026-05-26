@@ -99,6 +99,7 @@ export async function createNativeResponse(input: {
   parallelToolCalls?: boolean;
   truncation?: string;
   contextManagement?: Array<{ type: string; compact_threshold: number }>;
+  textVerbosity?: string;
   chatId?: number;
   reasoningEffort?: string;
   maxOutputTokens?: number;
@@ -106,6 +107,7 @@ export async function createNativeResponse(input: {
   const baseUrl = normalizeBaseUrl(config.openai.baseUrl);
   const effectiveEffort = input.reasoningEffort ?? config.openai.reasoningEffort;
   const maxTokens = input.maxOutputTokens || config.openai.maxOutputTokens || 0;
+  const textVerbosity = input.textVerbosity ?? config.openai.textVerbosity;
   const bodyPayload: Record<string, unknown> = {
       model: input.model ?? config.openai.model,
       instructions: input.instructions,
@@ -115,6 +117,7 @@ export async function createNativeResponse(input: {
       tools: input.tools,
       tool_choice: 'auto',
       parallel_tool_calls: input.parallelToolCalls ?? false,
+      text: textVerbosity ? { verbosity: textVerbosity } : undefined,
       reasoning: effectiveEffort
         ? { effort: effectiveEffort }
         : undefined,

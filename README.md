@@ -81,6 +81,8 @@ TELEGRAM_BOT_TOKEN=...
 OPENAI_API_KEY=...
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-5.5
+OPENAI_REASONING_EFFORT=medium
+OPENAI_TEXT_VERBOSITY=low
 OPENAI_RESPONSE_STATE_MODE=stateless
 EVE_CLIENT_ID=...
 EVE_CLIENT_SECRET=...
@@ -97,8 +99,11 @@ Generate `AUTH_SECRET_KEY` with:
 openssl rand -base64 32
 ```
 
-Model state mode:
+Model provider defaults:
 
+- `OPENAI_MODEL=gpt-5.5` uses the current OpenAI latest-model guidance for tool-heavy Responses API agents.
+- `OPENAI_REASONING_EFFORT=medium` is the balanced starting point; evaluate `low` for latency-sensitive deployments.
+- `OPENAI_TEXT_VERBOSITY=low` keeps Telegram answers compact; set `medium` if your community wants longer explanations.
 - `OPENAI_RESPONSE_STATE_MODE=stateless` is the default and is recommended for OpenAI-compatible gateways that do not retain `previous_response_id` state.
 - `OPENAI_RESPONSE_STATE_MODE=server` is only for providers that support stored Responses continuation.
 
@@ -127,6 +132,7 @@ See [docs/deployment.md](./docs/deployment.md) for a generic production deployme
 - [docs/SECURITY.md](./docs/SECURITY.md): security rules and current gaps.
 - [docs/RELIABILITY.md](./docs/RELIABILITY.md): reliability model.
 - [docs/deployment.md](./docs/deployment.md): generic self-host guide.
+- [docs/openai-integration.md](./docs/openai-integration.md): OpenAI Responses API and GPT-5.5 configuration.
 - [docs/generated/db-schema.md](./docs/generated/db-schema.md): SQLite schema reference.
 
 ## Open-Source Safety Notice
