@@ -167,6 +167,18 @@ Contributions are welcome. Start with [CONTRIBUTING.md](./CONTRIBUTING.md), keep
 
 Please do not include secrets, private deployment notes, server IPs, logs, database files, or SDE dumps in issues or pull requests.
 
+## Legal Notice
+
+EVE Online and all related logos, images, and trademarks are the property of CCP hf. This project is a third-party tool and is not affiliated with, endorsed by, or supported by CCP Games.
+
+Use of EVE Online SSO, ESI, SDE, and related game data is subject to the [EVE Online Developer License Agreement](https://developers.eveonline.com/license-agreement). Each self-hosting operator is responsible for accepting and complying with that agreement when creating an EVE Developer application and running an instance.
+
+## Community Showcase Readiness
+
+CCP's community documentation lists requirements for services/resources submitted to the EVE Developer Community Showcase: the project must be directly related to EVE Online, comply with the Developer License Agreement, be public, be production-ready, be public for at least three months, and be actively maintained within the last year. See [Community tools and Services](https://developers.eveonline.com/docs/community/).
+
+This repository is public and EVE-related, but operators should only submit a hosted instance once it has been production-ready, publicly available for the required period, and actively maintained.
+
 ## Open-Source Safety Notice
 
 If you are publishing a fork that previously contained private deployment files or secrets, do not make that repository public as-is. Publish from a clean sanitized export or rewrite history, rotate exposed credentials, and run a secret scan before release.

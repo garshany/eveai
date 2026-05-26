@@ -594,8 +594,8 @@ function LandingPage({ config }: { config: AppConfig }) {
 
       <footer className="relative z-10 border-t border-white/[0.06] px-6 py-6">
         <div className="mx-auto flex max-w-6xl flex-col gap-1 text-[11px] text-white/25 sm:flex-row sm:justify-between">
-          <span>EVE Online and the EVE logo are registered trademarks of CCP hf.</span>
-          <span>EVE Agent is a third-party tool, not affiliated with CCP Games.</span>
+          <span>EVE Online and related marks are property of CCP hf.</span>
+          <span>EVE Agent is a third-party tool, not affiliated with or endorsed by CCP Games.</span>
         </div>
       </footer>
     </div>
