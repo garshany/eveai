@@ -112,10 +112,37 @@ Model defaults:
 - `OPENAI_TEXT_VERBOSITY=low` keeps chat answers compact; set `medium` if your community wants longer explanations.
 - `OPENAI_RESPONSE_LANGUAGE=Russian` sets the default final-answer language. Aliases like `ru`, `русский`, `en`, `English`, and custom language names are accepted; an explicit user request can override it per answer.
 
+## Terminal CLI (no bot token needed)
+
+Talk to the agent directly in your terminal — a third platform adapter beside
+Telegram and Discord, driving the same runtime. Great for trying it out or for
+headless use with **only an OpenAI key**:
+
+```bash
+npm run cli
+```
+
+```text
+┌─ EVE AI Agent · CLI ───────────────────────────────┐
+│ Talk to the agent in your terminal. Commands:      │
+│   /login   link an EVE character (opens SSO)       │
+│   /whoami  show the active character               │
+│   /clear   wipe this conversation                  │
+│   /exit    quit                                    │
+└────────────────────────────────────────────────────┘
+eve> route from Jita to Amarr, is it dangerous?
+```
+
+Public tools (SDE lookups, market, route planning with danger analysis,
+killboards, OSINT) work immediately. Run `/login` to link an EVE character via
+SSO and unlock private ESI (skills, assets, location, mail, …). The full bots
+still need a Telegram or Discord token; the CLI does not.
+
 ## Scripts
 
 ```bash
-npm run dev            # tsx watch mode (recommended for local runs)
+npm run cli            # interactive terminal agent (no bot token required)
+npm run dev            # tsx watch mode (recommended for running the bots)
 npm run build          # compile server (tsc)
 npm start              # run built app: node dist/app.js
 npm run check          # typecheck + tests + lint
