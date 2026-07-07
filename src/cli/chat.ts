@@ -8,6 +8,7 @@
  */
 import 'dotenv/config';
 import { createInterface } from 'node:readline';
+import { pathToFileURL } from 'node:url';
 import { config } from '../config.js';
 import { initDb, type Db } from '../db/sqlite.js';
 import { runMigrations } from '../db/migrations.js';
@@ -78,13 +79,29 @@ async function main(): Promise<void> {
   const sdeTypes = safeCount(db, 'sde_types');
   const sdeSystems = safeCount(db, 'sde_systems');
 
-  // Start the HTTP server so the EVE SSO callback works for /login.
+  // Start the HTTP server so the EVE SSO callback works for /login. It's only
+  // needed for /login, so a bind failure (e.g. port already in use) must not
+  // sink the whole CLI — degrade to "public data only" and keep going.
   const { createServer } = await import('../web/server.js');
   const server = await createServer(db);
-  await server.listen({ port: config.server.port, host: config.server.host });
+  let ssoServerReady = false;
+  let ssoServerError = '';
+  try {
+    await server.listen({ port: config.server.port, host: config.server.host });
+    ssoServerReady = true;
+  } catch (err) {
+    ssoServerError = err instanceof Error ? err.message : String(err);
+    await server.close().catch(() => {});
+  }
 
   // From here on, hush the app's internal debug logs for a clean prompt.
   silenceInternalLogs();
+  if (!ssoServerReady) {
+    const portBusy = /EADDRINUSE/i.test(ssoServerError);
+    say(colorize('yellow', portBusy
+      ? `Порт ${config.server.port} занят — /login недоступен в этой сессии. Освободи порт (lsof -nP -iTCP:${config.server.port} -sTCP:LISTEN) и перезапусти. Публичные данные работают.`
+      : `SSO-сервер не стартовал (${ssoServerError}) — /login недоступен; остальное работает.`));
+  }
   if (sdeTypes === 0 || sdeSystems === 0) {
     const missing = [
       sdeTypes === 0 ? 'items' : null,
@@ -122,7 +139,7 @@ async function main(): Promise<void> {
     if (closing) return;
     closing = true;
     rl.close();
-    await server.close().catch(() => {});
+    if (ssoServerReady) await server.close().catch(() => {});
     db.close();
     process.exit(0);
   };
@@ -173,6 +190,8 @@ async function main(): Promise<void> {
     if (text === '/login') {
       if (!isEveSsoConfigured()) {
         say(colorize('yellow', buildEveSsoSetupGuide()));
+      } else if (!ssoServerReady) {
+        say(colorize('yellow', `Локальный SSO-сервер не запущен (порт ${config.server.port} занят) — ссылка входа не сможет принять колбэк. Освободи порт и перезапусти CLI.`));
       } else {
         const url = createEveLoginLink(db, userId, CLI_CHAT_ID);
         say('Открой ссылку для привязки персонажа:\n' + colorize('cyan', url));
@@ -225,7 +244,15 @@ function safeCount(db: Db, table: string): number {
   }
 }
 
-main().catch((err) => {
-  console.error('Fatal:', err instanceof Error ? err.message : String(err));
-  process.exit(1);
-});
+// Only launch the interactive loop when run directly (npm run cli / tsx). Guarded
+// so a test can import this module for its helpers without starting a server.
+const isMain = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
+
+if (isMain) {
+  main().catch((err) => {
+    console.error('Fatal:', err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
+}
