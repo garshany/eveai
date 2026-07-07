@@ -102,9 +102,17 @@ async function executeBatchMarketPrices(
   console.log('[batch_market] region=%d types=%d ids=%j', regionId, typeIds.length, typeIds);
 
   type OrderData = { price: number; volume_remain: number; is_buy_order: boolean };
+  type MarketResult = {
+    type_id: number;
+    error?: string;
+    sell: { min_price: number; volume: number; orders: number } | null;
+    buy: { max_price: number; volume: number; orders: number } | null;
+    global_average_price?: number;
+    note?: string;
+  };
 
-  const results = await Promise.all(
-    typeIds.map(async (typeId) => {
+  const results: MarketResult[] = await Promise.all(
+    typeIds.map(async (typeId): Promise<MarketResult> => {
       const esiResult = await callEsiOperation<OrderData[]>(
         db,
         'get_markets_region_id_orders',
@@ -112,7 +120,7 @@ async function executeBatchMarketPrices(
         ctx,
       );
       if (!esiResult.ok || !Array.isArray(esiResult.data)) {
-        return { type_id: typeId, error: !esiResult.ok ? esiResult.error : 'failed' };
+        return { type_id: typeId, error: !esiResult.ok ? esiResult.error : 'failed', sell: null, buy: null };
       }
       const orders = esiResult.data;
       const sell = orders.filter((o) => !o.is_buy_order);
@@ -129,10 +137,33 @@ async function executeBatchMarketPrices(
     }),
   );
 
+  // PLEX and a few other items trade on a global cross-region market, so the
+  // regional order book is empty and would leave the model with two nulls
+  // (which reads as "no data" and makes it give up). Backfill those with the
+  // ESI global average price so every item gets a usable number. One extra
+  // call, only when needed; the global list is ETag-cached.
+  const needsGlobal = results.filter((r) => !r.error && r.sell === null && r.buy === null);
+  if (needsGlobal.length > 0) {
+    type GlobalPrice = { type_id: number; average_price?: number; adjusted_price?: number };
+    const globalResult = await callEsiOperation<GlobalPrice[]>(db, 'get_markets_prices', {}, ctx);
+    if (globalResult.ok && Array.isArray(globalResult.data)) {
+      const priceMap = new Map(
+        globalResult.data.map((p) => [p.type_id, p.average_price ?? p.adjusted_price] as const),
+      );
+      for (const r of needsGlobal) {
+        const avg = priceMap.get(r.type_id);
+        if (typeof avg === 'number' && avg > 0) {
+          r.global_average_price = avg;
+          r.note = 'No regional order book (global-market item, e.g. PLEX); ESI global average price shown.';
+        }
+      }
+    }
+  }
+
   const totalChars = JSON.stringify(results).length;
   console.log('[batch_market] done items=%d result=%d chars', results.length, totalChars);
 
-  return { ok: true, prices: results };
+  return { ok: true, region_id: regionId, prices: results };
 }
 
 function stripRedundantFields(data: unknown, requestArgs: Record<string, unknown>): unknown {
