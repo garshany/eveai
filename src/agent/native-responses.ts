@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { activityWantsTokens, getActivitySink, reportActivity } from './activity.js';
 
 export type NativeInputItem =
   | NativeInputMessage
@@ -107,6 +108,10 @@ export async function createNativeResponse(input: {
   const effectiveEffort = input.reasoningEffort ?? config.openai.reasoningEffort;
   const maxTokens = input.maxOutputTokens || config.openai.maxOutputTokens || 0;
   const textVerbosity = input.textVerbosity ?? config.openai.textVerbosity;
+  // Ask for a concise reasoning summary only when an activity sink is attached
+  // (the interactive CLI) so it can show a "thinking" line. Bots get no sink and
+  // an unchanged request — no extra summary tokens.
+  const wantReasoningSummary = getActivitySink() !== undefined;
   const bodyPayload: Record<string, unknown> = {
       model: input.model ?? config.openai.model,
       instructions: input.instructions,
@@ -118,8 +123,8 @@ export async function createNativeResponse(input: {
       parallel_tool_calls: input.parallelToolCalls ?? false,
       text: textVerbosity ? { verbosity: textVerbosity } : undefined,
       reasoning: effectiveEffort
-        ? { effort: effectiveEffort }
-        : undefined,
+        ? (wantReasoningSummary ? { effort: effectiveEffort, summary: 'auto' } : { effort: effectiveEffort })
+        : (wantReasoningSummary ? { summary: 'auto' } : undefined),
       store: false,
       stream: true,
       include: [],
@@ -152,7 +157,11 @@ export async function createNativeResponse(input: {
     });
     // Keep the deadline active across the streamed body read: with stream:true,
     // fetch resolves on headers, so a stalled body would otherwise hang forever.
-    rawText = await response.text();
+    // When a sink wants tokens (the CLI), read the body incrementally and emit
+    // output-text deltas live; otherwise buffer it whole exactly as before.
+    rawText = response.ok && response.body && activityWantsTokens()
+      ? await readBodyEmittingTokens(response.body)
+      : await response.text();
   } catch (error) {
     if ((error as Error).name === 'AbortError' || (error as Error).name === 'TimeoutError') {
       throw new Error(`Responses API timed out after ${Math.round(RESPONSES_TIMEOUT_MS / 1000)}s`);
@@ -210,10 +219,13 @@ export async function createNativeResponse(input: {
       (usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens ?? '0');
   }
 
-  // Log reasoning summary if present (enabled by reasoning.summary='concise')
+  // Log reasoning summary if present (enabled by reasoning.summary='auto').
+  // When streaming (activityWantsTokens), the reasoning line was already emitted
+  // live from the stream, before the answer — don't emit it again post-parse.
   const reasoningSummary = extractReasoningSummary(output);
   if (reasoningSummary) {
     console.log('[reasoning] %s', reasoningSummary.slice(0, 500));
+    if (!activityWantsTokens()) reportActivity({ type: 'reasoning', text: reasoningSummary });
   }
 
   const toolSearchItems = output.filter((item) => item.type === 'tool_search_output');
@@ -360,6 +372,88 @@ function parseSse(raw: string): NativeSseEvent[] {
   }
   flush();
   return events;
+}
+
+/** Pull the text token out of an output-text delta event's data (same shapes as the buffered path). */
+function extractDeltaToken(data: unknown): string | null {
+  const record = data as Record<string, unknown> | null;
+  const delta = typeof record?.delta === 'string' ? record.delta : null;
+  const text = typeof record?.text === 'string' ? record.text : null;
+  const outputText = typeof record?.output_text === 'string' ? record.output_text : null;
+  const nested = typeof (record?.output_text as { text?: unknown } | undefined)?.text === 'string'
+    ? (record?.output_text as { text?: string }).text
+    : null;
+  const token = delta ?? text ?? outputText ?? nested;
+  return typeof token === 'string' && token ? token : null;
+}
+
+/**
+ * Read the SSE body incrementally, emitting output-text deltas as 'token' events
+ * and reasoning-summary text as a 'reasoning' event, then return the full body
+ * text unchanged so the existing buffered parse runs identically afterwards.
+ * Used only on the CLI path (a sink that wantsTokens); the bots never reach here.
+ */
+async function readBodyEmittingTokens(body: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let full = '';
+  let pending = '';
+  let currentEvent = 'message';
+  let dataLines: string[] = [];
+  let reasoningBuf = '';
+
+  const flushFrame = () => {
+    if (dataLines.length === 0) { currentEvent = 'message'; return; }
+    const dataText = dataLines.join('\n');
+    dataLines = [];
+    if (!dataText || dataText === '[DONE]') { currentEvent = 'message'; return; }
+    let data: unknown = dataText;
+    try { data = JSON.parse(dataText); } catch { /* keep raw string */ }
+    let event = currentEvent;
+    currentEvent = 'message';
+    if (event === 'message' && data && typeof data === 'object') {
+      const dataType = (data as { type?: unknown }).type;
+      if (typeof dataType === 'string' && dataType.trim()) event = dataType.trim();
+    }
+    if (isOutputTextDelta(event)) {
+      const token = extractDeltaToken(data);
+      if (token) reportActivity({ type: 'token', delta: token });
+    } else if (event === 'response.reasoning_summary_text.delta') {
+      const delta = (data as { delta?: unknown })?.delta;
+      if (typeof delta === 'string') reasoningBuf += delta;
+    } else if (event === 'response.reasoning_summary_text.done') {
+      const doneText = typeof (data as { text?: unknown })?.text === 'string'
+        ? (data as { text: string }).text
+        : reasoningBuf;
+      reasoningBuf = '';
+      if (doneText.trim()) reportActivity({ type: 'reasoning', text: doneText.trim() });
+    }
+  };
+
+  const handleLine = (line: string) => {
+    if (line === '') { flushFrame(); return; }
+    if (line.startsWith(':')) return;
+    if (line.startsWith('event:')) { currentEvent = line.slice(6).trim() || 'message'; return; }
+    if (line.startsWith('data:')) { dataLines.push(line.slice(5).replace(/^\s/, '')); return; }
+    if (line.startsWith('id:') || line.startsWith('retry:')) return;
+    dataLines.push(line);
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    full += chunk;
+    pending += chunk;
+    const parts = pending.split(/\r?\n/);
+    pending = parts.pop() ?? '';
+    for (const part of parts) handleLine(part);
+  }
+  const tail = decoder.decode();
+  if (tail) { full += tail; pending += tail; }
+  if (pending) handleLine(pending);
+  flushFrame();
+  return full;
 }
 
 function isOutputTextDelta(event: string): boolean {

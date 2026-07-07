@@ -21,6 +21,7 @@ import {
   runAgentTurn,
 } from '../chat/shared.js';
 import { getLinkedCharacter, listLinkedCharacters } from '../eve/sso.js';
+import { runWithActivitySink, type AgentActivitySink } from '../agent/activity.js';
 import { buildEveSsoSetupGuide, isEveSsoConfigured } from '../eve/eve-login.js';
 import { registerTelegramOutbound } from '../messaging/outbound.js';
 import { htmlToDiscordMarkdown } from '../discord/format.js';
@@ -183,14 +184,13 @@ async function main(): Promise<void> {
     // Plain text -> agent turn. Pause input so turns never overlap.
     rl.pause();
     busy = true;
-    const dots = startThinking();
+    const activity = createActivityRenderer();
     try {
       const threadId = resolveThreadForChat(db, CLI_CHAT_ID, ctx);
-      const answer = await runAgentTurn(db, threadId, ctx, text);
-      dots.stop();
-      process.stdout.write('\n' + renderForTerminal(answer) + '\n');
+      const answer = await runWithActivitySink(activity.sink, () => runAgentTurn(db, threadId, ctx, text));
+      activity.finish(answer);
     } catch (err) {
-      dots.stop();
+      activity.abort();
       console.error(colorize('red', 'error: ') + (err instanceof Error ? err.message : String(err)));
     } finally {
       busy = false;
@@ -202,24 +202,120 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => { void shutdown(); });
 }
 
-function startThinking(): { stop: () => void } {
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/** Friendly label + icon for a tool name shown in the live activity feed. */
+function toolLabel(name: string): string {
+  const KNOWN: Record<string, string> = {
+    sde_sql: '🗄  SDE query',
+    batch_market_prices: '💰 market prices',
+    get_eve_capabilities: '🔑 EVE access check',
+    plan_route: '🗺  route planner',
+    route_monitor: '🛰  route monitor',
+    web_search: '🌐 web search',
+    osint_infer_home: '🕵  OSINT',
+    analyze_local: '📡 local analysis',
+    analyze_scan: '📡 d-scan analysis',
+    intel_note: '🗒  intel note',
+    update_plan: '📝 plan',
+    set_active_fit: '🔧 active fit',
+    heartbeat_config: '⏰ heartbeat',
+    count_universe_objects: '🔢 universe count',
+  };
+  if (KNOWN[name]) return KNOWN[name];
+  if (name === 'kill_feed' || name.startsWith('eve_kill')) return '☠  killboard';
+  if (name.startsWith('eve_scout') || name.startsWith('scout_')) return '🪐 EVE-Scout';
+  if (name.startsWith('get_') || name.startsWith('post_') || name.startsWith('eve_')) return `🛰  ESI · ${name}`;
+  return `⚙  ${name}`;
+}
+
+/**
+ * Renders the agent's live activity to the terminal: a "thinking" spinner
+ * between steps, one line per tool/skill as it runs, brief reasoning notes, and
+ * the answer streamed token by token. Returns a sink to hand to
+ * runWithActivitySink plus finish()/abort() to close out the turn.
+ */
+function createActivityRenderer(): {
+  sink: AgentActivitySink;
+  finish: (answer: string) => void;
+  abort: () => void;
+} {
+  const isTty = Boolean(process.stdout.isTTY);
   const phrase = pickThinkingPhrase();
-  // Only animate on an interactive TTY — a \r spinner spams a piped/logged run.
-  if (!process.stdout.isTTY) {
-    say(colorize('gray', `· ${phrase}`));
-    return { stop: () => {} };
-  }
-  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  let i = 0;
-  const timer = setInterval(() => {
-    process.stdout.write(`\r${colorize('cyan', frames[i % frames.length])} ${colorize('gray', phrase)}   `);
-    i += 1;
-  }, 90);
-  return {
-    stop: () => {
-      clearInterval(timer);
-      process.stdout.write('\r' + ' '.repeat(phrase.length + 8) + '\r');
+  let timer: NodeJS.Timeout | null = null;
+  let frame = 0;
+  let streaming = false;   // answer tokens have started arriving
+  let streamedAny = false;
+  let streamedText = '';   // raw answer text streamed so far
+
+  const clearLine = () => {
+    if (isTty) process.stdout.write('\r\x1b[K');
+  };
+  const startSpinner = () => {
+    if (!isTty || streaming || timer) return;
+    timer = setInterval(() => {
+      process.stdout.write(`\r${colorize('cyan', SPINNER_FRAMES[frame % SPINNER_FRAMES.length])} ${colorize('gray', phrase)}   `);
+      frame += 1;
+    }, 90);
+  };
+  const stopSpinner = () => {
+    if (timer) { clearInterval(timer); timer = null; }
+    clearLine();
+  };
+  // Print a persistent activity line without losing the spinner animation.
+  const printLine = (text: string) => {
+    stopSpinner();
+    say(text);
+    startSpinner();
+  };
+
+  const sink: AgentActivitySink = {
+    wantsTokens: true,
+    emit: (event) => {
+      switch (event.type) {
+        case 'model_turn':
+          startSpinner();
+          break;
+        case 'tool_start':
+          printLine('  ' + colorize('cyan', toolLabel(event.name)) + (event.detail ? colorize('gray', ` · ${event.detail}`) : ''));
+          break;
+        case 'reasoning': {
+          const text = event.text.length > 240 ? `${event.text.slice(0, 239)}…` : event.text;
+          printLine('  ' + colorize('gray', `💭 ${text.replace(/\s+/g, ' ').trim()}`));
+          break;
+        }
+        case 'token':
+          if (!streaming) { stopSpinner(); streaming = true; process.stdout.write('\n'); }
+          streamedAny = true;
+          streamedText += event.delta;
+          process.stdout.write(event.delta);
+          break;
+      }
     },
+  };
+
+  return {
+    sink,
+    finish: (answer: string) => {
+      stopSpinner();
+      if (!streamedAny) {
+        // No token stream (short/edge response) — render the final answer cleanly.
+        say('\n' + renderForTerminal(answer));
+        return;
+      }
+      // The answer body already streamed in raw; close the line. If finalize
+      // appended a tail the stream didn't carry (e.g. a helpful-commands block),
+      // print just that tail so nothing is silently dropped. Only when the final
+      // answer cleanly extends the streamed text — never re-print the body.
+      process.stdout.write('\n');
+      const streamedTrim = streamedText.trimEnd();
+      const answerTrim = answer.trimEnd();
+      if (answerTrim.length > streamedTrim.length && answerTrim.startsWith(streamedTrim)) {
+        const tail = answerTrim.slice(streamedTrim.length).trim();
+        if (tail) say('\n' + renderForTerminal(tail));
+      }
+    },
+    abort: () => stopSpinner(),
   };
 }
 

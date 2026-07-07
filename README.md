@@ -168,6 +168,21 @@ killboards, OSINT) work immediately. Run `/login` to link an EVE character via
 SSO and unlock private ESI (skills, assets, location, mail, …). The full bots
 still need a Telegram or Discord token; the CLI does not.
 
+While the agent works, the CLI shows a **live activity feed** — a brief
+"thinking" note, one line per tool/skill as it runs (e.g. `🗄 SDE query`,
+`💰 market prices`, `🛰 ESI · …`), and the answer streamed in token by token:
+
+```text
+eve> Сколько стоит Plex?
+  💭 Checking PLEX price; resolve type_id, then market price
+  🗄  SDE query · query
+  💰 market prices · 1 item
+PLEX: 4,621,543 ISK (global average — no regional order book).
+```
+
+This feed is CLI-only: the Telegram and Discord bots reply with one finished
+message and are unaffected.
+
 ## Scripts
 
 ```bash

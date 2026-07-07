@@ -35,6 +35,7 @@ import {
   type NativeInputItem,
 } from './native-responses.js';
 import { callEsiOperation } from '../eve/esi-client.js';
+import { reportActivity, summarizeToolArgs } from './activity.js';
 import { ESI_FIELD_WHITELIST, filterEsiFields, validateEsiFields } from './esi-field-filter.js';
 import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
@@ -468,6 +469,7 @@ async function runNativeAgentLoop(
   console.log('[executor] === NEW REQUEST chat=%d thread=%s goal="%s" ===', chatId, threadId.slice(0, 12), goal.slice(0, 80));
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
+    reportActivity({ type: 'model_turn', iteration });
     let response;
     try {
       response = await createNativeResponse({
@@ -759,6 +761,11 @@ async function executeToolCall(
   args: Record<string, unknown>,
   webSearchState: WebSearchState,
 ): Promise<unknown> {
+  // Live activity: surface which tool ("skill") is running to any attached sink
+  // (the interactive CLI). No-op for the bots. Single point so it covers both
+  // the parallel and sequential dispatch paths.
+  reportActivity({ type: 'tool_start', name, detail: summarizeToolArgs(name, args) });
+
   if (name === 'web_search') {
     const query = String(args.query ?? '');
     const guard = registerWebSearch(webSearchState, query);
