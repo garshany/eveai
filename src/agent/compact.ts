@@ -24,6 +24,30 @@ const COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000;
 /** Max retries when summarizer fails (Codex-style retry on transient errors). */
 const COMPACT_MAX_RETRIES = 2;
 
+/**
+ * Rough token estimate for a soft budget (the keep window), not a hard overflow
+ * guard — the mid-turn trigger uses the API's exact usage for that. UTF-8 bytes/4
+ * is a dependency-free BPE proxy: ASCII is ~1 byte/char (so ≈ chars/4 as before),
+ * while Cyrillic is ~2 bytes/char, so Russian text counts ~2x higher — much closer
+ * to real gpt-5.5 tokenization than a flat chars/4, which underclaimed Cyrillic and
+ * silently kept ~2x too much recent history for the default Russian output.
+ */
+export function estimateTokens(text: string): number {
+  return Math.ceil(Buffer.byteLength(text, 'utf8') / 4);
+}
+
+/**
+ * Trim `text` to at most `max` chars, preferring the last line break within the
+ * cap so a bulleted summary is never cut in the middle of a bullet. Falls back to
+ * a hard cut only if there is no reasonable line boundary (a single huge line).
+ */
+export function capOnLineBoundary(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const hard = text.slice(0, max);
+  const nl = hard.lastIndexOf('\n');
+  return nl > max * 0.5 ? hard.slice(0, nl) : hard;
+}
+
 // Codex-style compaction prompt — adapted for EVE Online assistant
 const COMPACTION_DEVELOPER_PROMPT = `Ты выполняешь СЖАТИЕ КОНТЕКСТА. Создай краткую передачу для другой языковой модели, которая продолжит диалог.
 
@@ -193,7 +217,7 @@ export async function compactThread(
   let keepTokens = 0;
   for (let i = allMessages.length - 1; i >= 0; i--) {
     const msg = allMessages[i];
-    const tokens = Math.ceil(msg.content.length / 4);
+    const tokens = estimateTokens(msg.content);
     if (keepMessages.length > 0 && keepTokens + tokens > COMPACT_USER_MESSAGE_MAX_TOKENS) break;
     keepMessages.unshift(msg);
     keepTokens += tokens;
@@ -236,9 +260,10 @@ export async function compactThread(
 
   if (!summaryText) return false;
 
-  const cappedSummary = summaryText.length > MAX_SUMMARY_CHARS
-    ? summaryText.slice(0, MAX_SUMMARY_CHARS)
-    : summaryText;
+  // Cap the summary, but cut on a line (bullet) boundary rather than mid-bullet:
+  // a half-truncated fact is worse than dropping it, and the capped summary is
+  // fed back as existingSummary on the next pass, so a broken tail would compound.
+  const cappedSummary = capOnLineBoundary(summaryText, MAX_SUMMARY_CHARS);
 
   const tx = db.transaction(() => {
     db.prepare(

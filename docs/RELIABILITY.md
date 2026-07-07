@@ -16,6 +16,13 @@
 - simple static aggregate count questions use local-SDE deterministic paths instead of exploratory web or live-ESI loops.
 - when a deterministic static count tool fully answers the user request, the executor finalizes the reply server-side and skips the extra model round-trip.
 
+### Context compaction
+
+- Per-thread history is compacted so old messages are summarized (not silently lost) as the conversation grows. The limit is `autoCompactLimit()` = 90% of `OPENAI_MODEL_CONTEXT_WINDOW` (default 200k → 180k), or `min(OPENAI_COMPACT_THRESHOLD, 90%)` when the override is set.
+- Two triggers: a mid-turn backstop fires when a single model call's real input (`response.usage.input`) reaches the limit; a pre-turn counter (`agent_threads.total_tokens`) accumulates each turn's peak input and triggers when it reaches the limit. In the default stateless mode the prompt is rebuilt each turn from `buildSmartContext` (capped to `MAX_CONTEXT_MESSAGES` / `MAX_CONTEXT_CHARS`), so the per-call input stays roughly constant and the pre-turn counter functions as a periodic "summarize the growing SQLite backlog" cadence — it is reset to 0 only by compaction.
+- Compaction keeps the most recent user/assistant messages up to a ~20k-token budget and summarizes everything older into a ≤4k-char structured summary (preserving IDs, numbers, location/ship, and what was already fetched). The keep-window token budget uses a UTF-8-byte-based estimate (`estimateTokens`) so it is honest for Cyrillic (a flat chars/4 under-counted Russian and kept ~2x too much), and the summary is trimmed on a line boundary (`capOnLineBoundary`) so bullets are never cut mid-fact.
+- Summarization is incremental (the prior summary is extended, `last_message_id` tracks the boundary) and input-bounded (`COMPACT_MAX_INPUT_CHARS`); anything over budget carries to the next pass rather than being dropped unsummarized. After compaction the counter resets and `previous_response_id` is cleared, forcing a cold rebuild from `[summary + kept recent messages]`.
+
 ## Tool Loop Model
 
 - runtime tools are Responses API function tools implemented by this Node.js process.

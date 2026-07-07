@@ -253,28 +253,38 @@ export async function handleAgentMessage(
   // tokens exceed 90% of model context window.
   await runPreTurnCompact(db, threadId);
 
-  const summary = getThreadSummary(db, threadId);
   const promptMode = isSimpleStaticAggregateCountGoal(userText) ? 'static_aggregate' : 'full';
 
-  const developerPrompt = buildDeveloperPrompt(
-    {
-      authenticated: Boolean(linked),
-      characterId: linked?.characterId ?? null,
-      characterName: linked?.characterName ?? null,
-      grantedScopes: linked?.scopes ?? [],
-    },
-    summary,
-    userProfile,
-    liveContext?.summary ?? null,
-    promptMode,
-    config.openai.responseLanguage,
-  );
+  // Rebuild the developer prompt from current thread state. Called once up front
+  // and again after mid-turn compaction so `instructions` always carries the
+  // freshest thread summary. Everything except the summary is turn-stable.
+  const rebuildDeveloperPrompt = (): string =>
+    buildDeveloperPrompt(
+      {
+        authenticated: Boolean(linked),
+        characterId: linked?.characterId ?? null,
+        characterName: linked?.characterName ?? null,
+        grantedScopes: linked?.scopes ?? [],
+      },
+      getThreadSummary(db, threadId),
+      userProfile,
+      liveContext?.summary ?? null,
+      promptMode,
+      config.openai.responseLanguage,
+    );
 
-  const result = await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt);
+  const developerPrompt = rebuildDeveloperPrompt();
 
-  // Track cumulative token usage for compaction trigger.
-  // Use peakInputTokens (max of single iteration) — reflects actual context size.
-  // Summing across iterations double-counts because each iteration resends instructions+tools.
+  const result = await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt, rebuildDeveloperPrompt);
+
+  // Advance the pre-turn compaction counter. In the default stateless mode the
+  // prompt is rebuilt from buildSmartContext (capped to MAX_CONTEXT_MESSAGES /
+  // MAX_CONTEXT_CHARS), so peakInputTokens is roughly constant regardless of
+  // backlog — accumulating it across turns therefore acts as a periodic "summarize
+  // the growing SQLite history" cadence that reaches autoCompactLimit after enough
+  // turns. Reset to 0 happens only inside compaction. Do NOT switch to storing the
+  // latest peak: that would make the counter constant and stop pre-turn compaction
+  // from ever firing in stateless mode.
   db.prepare(
     'UPDATE agent_threads SET total_tokens = COALESCE(total_tokens, 0) + ? WHERE thread_id = ?'
   ).run(result.peakInputTokens, threadId);
@@ -418,6 +428,7 @@ async function runNativeAgentLoop(
   ctx: UserContext,
   goal: string,
   developerPrompt: string,
+  rebuildDeveloperPrompt: () => string,
 ): Promise<AgentResult> {
   const chatId = ctx.chatId ?? ctx.userId;
   const requestId = createRequestId();
@@ -548,6 +559,10 @@ async function runNativeAgentLoop(
         usedMidTurnCompact = true;
         try {
           await runMidTurnCompact(db, threadId);
+          // Refresh `instructions` so the newly written summary reaches the model
+          // for the rest of this turn; the prompt captured before the loop still
+          // holds the pre-compaction summary state.
+          developerPrompt = rebuildDeveloperPrompt();
           previousResponseId = null;
           pendingItems = buildSmartContext(db, threadId);
           // The summary only covers user/assistant history — re-inject the
