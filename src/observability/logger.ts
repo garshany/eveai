@@ -37,7 +37,7 @@ const ANSI = {
   gray: '[90m',
 } as const;
 
-type AnsiColor = keyof typeof ANSI;
+export type AnsiColor = keyof typeof ANSI;
 
 export function colorize(color: AnsiColor, text: string): string {
   if (!colorsEnabled) return text;
