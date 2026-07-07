@@ -1,29 +1,27 @@
 import 'dotenv/config';
+import {
+  parseOptionalIntEnv,
+  parseRequiredIntEnv,
+  readOptionalEnv,
+  readRequiredEnv,
+} from './config-env.js';
 
+// Strict parsing: malformed integers (e.g. "3000.5", "1e3", unsafe ints) fail
+// fast at startup instead of being silently coerced. See src/config-env.ts.
 function required(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing required env var: ${name}`);
-  return value;
+  return readRequiredEnv(process.env, name);
 }
 
 function requiredInt(name: string): number {
-  const raw = required(name);
-  const num = Number(raw);
-  if (!Number.isFinite(num)) throw new Error(`Env var ${name} must be a number, got: "${raw}"`);
-  return num;
+  return parseRequiredIntEnv(process.env, name);
 }
 
 function optional(name: string, fallback: string): string {
-  const value = process.env[name];
-  return (value !== undefined && value !== '') ? value : fallback;
+  return readOptionalEnv(process.env, name, fallback);
 }
 
 function optionalInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) return fallback;
-  const num = Number(raw);
-  if (!Number.isFinite(num)) throw new Error(`Env var ${name} must be a number, got: "${raw}"`);
-  return num;
+  return parseOptionalIntEnv(process.env, name, fallback);
 }
 
 export const config = {
