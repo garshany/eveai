@@ -7,12 +7,14 @@ Repository knowledge lives in versioned docs under `docs/`. Read only the next d
 ## Hard Invariants
 
 - Single-process Node.js app. No workers, queues, Redis, or Postgres.
-- Telegram uses grammY long polling only. No webhooks.
-- Fastify is limited to auth callback, web auth, dashboard support, and health.
-- Private ESI access stays isolated per Telegram user and chat.
+- Chat platforms: Telegram (grammY long polling, no webhooks) and Discord (discord.js gateway, DMs only). Both share one agent runtime; at least one bot token must be configured.
+- There is no web frontend. Fastify is limited to the EVE SSO callback and health.
+- Model provider: official OpenAI Responses API only.
+- Private ESI access stays isolated per user and chat lane.
 - Private ESI access must be gated by `get_eve_capabilities` when access is not already fresh.
 - The model must not see tokens, refresh flow, pagination internals, retry logic, or secrets.
 - Static game data comes from local SDE in SQLite. Live character and market data comes from ESI.
+- Discord snowflake ids are stored as TEXT; Discord DM lanes map to negative internal chat keys (Telegram chat ids are positive).
 - TypeScript strict mode is required across the repo.
 - Use `gh` for GitHub-aware workflows when repo operations are needed.
 
@@ -28,7 +30,6 @@ Repository knowledge lives in versioned docs under `docs/`. Read only the next d
 - [ARCHITECTURE.md](./ARCHITECTURE.md)
 - [docs/DESIGN.md](./docs/DESIGN.md)
 - [docs/PRODUCT_SENSE.md](./docs/PRODUCT_SENSE.md)
-- [docs/FRONTEND.md](./docs/FRONTEND.md)
 - [docs/PLANS.md](./docs/PLANS.md)
 - [docs/QUALITY_SCORE.md](./docs/QUALITY_SCORE.md)
 - [docs/RELIABILITY.md](./docs/RELIABILITY.md)
@@ -48,12 +49,10 @@ Repository knowledge lives in versioned docs under `docs/`. Read only the next d
 ## Repo Map
 
 - Runtime entrypoints:
-  - `src/app.ts` boots DB, HTTP server, and Telegram bot.
+  - `src/app.ts` boots DB, HTTP server, and the Telegram/Discord bots.
   - `src/config.ts` is the runtime config boundary.
 - Domain folders:
-  - `src/agent/`, `src/auth/`, `src/db/`, `src/eve/`, `src/telegram/`, `src/web/`
-- Product surface:
-  - `client/src/` contains the Vite/React landing page and dashboard.
+  - `src/agent/`, `src/auth/`, `src/chat/`, `src/db/`, `src/discord/`, `src/eve/`, `src/messaging/`, `src/telegram/`, `src/web/`
 - Verification and ops:
   - `tests/unit/`, `tests/integration/`, `deploy/systemd/`
 - Repo-local knowledge:

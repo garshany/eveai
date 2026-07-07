@@ -1,10 +1,11 @@
 import { Cron } from 'croner';
-import type { Bot } from 'grammy';
 import type { Db } from '../db/sqlite.js';
-import { callEsiOperation } from '../eve/esi-client.js';
+import { callEsiOperation, pruneExpiredEsiCache } from '../eve/esi-client.js';
+import { prunePlans } from '../agent/planner.js';
 import { getAccessToken } from '../eve/sso.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
-import { getUserTelegramChatId } from '../auth/user-resolver.js';
+import { getUserOutboundChatId } from '../auth/user-resolver.js';
+import { sendOutbound } from '../messaging/outbound.js';
 import { runModelText } from '../agent/model.js';
 import {
   parseChecks,
@@ -22,11 +23,13 @@ const WALLET_CHANGE_THRESHOLD = 10_000_000; // 10M ISK minimum change to notify
 
 let cronJob: Cron | null = null;
 
-export function startHeartbeat(bot: Bot, db: Db): void {
+export function startHeartbeat(db: Db): void {
   console.log('[heartbeat] Starting heartbeat worker');
-  cronJob = new Cron(HEARTBEAT_CRON, async () => {
+  // protect: true prevents overlapping ticks — a slow tick (ESI backoff, LLM
+  // summarize) must not race a new one on the same users/state.
+  cronJob = new Cron(HEARTBEAT_CRON, { protect: true }, async () => {
     try {
-      await runHeartbeatTick(bot, db);
+      await runHeartbeatTick(db);
     } catch (err) {
       console.error('[heartbeat] tick error:', err);
     }
@@ -41,8 +44,24 @@ export function stopHeartbeat(): void {
   }
 }
 
-async function runHeartbeatTick(bot: Bot, db: Db): Promise<void> {
+let ticksSinceCacheSweep = 0;
+const CACHE_SWEEP_EVERY_TICKS = 12; // every ~1h at the 5-min cron
+
+async function runHeartbeatTick(db: Db): Promise<void> {
   const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+  // Piggyback maintenance on the existing cron: prune expired ESI cache rows so
+  // the shared esi_cache table can't grow without bound.
+  if (ticksSinceCacheSweep++ >= CACHE_SWEEP_EVERY_TICKS) {
+    ticksSinceCacheSweep = 0;
+    try {
+      const removed = pruneExpiredEsiCache(db);
+      if (removed > 0) console.log('[heartbeat] pruned %d expired esi_cache rows', removed);
+      prunePlans(db);
+    } catch (err) {
+      console.error('[heartbeat] maintenance sweep failed:', err);
+    }
+  }
 
   const rows = db.prepare(`
     SELECT * FROM heartbeat_config
@@ -53,7 +72,7 @@ async function runHeartbeatTick(bot: Bot, db: Db): Promise<void> {
 
   for (const row of rows) {
     try {
-      await processUserHeartbeat(bot, db, row, nowUtc);
+      await processUserHeartbeat(db, row, nowUtc);
     } catch (err) {
       console.error('[heartbeat] user=%d char=%d error:', row.user_id, row.character_id, err);
     }
@@ -61,17 +80,25 @@ async function runHeartbeatTick(bot: Bot, db: Db): Promise<void> {
 }
 
 async function processUserHeartbeat(
-  bot: Bot,
   db: Db,
   row: HeartbeatConfigRow,
   nowUtc: string,
 ): Promise<void> {
   const ctx: UserContext = { userId: row.user_id };
-  const chatId = getUserTelegramChatId(db, row.user_id);
+  const chatId = getUserOutboundChatId(db, row.user_id);
   if (!chatId) return;
 
   const tokenResult = await getAccessToken(db, ctx);
-  if (!tokenResult) return;
+  if (!tokenResult) {
+    // Dead/expired token: still record the attempt so the user is retried at
+    // their configured interval, not on every 5-minute tick (each retry hits
+    // the EVE SSO token endpoint).
+    db.prepare(
+      'UPDATE heartbeat_config SET last_run_at = ? WHERE user_id = ? AND character_id = ?',
+    ).run(nowUtc, row.user_id, row.character_id);
+    console.warn('[heartbeat] user=%d char=%d: no valid EVE token, skipping until next interval', row.user_id, row.character_id);
+    return;
+  }
 
   // Record capability snapshot so callEsiOperation doesn't reject with 428
   await getEveCapabilities(db, 'heartbeat', ctx);
@@ -109,12 +136,8 @@ async function processUserHeartbeat(
   const characterName = getCharacterName(db, row.character_id);
   const summary = await summarizeFindings(characterName, findings);
 
-  try {
-    await bot.api.sendMessage(chatId, summary, { parse_mode: 'HTML' });
-    console.log('[heartbeat] user=%d char=%d: sent %d findings', row.user_id, row.character_id, findings.length);
-  } catch (err) {
-    console.error('[heartbeat] telegram send failed user=%d:', row.user_id, err);
-  }
+  sendOutbound(chatId, summary);
+  console.log('[heartbeat] user=%d char=%d: sent %d findings', row.user_id, row.character_id, findings.length);
 }
 
 function getCharacterName(db: Db, characterId: number): string {
@@ -130,7 +153,7 @@ function sdeName(db: Db, typeId: number): string {
 
 async function resolveName(db: Db, ctx: UserContext, entityId: number): Promise<string> {
   const result = await callEsiOperation<Array<{ id: number; name: string }>>(
-    db, 'post_universe_names', { ids: [entityId] }, ctx,
+    db, 'post_universe_names', { ids: JSON.stringify([entityId]) }, ctx,
   );
   if (result.ok && Array.isArray(result.data) && result.data.length > 0) {
     return result.data[0].name;
@@ -166,9 +189,18 @@ async function checkMail(
   const result = await callEsiOperation<Array<{ mail_id: number; from: number; subject: string; timestamp: string }>>(
     db, 'get_characters_character_id_mail', { character_id: characterId }, ctx,
   );
-  if (!result.ok || !Array.isArray(result.data) || result.data.length === 0) return null;
+  if (!result.ok || !Array.isArray(result.data)) return null;
 
-  const lastId = state.last_mail_id ?? 0;
+  // First run: seed a baseline silently instead of dumping the whole inbox.
+  // An empty first poll must still seed (to 0) so the next real mail is
+  // reported instead of being swallowed as another "first run".
+  if (state.last_mail_id === undefined) {
+    state.last_mail_id = result.data.length > 0 ? Math.max(...result.data.map((m) => m.mail_id)) : 0;
+    return null;
+  }
+  if (result.data.length === 0) return null;
+
+  const lastId = state.last_mail_id;
   const newMail = result.data.filter((m) => m.mail_id > lastId);
   if (newMail.length === 0) return null;
 
@@ -216,8 +248,14 @@ async function checkSkills(
     findings.push(`Завершены: ${names.join(', ')}`);
   }
 
+  // Notify about an empty queue once, not on every interval.
   if (result.data.length === 0 || currentIds.length === 0) {
-    findings.push('Очередь скиллов пуста!');
+    if (!state.empty_queue_notified) {
+      state.empty_queue_notified = true;
+      findings.push('Очередь скиллов пуста!');
+    }
+  } else {
+    state.empty_queue_notified = false;
   }
 
   state.last_skillqueue_ids = currentIds;
@@ -305,7 +343,15 @@ async function checkContracts(
   );
   if (!result.ok || !Array.isArray(result.data)) return null;
 
-  const lastId = state.last_contract_id ?? 0;
+  // First run: seed silently instead of reporting historical contracts.
+  if (state.last_contract_id === undefined) {
+    state.last_contract_id = result.data.length > 0
+      ? Math.max(...result.data.map((c) => c.contract_id))
+      : 0;
+    return null;
+  }
+
+  const lastId = state.last_contract_id;
   // New contracts assigned to this character (not issued by them)
   const newContracts = result.data
     .filter((c) => c.contract_id > lastId && c.issuer_id !== characterId && c.status === 'outstanding');
@@ -333,7 +379,6 @@ async function checkContracts(
 async function checkKillmails(
   db: Db, ctx: UserContext, characterId: number, state: HeartbeatState,
 ): Promise<string | null> {
-  const lastId = state.last_killmail_id ?? 0;
   const details: string[] = [];
   const seenIds = new Set<number>();
 
@@ -341,6 +386,18 @@ async function checkKillmails(
   const result = await callEsiOperation<Array<{ killmail_id: number; killmail_hash: string }>>(
     db, 'get_characters_character_id_killmails_recent', { character_id: characterId }, ctx,
   );
+
+  // First run: seed silently instead of reporting historical killmails.
+  if (state.last_killmail_id === undefined) {
+    if (result.ok && Array.isArray(result.data) && result.data.length > 0) {
+      state.last_killmail_id = Math.max(...result.data.map((k) => k.killmail_id));
+    } else {
+      state.last_killmail_id = 0;
+    }
+    return null;
+  }
+
+  const lastId = state.last_killmail_id;
   if (result.ok && Array.isArray(result.data)) {
     const newEsiKills = result.data.filter((k) => k.killmail_id > lastId && !seenIds.has(k.killmail_id));
 
@@ -411,9 +468,17 @@ async function checkNotifications(
   }>>(
     db, 'get_characters_character_id_notifications', { character_id: characterId }, ctx,
   );
-  if (!result.ok || !Array.isArray(result.data) || result.data.length === 0) return null;
+  if (!result.ok || !Array.isArray(result.data)) return null;
 
-  const lastId = state.last_notification_id ?? 0;
+  // First run: seed a baseline silently. An empty first poll seeds to 0 so the
+  // next real notification is reported rather than swallowed as a first run.
+  if (state.last_notification_id === undefined) {
+    state.last_notification_id = result.data.length > 0 ? Math.max(...result.data.map((n) => n.notification_id)) : 0;
+    return null;
+  }
+  if (result.data.length === 0) return null;
+
+  const lastId = state.last_notification_id;
   const important = new Set([
     'StructureUnderAttack', 'StructureLostShields', 'StructureLostArmor',
     'StructureDestroyed', 'StructureFuelAlert', 'StructureAnchoring',
@@ -472,7 +537,7 @@ async function checkPI(
 
 async function summarizeFindings(characterName: string, findings: string[]): Promise<string> {
   const systemPrompt = `You are an EVE Online assistant. Summarize the following heartbeat check results for character "${characterName}".
-Be concise, use Russian language. Format for Telegram (plain text, no markdown).
+Be concise, use Russian language. Plain text only, no markdown or HTML.
 If there are mail messages, briefly describe each and suggest if any action is needed.
 Start with a short header line. Keep it under 1500 characters.`;
 

@@ -77,6 +77,9 @@ export async function verifyEveAccessToken(token: string): Promise<EveJwtPayload
 
   const { payload } = await jwtVerify(token, jwks, {
     issuer: ACCEPTED_ISSUERS,
+    // Pin the signature algorithm. EVE signs with RS256; without this, defense
+    // relies solely on JWKS key-type resolution to reject alg:none/HS256.
+    algorithms: ['RS256'],
   });
 
   const data = payload as unknown as EveJwtPayload;
@@ -103,7 +106,20 @@ export function resetEveSsoMetadataCacheForTests(): void {
 }
 
 function isValidMetadata(value: Partial<SsoMetadata>): value is SsoMetadata {
-  return typeof value.authorization_endpoint === 'string'
-    && typeof value.token_endpoint === 'string'
-    && typeof value.jwks_uri === 'string';
+  // The JWKS is the trust root for every token, so every discovered endpoint
+  // must be an https URL on login.eveonline.com; otherwise fall back to the
+  // pinned defaults rather than trusting a redirected jwks_uri.
+  return isEveHttpsEndpoint(value.authorization_endpoint)
+    && isEveHttpsEndpoint(value.token_endpoint)
+    && isEveHttpsEndpoint(value.jwks_uri);
+}
+
+function isEveHttpsEndpoint(value: string | undefined): boolean {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 'login.eveonline.com';
+  } catch {
+    return false;
+  }
 }

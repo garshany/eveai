@@ -434,10 +434,19 @@ export { planRoute } from '../eve/route-planner.js';
 export type { PlanRouteArgs } from '../eve/route-planner.js';
 
 export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'ui' | null> {
-  if (name === 'update_plan') {
+  // Tools that mutate local state must be 'write' so the executor runs them
+  // sequentially, never in the parallel read path (avoids lost-update races on
+  // USER.md, intel_notes, heartbeat_config, and route monitors).
+  if (
+    name === 'update_plan'
+    || isIntelNoteTool(name)
+    || isSetActiveFitTool(name)
+    || isHeartbeatConfigTool(name)
+    || isRouteMonitorTool(name)
+  ) {
     return 'write';
   }
-  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name)) {
+  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();

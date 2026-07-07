@@ -27,6 +27,7 @@ export function runMigrations(db: Db): void {
     ensureKillWatches(db);
     ensureRouteMonitors(db);
     ensureIntelNotes(db);
+    dropLegacyWebTables(db);
   });
 
   migrate();
@@ -35,13 +36,32 @@ export function runMigrations(db: Db): void {
 function ensureSchema(db: Db): void {
   try {
     db.exec(SCHEMA_SQL);
+    return;
   } catch (err) {
     const msg = String((err as Error).message || err);
-    if (msg.includes('no such column')) {
-      db.exec(SCHEMA_SQL);
-      return;
+    // The only tolerated failure is an inline CREATE INDEX in SCHEMA_SQL that
+    // references a column a later addColumnIfMissing() adds — happens on legacy
+    // DBs whose table predates that column. Anything else is a real error.
+    if (!msg.includes('no such column')) throw err;
+  }
+
+  // Re-apply statement-by-statement, skipping only the index creations that
+  // reference not-yet-added columns. The matching createIndexIfMissing() call
+  // recreates them after addColumnIfMissing() runs. All CREATEs use IF NOT
+  // EXISTS, so this stays idempotent. (SCHEMA_SQL contains no ';' inside string
+  // literals, so a naive split is safe.)
+  for (const raw of SCHEMA_SQL.split(';')) {
+    const stmt = raw.trim();
+    if (!stmt) continue;
+    try {
+      db.exec(stmt);
+    } catch (err) {
+      const msg = String((err as Error).message || err);
+      if (msg.includes('no such column') && /^CREATE\s+INDEX/i.test(stmt)) {
+        continue;
+      }
+      throw err;
     }
-    throw err;
   }
 }
 
@@ -77,8 +97,12 @@ function backfillThreadCharacters(db: Db): void {
 }
 
 function backfillUsers(db: Db): void {
-  // For each telegram_sessions row, create a user + telegram_account if not already present
-  const sessions = db.prepare('SELECT chat_id, username, active_character_id FROM telegram_sessions').all() as
+  // Legacy backfill for pre-user_id Telegram DBs. Telegram private chat ids are
+  // positive; Discord DM lanes reuse telegram_sessions with NEGATIVE chat keys
+  // and 0 is a legacy web placeholder — neither is a Telegram user, so excluding
+  // chat_id <= 0 prevents fabricating a bogus telegram_account (with a negative
+  // telegram_user_id) for every Discord lane on each boot.
+  const sessions = db.prepare('SELECT chat_id, username, active_character_id FROM telegram_sessions WHERE chat_id > 0').all() as
     Array<{ chat_id: number; username: string | null; active_character_id: number | null }>;
 
   for (const session of sessions) {
@@ -226,6 +250,13 @@ function ensureIntelNotes(db: Db): void {
 
 function clearLegacyOauthStates(db: Db): void {
   db.prepare('UPDATE telegram_sessions SET oauth_state = NULL WHERE oauth_state IS NOT NULL').run();
+}
+
+function dropLegacyWebTables(db: Db): void {
+  // The web dashboard was removed; browser sessions and Telegram Login Widget
+  // nonces have no consumers anymore.
+  db.exec('DROP TABLE IF EXISTS web_sessions');
+  db.exec('DROP TABLE IF EXISTS telegram_login_attempts');
 }
 
 async function main(): Promise<void> {

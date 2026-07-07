@@ -58,7 +58,7 @@ export function createBot(db: Db): Bot<Context> {
     { command: 'use', description: 'Переключить активного персонажа' },
     { command: 'clear', description: 'Очистить диалог' },
   ]).catch((err) => {
-    console.warn('[bot] setMyCommands failed:', err);
+    console.warn('[bot] setMyCommands failed: %s', err instanceof Error ? err.message : String(err));
   });
 
   bot.catch((err) => {

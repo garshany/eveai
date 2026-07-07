@@ -194,6 +194,61 @@ describe('compactThreadWithRetry', () => {
 });
 
 describe('compactThread core', () => {
+  it('never deletes messages that did not fit into the summarizer input budget', async () => {
+    process.env.COMPACT_MAX_INPUT_CHARS = '20000';
+    vi.resetModules();
+    const { compactThread } = await import('../../src/agent/compact.js');
+
+    const longText = 'x'.repeat(4000);
+    for (let i = 0; i < 30; i++) {
+      db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', `msg ${i} ${longText}`);
+    }
+    const before = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE thread_id = 't1'").get() as { n: number };
+
+    const seenBatches: number[] = [];
+    const changed = await compactThread(db, 't1', async ({ messages }) => {
+      seenBatches.push(messages.length);
+      return `Summary of ${messages.length}`;
+    });
+
+    expect(changed).toBe(true);
+    // Budget is 20K chars and every message is ~4K chars: one pass must not
+    // swallow (and delete) more than ~5 messages.
+    expect(seenBatches[0]).toBeLessThanOrEqual(5);
+
+    const after = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE thread_id = 't1'").get() as { n: number };
+    // Only the summarized prefix may be deleted.
+    expect(before.n - after.n).toBe(seenBatches[0]);
+
+    // A second pass continues from where the first stopped.
+    const changedAgain = await compactThread(db, 't1', async ({ messages }) => {
+      seenBatches.push(messages.length);
+      return `Summary of ${messages.length}`;
+    });
+    expect(changedAgain).toBe(true);
+    expect(seenBatches[1]).toBeLessThanOrEqual(5);
+  });
+
+  it('prunes stale tool messages even when there is nothing to summarize', async () => {
+    vi.resetModules();
+    const { compactThread } = await import('../../src/agent/compact.js');
+
+    for (let i = 0; i < 10; i++) {
+      db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'tool', `{"tool":"old_${i}"}`);
+    }
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'q1');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'assistant', 'a1');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'q2');
+
+    const changed = await compactThread(db, 't1', async () => 'unused');
+    expect(changed).toBe(false);
+
+    const toolRows = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE thread_id = 't1' AND role = 'tool'").get() as { n: number };
+    expect(toolRows.n).toBe(0);
+    const chatRows = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE thread_id = 't1' AND role IN ('user','assistant')").get() as { n: number };
+    expect(chatRows.n).toBe(3);
+  });
+
   it('compacts and preserves recent messages', async () => {
     vi.resetModules();
     const { compactThread, getThreadSummary } = await import('../../src/agent/compact.js');
@@ -214,6 +269,13 @@ describe('compactThread core', () => {
 
     const row = db.prepare('SELECT total_tokens FROM agent_threads WHERE thread_id = ?').get('t1') as { total_tokens: number };
     expect(row.total_tokens).toBe(0);
+
+    // Repeated passes drain the backlog down to the keep window without ever
+    // deleting unsummarized messages.
+    for (let pass = 0; pass < 20; pass++) {
+      const again = await compactThread(db, 't1', async ({ messages }) => `Summary of ${messages.length} messages`);
+      if (!again) break;
+    }
 
     const remaining = db.prepare("SELECT content FROM messages WHERE thread_id = ? ORDER BY id ASC").all('t1') as
       Array<{ content: string }>;

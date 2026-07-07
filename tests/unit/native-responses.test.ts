@@ -322,4 +322,34 @@ describe('createNativeResponse request body', () => {
       },
     ]);
   });
+
+  it('flags a truncated stream (no terminal event, no output) as an error', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+
+    // Stream opens but is cut off before any terminal (response.completed/done)
+    // event and before any output — must not look like a valid empty answer.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_trunc"}}',
+      '',
+    ].join('\n'), { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+
+    const result = await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+    });
+
+    expect(result.error).not.toBeNull();
+    expect(result.error?.message).toContain('Incomplete response stream');
+    expect(result.outputText).toBe('');
+  });
 });

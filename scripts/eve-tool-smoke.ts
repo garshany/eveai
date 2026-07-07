@@ -70,6 +70,9 @@ async function runAgentToolSmoke(db: Database.Database): Promise<void> {
   const prompt = process.env.EVE_TOOL_SMOKE_PROMPT
     || 'Проверь через локальную SDE: найди корабль Raven, его type_id, group/category и массу. Обязательно используй tool, не отвечай по памяти. Ответь кратко по-русски.';
 
+  // Mirror the real chat pipeline: the user message is stored before the agent runs.
+  db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'user', prompt);
+
   const result = await handleAgentMessage(db, threadId, { userId: 0, chatId }, prompt);
   const toolRows = db.prepare("SELECT content FROM messages WHERE thread_id = ? AND role = 'tool' ORDER BY id").all(threadId) as Array<{ content: string }>;
   const toolNames = toolRows.map((row) => {

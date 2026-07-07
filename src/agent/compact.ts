@@ -202,11 +202,30 @@ export async function compactThread(
   // Messages to summarize = everything before the kept messages
   const keepMinId = keepMessages[0]?.id ?? Number.MAX_SAFE_INTEGER;
   const startId = existingSummaryRow?.last_message_id ?? 0;
-  const candidates = allMessages.filter((msg) => msg.id > startId && msg.id < keepMinId);
-  if (candidates.length === 0) {
-    // Nothing to summarize, but reset token counter to stop re-triggering
+  const allCandidates = allMessages.filter((msg) => msg.id > startId && msg.id < keepMinId);
+  if (allCandidates.length === 0) {
+    // Nothing to summarize, but reset token counter to stop re-triggering and
+    // prune stale tool audit rows that fell out of the keep window.
+    db.prepare("DELETE FROM messages WHERE thread_id = ? AND role = 'tool' AND id < ?").run(threadId, keepMinId);
     db.prepare('UPDATE agent_threads SET total_tokens = 0 WHERE thread_id = ?').run(threadId);
     return false;
+  }
+
+  // Only summarize (and later delete) what actually fits the summarizer input
+  // budget — anything beyond the cap stays for the next compaction pass instead
+  // of being deleted unsummarized. Uses the same per-line accounting as
+  // buildTranscript so the transcript never drops a selected candidate.
+  const candidates: MessageRow[] = [];
+  let candidateChars = 0;
+  for (const msg of allCandidates) {
+    const cost = transcriptLineLength(msg);
+    if (candidates.length > 0 && candidateChars + cost > config.compact.maxInputChars) break;
+    candidates.push(msg);
+    candidateChars += cost;
+  }
+  if (candidates.length < allCandidates.length) {
+    console.log('[compact] thread=%s input budget reached: summarizing %d/%d candidates this pass',
+      threadId.slice(0, 12), candidates.length, allCandidates.length);
   }
 
   const lastSummarizedId = candidates[candidates.length - 1].id;
@@ -267,15 +286,25 @@ async function defaultSummarizer(input: {
   return await runModelText(COMPACTION_DEVELOPER_PROMPT, userText);
 }
 
+function transcriptPrefix(msg: MessageRow): string {
+  return msg.role === 'user' ? 'User: ' : 'Assistant: ';
+}
+
+/** Cost of one message in the transcript: prefix + content + joining newline. */
+function transcriptLineLength(msg: MessageRow): number {
+  return transcriptPrefix(msg).length + msg.content.length + 1;
+}
+
 function buildTranscript(messages: MessageRow[], maxChars: number): string {
   const lines: string[] = [];
   let total = 0;
   for (const msg of messages) {
-    const prefix = msg.role === 'user' ? 'User: ' : 'Assistant: ';
-    const line = `${prefix}${msg.content}`;
-    if (total + line.length > maxChars) break;
-    lines.push(line);
-    total += line.length;
+    const line = `${transcriptPrefix(msg)}${msg.content}`;
+    if (lines.length > 0 && total + line.length + 1 > maxChars) break;
+    // Always include at least one (possibly truncated) message so compaction
+    // makes progress even on a single oversized message.
+    lines.push(line.length > maxChars ? line.slice(0, maxChars) : line);
+    total += Math.min(line.length, maxChars) + 1;
   }
   return lines.join('\n');
 }

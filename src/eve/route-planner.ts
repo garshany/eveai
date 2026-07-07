@@ -290,9 +290,15 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
       console.log('[plan_route] briefing generation failed: %s', err instanceof Error ? err.message : String(err));
     }
 
-    // Auto-start route monitor only when autopilot is actually active
+    // Auto-start route monitor only when autopilot is actually active.
+    // Requires a real chat lane: a bare userId is not a valid outbound
+    // address and would misroute monitor alerts.
     if (autopilotSet && routeMonitorSender) {
-      startRouteMonitor(db, chatId, characterId, monitorSystemIds, shipTypeId, shipName, routeMonitorSender);
+      if (ctx.chatId === undefined) {
+        console.warn('[plan_route] skipping route monitor: no chat lane in context');
+      } else {
+        startRouteMonitor(db, chatId, characterId, monitorSystemIds, shipTypeId, shipName, routeMonitorSender);
+      }
     }
   }
 

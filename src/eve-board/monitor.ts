@@ -73,6 +73,11 @@ type MonitorInstance = {
   db: Db;
   shipAssessment: ShipAssessment;
   offlineSince: number | null;
+  /** Reentrancy guards: a slow cycle must not overlap with the next tick. */
+  pollingKills: boolean;
+  sendingDigest: boolean;
+  /** Consecutive failed location polls (auth/ESI). Monitor stops past the threshold. */
+  locationFailures: number;
   /** Cooldown: system_id → last alert timestamp. Don't re-alert same system within 5 min. */
   alertCooldowns: Map<number, number>;
   /** system_id → last known ship_jumps (for spike detection) */
@@ -101,7 +106,7 @@ type MonitorInstance = {
   seenKillmailIds: Set<number>;
 };
 
-type StopReason = 'arrived' | 'death' | 'offline' | 'manual';
+type StopReason = 'arrived' | 'death' | 'offline' | 'manual' | 'auth';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -114,6 +119,8 @@ const ONLINE_INTERVAL_MS = 60_000;
 const DIGEST_INTERVAL_MS = 120_000; // 2 minutes
 const DIGEST_HEARTBEAT_MS = 6 * 60_000; // resend actionable digest every 6 minutes even without deltas
 const OFFLINE_TIMEOUT_MINUTES = 30;
+/** Stop the monitor after this many consecutive failed location polls (~10 min at 15s). */
+const MAX_LOCATION_FAILURES = 40;
 /** Don't re-alert the same system within this window */
 const ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 /** Rolling snapshot window: keep last 20 snapshots per system */
@@ -430,6 +437,9 @@ export function startRouteMonitor(
     db,
     shipAssessment,
     offlineSince: null,
+    pollingKills: false,
+    sendingDigest: false,
+    locationFailures: 0,
     alertCooldowns: new Map(),
     previousJumps: new Map(),
     snapshots: [],
@@ -520,15 +530,26 @@ export function restoreMonitors(db: Db, sender: NotifySender): void {
 
   for (const row of rows) {
     const chatId = row.chat_id as number;
-    const characterId = row.character_id as number;
-    const routeSystems = JSON.parse(String(row.route_systems ?? '[]')) as number[];
-    const shipTypeId = (row.ship_type_id as number) ?? 0;
-    const shipName = String(row.ship_name ?? 'Unknown');
+    // One corrupt row must not brick app startup — skip and drop it.
+    try {
+      const characterId = row.character_id as number;
+      const routeSystems = JSON.parse(String(row.route_systems ?? '[]')) as number[];
+      if (!Array.isArray(routeSystems) || routeSystems.length === 0) {
+        console.warn(`${LOG} dropping monitor chat=${chatId}: empty route`);
+        deleteMonitor(db, chatId);
+        continue;
+      }
+      const shipTypeId = (row.ship_type_id as number) ?? 0;
+      const shipName = String(row.ship_name ?? 'Unknown');
 
-    console.log(`${LOG} restoring monitor chat=${chatId} route=${routeSystems.length} systems`);
-    // Prime capabilities snapshot before starting ESI polls
-    void getEveCapabilities(db, 'route-monitor-restore', { userId: 0, chatId }).catch(() => {});
-    startRouteMonitor(db, chatId, characterId, routeSystems, shipTypeId, shipName, sender);
+      console.log(`${LOG} restoring monitor chat=${chatId} route=${routeSystems.length} systems`);
+      // Prime capabilities snapshot before starting ESI polls
+      void getEveCapabilities(db, 'route-monitor-restore', { userId: 0, chatId }).catch(() => {});
+      startRouteMonitor(db, chatId, characterId, routeSystems, shipTypeId, shipName, sender);
+    } catch (err) {
+      console.error(`${LOG} failed to restore monitor chat=${chatId}, dropping row:`, (err as Error).message);
+      try { deleteMonitor(db, chatId); } catch { /* keep booting */ }
+    }
   }
 }
 
@@ -550,9 +571,17 @@ async function pollLocation(inst: MonitorInstance): Promise<void> {
     if (!loc.ok || !loc.data?.solar_system_id) {
       const errInfo = !loc.ok ? `status=${(loc as { status?: number }).status} error=${(loc as { error?: string }).error}` : 'no solar_system_id';
       console.log(`${LOG} location: ESI failed — ${errInfo}`);
+      // A revoked/expired token would otherwise retry (with an SSO refresh
+      // attempt) every 15s forever while monitoring is silently dead.
+      inst.locationFailures += 1;
+      if (inst.locationFailures >= MAX_LOCATION_FAILURES) {
+        console.warn(`${LOG} chat=${monitor.chatId} stopping after ${inst.locationFailures} consecutive location failures`);
+        stopRouteMonitor(monitor.chatId, 'auth');
+      }
       return;
     }
 
+    inst.locationFailures = 0;
     const newSystemId = loc.data.solar_system_id;
     if (newSystemId === monitor.currentSystemId) return;
 
@@ -602,6 +631,10 @@ type SystemKillEntry = { system_id: number; ship_kills: number; pod_kills: numbe
 
 async function pollKills(inst: MonitorInstance): Promise<void> {
   const { monitor, db, sender, shipAssessment, alertCooldowns } = inst;
+  // A long route with throttled zKB calls can exceed the 60s interval; do not
+  // let setInterval stack overlapping cycles.
+  if (inst.pollingKills) return;
+  inst.pollingKills = true;
   try {
     const currentIdx = monitor.routeSystems.indexOf(monitor.currentSystemId);
     if (currentIdx < 0) return;
@@ -823,6 +856,8 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
     }
   } catch (err) {
     console.error(`${LOG} kill scan error chat=${monitor.chatId}:`, (err as Error).message);
+  } finally {
+    inst.pollingKills = false;
   }
 }
 
@@ -832,6 +867,8 @@ async function pollKills(inst: MonitorInstance): Promise<void> {
 
 async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
   const { monitor, db, sender, shipAssessment } = inst;
+  if (inst.sendingDigest) return;
+  inst.sendingDigest = true;
   try {
     const currentIdx = monitor.routeSystems.indexOf(monitor.currentSystemId);
     if (currentIdx < 0) return;
@@ -911,6 +948,8 @@ async function sendRouteDigest(inst: MonitorInstance): Promise<void> {
     );
   } catch (err) {
     console.error(`${LOG} digest error chat=${monitor.chatId}:`, (err as Error).message);
+  } finally {
+    inst.sendingDigest = false;
   }
 }
 
@@ -1008,9 +1047,13 @@ async function pollOnline(inst: MonitorInstance): Promise<void> {
       return;
     }
 
-    // Pilot is offline — track but don't auto-stop (user controls lifecycle)
+    // Pilot is offline — stop after the timeout so an abandoned monitor does
+    // not scan the route and alert forever (it also survives restarts).
     if (inst.offlineSince === null) {
       inst.offlineSince = Date.now();
+    } else if (Date.now() - inst.offlineSince > OFFLINE_TIMEOUT_MINUTES * 60_000) {
+      console.log(`${LOG} chat=${monitor.chatId} pilot offline >${OFFLINE_TIMEOUT_MINUTES}min, stopping`);
+      stopRouteMonitor(monitor.chatId, 'offline');
     }
   } catch (err) {
     console.error(`${LOG} online poll error chat=${monitor.chatId}:`, (err as Error).message);
@@ -1373,6 +1416,12 @@ function formatStopMessage(
       return [
         `\u{1F4E4} Пилот оффлайн >${OFFLINE_TIMEOUT_MINUTES} мин. Мониторинг ${originName} \u2192 ${destName} остановлен.`,
         `Прыжков: ${stats.jumpsCompleted} | Киллов: ${stats.killsSeen}`,
+      ].join('\n');
+
+    case 'auth':
+      return [
+        `\u26A0 Мониторинг ${originName} \u2192 ${destName} остановлен: нет доступа к данным персонажа.`,
+        'Похоже, EVE-токен истёк или отозван. Перепривяжи персонажа через /eve_login и запусти маршрут заново.',
       ].join('\n');
 
     case 'manual':

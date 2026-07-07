@@ -1,11 +1,11 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from './esi-client.js';
 import { getEveCapabilities } from './capabilities.js';
 import { getLinkedCharacter } from './sso.js';
 import type { UserContext } from '../auth/user-resolver.js';
-import { resolveUserProfilePath } from './user-profile-storage.js';
+import { resolveUserProfilePath, writeUserProfileAtomic } from './user-profile-storage.js';
 
 type JsonResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -174,7 +174,7 @@ export async function refreshUserProfile(db: Db, ctx: UserContext): Promise<Json
   const path = resolveUserProfilePath(ctx, characterId);
   const dir = dirname(path);
   await mkdir(dir, { recursive: true });
-  await writeFile(path, markdown);
+  await writeUserProfileAtomic(path, markdown);
   return { ok: true, data: { path } };
 }
 

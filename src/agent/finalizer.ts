@@ -21,32 +21,36 @@ export function truncateForTelegram(text: string): string {
  */
 export function sanitizeOutput(text: string): string {
   return text
-    .replace(/Bearer\s+[A-Za-z0-9._-]{20,}/g, 'Bearer [REDACTED]')
-    .replace(/eyJ[A-Za-z0-9._-]{20,}/g, '[TOKEN_REDACTED]');
+    // Bearer tokens, including standard-base64 chars (+ / =).
+    .replace(/Bearer\s+[A-Za-z0-9._+/=-]{20,}/g, 'Bearer [REDACTED]')
+    // JWTs (access tokens), signature may contain / and +.
+    .replace(/eyJ[A-Za-z0-9._+/=-]{20,}/g, '[TOKEN_REDACTED]');
 }
 
 /**
  * Prepare final message for Telegram.
+ * Pass a smaller `limit` when a prefix will be prepended to each chunk —
+ * Telegram hard-rejects payloads over 4096 chars.
  */
-export function splitForTelegram(text: string): string[] {
+export function splitForTelegram(text: string, limit: number = MAX_TELEGRAM_LENGTH): string[] {
   const sanitized = sanitizeOutput(text);
-  if (sanitized.length <= MAX_TELEGRAM_LENGTH) return [sanitized];
+  if (sanitized.length <= limit) return [sanitized];
 
   const chunks: string[] = [];
   let remaining = sanitized;
 
-  while (remaining.length > MAX_TELEGRAM_LENGTH) {
-    const slice = remaining.slice(0, MAX_TELEGRAM_LENGTH);
+  while (remaining.length > limit) {
+    const slice = remaining.slice(0, limit);
     let cut = slice.lastIndexOf('\n');
-    if (cut < Math.floor(MAX_TELEGRAM_LENGTH * 0.6)) {
+    if (cut < Math.floor(limit * 0.6)) {
       const space = slice.lastIndexOf(' ');
-      if (space > Math.floor(MAX_TELEGRAM_LENGTH * 0.6)) {
+      if (space > Math.floor(limit * 0.6)) {
         cut = space;
       } else {
         cut = -1;
       }
     }
-    if (cut === -1) cut = MAX_TELEGRAM_LENGTH;
+    if (cut === -1) cut = limit;
 
     chunks.push(remaining.slice(0, cut));
     let nextStart = cut;

@@ -3,11 +3,11 @@
  * format it for AI context, and persist to USER.md.
  */
 
-import { readFile, writeFile, access } from 'node:fs/promises';
+import { readFile, access } from 'node:fs/promises';
 import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from './esi-client.js';
 import type { UserContext } from '../auth/user-resolver.js';
-import { resolveUserProfilePath } from './user-profile-storage.js';
+import { resolveUserProfilePath, writeUserProfileAtomic } from './user-profile-storage.js';
 import { getLinkedCharacter } from './sso.js';
 
 // ---------------------------------------------------------------------------
@@ -140,7 +140,12 @@ async function persistActiveFitting(db: Db, ctx: UserContext, fittingText: strin
 
   let content = await readFile(path, 'utf-8');
 
-  const newSection = `${SECTION_MARKER}\n\`\`\`\n${fittingText}\n\`\`\``;
+  // Neutralize any line that would look like a Markdown section heading inside
+  // the fenced block — otherwise a fitting line like "## Wallet" corrupts the
+  // section-boundary search on the next re-save. A zero-width space before the
+  // '#' is invisible but breaks the '\n## ' boundary match.
+  const safeFitting = fittingText.replace(/^(\s*)#/gm, '$1\u200B#');
+  const newSection = `${SECTION_MARKER}\n\`\`\`\n${safeFitting}\n\`\`\``;
 
   // Replace existing section or append before ## Wallet
   const sectionStart = content.indexOf(SECTION_MARKER);
@@ -162,7 +167,7 @@ async function persistActiveFitting(db: Db, ctx: UserContext, fittingText: strin
     }
   }
 
-  await writeFile(path, content);
+  await writeUserProfileAtomic(path, content);
   console.log('[active-fitting] persisted to USER.md');
 }
 

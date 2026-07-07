@@ -51,6 +51,18 @@ export function updatePlan(db: Db, requestId: string, goal: string, steps: PlanS
 }
 
 /**
+ * Delete plans (and their steps) older than the retention window. Each request
+ * mints a fresh request_id, so plans/plan_steps otherwise grow without bound.
+ */
+export function prunePlans(db: Db, retentionDays = 7): number {
+  const steps = db.prepare(
+    "DELETE FROM plan_steps WHERE request_id IN (SELECT request_id FROM plans WHERE created_at < datetime('now', ?))",
+  ).run(`-${retentionDays} days`);
+  db.prepare("DELETE FROM plans WHERE created_at < datetime('now', ?)").run(`-${retentionDays} days`);
+  return steps.changes;
+}
+
+/**
  * Get existing plan for a request.
  */
 export function getPlan(db: Db, requestId: string): Plan | null {

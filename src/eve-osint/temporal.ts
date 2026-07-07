@@ -122,13 +122,15 @@ function estimateTimezone(sleepWindow: {
   if (offset > 12) offset -= 24;
   offset = Math.round(offset);
 
+  // Narrower ranges first — otherwise EU (0–3) shadows RU (3–5) and AU (8–11)
+  // shadows CN/KR (8–9), making those labels unreachable.
   let name: string;
-  if (offset >= 0 && offset <= 3) name = 'EU';
-  else if (offset >= -5 && offset <= -4) name = 'US East';
+  if (offset >= -5 && offset <= -4) name = 'US East';
   else if (offset >= -8 && offset <= -7) name = 'US West';
-  else if (offset >= 8 && offset <= 11) name = 'AU';
-  else if (offset >= 3 && offset <= 5) name = 'RU';
   else if (offset >= 8 && offset <= 9) name = 'CN/KR';
+  else if (offset >= 4 && offset <= 5) name = 'RU';
+  else if (offset >= 0 && offset <= 3) name = 'EU';
+  else if (offset >= 10 && offset <= 11) name = 'AU';
   else name = `UTC${offset >= 0 ? '+' : ''}${offset}`;
 
   return { name, utc_offset: offset };

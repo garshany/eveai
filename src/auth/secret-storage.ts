@@ -70,7 +70,9 @@ export function matchesOpaqueToken(storedValue: string, rawToken: string, purpos
   if (storedValue.startsWith(`${HASH_PREFIX}:`)) {
     return safeEqualText(storedValue, protectOpaqueToken(rawToken, purpose));
   }
-  return storedValue === rawToken;
+  // Legacy plaintext rows: still compare in constant time to avoid a timing
+  // side channel that leaks token bytes.
+  return safeEqualText(storedValue, rawToken);
 }
 
 export function encryptStoredSecret(secret: string, purpose: string): string {

@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { config } from '../config.js';
 import type { NativeFunctionTool, NativeNamespaceTool } from '../agent/native-responses.js';
@@ -119,13 +119,18 @@ export const BULK_FILTER_OPERATIONS: Record<string, { filterKey: string; descrip
   get_sovereignty_map:        { filterKey: 'system_id',       description: 'Filter by system_id (array of integers). Returns sovereignty holder (alliance/corp/faction).' },
 };
 
+// Compared against parameter.name.toLowerCase(), so header params keep their
+// hyphenated form (If-None-Match -> if-none-match). Underscore variants are
+// kept too for any snake_case query params.
 const HIDDEN_PARAMS = new Set([
   'datasource',
   'token',
   'user_agent',
   'if_none_match',
+  'if-none-match',
   'language',
   'accept_language',
+  'accept-language',
   'page',
 ]);
 
@@ -133,7 +138,12 @@ let catalogPromise: Promise<Map<string, EsiOperationMeta>> | null = null;
 
 export async function loadEsiCatalog(): Promise<Map<string, EsiOperationMeta>> {
   if (!catalogPromise) {
-    catalogPromise = loadEsiCatalogInternal();
+    // Don't memoize a rejected promise — a transient load failure would
+    // otherwise wedge every later tool-call path for the whole process.
+    catalogPromise = loadEsiCatalogInternal().catch((err) => {
+      catalogPromise = null;
+      throw err;
+    });
   }
   return catalogPromise;
 }
@@ -259,18 +269,31 @@ async function loadSwaggerSpec(): Promise<SwaggerSpec> {
     }, config.esi.requestTimeoutMs);
     if (res.ok) {
       const json = await res.json() as SwaggerSpec;
-      await writeCache(cachePath, JSON.stringify(json));
-      return json;
+      // Only cache/return a spec that actually has paths — a valid-but-empty
+      // JSON (error page, {}) would otherwise overwrite the good cache and
+      // silently strip every ESI tool from the model.
+      if (isUsableSpec(json)) {
+        await writeCache(cachePath, JSON.stringify(json));
+        return json;
+      }
     }
   } catch {
     // fall back to local cache
   }
 
   try {
-    return JSON.parse(await readFile(cachePath, 'utf-8')) as SwaggerSpec;
-  } catch {
-    throw new Error(`ESI swagger cache is missing: ${cachePath}`);
+    const cached = JSON.parse(await readFile(cachePath, 'utf-8')) as SwaggerSpec;
+    if (!isUsableSpec(cached)) {
+      throw new Error('cached ESI swagger spec has no paths');
+    }
+    return cached;
+  } catch (err) {
+    throw new Error(`ESI swagger spec unavailable (network + cache): ${(err as Error).message}`);
   }
+}
+
+function isUsableSpec(spec: SwaggerSpec | null | undefined): spec is SwaggerSpec {
+  return Boolean(spec && spec.paths && typeof spec.paths === 'object' && Object.keys(spec.paths).length > 0);
 }
 
 function isTestEnvironment(): boolean {
@@ -279,7 +302,11 @@ function isTestEnvironment(): boolean {
 
 async function writeCache(path: string, data: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, data);
+  // Atomic write: a crash or concurrent boot mid-write must not leave a
+  // truncated cache that then fails to parse on the next startup.
+  const tmp = `${path}.tmp-${process.pid}`;
+  await writeFile(tmp, data);
+  await rename(tmp, path);
 }
 
 function resolveParameter(
@@ -356,15 +383,18 @@ function extractResponseFieldNames(operation: SwaggerOperation): string[] | null
 
 function buildScalarSchema(parameter: SwaggerParameter, required: boolean): Record<string, unknown> {
   const baseType = normalizeParameterType(parameter.type ?? 'string');
+  // Optional params are nullable (strict mode requires every key present, so
+  // "not set" is expressed as null). Arrays get null too for consistency.
+  const nullable = !required;
   const schema: Record<string, unknown> = {
-    type: baseType === 'array'
-      ? 'array'
-      : required
-        ? baseType
-        : [baseType, 'null'],
+    type: nullable ? [baseType, 'null'] : baseType,
   };
   if (parameter.description) schema.description = parameter.description;
-  if (Array.isArray(parameter.enum) && parameter.enum.length > 0) schema.enum = parameter.enum;
+  if (Array.isArray(parameter.enum) && parameter.enum.length > 0) {
+    // When the type permits null, null must be a valid enum value too — else
+    // the model can neither pass null nor omit the key under strict mode.
+    schema.enum = nullable ? [...parameter.enum, null] : parameter.enum;
+  }
   if (baseType === 'array') {
     schema.items = buildArrayItems(parameter.items);
   }

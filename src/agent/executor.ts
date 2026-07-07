@@ -401,6 +401,11 @@ async function runNativeAgentLoop(
   let pendingItems: NativeInputItem[] = useServerResponseState
     ? continuation.items
     : buildSmartContext(db, threadId);
+  // The Responses API rejects an empty input without previous_response_id.
+  // History can be empty on a brand-new thread; fall back to the goal itself.
+  if (pendingItems.length === 0 && !continuation.previousResponseId) {
+    pendingItems = [toNativeMessage(goal)];
+  }
   let previousResponseId: string | null = useServerResponseState
     ? continuation.previousResponseId
     : null;
@@ -443,7 +448,6 @@ async function runNativeAgentLoop(
         parallelToolCalls: true,
         truncation: 'auto',
         contextManagement,
-        chatId,
         reasoningEffort,
       });
     } catch (error) {
@@ -510,10 +514,16 @@ async function runNativeAgentLoop(
           await runMidTurnCompact(db, threadId);
           previousResponseId = null;
           pendingItems = buildSmartContext(db, threadId);
+          // The summary only covers user/assistant history — re-inject the
+          // freshest tool results so this turn's collected data survives.
+          const toolSummary = buildRecentToolSummaryMessage(db, threadId);
+          if (toolSummary) {
+            pendingItems.push(toNativeAssistantMessage(toolSummary));
+          }
           pendingItems.push({
             type: 'message',
             role: 'user',
-            content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку выше. Если нужные данные уже есть в сводке — используй их, не вызывай tools повторно.' }],
+            content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку и восстановленные tool-результаты выше. Если нужные данные уже есть — используй их, не вызывай tools повторно.' }],
           } as NativeInputItem);
           continue;
         } catch (compactError) {

@@ -31,26 +31,30 @@ export const config = {
     secretKey: optional('AUTH_SECRET_KEY', ''),
   },
   telegram: {
-    botToken: required('TELEGRAM_BOT_TOKEN'),
-    botUsername: optional('TELEGRAM_BOT_USERNAME', ''),
+    botToken: optional('TELEGRAM_BOT_TOKEN', ''),
     allowedUserId: optionalInt('ALLOWED_TELEGRAM_USER_ID', 0),
     requestWindowMs: optionalInt('TELEGRAM_REQUEST_WINDOW_MS', 60000),
     maxRequestsPerWindow: optionalInt('TELEGRAM_MAX_REQUESTS_PER_WINDOW', 6),
     maxActiveRequestsGlobal: optionalInt('TELEGRAM_MAX_ACTIVE_REQUESTS_GLOBAL', 24),
   },
+  discord: {
+    botToken: optional('DISCORD_BOT_TOKEN', ''),
+    // Discord user id (snowflake) allowlist. Empty = allow any user in DMs.
+    allowedUserId: optional('ALLOWED_DISCORD_USER_ID', ''),
+  },
   openai: {
     apiKey: required('OPENAI_API_KEY'),
     model: optional('OPENAI_MODEL', 'gpt-5.5'),
-    baseUrl: optional('OPENAI_BASE_URL', ''),
-    apiMode: optional('OPENAI_API_MODE', 'native_responses'),
+    baseUrl: optional('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
     responseStateMode: optional('OPENAI_RESPONSE_STATE_MODE', 'stateless'),
     reasoningEffort: optional('OPENAI_REASONING_EFFORT', 'medium'),
     textVerbosity: optional('OPENAI_TEXT_VERBOSITY', 'low'),
     responseLanguage: optional('OPENAI_RESPONSE_LANGUAGE', 'Russian'),
     maxOutputTokens: optionalInt('OPENAI_MAX_OUTPUT_TOKENS', 0),
-    store: optional('OPENAI_STORE', 'true') === 'true',
     compactThreshold: optionalInt('OPENAI_COMPACT_THRESHOLD', 0),
-    modelContextWindow: optionalInt('OPENAI_MODEL_CONTEXT_WINDOW', 200_000),
+    // Floor the window so a misconfigured 0/negative value can't make
+    // autoCompactLimit 0 and trigger compaction on every single turn.
+    modelContextWindow: Math.max(8_000, optionalInt('OPENAI_MODEL_CONTEXT_WINDOW', 200_000)),
   },
   eve: {
     clientId: required('EVE_CLIENT_ID'),
@@ -64,10 +68,10 @@ export const config = {
     catalogCachePath: optional('ESI_CATALOG_CACHE_PATH', './data/cache/esi-swagger.json'),
     compatibilityDate: optional('ESI_COMPATIBILITY_DATE', '2026-03-15'),
     userAgent: optional('ESI_USER_AGENT', 'EVEAI/2.1 (+https://github.com/example/eveai; contact=operator@example.com)'),
-    maxPages: optionalInt('ESI_MAX_PAGES', 5),
-    backoffMaxSeconds: optionalInt('ESI_BACKOFF_MAX_SECONDS', 10),
+    maxPages: Math.max(1, optionalInt('ESI_MAX_PAGES', 5)),
+    backoffMaxSeconds: Math.max(1, optionalInt('ESI_BACKOFF_MAX_SECONDS', 10)),
     requestTimeoutMs: optionalInt('ESI_REQUEST_TIMEOUT_MS', 8000),
-    retryMaxAttempts: optionalInt('ESI_RETRY_MAX_ATTEMPTS', 3),
+    retryMaxAttempts: Math.max(1, optionalInt('ESI_RETRY_MAX_ATTEMPTS', 3)),
   },
   server: {
     port: optionalInt('PORT', 3000),
@@ -75,8 +79,6 @@ export const config = {
   },
   web: {
     baseUrl: optional('WEB_BASE_URL', 'http://localhost:3000'),
-    sessionTtlHours: optionalInt('WEB_SESSION_TTL_HOURS', 720),
-    handoffTtlSeconds: optionalInt('TG_HANDOFF_TTL_SECONDS', 300),
   },
   db: {
     path: optional('DB_PATH', './data/eve-agent.db'),

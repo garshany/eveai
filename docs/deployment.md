@@ -8,10 +8,10 @@ Recommended baseline:
 
 - one Node.js process running `dist/app.js`
 - SQLite database on local disk
-- Telegram grammY long polling, not webhooks
-- Fastify bound to localhost or a private interface unless you intentionally expose the dashboard
-- optional reverse proxy such as Caddy, nginx, or a platform load balancer for HTTPS
-- no Redis, Postgres, background workers, or queue system
+- Telegram grammY long polling (not webhooks) and/or a Discord gateway bot
+- Fastify bound to localhost or a private interface; only the EVE SSO callback needs to be reachable from a browser
+- optional reverse proxy such as Caddy, nginx, or a platform load balancer for HTTPS on the SSO callback
+- no Redis, Postgres, background workers, queue system, or web frontend
 
 ## Build
 
@@ -29,7 +29,8 @@ npm start
 At minimum configure:
 
 ```env
-TELEGRAM_BOT_TOKEN=...
+TELEGRAM_BOT_TOKEN=...        # and/or DISCORD_BOT_TOKEN — at least one is required
+DISCORD_BOT_TOKEN=...
 OPENAI_API_KEY=...
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-5.5
@@ -98,7 +99,7 @@ OPENAI_RESPONSE_STATE_MODE=server
 
 ## Reverse Proxy
 
-A reverse proxy is optional but recommended for HTTPS dashboard access and secure cookies.
+A reverse proxy is optional but recommended for serving the EVE SSO callback over HTTPS.
 
 Generic Caddy example:
 

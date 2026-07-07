@@ -100,7 +100,6 @@ export async function createNativeResponse(input: {
   truncation?: string;
   contextManagement?: Array<{ type: string; compact_threshold: number }>;
   textVerbosity?: string;
-  chatId?: number;
   reasoningEffort?: string;
   maxOutputTokens?: number;
 }): Promise<NativeResponseResult> {
@@ -126,8 +125,6 @@ export async function createNativeResponse(input: {
       include: [],
     };
   // Only send optional parameters when explicitly configured.
-  // ChatGPT proxy rejects unknown parameters (user, max_output_tokens,
-  // prompt_cache_retention, reasoning.summary) with a 400 error.
   if (maxTokens > 0) bodyPayload.max_output_tokens = maxTokens;
   if (input.truncation) {
     bodyPayload.truncation = input.truncation;
@@ -142,6 +139,7 @@ export async function createNativeResponse(input: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RESPONSES_TIMEOUT_MS);
   let response: Response;
+  let rawText: string;
   try {
     response = await fetch(`${baseUrl}/responses`, {
       method: 'POST',
@@ -149,12 +147,14 @@ export async function createNativeResponse(input: {
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${config.openai.apiKey}`,
-        ...(input.chatId ? { 'x-chat-id': String(input.chatId) } : {}),
       },
       body: bodyJson,
     });
+    // Keep the deadline active across the streamed body read: with stream:true,
+    // fetch resolves on headers, so a stalled body would otherwise hang forever.
+    rawText = await response.text();
   } catch (error) {
-    if ((error as Error).name === 'AbortError') {
+    if ((error as Error).name === 'AbortError' || (error as Error).name === 'TimeoutError') {
       throw new Error(`Responses API timed out after ${Math.round(RESPONSES_TIMEOUT_MS / 1000)}s`);
     }
     throw error;
@@ -162,7 +162,6 @@ export async function createNativeResponse(input: {
     clearTimeout(timer);
   }
 
-  const rawText = await response.text();
   if (!response.ok) {
     const detail = extractErrorMessage(rawText) ?? `HTTP ${response.status}`;
     throw new Error(detail);
@@ -187,9 +186,18 @@ export async function createNativeResponse(input: {
   const outputTextFromStream = extractStreamedOutputText(events);
   const outputText = completedPayload?.output_text
     ?? (outputTextFromStream || outputTextFromItems);
+  // A stream that ends without a terminal event and produced nothing usable was
+  // truncated mid-flight — surface it as a (retriable) error instead of a
+  // silent empty completion that looks like a deliberate blank answer.
+  const sawTerminalEvent = events.some(
+    (event) => event.event === 'response.completed' || event.event === 'response.done',
+  );
+  const incompleteStream = !sawTerminalEvent
+    && output.length === 0
+    && !outputText.trim();
   const errorMessage = completedPayload?.error?.message
     ?? findStreamError(events)
-    ?? null;
+    ?? (incompleteStream ? 'Incomplete response stream (no terminal event received)' : null);
 
   const toolSearchPaths = extractToolSearchPaths(output);
 

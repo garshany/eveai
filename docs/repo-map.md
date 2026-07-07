@@ -1,7 +1,7 @@
 # Repo Map
 
 Status: active
-Verified against code: 2026-03-25
+Verified against code: 2026-07-06
 
 This file is the fast file-and-domain map for the repository.
 
@@ -21,7 +21,7 @@ Use it when you need to find the right file or folder before reading implementat
 
 ### `src/agent/`
 
-- `native-responses.ts`: OpenAI-compatible runtime loop, including SSE function-call reconstruction from `response.function_call_arguments.done`
+- `native-responses.ts`: official OpenAI Responses API loop, including SSE function-call reconstruction from `response.function_call_arguments.done`
 - `executor.ts`: tool execution, continuation, persistence
 - `planner.ts` / `replanner.ts`: plan generation and adjustment
 - `compact.ts`: history reduction and compaction
@@ -32,12 +32,17 @@ Use it when you need to find the right file or folder before reading implementat
 
 ### `src/auth/`
 
-- `telegram-login.ts`: Telegram login verification
-- `auth-request.ts`: one-time auth state storage
-- `session.ts`: web session cookie and storage logic
-- `handoff.ts`: Telegram-to-web handoff token flow
-- `user-resolver.ts`: user/chat identity resolution
+- `auth-request.ts`: one-time EVE SSO state token storage
+- `user-resolver.ts`: user/chat identity resolution (Telegram + Discord + outbound chat lookup)
 - `secret-storage.ts`: encrypted secret persistence
+
+### `src/chat/`
+
+- `shared.ts`: platform-neutral chat pipeline — session rows, thread resolution, in-flight dedupe, rate limiting, agent turn, error normalization
+
+### `src/messaging/`
+
+- `outbound.ts`: platform-routing notification dispatcher (positive chat id -> Telegram, negative -> Discord)
 
 ### `src/db/`
 
@@ -75,30 +80,27 @@ PvP killboard integration (EVE-KILL, replaces zKillboard). See `docs/eve-kill.md
 - `intel.ts`: kill_stats/battles/entity/lookup/spatial/prices handlers
 - `query.ts`: MongoDB filter builder and sanitizer
 - `types.ts`: shared TypeScript types
-- `ws.ts`: WebSocket client for real-time killmail streaming
+- `zkb-ws.ts`: zKillboard R2Z2 poller for real-time kill alerts
 
 ### `src/telegram/`
 
 - `bot.ts`: grammY bot bootstrap
-- `handlers.ts`: commands, request handling, agent entrypoint
+- `handlers.ts`: commands and agent entrypoint (delegates to `src/chat/shared.ts`)
 - `access.ts`: Telegram access checks
+- `formatting.ts`: HTML parse-mode detection
+
+### `src/discord/`
+
+- `bot.ts`: discord.js client, slash commands, DM message handling
+- `session.ts`: snowflake identity mapping and negative chat-key allocation
+- `format.ts`: HTML -> Discord markdown conversion and 2000-char chunking
 
 ### `src/web/`
 
-- `server.ts`: Fastify server assembly
-- `auth-routes.ts`: Telegram login, EVE callback, logout, handoff
-- `api-routes.ts`: authenticated dashboard APIs
-- `frontend.ts`: built frontend shell delivery
-- `health.ts`: runtime/dependency health endpoint
-- `middleware.ts`, `security.ts`: request middleware and security headers
-
-## Browser Surface
-
-- `client/src/app.tsx`: dashboard and landing app
-- `client/src/main.tsx`: browser bootstrap
-- `client/src/styles.css`: styling system
-- `vite.config.ts`: frontend build config
-- `tsconfig.client.json`: frontend TypeScript config
+- `server.ts`: Fastify server assembly (SSO callback + health only)
+- `auth-routes.ts`: EVE SSO OAuth callback and `/callback` alias
+- `health.ts`: runtime/dependency health endpoint for both bot platforms
+- `security.ts`: security headers
 
 ## Tests
 

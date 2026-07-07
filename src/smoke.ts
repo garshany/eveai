@@ -9,13 +9,14 @@ interface SmokeCheck {
 }
 
 const REQUIRED_ENV_VARS = [
-  'TELEGRAM_BOT_TOKEN',
   'OPENAI_API_KEY',
   'EVE_CLIENT_ID',
   'EVE_CLIENT_SECRET',
   'DEFAULT_MARKET_REGION_ID',
   'DEFAULT_MARKET_REGION_NAME',
 ] as const;
+
+const BOT_TOKEN_ENV_VARS = ['TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN'] as const;
 
 const REQUEST_TIMEOUT_MS = 5_000;
 const MODEL_REQUEST_TIMEOUT_MS = 30_000;
@@ -24,19 +25,6 @@ export async function runSmokeChecks(): Promise<{ ok: boolean; checks: SmokeChec
   const checks: SmokeCheck[] = [];
 
   checks.push(checkRequiredEnv());
-
-  const proxyBaseUrl = normalizeBaseUrl(process.env.OPENAI_BASE_URL);
-  if (proxyBaseUrl && isLocalOpenAiProxy(proxyBaseUrl)) {
-    checks.push(await checkHttpOk('proxy_health', deriveProxyHealthUrl(proxyBaseUrl)));
-    checks.push(await checkHttpOk('proxy_models', deriveProxyModelsUrl(proxyBaseUrl)));
-  } else {
-    checks.push({
-      name: 'proxy_health',
-      status: 'skip',
-      detail: 'OPENAI_BASE_URL is not set to a local proxy URL',
-    });
-  }
-
   checks.push(await checkOpenAiResponses());
   checks.push(await checkAppHealth(resolveAppBaseUrl()));
 
@@ -48,28 +36,6 @@ export async function runSmokeChecks(): Promise<{ ok: boolean; checks: SmokeChec
 
 export function normalizeBaseUrl(value: string | undefined): string {
   return (value ?? '').trim().replace(/\/+$/, '');
-}
-
-export function deriveProxyHealthUrl(baseUrl: string): string {
-  const url = new URL(baseUrl);
-  const normalizedPath = url.pathname.replace(/\/+$/, '');
-  url.pathname = normalizedPath.endsWith('/v1')
-    ? `${normalizedPath.slice(0, -3) || ''}/health`
-    : `${normalizedPath || ''}/health`;
-  url.search = '';
-  url.hash = '';
-  return url.toString();
-}
-
-export function deriveProxyModelsUrl(baseUrl: string): string {
-  const url = new URL(baseUrl);
-  const normalizedPath = url.pathname.replace(/\/+$/, '');
-  url.pathname = normalizedPath.endsWith('/v1')
-    ? `${normalizedPath}/models`
-    : `${normalizedPath || ''}/v1/models`;
-  url.search = '';
-  url.hash = '';
-  return url.toString();
 }
 
 export function resolveAppBaseUrl(): string {
@@ -84,15 +50,6 @@ export function resolveAppBaseUrl(): string {
   return `http://${safeHost}:${port}`;
 }
 
-function isLocalOpenAiProxy(baseUrl: string): boolean {
-  try {
-    const url = new URL(baseUrl);
-    return ['127.0.0.1', 'localhost', '0.0.0.0'].includes(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
 function checkRequiredEnv(): SmokeCheck {
   const missing = REQUIRED_ENV_VARS.filter((name) => !process.env[name] || !process.env[name]?.trim());
   if (missing.length > 0) {
@@ -103,10 +60,19 @@ function checkRequiredEnv(): SmokeCheck {
     };
   }
 
+  const hasBotToken = BOT_TOKEN_ENV_VARS.some((name) => Boolean(process.env[name]?.trim()));
+  if (!hasBotToken) {
+    return {
+      name: 'env',
+      status: 'fail',
+      detail: `At least one bot token is required: ${BOT_TOKEN_ENV_VARS.join(' or ')}`,
+    };
+  }
+
   return {
     name: 'env',
     status: 'ok',
-    detail: `Required env vars present (${REQUIRED_ENV_VARS.length})`,
+    detail: `Required env vars present (${REQUIRED_ENV_VARS.length} + bot token)`,
   };
 }
 
@@ -147,15 +113,6 @@ async function checkAppHealth(appBaseUrl: string): Promise<SmokeCheck> {
     name: 'app_health',
     status: 'ok',
     detail: `App health OK at ${url}`,
-  };
-}
-
-async function checkHttpOk(name: string, url: string): Promise<SmokeCheck> {
-  const result = await fetchWithTimeout(url);
-  return {
-    name,
-    status: result.ok ? 'ok' : 'fail',
-    detail: result.detail,
   };
 }
 

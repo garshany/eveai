@@ -1,5 +1,5 @@
 import type { Db } from '../db/sqlite.js';
-import { resolveWebSessionUser } from './session.js';
+import { isDiscordOutboundRegistered, isTelegramOutboundRegistered } from '../messaging/outbound.js';
 
 export type UserContext = { userId: number; chatId?: number };
 
@@ -35,15 +35,35 @@ export function getOrCreateUser(
   return userId;
 }
 
-export function resolveUserFromWebSession(db: Db, sessionId: string): number | null {
-  return resolveWebSessionUser(db, sessionId);
-}
-
 export function getUserTelegramChatId(db: Db, userId: number): number | null {
   const row = db.prepare(
     'SELECT telegram_user_id FROM telegram_accounts WHERE user_id = ?',
   ).get(userId) as { telegram_user_id: number } | undefined;
   return row?.telegram_user_id ?? null;
+}
+
+/**
+ * Preferred outbound chat for user-keyed notifications: Telegram private chat
+ * when linked AND the Telegram bot is running, otherwise the most recent
+ * Discord DM lane (negative chat key) when the Discord bot is running. Never
+ * returns a chat whose platform sender is offline — the message would be
+ * silently dropped by the dispatcher.
+ */
+export function getUserOutboundChatId(db: Db, userId: number): number | null {
+  const telegramChatId = getUserTelegramChatId(db, userId);
+  if (telegramChatId && isTelegramOutboundRegistered()) return telegramChatId;
+
+  const row = db.prepare(
+    'SELECT chat_key FROM discord_sessions WHERE user_id = ? ORDER BY last_seen_at DESC LIMIT 1',
+  ).get(userId) as { chat_key: number } | undefined;
+  if (row?.chat_key && isDiscordOutboundRegistered()) return row.chat_key;
+
+  // No live platform sender (e.g. unit tests) — fall back to whichever chat
+  // exists so callers can still resolve an address.
+  if (!isTelegramOutboundRegistered() && !isDiscordOutboundRegistered()) {
+    return telegramChatId ?? row?.chat_key ?? null;
+  }
+  return null;
 }
 
 export function getUserDisplayName(db: Db, userId: number): string | null {
