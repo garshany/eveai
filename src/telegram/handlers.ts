@@ -3,12 +3,12 @@ import type { Db } from '../db/sqlite.js';
 import { randomUUID } from 'node:crypto';
 import { splitForTelegram } from '../agent/finalizer.js';
 import { getLinkedCharacter, listLinkedCharacters, setActiveCharacter } from '../eve/sso.js';
+import { buildEveSsoSetupGuide, createEveLoginLink, isEveSsoConfigured } from '../eve/eve-login.js';
 import { callEsiOperation } from '../eve/esi-client.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
 import { getOrCreateUser, type UserContext } from '../auth/user-resolver.js';
 import {
   MAX_INPUT_LENGTH,
-  createEveLoginLink,
   clearChatConversation,
   clearInFlightRequest,
   ensureChatSessionRow,
@@ -70,6 +70,11 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     ensureSession(db, ctx);
     const userCtx = buildUserContext(db, ctx);
     if (!ctx.chat || !userCtx) return;
+
+    if (!isEveSsoConfigured()) {
+      await ctx.reply(buildEveSsoSetupGuide());
+      return;
+    }
 
     const url = createEveLoginLink(db, userCtx.userId, ctx.chat.id);
     await ctx.reply(`Открой ссылку для входа в EVE:\n${url}\n\nПосле привязки используй /characters для переключения.`);

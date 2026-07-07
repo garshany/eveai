@@ -1,3 +1,4 @@
+import { config } from '../config.js';
 import { loadEsiCatalog, listEsiNamespaces } from '../eve/esi-catalog.js';
 import { buildEveKillNamespace, isEveKillToolName } from '../eve-kill/tools.js';
 import { buildEveScoutNamespace, isEveScoutToolName } from '../eve/eve-scout-tools.js';
@@ -5,6 +6,7 @@ import type { NativeFunctionTool, NativeTool } from './native-responses.js';
 import { SDE_SCHEMA } from './tools/sde-schema.js';
 
 const SDE_SQL_TOOL_NAME = 'sde_sql';
+const WEB_SEARCH_TOOL_NAME = 'web_search';
 
 export { SDE_SCHEMA };
 
@@ -379,9 +381,16 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
     );
   }
 
+  // Only offer web_search when a Tavily key is configured. Without it the tool
+  // is weak (EVE-Uni wiki only) and the model wastes turns on it instead of
+  // answering game-data questions from the local SDE / live ESI.
+  const alwaysOn = config.tavily?.apiKey
+    ? ALWAYS_ON_FUNCTION_TOOLS
+    : ALWAYS_ON_FUNCTION_TOOLS.filter((tool) => tool.name !== WEB_SEARCH_TOOL_NAME);
+
   return [
     { type: 'tool_search' },
-    ...ALWAYS_ON_FUNCTION_TOOLS,
+    ...alwaysOn,
     ROUTE_MONITOR_TOOL,
     HEARTBEAT_CONFIG_TOOL,
     BATCH_MARKET_TOOL,

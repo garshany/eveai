@@ -539,8 +539,29 @@ async function main() {
     `INSERT OR REPLACE INTO sde_meta (build_number, loaded_at) VALUES (?, datetime('now'))`
   ).run('manual-' + new Date().toISOString().slice(0, 10));
 
+  // Fail loudly if a critical table is empty. These power the most common
+  // queries (item/price lookups and route planning); a silent partial load
+  // otherwise looks "done" but leaves the agent unable to answer basic
+  // questions. Exit non-zero so `npm run setup` surfaces the problem.
+  const CRITICAL_TABLES = ['sde_types', 'sde_systems', 'sde_groups', 'sde_regions'];
+  const empty = CRITICAL_TABLES.filter((table) => {
+    try {
+      return (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n === 0;
+    } catch {
+      return true;
+    }
+  });
+
   db.close();
   console.log(`[sde-loader] Done. Total: ${totalRecords} records loaded.`);
+
+  if (empty.length > 0) {
+    console.error(
+      `[sde-loader] ERROR: critical tables empty after load: ${empty.join(', ')}. ` +
+        'Check that the matching *.jsonl files downloaded correctly, then re-run `npm run setup`.',
+    );
+    process.exit(1);
+  }
 }
 
 // Only run the full load when executed directly (npm run sde:load) — importing

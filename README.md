@@ -112,6 +112,36 @@ Model defaults:
 - `OPENAI_TEXT_VERBOSITY=low` keeps chat answers compact; set `medium` if your community wants longer explanations.
 - `OPENAI_RESPONSE_LANGUAGE=Russian` sets the default final-answer language. Aliases like `ru`, `русский`, `en`, `English`, and custom language names are accepted; an explicit user request can override it per answer.
 
+## EVE SSO Setup (optional — enables private character data)
+
+Public data (SDE lookups, market prices, route planning, killboards, OSINT)
+works with no EVE credentials. To let users link a character with `/login` and
+unlock **private ESI** (skills, assets, wallet, location, mail, …), register a
+free EVE Developer application (~5 minutes):
+
+1. Open <https://developers.eveonline.com/applications/create> and sign in with
+   your EVE account.
+2. **Connection Type:** choose *Authentication & API Access*, then select the
+   scopes you want to support (or all of them for full parity).
+3. **Callback URL:** set it to *exactly* your `EVE_CALLBACK_URL`. For local use:
+
+   ```text
+   http://localhost:3000/auth/eve/callback
+   ```
+
+4. Copy the **Client ID** and **Secret Key** into `.env`:
+
+   ```env
+   EVE_CLIENT_ID=your_client_id
+   EVE_CLIENT_SECRET=your_secret_key
+   ```
+
+5. Restart. `/login` now returns a working SSO link in the CLI and both bots.
+
+Until real credentials are set, `/login` (CLI), `/eve_login` (Discord), and the
+login command (Telegram) reply with this same setup guide instead of a dead
+link, so the app stays usable in public-data-only mode.
+
 ## Terminal CLI (no bot token needed)
 
 Talk to the agent directly in your terminal — a third platform adapter beside

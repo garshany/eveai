@@ -21,6 +21,7 @@ import {
   runAgentTurn,
 } from '../chat/shared.js';
 import { getLinkedCharacter, listLinkedCharacters } from '../eve/sso.js';
+import { buildEveSsoSetupGuide, isEveSsoConfigured } from '../eve/eve-login.js';
 import { registerTelegramOutbound } from '../messaging/outbound.js';
 import { htmlToDiscordMarkdown } from '../discord/format.js';
 import { colorize } from '../observability/logger.js';
@@ -69,7 +70,11 @@ async function main(): Promise<void> {
   const db: Db = initDb(config.db.path);
   runMigrations(db);
 
-  const sde = safeCount(db, 'sde_systems');
+  // Check the two pillars independently: items (sde_types) power market/price
+  // lookups, universe (sde_systems) powers routes. A partial load can leave one
+  // empty while the other is full, so a single-table check would mislead.
+  const sdeTypes = safeCount(db, 'sde_types');
+  const sdeSystems = safeCount(db, 'sde_systems');
 
   // Start the HTTP server so the EVE SSO callback works for /login.
   const { createServer } = await import('../web/server.js');
@@ -78,8 +83,12 @@ async function main(): Promise<void> {
 
   // From here on, hush the app's internal debug logs for a clean prompt.
   silenceInternalLogs();
-  if (sde === 0) {
-    say(colorize('yellow', 'SDE data is empty — run `npm run setup` first for full lookups.'));
+  if (sdeTypes === 0 || sdeSystems === 0) {
+    const missing = [
+      sdeTypes === 0 ? 'items' : null,
+      sdeSystems === 0 ? 'universe' : null,
+    ].filter(Boolean).join(' & ');
+    say(colorize('yellow', `SDE ${missing} data is empty — run \`npm run setup\` for full lookups (prices, routes).`));
   }
 
   // Route any producer notifications (kill/route/heartbeat alerts) for this
@@ -160,12 +169,12 @@ async function main(): Promise<void> {
     }
 
     if (text === '/login') {
-      if (!config.eve.clientId || config.eve.clientId === 'smoke') {
-        say(colorize('yellow', 'Set EVE_CLIENT_ID / EVE_CLIENT_SECRET in .env to enable SSO.'));
+      if (!isEveSsoConfigured()) {
+        say(colorize('yellow', buildEveSsoSetupGuide()));
       } else {
         const url = createEveLoginLink(db, userId, CLI_CHAT_ID);
-        say('Open to link your character:\n' + colorize('cyan', url));
-        say(colorize('gray', 'After linking, private ESI (skills, assets, location, ...) becomes available.'));
+        say('Открой ссылку для привязки персонажа:\n' + colorize('cyan', url));
+        say(colorize('gray', 'После входа станут доступны приватные данные (скиллы, ассеты, локация, …).'));
       }
       promptLine();
       return;

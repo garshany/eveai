@@ -41,6 +41,7 @@ import {
   resolveThreadForChat,
   runAgentTurn,
 } from '../chat/shared.js';
+import { buildEveSsoSetupGuide, isEveSsoConfigured } from '../eve/eve-login.js';
 import {
   ensureDiscordSession,
   getDiscordChannelId,
@@ -270,6 +271,10 @@ async function handleSlashCommand(db: Db, interaction: ChatInputCommandInteracti
       await interaction.reply(COMMANDS_TEXT);
       return;
     case 'eve_login': {
+      if (!isEveSsoConfigured()) {
+        await interaction.reply(buildEveSsoSetupGuide());
+        return;
+      }
       // Short link to the app's redirect endpoint — the full SSO URL (~2.1KB)
       // exceeds Discord's 2000-char message and 512-char button limits.
       const url = createEveLoginLink(db, userCtx.userId, chatKey);
