@@ -45,22 +45,22 @@
     "smoke:eve-tool": "tsx scripts/eve-tool-smoke.ts"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.0",
+    "better-sqlite3": "^12.11.1",
     "croner": "^10.0.1",
     "discord.js": "^14.26.4",
     "dotenv": "^16.4.0",
     "fastify": "^5.2.0",
     "grammy": "^1.35.0",
-    "https-proxy-agent": "^8.0.0",
+    "https-proxy-agent": "^9.1.0",
     "jose": "^6.2.1",
-    "socks-proxy-agent": "^8.0.5"
+    "socks-proxy-agent": "^10.1.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^22.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
-    "eslint": "^9.0.0",
+    "eslint": "^10.6.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
