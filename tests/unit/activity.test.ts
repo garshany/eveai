@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  activityWantsTokens,
   getActivitySink,
   reportActivity,
   runWithActivitySink,
@@ -9,15 +8,14 @@ import {
   type AgentActivitySink,
 } from '../../src/agent/activity.js';
 
-function collectingSink(wantsTokens = true): { sink: AgentActivitySink; events: AgentActivityEvent[] } {
+function collectingSink(): { sink: AgentActivitySink; events: AgentActivityEvent[] } {
   const events: AgentActivityEvent[] = [];
-  return { sink: { wantsTokens, emit: (e) => events.push(e) }, events };
+  return { sink: { emit: (e) => events.push(e) }, events };
 }
 
 describe('agent activity sink', () => {
   it('is a no-op with no active sink', () => {
     expect(getActivitySink()).toBeUndefined();
-    expect(activityWantsTokens()).toBe(false);
     // Must not throw when nothing is listening.
     expect(() => reportActivity({ type: 'tool_start', name: 'sde_sql' })).not.toThrow();
   });
@@ -25,15 +23,15 @@ describe('agent activity sink', () => {
   it('delivers events to the sink active for the wrapped call', async () => {
     const { sink, events } = collectingSink();
     await runWithActivitySink(sink, async () => {
-      expect(activityWantsTokens()).toBe(true);
+      expect(getActivitySink()).toBe(sink);
       reportActivity({ type: 'model_turn', iteration: 0 });
       reportActivity({ type: 'tool_start', name: 'batch_market_prices', detail: '2 items' });
-      reportActivity({ type: 'token', delta: 'hi' });
+      reportActivity({ type: 'reasoning', text: 'thinking' });
     });
-    expect(events.map((e) => e.type)).toEqual(['model_turn', 'tool_start', 'token']);
+    expect(events.map((e) => e.type)).toEqual(['model_turn', 'tool_start', 'reasoning']);
     // Sink is scoped to the wrapped call only.
     expect(getActivitySink()).toBeUndefined();
-    reportActivity({ type: 'token', delta: 'leak?' });
+    reportActivity({ type: 'reasoning', text: 'leak?' });
     expect(events).toHaveLength(3);
   });
 
@@ -54,7 +52,7 @@ describe('agent activity sink', () => {
   });
 
   it('never lets a throwing sink break the turn', async () => {
-    const sink: AgentActivitySink = { wantsTokens: false, emit: () => { throw new Error('render boom'); } };
+    const sink: AgentActivitySink = { emit: () => { throw new Error('render boom'); } };
     await runWithActivitySink(sink, async () => {
       expect(() => reportActivity({ type: 'reasoning', text: 'x' })).not.toThrow();
     });

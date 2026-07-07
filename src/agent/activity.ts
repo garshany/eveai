@@ -2,9 +2,8 @@
  * Optional live-activity channel for the agent runtime.
  *
  * The interactive CLI wants to show what the agent is doing in real time —
- * which tool ("skill") is running, a one-line "thinking" note, and the answer
- * streaming in token by token. The Telegram/Discord bots do not: they reply
- * with one finished message.
+ * which tool ("skill") is running and a one-line "thinking" note. The
+ * Telegram/Discord bots do not: they reply with one finished message.
  *
  * Rather than thread an optional callback through runAgentTurn -> the executor
  * loop -> the model transport (five layers, all shared with the bots), the sink
@@ -19,12 +18,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 export type AgentActivityEvent =
   | { type: 'model_turn'; iteration: number }
   | { type: 'tool_start'; name: string; detail?: string }
-  | { type: 'reasoning'; text: string }
-  | { type: 'token'; delta: string };
+  | { type: 'reasoning'; text: string };
 
 export interface AgentActivitySink {
-  /** When true, the transport streams output-text deltas as 'token' events. */
-  wantsTokens: boolean;
   emit: (event: AgentActivityEvent) => void;
 }
 
@@ -37,11 +33,6 @@ export function runWithActivitySink<T>(sink: AgentActivitySink, fn: () => Promis
 
 export function getActivitySink(): AgentActivitySink | undefined {
   return storage.getStore();
-}
-
-/** True when the active sink wants streamed token deltas (drives the transport read path). */
-export function activityWantsTokens(): boolean {
-  return storage.getStore()?.wantsTokens ?? false;
 }
 
 /**

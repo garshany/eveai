@@ -229,6 +229,44 @@ describe('createNativeResponse request body', () => {
     expect(body?.stream).toBe(true);
   });
 
+  it('requests a reasoning summary only for a streaming top-level call with a sink', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"r","output_text":"ok","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+    const sink = { emit: () => {} };
+    const call = (streamToActivity: boolean) =>
+      createNativeResponse({ instructions: 't', items: [toNativeMessage('hi')], tools: [], reasoningEffort: 'medium', streamToActivity });
+
+    // Internal call (streamToActivity false) with a sink active: no summary, no leaked reasoning.
+    await runWithActivitySink(sink, () => call(false));
+    expect(body?.reasoning).toEqual({ effort: 'medium' });
+
+    // Top-level streaming call with a sink: summary requested.
+    await runWithActivitySink(sink, () => call(true));
+    expect(body?.reasoning).toEqual({ effort: 'medium', summary: 'auto' });
+
+    // No sink (the bots) even with streamToActivity true: unchanged request.
+    await call(true);
+    expect(body?.reasoning).toEqual({ effort: 'medium' });
+  });
+
   it('forwards prompt_cache_key to the proxy', async () => {
     let body: Record<string, unknown> | null = null;
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {

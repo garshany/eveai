@@ -482,6 +482,9 @@ async function runNativeAgentLoop(
         truncation: 'auto',
         contextManagement,
         reasoningEffort,
+        // Only this top-level loop streams to the CLI activity feed; internal
+        // model calls (compaction/OSINT/advisor) must not leak into the answer.
+        streamToActivity: true,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

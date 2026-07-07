@@ -21,6 +21,7 @@ import {
 } from '../chat/shared.js';
 import { getLinkedCharacter, listLinkedCharacters } from '../eve/sso.js';
 import { runWithActivitySink } from '../agent/activity.js';
+import { sanitizeOutput } from '../agent/finalizer.js';
 import { createActivityRenderer as buildActivityRenderer, type ActivityRenderer } from './activity-renderer.js';
 import { buildEveSsoSetupGuide, isEveSsoConfigured } from '../eve/eve-login.js';
 import { registerTelegramOutbound } from '../messaging/outbound.js';
@@ -185,6 +186,7 @@ async function main(): Promise<void> {
     rl.pause();
     busy = true;
     const activity = createActivityRenderer();
+    activity.begin(); // spin immediately — pre-loop work (profile/live-context/compaction) runs before the first model turn
     try {
       const threadId = resolveThreadForChat(db, CLI_CHAT_ID, ctx);
       const answer = await runWithActivitySink(activity.sink, () => runAgentTurn(db, threadId, ctx, text));
@@ -208,6 +210,7 @@ function createActivityRenderer(): ActivityRenderer {
     write: (text) => { process.stdout.write(text); },
     isTty: Boolean(process.stdout.isTTY),
     render: renderForTerminal,
+    sanitize: sanitizeOutput,
     colorize,
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (handle) => { clearInterval(handle); },
