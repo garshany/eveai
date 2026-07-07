@@ -148,8 +148,11 @@ async function executeBatchMarketPrices(
     type GlobalPrice = { type_id: number; average_price?: number; adjusted_price?: number };
     const globalResult = await callEsiOperation<GlobalPrice[]>(db, 'get_markets_prices', {}, ctx);
     if (globalResult.ok && Array.isArray(globalResult.data)) {
+      // Use ONLY average_price (the ESI trade average). adjusted_price is CCP's
+      // internal valuation, not a market quote — falling back to it would report a
+      // fake price for non-traded/stale items.
       const priceMap = new Map(
-        globalResult.data.map((p) => [p.type_id, p.average_price ?? p.adjusted_price] as const),
+        globalResult.data.map((p) => [p.type_id, p.average_price] as const),
       );
       for (const r of needsGlobal) {
         const avg = priceMap.get(r.type_id);

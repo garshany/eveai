@@ -9,6 +9,10 @@ describe('agent tools', () => {
     process.env.EVE_CLIENT_SECRET = 'test';
     process.env.DEFAULT_MARKET_REGION_ID = '10000002';
     process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    // web_search is gated on TAVILY_API_KEY; clear it (and reset the cached config)
+    // so this "no web_search" assertion is hermetic on a dev/CI box that has a key.
+    delete process.env.TAVILY_API_KEY;
+    vi.resetModules();
     const { buildNativeAgentTools } = await import('../../src/agent/tools.js');
 
     const tools = await buildNativeAgentTools();

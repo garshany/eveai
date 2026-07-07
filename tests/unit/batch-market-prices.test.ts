@@ -65,6 +65,23 @@ describe('batch_market_prices global-average fallback', () => {
     expect(globalCalls).toHaveLength(1);
   });
 
+  it('does not report adjusted_price as a market average (no trade average available)', async () => {
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string) => {
+      if (operation === 'get_markets_region_id_orders') return { ok: true, data: [] };
+      if (operation === 'get_markets_prices') {
+        // Item has only CCP's internal adjusted valuation, no trade average.
+        return { ok: true, data: [{ type_id: PLEX, adjusted_price: 1234567.0 }] };
+      }
+      return { ok: false, error: `unexpected op ${operation}` };
+    });
+
+    const prices = await runBatch([PLEX]);
+    expect(prices[0].sell).toBeNull();
+    expect(prices[0].buy).toBeNull();
+    // adjusted_price must NOT be surfaced as a market price.
+    expect(prices[0].global_average_price).toBeUndefined();
+  });
+
   it('uses regional order book and skips the global list when orders exist', async () => {
     callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string) => {
       if (operation === 'get_markets_region_id_orders') {

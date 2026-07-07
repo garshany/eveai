@@ -11,13 +11,27 @@ import type { Db } from '../db/sqlite.js';
 import { ALL_REQUESTED_SCOPES } from './scopes.js';
 import { createAuthRequestToken } from '../auth/auth-request.js';
 
-const PLACEHOLDER_CREDS = new Set(['', 'smoke', 'placeholder', 'test', 'changeme', 'your_client_id', 'your_client_secret']);
+const PLACEHOLDER_CREDS = new Set([
+  '', 'smoke', 'placeholder', 'test', 'changeme',
+  'your_client_id', 'your_client_secret', 'your_secret_key', 'your_secret',
+]);
+
+/**
+ * True when a credential value is an obvious placeholder rather than a real EVE
+ * app credential. Covers the exact strings above, any `your_…`/`your-…` guide
+ * placeholder, and punctuation-only values like the README's `...`.
+ */
+function isPlaceholderCred(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (PLACEHOLDER_CREDS.has(v)) return true;
+  if (v.startsWith('your_') || v.startsWith('your-') || v.startsWith('your ')) return true;
+  if (/^[.\-_*]+$/.test(v)) return true; // '...', '---', '***', etc.
+  return false;
+}
 
 /** True when real EVE app credentials are configured (not the .env placeholders). */
 export function isEveSsoConfigured(): boolean {
-  const id = config.eve.clientId.trim().toLowerCase();
-  const secret = config.eve.clientSecret.trim().toLowerCase();
-  return !PLACEHOLDER_CREDS.has(id) && !PLACEHOLDER_CREDS.has(secret);
+  return !isPlaceholderCred(config.eve.clientId) && !isPlaceholderCred(config.eve.clientSecret);
 }
 
 /**
