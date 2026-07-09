@@ -1,5 +1,6 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
+import { isTurnAborted } from './activity.js';
 import { runModelText } from './model.js';
 
 type MessageRow = {
@@ -176,6 +177,9 @@ export async function compactThreadWithRetry(
 ): Promise<boolean> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= COMPACT_MAX_RETRIES; attempt++) {
+    // Ctrl-C during a failing summarizer: an abandoned turn must not keep
+    // issuing compaction model calls (or block the input queue on backoff).
+    if (isTurnAborted()) return false;
     try {
       return await compactThread(db, threadId, summarizer);
     } catch (error) {
@@ -259,6 +263,11 @@ export async function compactThread(
   })).trim();
 
   if (!summaryText) return false;
+
+  // Ctrl-C landed while the summarizer was in flight: don't rewrite history
+  // (summary upsert + message pruning) for a turn the user already abandoned.
+  // The backlog stays over the limit, so the next turn simply compacts again.
+  if (isTurnAborted()) return false;
 
   // Cap the summary, but cut on a line (bullet) boundary rather than mid-bullet:
   // a half-truncated fact is worse than dropping it, and the capped summary is

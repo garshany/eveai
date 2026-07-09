@@ -22,6 +22,27 @@ export type AgentActivityEvent =
 
 export interface AgentActivitySink {
   emit: (event: AgentActivityEvent) => void;
+  /**
+   * Optional cooperative-cancellation probe (the CLI's Ctrl-C). When it
+   * returns true, the agent loop stops before the next model call or tool
+   * execution — in particular no WRITE tool may run after the user aborted.
+   * Absent for the bots: their turns are never user-aborted.
+   */
+  aborted?: () => boolean;
+}
+
+/** Thrown (via error message match) when the user abandoned the turn. */
+export const TURN_ABORTED_MESSAGE = 'Turn aborted by user';
+
+/** True when the active sink reports the user abandoned this turn. */
+export function isTurnAborted(): boolean {
+  const sink = storage.getStore();
+  if (!sink?.aborted) return false;
+  try {
+    return sink.aborted();
+  } catch {
+    return false;
+  }
 }
 
 const storage = new AsyncLocalStorage<AgentActivitySink>();

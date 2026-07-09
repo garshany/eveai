@@ -5,6 +5,7 @@ import { getLinkedCharacter } from './sso.js';
 import { config } from '../config.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { startRouteMonitor } from '../eve-board/monitor.js';
+import { isTurnAborted } from '../agent/activity.js';
 import { generateBriefingFromSnapshot } from '../eve-board/briefing.js';
 import { attributeKillsToGates } from '../eve-board/analytics.js';
 import type { GateKill } from '../eve-board/types.js';
@@ -293,7 +294,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     // Auto-start route monitor only when autopilot is actually active.
     // Requires a real chat lane: a bare userId is not a valid outbound
     // address and would misroute monitor alerts.
-    if (autopilotSet && routeMonitorSender) {
+    if (autopilotSet && routeMonitorSender && !isTurnAborted()) {
       if (ctx.chatId === undefined) {
         console.warn('[plan_route] skipping route monitor: no chat lane in context');
       } else {
@@ -613,11 +614,17 @@ async function setAutopilotRoute(
   if (waypoints.length === 0) {
     return { ok: false, mode: 'none' };
   }
+  // Ctrl-C mid-tool (route/danger fetches above take seconds): an abandoned
+  // turn must not change the player's in-game autopilot.
+  if (isTurnAborted()) return { ok: false, mode: 'none' };
 
   await getEveCapabilities(db, 'route_autopilot', ctx);
 
   try {
     for (let index = 0; index < waypoints.length; index += 1) {
+      // Abort can land between waypoint writes — stop mid-route rather than
+      // keep changing the player's autopilot after Ctrl-C.
+      if (isTurnAborted()) return { ok: false, mode: 'none' };
       const result = await callEsiOperation(db, 'post_ui_autopilot_waypoint', {
         destination_id: waypoints[index],
         clear_other_waypoints: index === 0,
@@ -632,6 +639,7 @@ async function setAutopilotRoute(
     console.log('[plan_route] exact autopilot ESI failed: %s', err instanceof Error ? err.message : String(err));
   }
 
+  if (isTurnAborted()) return { ok: false, mode: 'none' };
   const fallback = await callEsiOperation(db, 'post_ui_autopilot_waypoint', {
     destination_id: destinationId,
     clear_other_waypoints: true,
@@ -659,11 +667,14 @@ async function setShortcutAutopilot(
   destinationId: number,
   ctx: UserContext,
 ): Promise<{ ok: boolean; mode: AutopilotMode }> {
+  // Same abort guard as setAutopilotRoute: no in-game writes after Ctrl-C.
+  if (isTurnAborted()) return { ok: false, mode: 'none' };
   await getEveCapabilities(db, 'route_autopilot', ctx);
 
   const waypoints = [entrySystemId, exitSystemId, destinationId];
   try {
     for (let i = 0; i < waypoints.length; i++) {
+      if (isTurnAborted()) return { ok: false, mode: 'none' };
       const result = await callEsiOperation(db, 'post_ui_autopilot_waypoint', {
         destination_id: waypoints[i],
         clear_other_waypoints: i === 0,

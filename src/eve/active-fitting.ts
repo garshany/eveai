@@ -9,6 +9,7 @@ import { callEsiOperation } from './esi-client.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { resolveUserProfilePath, writeUserProfileAtomic } from './user-profile-storage.js';
 import { getLinkedCharacter } from './sso.js';
+import { isTurnAborted } from '../agent/activity.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -167,6 +168,10 @@ async function persistActiveFitting(db: Db, ctx: UserContext, fittingText: strin
     }
   }
 
+  // Last check after all the awaits above (ESI fetch, file reads): a turn the
+  // user abandoned via Ctrl-C must not rewrite USER.md. Single-threaded JS —
+  // nothing can flip the flag between this line and the write below.
+  if (isTurnAborted()) return;
   await writeUserProfileAtomic(path, content);
   console.log('[active-fitting] persisted to USER.md');
 }

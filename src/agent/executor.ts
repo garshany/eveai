@@ -35,7 +35,7 @@ import {
   type NativeInputItem,
 } from './native-responses.js';
 import { callEsiOperation } from '../eve/esi-client.js';
-import { reportActivity, summarizeToolArgs } from './activity.js';
+import { isTurnAborted, reportActivity, summarizeToolArgs, TURN_ABORTED_MESSAGE } from './activity.js';
 import { ESI_FIELD_WHITELIST, filterEsiFields, validateEsiFields } from './esi-field-filter.js';
 import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
@@ -432,6 +432,10 @@ function resolveSystemLocationContext(db: Db, systemId: number): SystemLocationC
  * over the limit the next turn simply retries compaction.
  */
 async function runPreTurnCompactSafe(db: Db, threadId: string): Promise<void> {
+  // An abandoned turn (CLI Ctrl-C during the pre-loop work) must not spend a
+  // summarizer model call or rewrite thread history — the loop would throw
+  // TURN_ABORTED_MESSAGE right after anyway.
+  if (isTurnAborted()) return;
   try {
     await runPreTurnCompact(db, threadId);
   } catch (error) {
@@ -524,6 +528,9 @@ async function runNativeAgentLoop(
   console.log('[executor] === NEW REQUEST chat=%d thread=%s goal="%s" ===', chatId, threadId.slice(0, 12), goal.slice(0, 80));
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
+    // Cooperative cancellation (CLI Ctrl-C): stop before spending another
+    // model call. The CLI discards the turn's rows, so nothing is lost.
+    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
     reportActivity({ type: 'model_turn', iteration });
     let response;
     try {
@@ -568,6 +575,11 @@ async function runNativeAgentLoop(
       }
       throw error;
     }
+
+    // Cooperative cancellation, immediately after sampling: an abort during
+    // the model call must stop the turn BEFORE mid-turn compaction (another
+    // model call + history mutation) or any tool execution.
+    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
 
     // Track token usage
     if (response.usage) {
@@ -724,6 +736,10 @@ async function runNativeAgentLoop(
     }
     emptyResponseRetries = 0;
 
+    // Re-check right before dispatch: an abort while extracting/answer-building
+    // must not let any tool run — especially write tools (route_monitor,
+    // intel_note, …). Sequential batches re-check before each tool too.
+    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
     const policies = await Promise.all(toolCalls.map((toolCall) => getToolPolicy(toolCall.name)));
     const argsList = toolCalls.map((toolCall) => safeParseArguments(toolCall.argumentsText));
     const results = policies.every((policy) => policy === 'read')
@@ -840,6 +856,9 @@ async function executeToolCallsSequentially(
 ): Promise<unknown[]> {
   const results: unknown[] = [];
   for (let index = 0; index < toolCalls.length; index += 1) {
+    // Sequential batches contain at least one write tool — an abort during an
+    // earlier tool in the batch must stop later writes from starting.
+    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
     results.push(await executeToolCall(
       db, requestId, goal, ctx, toolCalls[index].name, argsList[index] ?? {}, webSearchState,
     ));

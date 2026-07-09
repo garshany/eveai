@@ -39,17 +39,24 @@ const fakeSanitize = (t: string) => t.replace(/Bearer\s+[A-Za-z0-9._-]{20,}/g, '
 
 function harness(isTty: boolean) {
   const screen = new VirtualScreen();
-  const timers: Array<() => void> = [];
+  const timers = new Map<number, () => void>();
+  let nextId = 1;
   const deps: RendererDeps = {
     write: (t) => screen.write(t),
     isTty,
     render: (t) => `RENDERED(${t})`,
     sanitize: fakeSanitize,
     colorize: (_c, t) => t,
-    setInterval: (fn) => { timers.push(fn); return timers.length as unknown as ReturnType<typeof setInterval>; },
-    clearInterval: () => {},
+    setInterval: (fn) => {
+      const id = nextId;
+      nextId += 1;
+      timers.set(id, fn);
+      return id as unknown as ReturnType<typeof setInterval>;
+    },
+    // Faithful to the real timer: a cleared interval stops firing.
+    clearInterval: (handle) => { timers.delete(handle as unknown as number); },
   };
-  return { screen, tickSpinner: () => timers.forEach((fn) => fn()), renderer: createActivityRenderer(deps) };
+  return { screen, tickSpinner: () => { for (const fn of timers.values()) fn(); }, renderer: createActivityRenderer(deps) };
 }
 
 describe('CLI activity renderer', () => {
@@ -108,6 +115,29 @@ describe('CLI activity renderer', () => {
     const out = screen.screen();
     expect(out).toContain('Bearer [REDACTED]');
     expect(out).not.toContain('sk-abcdefghij0123456789XYZ');
+  });
+
+  it('mutes all output after abort() — an abandoned turn must not print over the prompt', () => {
+    const { screen, renderer, tickSpinner } = harness(true);
+    renderer.sink.emit({ type: 'model_turn', iteration: 0 });
+    tickSpinner();
+    expect(renderer.sink.aborted?.()).toBe(false);
+    renderer.abort(); // Ctrl-C: prompt is redrawn by the CLI right after this
+    // The executor polls this probe to stop before the next model call/tool.
+    expect(renderer.sink.aborted?.()).toBe(true);
+
+    const after = screen.screen();
+    // The agent keeps running in the background — later events must be no-ops.
+    renderer.sink.emit({ type: 'tool_start', name: 'sde_sql', detail: 'late query' });
+    renderer.sink.emit({ type: 'reasoning', text: 'late thought' });
+    renderer.sink.emit({ type: 'model_turn', iteration: 1 });
+    tickSpinner();
+    renderer.begin();
+    tickSpinner();
+    renderer.finish('late answer');
+
+    expect(screen.screen()).toBe(after);
+    expect(screen.screen()).not.toContain('late');
   });
 
   it('maps tool names to friendly labels', () => {

@@ -245,6 +245,39 @@ describe('transient model error retry', () => {
   }, 20_000);
 });
 
+describe('cooperative turn abort (CLI Ctrl-C)', () => {
+  it('stops before any tool runs when the sink reports aborted mid-sampling', async () => {
+    let aborted = false;
+    createNativeResponseMock.mockImplementation(async () => {
+      // Simulate the user hitting Ctrl-C while the model call is in flight.
+      aborted = true;
+      return toolCallResponse('call_1', 'SELECT type_id FROM sde_types LIMIT 1');
+    });
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+
+    await expect(runWithActivitySink(
+      { emit: () => {}, aborted: () => aborted },
+      () => __test__.runNativeAgentLoop(
+        db as never, 't1', { userId: 1, chatId: 1 }, GOAL, 'developer prompt', () => 'developer prompt',
+      ),
+    )).rejects.toThrow('Turn aborted by user');
+
+    // One model call, then the loop stopped — the returned tool call never ran.
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
+    const toolRows = db.prepare(
+      "SELECT COUNT(*) AS n FROM messages WHERE thread_id = 't1' AND role = 'tool'",
+    ).get() as { n: number };
+    expect(toolRows.n).toBe(0);
+  });
+
+  it('without an aborted probe (bots) the loop is unaffected', async () => {
+    createNativeResponseMock.mockResolvedValueOnce(textResponse('ок'));
+    const result = await runLoop();
+    expect(result.text).toBe('ок');
+  });
+});
+
 describe('runPreTurnCompactSafe', () => {
   it('swallows compaction failure instead of failing the turn', async () => {
     runPreTurnCompactMock.mockRejectedValueOnce(new Error('summarizer down'));

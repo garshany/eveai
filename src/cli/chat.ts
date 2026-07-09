@@ -28,6 +28,8 @@ import { buildEveSsoSetupGuide, isEveSsoConfigured } from '../eve/eve-login.js';
 import { registerTelegramOutbound } from '../messaging/outbound.js';
 import { htmlToDiscordMarkdown } from '../discord/format.js';
 import { colorize } from '../observability/logger.js';
+import { stripTerminalControls } from './term-sanitize.js';
+import { createInputQueue } from './input-queue.js';
 
 // Sentinel identity for the local CLI user. Real Telegram chat ids are large
 // positive numbers and Discord lanes are negative, so 1 can't collide.
@@ -49,12 +51,18 @@ function silenceInternalLogs(): void {
 }
 
 function renderForTerminal(text: string): string {
-  // Reuse the tested HTML->markdown converter, then light ANSI styling for
-  // **bold** and `code` so answers read nicely in a terminal.
-  const md = htmlToDiscordMarkdown(text);
+  // Model/tool text can quote hostile external data (bios, web pages) — strip
+  // terminal control sequences BEFORE adding our own ANSI styling. Then reuse
+  // the tested HTML->markdown converter plus light styling for **bold**/`code`.
+  const md = htmlToDiscordMarkdown(stripTerminalControls(text));
   return md
     .replace(/\*\*([^*]+)\*\*/g, (_m, s: string) => colorize('bold', s))
     .replace(/`([^`]+)`/g, (_m, s: string) => colorize('cyan', s));
+}
+
+/** External error text → one safe line for the terminal. */
+function safeErrorText(err: unknown): string {
+  return stripTerminalControls(err instanceof Error ? err.message : String(err));
 }
 
 function banner(): void {
@@ -133,41 +141,54 @@ async function main(): Promise<void> {
   const promptLine = () => rl.prompt();
 
   let closing = false;
-  let busy = false;
   let pendingClose = false;
+  // The turn currently talking to the model, if any. Ctrl-C marks it abandoned:
+  // the renderer stops and the result is discarded when the turn completes.
+  type ActiveTurn = { abandoned: boolean; activity: ActivityRenderer; threadId: string; watermark: number };
+  let activeTurn: ActiveTurn | null = null;
+
+  // Delete everything an abandoned turn wrote to its thread (idempotent: the
+  // watermark is the pre-turn MAX(id)), and drop any server-state response id
+  // so the next turn can't warm-start from the discarded exchange.
+  const discardTurnRows = (turn: ActiveTurn): void => {
+    db.prepare('DELETE FROM messages WHERE thread_id = ? AND id > ?')
+      .run(turn.threadId, turn.watermark);
+    db.prepare('UPDATE agent_threads SET last_response_id = NULL WHERE thread_id = ?')
+      .run(turn.threadId);
+  };
+
   const shutdown = async () => {
     if (closing) return;
     closing = true;
+    // Double Ctrl-C can exit while an abandoned turn is still settling.
+    // Capture the reference BEFORE any await: if the turn settles during
+    // server.close(), its finally nulls activeTurn and skips its own cleanup
+    // (closing is already true) — without this capture the rows would leak
+    // into the next session.
+    const abandonedTurn = activeTurn?.abandoned ? activeTurn : null;
     rl.close();
     if (ssoServerReady) await server.close().catch(() => {});
+    // SQLite is sync and there is no await between here and exit, so the
+    // in-flight turn cannot write between this cleanup and process.exit.
+    if (abandonedTurn) discardTurnRows(abandonedTurn);
     db.close();
     process.exit(0);
   };
-  // Continue the prompt only if the stream is still open and no turn is running.
-  const resumePrompt = () => {
-    if (pendingClose || closing) { void shutdown(); return; }
-    rl.resume();
-    promptLine();
-  };
 
-  // EOF (Ctrl-D / end of piped input): finish any in-flight turn first.
-  rl.on('close', () => {
-    if (busy) pendingClose = true;
-    else void shutdown();
-  });
-
-  promptLine();
-  rl.on('line', async (line) => {
+  /**
+   * Process one input line. Returns true when the screen already ends with a
+   * fresh prompt (abandoned turn), so the queue drain must not re-prompt.
+   */
+  const handleLine = async (line: string): Promise<boolean> => {
     const text = line.trim();
-    if (!text) { promptLine(); return; }
+    if (!text || closing) return false;
 
-    if (text === '/exit' || text === '/quit') { await shutdown(); return; }
+    if (text === '/exit' || text === '/quit') { await shutdown(); return false; }
 
     if (text === '/clear' || text === '/reset') {
       const n = clearChatConversation(db, CLI_CHAT_ID);
       say(colorize('gray', `cleared ${n} thread(s).`));
-      promptLine();
-      return;
+      return false;
     }
 
     if (text === '/whoami') {
@@ -175,16 +196,14 @@ async function main(): Promise<void> {
       say(l
         ? `${colorize('bold', l.characterName)} · id ${l.characterId} · ${l.scopes.length} scopes`
         : colorize('gray', 'no character linked — use /login'));
-      promptLine();
-      return;
+      return false;
     }
 
     if (text === '/characters' || text === '/chars') {
       const list = listLinkedCharacters(db, ctx);
       if (list.length === 0) say(colorize('gray', 'no linked characters — /login'));
       else for (const e of list) say(`${e.isActive ? colorize('green', '* ') : '  '}${e.characterName} (${e.characterId})`);
-      promptLine();
-      return;
+      return false;
     }
 
     if (text === '/login') {
@@ -197,29 +216,84 @@ async function main(): Promise<void> {
         say('Открой ссылку для привязки персонажа:\n' + colorize('cyan', url));
         say(colorize('gray', 'После входа станут доступны приватные данные (скиллы, ассеты, локация, …).'));
       }
+      return false;
+    }
+
+    // Plain text -> agent turn. readline stays ACTIVE during the turn: pausing
+    // stdin in raw mode would buffer the ^C byte unread, so Ctrl-C could not
+    // abandon an in-flight turn (it would exit later, after the answer).
+    // Overlap is impossible anyway — the input queue serializes lines; typing
+    // during a turn just echoes and queues.
+    const activity = createActivityRenderer();
+    const threadId = resolveThreadForChat(db, CLI_CHAT_ID, ctx);
+    // Watermark for Ctrl-C: an abandoned turn's rows (user message, tool and
+    // assistant rows) are deleted once the turn settles — or in shutdown() if
+    // the user exits first — so the discarded exchange never leaks into later
+    // context. The queue is serialized, so nothing else writes to this thread
+    // while the turn runs.
+    const turn: ActiveTurn = {
+      abandoned: false,
+      activity,
+      threadId,
+      watermark: (db.prepare(
+        'SELECT COALESCE(MAX(id), 0) AS m FROM messages WHERE thread_id = ?',
+      ).get(threadId) as { m: number }).m,
+    };
+    activeTurn = turn;
+    activity.begin(); // spin immediately — pre-loop work (profile/live-context/compaction) runs before the first model turn
+    try {
+      const answer = await runWithActivitySink(activity.sink, () => runAgentTurn(db, threadId, ctx, text));
+      if (!turn.abandoned) activity.finish(answer);
+    } catch (err) {
+      if (!turn.abandoned) {
+        activity.abort();
+        console.error(colorize('red', 'error: ') + safeErrorText(err));
+      }
+    } finally {
+      activeTurn = null;
+      if (turn.abandoned && !closing) discardTurnRows(turn);
+    }
+    return turn.abandoned;
+  };
+
+  const inputQueue = createInputQueue({
+    handleLine,
+    onDrained: (promptSuppressed) => {
+      if (pendingClose || closing) { void shutdown(); return; }
+      if (!promptSuppressed) promptLine();
+    },
+    onError: (err) => {
+      // Slash-command/DB failures must not become unhandled rejections that
+      // kill the CLI — report and keep the loop alive.
+      console.error(colorize('red', 'error: ') + safeErrorText(err));
+    },
+  });
+
+  // EOF (Ctrl-D / end of piped input): drain queued lines, then exit.
+  rl.on('close', () => {
+    if (inputQueue.isBusy() || inputQueue.size() > 0) pendingClose = true;
+    else void shutdown();
+  });
+
+  promptLine();
+  rl.on('line', (line) => { inputQueue.push(line); });
+
+  // Ctrl-C: first press abandons the in-flight turn (its result is discarded
+  // on completion; queued lines still run after it); idle press — exit.
+  // Both handlers are needed: readline swallows SIGINT while it owns the TTY,
+  // the process-level signal fires while input is paused during a turn.
+  const handleSigint = (): void => {
+    if (activeTurn && !activeTurn.abandoned) {
+      activeTurn.abandoned = true;
+      activeTurn.activity.abort();
+      say(colorize('yellow', '⏹ Ход прерван — ответ будет отброшен. Ctrl-C ещё раз — выход.'));
       promptLine();
       return;
     }
-
-    // Plain text -> agent turn. Pause input so turns never overlap.
-    rl.pause();
-    busy = true;
-    const activity = createActivityRenderer();
-    activity.begin(); // spin immediately — pre-loop work (profile/live-context/compaction) runs before the first model turn
-    try {
-      const threadId = resolveThreadForChat(db, CLI_CHAT_ID, ctx);
-      const answer = await runWithActivitySink(activity.sink, () => runAgentTurn(db, threadId, ctx, text));
-      activity.finish(answer);
-    } catch (err) {
-      activity.abort();
-      console.error(colorize('red', 'error: ') + (err instanceof Error ? err.message : String(err)));
-    } finally {
-      busy = false;
-      resumePrompt();
-    }
-  });
-
-  rl.on('SIGINT', () => { void shutdown(); });
+    void shutdown();
+  };
+  rl.on('SIGINT', handleSigint);
+  process.on('SIGINT', handleSigint);
   process.on('SIGTERM', () => { void shutdown(); });
 }
 
@@ -229,7 +303,9 @@ function createActivityRenderer(): ActivityRenderer {
     write: (text) => { process.stdout.write(text); },
     isTty: Boolean(process.stdout.isTTY),
     render: renderForTerminal,
-    sanitize: sanitizeOutput,
+    // Feed text (reasoning, tool details) bypasses renderForTerminal — compose
+    // secret redaction with control-sequence stripping for that path too.
+    sanitize: (text) => stripTerminalControls(sanitizeOutput(text)),
     colorize,
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (handle) => { clearInterval(handle); },

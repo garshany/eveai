@@ -75,6 +75,10 @@ export function createActivityRenderer(deps: RendererDeps): ActivityRenderer {
   let timer: ReturnType<typeof setInterval> | null = null;
   let frame = 0;
   let spinnerOnLine = false; // the spinner (and nothing else) currently occupies the cursor line
+  // Set by abort(): the turn was abandoned (Ctrl-C) but the agent may keep
+  // running for a while — every later event/finish must be a silent no-op or
+  // feed lines would print over the fresh prompt.
+  let dead = false;
 
   const say = (text: string) => write(text + '\n');
 
@@ -101,6 +105,7 @@ export function createActivityRenderer(deps: RendererDeps): ActivityRenderer {
   };
 
   const onEvent = (event: AgentActivityEvent) => {
+    if (dead) return;
     switch (event.type) {
       case 'model_turn':
         startSpinner();
@@ -120,14 +125,20 @@ export function createActivityRenderer(deps: RendererDeps): ActivityRenderer {
   };
 
   return {
-    sink: { emit: onEvent },
-    begin: startSpinner,
+    // `aborted` doubles as the agent loop's cooperative-cancellation probe:
+    // after Ctrl-C the executor stops before the next model call / tool run.
+    sink: { emit: onEvent, aborted: () => dead },
+    begin: () => { if (!dead) startSpinner(); },
     // The answer is rendered once, cleanly, from the finalized (sanitized) text —
     // the live feed above shows tools/reasoning, this shows the result.
     finish: (answer: string) => {
+      if (dead) return;
       stopSpinner();
       say('\n' + render(answer));
     },
-    abort: () => stopSpinner(),
+    abort: () => {
+      dead = true;
+      stopSpinner();
+    },
   };
 }
