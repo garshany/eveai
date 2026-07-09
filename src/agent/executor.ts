@@ -254,7 +254,7 @@ export async function handleAgentMessage(
 
   // Codex-style pre-turn compaction: compact before first API call if accumulated
   // tokens exceed 90% of model context window.
-  await runPreTurnCompact(db, threadId);
+  await runPreTurnCompactSafe(db, threadId);
 
   const promptMode = isSimpleStaticAggregateCountGoal(userText) ? 'static_aggregate' : 'full';
 
@@ -425,6 +425,42 @@ function resolveSystemLocationContext(db: Db, systemId: number): SystemLocationC
   };
 }
 
+/**
+ * Pre-turn compaction must never fail the user's turn: buildSmartContext caps
+ * the prompt regardless of backlog size, and mid-turn compaction failure in
+ * this same file is already deliberately non-fatal. While total_tokens stays
+ * over the limit the next turn simply retries compaction.
+ */
+async function runPreTurnCompactSafe(db: Db, threadId: string): Promise<void> {
+  try {
+    await runPreTurnCompact(db, threadId);
+  } catch (error) {
+    console.error('[executor] pre-turn compaction failed, continuing without compaction:', error);
+  }
+}
+
+/**
+ * Transient model/transport failures that are safe to retry with the exact
+ * same request: our 90s deadline, truncated SSE streams, provider 429/5xx,
+ * and undici/socket-level drops. Tool side effects only happen after a
+ * successful response, so re-sending the identical call cannot duplicate them.
+ */
+function isTransientModelError(message: string): boolean {
+  return /timed out|Incomplete response stream|HTTP (429|5\d\d)|terminated|fetch failed|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|rate.?limit|server had an error|server_error|overloaded|too many requests|bad gateway|service unavailable|gateway time-?out/i.test(message);
+}
+
+const MAX_TRANSIENT_RETRIES = 3;
+const TRANSIENT_RETRY_BASE_DELAY_MS = 1000;
+
+function transientRetryDelayMs(attempt: number): number {
+  // Bounded linear backoff: 1s, 2s, 3s — worst case adds ~6s to a turn.
+  return TRANSIENT_RETRY_BASE_DELAY_MS * attempt;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function runNativeAgentLoop(
   db: Db,
   threadId: string,
@@ -479,6 +515,11 @@ async function runNativeAgentLoop(
   let toolStateRecoveryCount = 0;
   const MAX_TOOL_STATE_RECOVERIES = 3;
   let usedMidTurnCompact = false;
+  // Per-turn budget for retrying the same request after a transient failure.
+  // Without this, one dropped connection on iteration N throws away all tool
+  // work from iterations 0..N-1 (the recovery paths below require
+  // previousResponseId and are dead code in the default stateless mode).
+  let transientRetries = 0;
 
   console.log('[executor] === NEW REQUEST chat=%d thread=%s goal="%s" ===', chatId, threadId.slice(0, 12), goal.slice(0, 80));
 
@@ -510,6 +551,19 @@ async function runNativeAgentLoop(
         pendingItems = buildToolStateRecoveryContext(db, threadId);
         saveLastResponseId(db, threadId, null);
         console.warn('[executor] tool state lost, switching to cold recovery context: %s', message);
+        continue;
+      }
+      if (isTransientModelError(message) && transientRetries < MAX_TRANSIENT_RETRIES) {
+        transientRetries += 1;
+        const delay = transientRetryDelayMs(transientRetries);
+        console.warn('[executor] transient model error (retry %d/%d in %dms): %s',
+          transientRetries, MAX_TRANSIENT_RETRIES, delay, message);
+        await sleep(delay);
+        // pendingItems/previousResponseId are untouched — re-send the same call.
+        // No model response was processed, so the retry must not consume the
+        // tool-iteration budget or shift iteration-gated checks (mid-turn
+        // compaction fires only at iteration > 0).
+        iteration -= 1;
         continue;
       }
       throw error;
@@ -596,6 +650,18 @@ async function runNativeAgentLoop(
         pendingItems = buildToolStateRecoveryContext(db, threadId);
         saveLastResponseId(db, threadId, null);
         console.warn('[executor] tool state lost in response payload, switching to cold recovery context: %s', response.error.message);
+        continue;
+      }
+      if (isTransientModelError(response.error.message) && transientRetries < MAX_TRANSIENT_RETRIES) {
+        transientRetries += 1;
+        const delay = transientRetryDelayMs(transientRetries);
+        console.warn('[executor] transient error in response payload (retry %d/%d in %dms): %s',
+          transientRetries, MAX_TRANSIENT_RETRIES, delay, response.error.message);
+        await sleep(delay);
+        // response.error is checked before outputs are built, so pendingItems
+        // still holds this request's input — re-send the same call. As above,
+        // a failed call must not consume the tool-iteration budget.
+        iteration -= 1;
         continue;
       }
       console.error('[executor] model error:', response.error.message);
@@ -1299,6 +1365,8 @@ export function classifyReasoningEffort(goal: string): string {
 
 export const __test__ = {
   runNativeAgentLoop,
+  runPreTurnCompactSafe,
+  isTransientModelError,
   buildSmartContext,
   buildToolStateRecoveryContext,
   buildRecentToolSummaryMessage,

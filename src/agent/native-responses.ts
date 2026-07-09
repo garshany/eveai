@@ -176,8 +176,11 @@ export async function createNativeResponse(input: {
   }
 
   if (!response.ok) {
-    const detail = extractErrorMessage(rawText) ?? `HTTP ${response.status}`;
-    throw new Error(detail);
+    // Always carry the status code: transient-error classification upstream
+    // keys on "HTTP 429/5xx", and plain-text gateway bodies ("Bad Gateway",
+    // "Too Many Requests") say nothing machine-readable on their own.
+    const detail = extractErrorMessage(rawText);
+    throw new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
   }
 
   const events = parseSse(rawText);

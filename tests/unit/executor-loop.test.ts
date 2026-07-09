@@ -4,10 +4,17 @@ import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 // Mock ONLY the network call; keep the real item builders/helpers so the loop
 // under test assembles input exactly as production does.
-const { createNativeResponseMock } = vi.hoisted(() => ({ createNativeResponseMock: vi.fn() }));
+const { createNativeResponseMock, runPreTurnCompactMock } = vi.hoisted(() => ({
+  createNativeResponseMock: vi.fn(),
+  runPreTurnCompactMock: vi.fn(),
+}));
 vi.mock('../../src/agent/native-responses.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/agent/native-responses.js')>();
   return { ...actual, createNativeResponse: createNativeResponseMock };
+});
+vi.mock('../../src/agent/compact.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/agent/compact.js')>();
+  return { ...actual, runPreTurnCompact: runPreTurnCompactMock };
 });
 
 const GOAL = 'сравни цены Rifter и Punisher в Jita для соло-PvP';
@@ -64,6 +71,7 @@ beforeEach(() => {
   process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
   vi.resetModules();
   createNativeResponseMock.mockReset();
+  runPreTurnCompactMock.mockReset();
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);
@@ -136,5 +144,112 @@ describe('stateless tool loop context accumulation', () => {
     const outputItems = second.filter((item) => item.type === 'function_call_output');
     expect(callItems).toHaveLength(1);
     expect(outputItems).toHaveLength(1);
+  });
+});
+
+function errorResponse(message: string): MockResponse {
+  return {
+    id: null,
+    output: [],
+    outputText: '',
+    error: { message },
+    toolSearchPaths: [],
+    rawEvents: [],
+    usage: null,
+  };
+}
+
+describe('transient model error retry', () => {
+  it('classifies transient vs permanent error messages', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const transient = [
+      'Responses API timed out after 90s',
+      'Incomplete response stream (no terminal event received)',
+      'HTTP 502',
+      'HTTP 429',
+      'terminated',
+      'fetch failed',
+      'read ECONNRESET',
+      'Rate limit reached for gpt-5.5',
+      'The server had an error processing your request.',
+      // Plain-text gateway bodies now arrive prefixed with the status code.
+      'HTTP 429: Too Many Requests',
+      'HTTP 502: Bad Gateway',
+      'HTTP 503: Service Unavailable',
+      'HTTP 504: Gateway Timeout',
+    ];
+    for (const message of transient) {
+      expect(__test__.isTransientModelError(message), message).toBe(true);
+    }
+    const permanent = [
+      'HTTP 400',
+      'Invalid value for tools[3].parameters',
+      'HTTP 401',
+      'No tool output found for function call call_abc',
+    ];
+    for (const message of permanent) {
+      expect(__test__.isTransientModelError(message), message).toBe(false);
+    }
+  });
+
+  it('retries a thrown transient error with the same request and completes the turn', async () => {
+    createNativeResponseMock
+      .mockRejectedValueOnce(new Error('Responses API timed out after 90s'))
+      .mockResolvedValueOnce(textResponse('ответ после ретрая'));
+    const result = await runLoop();
+    expect(result.text).toBe('ответ после ретрая');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(2);
+    // The retried request must be byte-identical input to the failed one.
+    expect(createNativeResponseMock.mock.calls[1][0].items)
+      .toEqual(createNativeResponseMock.mock.calls[0][0].items);
+  });
+
+  it('retries an in-payload transient error (truncated stream)', async () => {
+    createNativeResponseMock
+      .mockResolvedValueOnce(errorResponse('Incomplete response stream (no terminal event received)'))
+      .mockResolvedValueOnce(textResponse('ответ'));
+    const result = await runLoop();
+    expect(result.text).toBe('ответ');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry permanent errors', async () => {
+    createNativeResponseMock.mockRejectedValue(new Error('HTTP 400'));
+    await expect(runLoop()).rejects.toThrow('HTTP 400');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not consume the tool-iteration budget on retry', async () => {
+    // 1 transient failure + 15 tool rounds + final text. MAX_TOOL_ITERATIONS
+    // is 16: if the retry burned an iteration slot, the final text call would
+    // fall outside the loop and the turn would end with the timeout message.
+    createNativeResponseMock.mockRejectedValueOnce(new Error('HTTP 502: Bad Gateway'));
+    for (let i = 0; i < 15; i += 1) {
+      createNativeResponseMock.mockResolvedValueOnce(
+        toolCallResponse(`call_${i}`, `SELECT type_id FROM sde_types LIMIT ${i + 1}`),
+      );
+    }
+    createNativeResponseMock.mockResolvedValueOnce(textResponse('успел'));
+
+    const result = await runLoop();
+    expect(result.text).toBe('успел');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(17);
+  }, 20_000);
+
+  // Real backoff delays (1s+2s+3s) run here — this test is deliberately slow.
+  it('gives up after the per-turn retry budget', async () => {
+    createNativeResponseMock.mockRejectedValue(new Error('fetch failed'));
+    await expect(runLoop()).rejects.toThrow('fetch failed');
+    // 1 original + 3 retries, then the error propagates.
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(4);
+  }, 20_000);
+});
+
+describe('runPreTurnCompactSafe', () => {
+  it('swallows compaction failure instead of failing the turn', async () => {
+    runPreTurnCompactMock.mockRejectedValueOnce(new Error('summarizer down'));
+    const { __test__ } = await import('../../src/agent/executor.js');
+    await expect(__test__.runPreTurnCompactSafe(db as never, 't1')).resolves.toBeUndefined();
+    expect(runPreTurnCompactMock).toHaveBeenCalledTimes(1);
   });
 });
