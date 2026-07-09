@@ -729,7 +729,15 @@ async function runNativeAgentLoop(
       pendingItems = buildFunctionCallOutputs(outputs);
     } else {
       previousResponseId = null;
+      // Stateless mode is memoryless (store:false, no previous_response_id):
+      // each request's input is the model's entire view of the turn. Append
+      // this round's calls/outputs to the accumulated items instead of
+      // replacing them — otherwise the user's goal and earlier tool results
+      // vanish after the first round and multi-step turns answer blind.
+      // Growth is bounded by MAX_TOOL_ITERATIONS, the 12k/tool output budget,
+      // truncation:'auto', and mid-turn compaction.
       pendingItems = [
+        ...pendingItems,
         ...buildFunctionCallInputItems(response.output),
         ...buildFunctionCallOutputs(outputs),
       ];
@@ -1290,6 +1298,7 @@ export function classifyReasoningEffort(goal: string): string {
 }
 
 export const __test__ = {
+  runNativeAgentLoop,
   buildSmartContext,
   buildToolStateRecoveryContext,
   buildRecentToolSummaryMessage,
