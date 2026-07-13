@@ -5,17 +5,17 @@ Scoring uses `1` to `5`, where `5` means strong structure plus regression covera
 | Domain | Score | Evidence | Gap |
 | --- | --- | --- | --- |
 | Agent runtime | 4 | dedicated modules plus tests for planner, executor, finalizer, prompts, native responses | prompt policy is still dense and should be decomposed further |
-| Auth and identity | 4 | callback, auth storage, session, and route tests exist | ownership and legacy-path cleanup still coexist |
+| Auth and identity | 4 | SSO callback, auth storage, one-time state, and route tests exist | ownership and legacy-path cleanup still coexist |
 | ESI transport | 4 | retry, caching, compatibility date, and capability logic are explicit | operation surface is large and catalog drift risk remains |
 | SDE pipeline | 3 | loader, downloader, SQL security test, and normalized tables exist | generated docs and ingestion contracts are still thin |
 | Telegram UX | 4 | command handlers and bot tests exist | command copy and behavior are not yet spec-driven in docs |
-| Web surface | 4 | health, auth routes, CSP, and asset serving are tested | dashboard API surface is small but not formally versioned |
+| Browser surface | 4 | health endpoint, EVE SSO callback, and CSP are tested | no end-user browser product surface by design |
 | Documentation system | 2 | core structure now exists in-repo | no CI lint or doc-gardening automation yet |
 
 ## Current Quality Priorities
 
 - add mechanical checks for docs coverage and stale references
-- tighten product-spec coverage for Telegram and web flows
+- tighten product-spec coverage for Telegram, Discord, CLI, and browser SSO flows
 - reduce duplication between legacy chat-based identity paths and current user-based identity paths
 
 ## Knowledge-System Notes

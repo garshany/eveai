@@ -231,4 +231,39 @@ describe('osint inference', () => {
     expect(result.ok).toBe(true);
     expect(result.hypotheses[0]?.system_name).toBe('X-70MU');
   });
+
+  it('does not produce NaN scores from a malformed killmail_time', async () => {
+    eveKillMocks.getEntityDetail.mockResolvedValue({ ok: true, data: { name: 'Solo Pilot' } });
+    eveKillMocks.getEntityMembers.mockResolvedValue({ ok: true, data: [] });
+    zkillMocks.fetchEntityActivityFeed.mockImplementation(async (_db: Database.Database, args: Record<string, unknown>) => {
+      if (args.activity === 'kills') {
+        return [
+          // Valid kill plus one with an unparseable timestamp.
+          { activity: 'kills', killmail_id: 2, killmail_time: isoDaysAgo(2), solar_system_id: 30007001, total_value: 300_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 8002, victim_corporation_id: 6002, attackers: [{ character_id: 7001, corporation_id: 5001, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
+          { activity: 'kills', killmail_id: 3, killmail_time: 'not-a-date', solar_system_id: 30007001, total_value: 400_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 8003, victim_corporation_id: 6003, attackers: [{ character_id: 7001, corporation_id: 5001, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' },
+        ];
+      }
+      return [{ activity: 'losses', killmail_id: 1, killmail_time: isoDaysAgo(1), solar_system_id: 30007001, total_value: 180_000_000, attacker_count: 1, is_npc: false, is_solo: false, is_awox: false, ship_type_id: 11, victim_character_id: 7001, victim_corporation_id: 5001, attackers: [{ character_id: 8001, corporation_id: 6001, final_blow: true }], zkb_labels: ['tz:eu'], tz_label: 'eu', location_label: 'nullsec' }];
+    });
+    esiMocks.callEsiOperation.mockImplementation(async (_db: Database.Database, operation: string) => {
+      if (operation === 'post_universe_names') return { ok: true, data: [{ id: 7001, name: 'Solo Pilot' }] };
+      return { ok: false, status: 404, error: 'no mock' };
+    });
+
+    const { executeOsintInferHome } = await import('../../src/eve-osint/inference.js');
+    const result = await executeOsintInferHome(db, {
+      scope: 'character',
+      id: 7001,
+      window_days: 30,
+      include_member_analysis: false,
+      include_graph: false,
+      include_llm_pattern_analysis: false,
+    });
+
+    expect(result.ok).toBe(true);
+    for (const hypo of result.hypotheses) {
+      expect(Number.isFinite(hypo.confidence)).toBe(true);
+      expect(JSON.stringify(hypo)).not.toContain('NaN');
+    }
+  });
 });

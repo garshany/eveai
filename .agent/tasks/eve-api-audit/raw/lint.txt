@@ -1,6 +1,0 @@
-Command: npm run lint
-Exit code: 0
-
-Output summary:
-- `eslint src/ --max-warnings 0` completed successfully.
-- No lint warnings or errors were reported.

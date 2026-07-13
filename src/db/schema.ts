@@ -17,13 +17,28 @@ CREATE TABLE IF NOT EXISTS telegram_accounts (
 );
 CREATE INDEX IF NOT EXISTS idx_telegram_accounts_user ON telegram_accounts(user_id);
 
-CREATE TABLE IF NOT EXISTS web_sessions (
-  session_id TEXT PRIMARY KEY,
-  user_id    INTEGER NOT NULL REFERENCES users(user_id),
-  expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+-- Discord snowflake ids exceed Number.MAX_SAFE_INTEGER, so they are stored as TEXT.
+CREATE TABLE IF NOT EXISTS discord_accounts (
+  discord_user_id TEXT PRIMARY KEY,
+  user_id         INTEGER NOT NULL REFERENCES users(user_id),
+  username        TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_discord_accounts_user ON discord_accounts(user_id);
+
+-- Maps a Discord DM channel to an internal negative integer chat key so all
+-- chat_id-keyed tables (agent_threads, eve_character_links, kill_watches,
+-- route_monitors) work unchanged. Telegram private chat ids are positive;
+-- Discord chat keys are negative, so the keyspaces never collide.
+CREATE TABLE IF NOT EXISTS discord_sessions (
+  discord_channel_id TEXT PRIMARY KEY,
+  discord_user_id    TEXT NOT NULL,
+  user_id            INTEGER NOT NULL REFERENCES users(user_id),
+  chat_key           INTEGER NOT NULL UNIQUE,
+  username           TEXT,
+  last_seen_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_discord_sessions_user ON discord_sessions(user_id);
 
 CREATE TABLE IF NOT EXISTS auth_requests (
   state        TEXT PRIMARY KEY,
@@ -34,14 +49,6 @@ CREATE TABLE IF NOT EXISTS auth_requests (
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at   TEXT NOT NULL,
   used_at      TEXT
-);
-
-CREATE TABLE IF NOT EXISTS telegram_login_attempts (
-  nonce         TEXT PRIMARY KEY,
-  redirect_path TEXT,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  expires_at    TEXT NOT NULL,
-  used_at       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS telegram_sessions (

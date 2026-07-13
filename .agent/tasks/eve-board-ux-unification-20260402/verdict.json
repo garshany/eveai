@@ -1,5 +1,0 @@
-{
-  "task_id": "eve-board-ux-unification-20260402",
-  "overall": "PASS",
-  "summary": "eve-board now behaves like one coherent travel assistant: `plan_route` produces a compact selected-route-first summary, `generateBriefing()` provides a single cockpit-style pre-flight brief, and live ESP keeps the same action-oriented `Сейчас / Впереди / Действие` contract with deterministic quiet-state handling."
-}

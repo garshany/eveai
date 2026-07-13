@@ -1,8 +1,0 @@
-$ git -C /tmp/eveai-public-release status --short
-$ test required public export properties
-.env.example present
-.env absent
-.agent absent
-$ git -C /tmp/eveai-public-release log --oneline -1
-87b6ac4 Initial public release
-$ rg final private marker scan over /tmp/eveai-public-release

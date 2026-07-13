@@ -23,7 +23,7 @@ export function buildSecurityHeaders(
 ): Record<string, string> {
   const baseOrigin = getOrigin(options.baseUrl);
   const formActionSources = ["'self'"];
-  const connectSources = ["'self'", 'https://telegram.org', 'https://oauth.telegram.org'];
+  const connectSources = ["'self'"];
 
   if (baseOrigin) {
     formActionSources.push(baseOrigin);
@@ -61,11 +61,11 @@ export function buildContentSecurityPolicy(formActionSources: string[], connectS
     `form-action ${formActionSources.join(' ')}`,
     "frame-ancestors 'none'",
     "object-src 'none'",
-    "script-src 'self' https://telegram.org",
-    "style-src 'self'",
-    "img-src 'self' data: https://images.evetech.net https://telegram.org https://oauth.telegram.org",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
     `connect-src ${connectSources.join(' ')}`,
-    "frame-src https://telegram.org https://oauth.telegram.org",
+    "frame-src 'none'",
     "font-src 'self'",
     "manifest-src 'self'",
     "media-src 'none'",

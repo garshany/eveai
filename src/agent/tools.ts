@@ -1,3 +1,4 @@
+import { config } from '../config.js';
 import { loadEsiCatalog, listEsiNamespaces } from '../eve/esi-catalog.js';
 import { buildEveKillNamespace, isEveKillToolName } from '../eve-kill/tools.js';
 import { buildEveScoutNamespace, isEveScoutToolName } from '../eve/eve-scout-tools.js';
@@ -5,6 +6,7 @@ import type { NativeFunctionTool, NativeTool } from './native-responses.js';
 import { SDE_SCHEMA } from './tools/sde-schema.js';
 
 const SDE_SQL_TOOL_NAME = 'sde_sql';
+const WEB_SEARCH_TOOL_NAME = 'web_search';
 
 export { SDE_SCHEMA };
 
@@ -379,9 +381,16 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
     );
   }
 
+  // Only offer web_search when a Tavily key is configured. Without it the tool
+  // is weak (EVE-Uni wiki only) and the model wastes turns on it instead of
+  // answering game-data questions from the local SDE / live ESI.
+  const alwaysOn = config.tavily?.apiKey
+    ? ALWAYS_ON_FUNCTION_TOOLS
+    : ALWAYS_ON_FUNCTION_TOOLS.filter((tool) => tool.name !== WEB_SEARCH_TOOL_NAME);
+
   return [
     { type: 'tool_search' },
-    ...ALWAYS_ON_FUNCTION_TOOLS,
+    ...alwaysOn,
     ROUTE_MONITOR_TOOL,
     HEARTBEAT_CONFIG_TOOL,
     BATCH_MARKET_TOOL,
@@ -434,10 +443,19 @@ export { planRoute } from '../eve/route-planner.js';
 export type { PlanRouteArgs } from '../eve/route-planner.js';
 
 export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'ui' | null> {
-  if (name === 'update_plan') {
+  // Tools that mutate local state must be 'write' so the executor runs them
+  // sequentially, never in the parallel read path (avoids lost-update races on
+  // USER.md, intel_notes, heartbeat_config, and route monitors).
+  if (
+    name === 'update_plan'
+    || isIntelNoteTool(name)
+    || isSetActiveFitTool(name)
+    || isHeartbeatConfigTool(name)
+    || isRouteMonitorTool(name)
+  ) {
     return 'write';
   }
-  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name)) {
+  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();

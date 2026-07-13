@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 describe('agent tools', () => {
   it('preloads deferred tool catalogs as hosted namespaces', async () => {
@@ -9,6 +9,10 @@ describe('agent tools', () => {
     process.env.EVE_CLIENT_SECRET = 'test';
     process.env.DEFAULT_MARKET_REGION_ID = '10000002';
     process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    // web_search is gated on TAVILY_API_KEY; clear it (and reset the cached config)
+    // so this "no web_search" assertion is hermetic on a dev/CI box that has a key.
+    delete process.env.TAVILY_API_KEY;
+    vi.resetModules();
     const { buildNativeAgentTools } = await import('../../src/agent/tools.js');
 
     const tools = await buildNativeAgentTools();
@@ -18,7 +22,9 @@ describe('agent tools', () => {
     const namespaces = tools.filter((tool): tool is Extract<(typeof tools)[number], { type: 'namespace' }> => tool.type === 'namespace');
     const namespaceNames = namespaces.map((tool) => tool.name);
 
-    expect(functionNames).toContain('web_search');
+    // web_search is gated on TAVILY_API_KEY, which is unset in this test env, so
+    // it must be absent — offering a tool that always errors wastes agent turns.
+    expect(functionNames).not.toContain('web_search');
     expect(functionNames).toContain('osint_infer_home');
     expect(functionNames).toContain('update_plan');
     expect(functionNames).toContain('get_eve_capabilities');
@@ -112,6 +118,31 @@ describe('agent tools', () => {
       },
       description: 'Optional top-level response fields to return. Allowed fields: is_blueprint_copy, is_singleton, item_id, location_flag, location_id, location_type, quantity, type_id. Null uses the operation default behavior.',
     });
+  });
+
+  it('includes web_search only when TAVILY_API_KEY is configured', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    // config is frozen at first import, so reset the module registry to force a
+    // fresh read of the env var we set below.
+    vi.resetModules();
+    process.env.TAVILY_API_KEY = 'tvly-test-key';
+    try {
+      const { buildNativeAgentTools } = await import('../../src/agent/tools.js');
+      const tools = await buildNativeAgentTools();
+      const functionNames = tools
+        .filter((tool): tool is Extract<(typeof tools)[number], { type: 'function' }> => tool.type === 'function')
+        .map((tool) => tool.name);
+      expect(functionNames).toContain('web_search');
+    } finally {
+      delete process.env.TAVILY_API_KEY;
+      vi.resetModules();
+    }
   });
 
   it('can build a reduced static-aggregate toolset without namespaces', async () => {

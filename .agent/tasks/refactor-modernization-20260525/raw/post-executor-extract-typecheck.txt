@@ -1,5 +1,0 @@
-
-> eve-agent@2.1.1 typecheck
-> tsc --noEmit
-
-src/agent/web-search.ts(29,23): error TS2304: Cannot find name 'MAX_WEB_SEARCHES_PER_TURN'.

@@ -360,10 +360,13 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
   }
 
   for (const kill of deduped.values()) {
-    const timeMs = kill.killmail_time ? new Date(kill.killmail_time).getTime() : 0;
-    if (timeMs > 0 && timeMs < cutoffMs) continue;
+    // A present-but-unparseable timestamp must be treated as missing — otherwise
+    // NaN slips past the cutoff filter and poisons every downstream score.
+    const timeMs = kill.killmail_time ? new Date(kill.killmail_time).getTime() : NaN;
+    const hasValidTime = Boolean(kill.killmail_time) && Number.isFinite(timeMs);
+    if (hasValidTime && timeMs < cutoffMs) continue;
     const systemId = typeof kill.solar_system_id === 'number' ? kill.solar_system_id : null;
-    if (!systemId || !kill.killmail_time) {
+    if (!systemId || !kill.killmail_time || !hasValidTime) {
       filtered.incomplete += 1;
       continue;
     }
@@ -646,7 +649,9 @@ function matchesAttackerScope(
 
 function recencyWeight(time: string | undefined): number {
   if (!time) return 0;
-  const ageMs = Date.now() - new Date(time).getTime();
+  const parsed = new Date(time).getTime();
+  if (!Number.isFinite(parsed)) return 0;
+  const ageMs = Date.now() - parsed;
   if (ageMs <= 0) return 1.5;
   const ageDays = ageMs / 86_400_000;
   return Number((1 / Math.max(1, ageDays)).toFixed(3));
@@ -1058,9 +1063,13 @@ function buildHomeHypothesis(
     let weeklyStability = 0;
     if (sortedDays.length >= 2) {
       const weeks = new Set(sortedDays.map((d) => {
+        // Compute the week bucket entirely in UTC. Mixing UTC-midnight parsing
+        // with local getFullYear() shifts buckets in negative-UTC timezones and
+        // breaks deterministic output.
         const date = new Date(d);
-        const yearDay = Math.floor((date.getTime() - new Date(date.getFullYear(), 0, 1).getTime()) / 86_400_000);
-        return `${date.getFullYear()}-W${Math.floor(yearDay / 7)}`;
+        const year = date.getUTCFullYear();
+        const yearDay = Math.floor((date.getTime() - Date.UTC(year, 0, 1)) / 86_400_000);
+        return `${year}-W${Math.floor(yearDay / 7)}`;
       }));
       weeklyStability = Math.min(1, weeks.size / Math.max(1, evidence.sourceWindowDays / 7));
       if (weeks.size >= 2) reasons.push(`active ${weeks.size} weeks (stable presence)`);

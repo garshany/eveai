@@ -192,7 +192,7 @@ describe('createNativeResponse request body', () => {
     expect(body?.context_management).toEqual([{ type: 'compaction', compact_threshold: 1234 }]);
   });
 
-  it('sends the GPT-5.5 Responses tuning parameters configured for Telegram', async () => {
+  it('sends the GPT-5.6 Responses tuning parameters configured for Telegram', async () => {
     process.env.ALLOWED_TELEGRAM_USER_ID = '1';
     process.env.TELEGRAM_BOT_TOKEN = 'test';
     process.env.OPENAI_API_KEY = 'test';
@@ -200,8 +200,9 @@ describe('createNativeResponse request body', () => {
     process.env.EVE_CLIENT_SECRET = 'test';
     process.env.DEFAULT_MARKET_REGION_ID = '10000002';
     process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
-    process.env.OPENAI_MODEL = 'gpt-5.5';
-    process.env.OPENAI_REASONING_EFFORT = 'medium';
+    process.env.OPENAI_MODEL = 'gpt-5.6-sol';
+    process.env.OPENAI_REASONING_EFFORT = 'auto';
+    process.env.OPENAI_REASONING_MODE = 'standard';
     process.env.OPENAI_TEXT_VERBOSITY = 'low';
 
     let body: Record<string, unknown> | null = null;
@@ -209,7 +210,7 @@ describe('createNativeResponse request body', () => {
       body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
       return new Response([
         'event: response.done',
-        'data: {"response":{"id":"resp_gpt55","output_text":"ok","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}',
+        'data: {"response":{"id":"resp_gpt56","output_text":"ok","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}',
         '',
       ].join('\n'), { status: 200 });
     }));
@@ -222,11 +223,137 @@ describe('createNativeResponse request body', () => {
       tools: [],
     });
 
-    expect(body?.model).toBe('gpt-5.5');
+    expect(body?.model).toBe('gpt-5.6-sol');
+    // `auto` is local routing policy; internal calls use the preserved medium baseline.
     expect(body?.reasoning).toEqual({ effort: 'medium' });
     expect(body?.text).toEqual({ verbosity: 'low' });
     expect(body?.store).toBe(false);
     expect(body?.stream).toBe(true);
+  });
+
+  it('forwards every GPT-5.6 family model and supported fixed reasoning effort', async () => {
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"resp_options","output_text":"ok","output":[]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const models = ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
+    const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+    for (const model of models) {
+      for (const reasoningEffort of efforts) {
+        await createNativeResponse({
+          instructions: 'test',
+          items: [toNativeMessage('hello')],
+          tools: [],
+          model,
+          reasoningEffort,
+        });
+        expect(body?.model).toBe(model);
+        expect(body?.reasoning).toEqual({ effort: reasoningEffort });
+      }
+    }
+  });
+
+  it('serializes Pro mode only when requested and forwards the safety identifier', async () => {
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"resp_pro","output_text":"ok","output":[]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+      reasoningEffort: 'xhigh',
+      reasoningMode: 'pro',
+      safetyIdentifier: 'opaque-user-id',
+    });
+    expect(body?.reasoning).toEqual({ effort: 'xhigh', mode: 'pro' });
+    expect(body?.safety_identifier).toBe('opaque-user-id');
+
+    await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+      reasoningEffort: 'low',
+      reasoningMode: 'standard',
+    });
+    expect(body?.reasoning).toEqual({ effort: 'low' });
+    expect(body).not.toHaveProperty('safety_identifier');
+  });
+
+  it('parses GPT-5.6 cache-write usage separately from cache reads', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.done',
+      'data: {"response":{"id":"resp_usage","output_text":"ok","output":[],"usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":40,"cache_write_tokens":60},"output_tokens_details":{"reasoning_tokens":5}}}}',
+      '',
+    ].join('\n'), { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const result = await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+    });
+    expect(result.usage).toEqual({
+      input: 100,
+      output: 20,
+      total: 120,
+      cached: 40,
+      cacheWrite: 60,
+      reasoning: 5,
+    });
+  });
+
+  it('requests a reasoning summary only for a streaming top-level call with a sink', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"r","output_text":"ok","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+    const sink = { emit: () => {} };
+    const call = (streamToActivity: boolean) =>
+      createNativeResponse({ instructions: 't', items: [toNativeMessage('hi')], tools: [], reasoningEffort: 'medium', streamToActivity });
+
+    // Internal call (streamToActivity false) with a sink active: no summary, no leaked reasoning.
+    await runWithActivitySink(sink, () => call(false));
+    expect(body?.reasoning).toEqual({ effort: 'medium' });
+
+    // Top-level streaming call with a sink: summary requested.
+    await runWithActivitySink(sink, () => call(true));
+    expect(body?.reasoning).toEqual({ effort: 'medium', summary: 'auto' });
+
+    // No sink (the bots) even with streamToActivity true: unchanged request.
+    await call(true);
+    expect(body?.reasoning).toEqual({ effort: 'medium' });
   });
 
   it('forwards prompt_cache_key to the proxy', async () => {
@@ -321,5 +448,35 @@ describe('createNativeResponse request body', () => {
         argumentsText: '{"city":"Jita"}',
       },
     ]);
+  });
+
+  it('flags a truncated stream (no terminal event, no output) as an error', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+
+    // Stream opens but is cut off before any terminal (response.completed/done)
+    // event and before any output — must not look like a valid empty answer.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_trunc"}}',
+      '',
+    ].join('\n'), { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+
+    const result = await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+    });
+
+    expect(result.error).not.toBeNull();
+    expect(result.error?.message).toContain('Incomplete response stream');
+    expect(result.outputText).toBe('');
   });
 });

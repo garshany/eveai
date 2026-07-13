@@ -10,15 +10,18 @@ describe('buildDeveloperPrompt', () => {
       grantedScopes: [],
     });
 
-    // Structure: GPT-5.5 outcome-first mission, then output contract, then routing/policy.
+    // Structure: GPT-5.6 outcome-first mission, then output contract, then routing/policy.
     const missionPos = prompt.indexOf('<mission_and_success>');
     const outputContractPos = prompt.indexOf('<output_contract>');
     const toolHierarchyPos = prompt.indexOf('<tool_source_hierarchy>');
     const personalityPos = prompt.indexOf('<personality_and_writing_controls>');
+    const authorizationPos = prompt.indexOf('<authorization_boundaries>');
     expect(missionPos).toBeGreaterThanOrEqual(0);
     expect(missionPos).toBeLessThan(outputContractPos);
     expect(outputContractPos).toBeLessThan(personalityPos);
     expect(outputContractPos).toBeLessThan(toolHierarchyPos);
+    expect(authorizationPos).toBeGreaterThan(toolHierarchyPos);
+    expect(authorizationPos).toBeLessThan(personalityPos);
 
     // Core content assertions
     expect(prompt).toContain('Default answer language: Russian');
@@ -47,7 +50,7 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).not.toContain('<tool_routing>');
     expect(prompt).toContain('<tool_source_hierarchy>');
 
-    // GPT-5.5 outcome-first sections present.
+    // GPT-5.6 outcome-first sections present.
     expect(prompt).toContain('<mission_and_success>');
     expect(prompt).toContain('<tool_decision_rules>');
     expect(prompt).toContain('<private_access_and_context>');
@@ -56,6 +59,10 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('Residence/staging OSINT');
     expect(prompt).toContain('Private ESI access is gated');
     expect(prompt).toContain('Prefer batches over loops');
+    expect(prompt).toContain('For requests to answer, explain, compare, diagnose, review, or plan');
+    expect(prompt).toContain('perform it without asking again');
+    expect(prompt).toContain('Require confirmation before deletes');
+    expect(prompt.match(/<authorization_boundaries>/g)).toHaveLength(1);
 
     // Track size to avoid drifting back into a process-heavy prompt stack.
     expect(prompt.length).toBeLessThan(18000);

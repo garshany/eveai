@@ -194,6 +194,61 @@ describe('compactThreadWithRetry', () => {
 });
 
 describe('compactThread core', () => {
+  it('never deletes messages that did not fit into the summarizer input budget', async () => {
+    process.env.COMPACT_MAX_INPUT_CHARS = '20000';
+    vi.resetModules();
+    const { compactThread } = await import('../../src/agent/compact.js');
+
+    const longText = 'x'.repeat(4000);
+    for (let i = 0; i < 30; i++) {
+      db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', `msg ${i} ${longText}`);
+    }
+    const before = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE thread_id = 't1'").get() as { n: number };
+
+    const seenBatches: number[] = [];
+    const changed = await compactThread(db, 't1', async ({ messages }) => {
+      seenBatches.push(messages.length);
+      return `Summary of ${messages.length}`;
+    });
+
+    expect(changed).toBe(true);
+    // Budget is 20K chars and every message is ~4K chars: one pass must not
+    // swallow (and delete) more than ~5 messages.
+    expect(seenBatches[0]).toBeLessThanOrEqual(5);
+
+    const after = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE thread_id = 't1'").get() as { n: number };
+    // Only the summarized prefix may be deleted.
+    expect(before.n - after.n).toBe(seenBatches[0]);
+
+    // A second pass continues from where the first stopped.
+    const changedAgain = await compactThread(db, 't1', async ({ messages }) => {
+      seenBatches.push(messages.length);
+      return `Summary of ${messages.length}`;
+    });
+    expect(changedAgain).toBe(true);
+    expect(seenBatches[1]).toBeLessThanOrEqual(5);
+  });
+
+  it('prunes stale tool messages even when there is nothing to summarize', async () => {
+    vi.resetModules();
+    const { compactThread } = await import('../../src/agent/compact.js');
+
+    for (let i = 0; i < 10; i++) {
+      db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'tool', `{"tool":"old_${i}"}`);
+    }
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'q1');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'assistant', 'a1');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'q2');
+
+    const changed = await compactThread(db, 't1', async () => 'unused');
+    expect(changed).toBe(false);
+
+    const toolRows = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE thread_id = 't1' AND role = 'tool'").get() as { n: number };
+    expect(toolRows.n).toBe(0);
+    const chatRows = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE thread_id = 't1' AND role IN ('user','assistant')").get() as { n: number };
+    expect(chatRows.n).toBe(3);
+  });
+
   it('compacts and preserves recent messages', async () => {
     vi.resetModules();
     const { compactThread, getThreadSummary } = await import('../../src/agent/compact.js');
@@ -215,9 +270,65 @@ describe('compactThread core', () => {
     const row = db.prepare('SELECT total_tokens FROM agent_threads WHERE thread_id = ?').get('t1') as { total_tokens: number };
     expect(row.total_tokens).toBe(0);
 
+    // Repeated passes drain the backlog down to the keep window without ever
+    // deleting unsummarized messages.
+    for (let pass = 0; pass < 20; pass++) {
+      const again = await compactThread(db, 't1', async ({ messages }) => `Summary of ${messages.length} messages`);
+      if (!again) break;
+    }
+
     const remaining = db.prepare("SELECT content FROM messages WHERE thread_id = ? ORDER BY id ASC").all('t1') as
       Array<{ content: string }>;
     expect(remaining.length).toBeGreaterThan(0);
     expect(remaining.length).toBeLessThan(40);
+  });
+});
+
+describe('estimateTokens (Cyrillic-aware keep budget)', () => {
+  it('counts ASCII ~chars/4 and Cyrillic ~2x higher (UTF-8 bytes/4)', async () => {
+    const { estimateTokens } = await import('../../src/agent/compact.js');
+    expect(estimateTokens('abcd')).toBe(1);          // 4 ASCII bytes / 4
+    expect(estimateTokens('a'.repeat(40))).toBe(10); // 40 bytes / 4
+    // Cyrillic is 2 UTF-8 bytes/char, so it counts ~2x higher than chars/4.
+    const cyr = 'привет как дела друг';
+    expect(estimateTokens(cyr)).toBeGreaterThan(Math.ceil(cyr.length / 4));
+  });
+
+  it('keeps fewer Cyrillic messages than the old chars/4 estimate would', async () => {
+    process.env.OPENAI_MODEL_CONTEXT_WINDOW = '200000';
+    process.env.OPENAI_COMPACT_THRESHOLD = '0';
+    vi.resetModules();
+    const { compactThread, estimateTokens } = await import('../../src/agent/compact.js');
+
+    // 30 Cyrillic messages, each ~2000 chars (~4000 UTF-8 bytes). Under the
+    // byte-aware estimate the 20k keep budget holds fewer than all 30 — whereas
+    // chars/4 (~half the count) would have kept the whole backlog.
+    const line = 'ассеты и цены '.repeat(140); // ~2000 chars, all Cyrillic
+    for (let i = 0; i < 30; i++) {
+      db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)")
+        .run('t1', i % 2 === 0 ? 'user' : 'assistant', `${i}: ${line}`);
+    }
+    expect(estimateTokens(line)).toBeGreaterThan(400); // byte-aware, well above chars/4
+
+    await compactThread(db, 't1', async ({ messages }) => `Summary of ${messages.length} messages`);
+    const kept = db.prepare("SELECT COUNT(*) n FROM messages WHERE thread_id = ? AND role IN ('user','assistant')")
+      .get('t1') as { n: number };
+    // Byte-aware budget keeps a bounded, smaller recent window (not all 30).
+    expect(kept.n).toBeLessThan(30);
+    expect(kept.n).toBeGreaterThan(0);
+  });
+});
+
+describe('capOnLineBoundary (summary trim)', () => {
+  it('cuts on a line boundary and never mid-bullet, within the cap', async () => {
+    const { capOnLineBoundary } = await import('../../src/agent/compact.js');
+    const bullets = Array.from({ length: 50 }, (_, i) => `- факт номер ${i} с деталями`).join('\n');
+    const capped = capOnLineBoundary(bullets, 400);
+    expect(capped.length).toBeLessThanOrEqual(400);
+    expect(capped.endsWith('\n')).toBe(false);
+    // Every kept line is a complete bullet — none truncated mid-line.
+    expect(capped.split('\n').every((l) => l.startsWith('- факт'))).toBe(true);
+    // Short input is returned unchanged.
+    expect(capOnLineBoundary('short', 400)).toBe('short');
   });
 });

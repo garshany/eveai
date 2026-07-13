@@ -334,7 +334,16 @@ async function refreshAccessToken(
   }
 
   const tokens = (await res.json()) as TokenResponse;
-  await verifyEveAccessToken(tokens.access_token);
+  const payload = await verifyEveAccessToken(tokens.access_token);
+
+  // Ensure the refreshed token is still for the same character before storing
+  // it under this row — never serve character B's token from A's account.
+  const refreshedCharacterId = Number(payload.sub.split(':').at(-1));
+  if (!Number.isFinite(refreshedCharacterId) || refreshedCharacterId !== account.character_id) {
+    console.error('[sso] Refresh returned a token for a different character (expected %d, got %s) — rejecting',
+      account.character_id, payload.sub);
+    return null;
+  }
 
   db.prepare(`
     UPDATE eve_accounts SET

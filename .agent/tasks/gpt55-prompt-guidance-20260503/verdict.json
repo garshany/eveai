@@ -1,6 +1,0 @@
-{
-  "taskId": "gpt55-prompt-guidance-20260503",
-  "verdict": "PASS",
-  "reason": "All acceptance criteria passed. The GPT-5.5 prompt-guidance rewrite was implemented, locally validated, pushed, deployed, and verified in production.",
-  "problems": []
-}

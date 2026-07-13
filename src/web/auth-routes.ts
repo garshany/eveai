@@ -2,29 +2,20 @@ import type { FastifyInstance } from 'fastify';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
 import { deleteUserProfileArtifact } from '../eve/user-profile-storage.js';
-import { ALL_REQUESTED_SCOPES } from '../eve/scopes.js';
 import { refreshUserProfile } from '../eve/user-profile.js';
 import { linkCharacterToChat } from '../eve/sso.js';
 import { getEveSsoMetadata, verifyEveAccessToken } from '../eve/sso-auth.js';
-import { getOrCreateUser, type UserContext } from '../auth/user-resolver.js';
-import { consumeTelegramLoginNonce, parseTelegramLoginQuery, verifyTelegramLogin } from '../auth/telegram-login.js';
+import type { UserContext } from '../auth/user-resolver.js';
 import {
-  buildLogoutCookie,
-  buildSessionCookie,
-  createWebSession,
-  deleteWebSession,
-  SESSION_COOKIE_NAME,
-} from '../auth/session.js';
-import { consumeHandoffToken } from '../auth/handoff.js';
-import { resolveUserFromWebSession } from '../auth/user-resolver.js';
-import {
-  createAuthRequestToken,
   findPendingAuthRequest,
   markAuthRequestUsed,
 } from '../auth/auth-request.js';
 import { encryptStoredSecret } from '../auth/secret-storage.js';
-import { isTelegramUserAllowed } from '../telegram/access.js';
+import { buildEveAuthorizeUrl } from '../eve/eve-login.js';
 import { fetchWithTimeout } from '../eve/http.js';
+import { createLogger } from '../observability/logger.js';
+
+const log = createLogger('auth');
 
 interface CallbackQuery {
   code?: string;
@@ -41,59 +32,28 @@ interface TokenResponse {
 }
 
 export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
-  // GET /auth/telegram/callback -- Telegram Login Widget verification
-  app.get<{ Querystring: Record<string, string> }>('/auth/telegram/callback', async (req, reply) => {
-    const data = parseTelegramLoginQuery(req.query);
-    if (!data) {
-      return reply.status(400).send({ error: 'Invalid Telegram login data' });
+  // GET /auth/eve/login -- short redirect to the full EVE SSO authorize URL.
+  // The bots send this short link (the real URL is ~2.1KB, too long for a
+  // Discord message/button); it 302s the browser on to EVE.
+  app.get<{ Querystring: { state?: string } }>('/auth/eve/login', async (req, reply) => {
+    const state = typeof req.query.state === 'string' ? req.query.state : '';
+    if (!state) {
+      return reply.status(400).type('text/html').send(buildNoticePage('Missing login token.'));
     }
-
-    if (!verifyTelegramLogin(data)) {
-      return reply.status(403).send({ error: 'Telegram login verification failed' });
+    // Validate (do not consume — the callback consumes it) so a stale/expired
+    // link gives a clear message instead of bouncing through EVE.
+    const pending = findPendingAuthRequest(db, 'eve_sso', state);
+    if (!pending) {
+      return reply.status(403).type('text/html').send(buildNoticePage('This login link has expired or was already used. Run /eve_login again in the bot.'));
     }
-
-    if (!consumeTelegramLoginNonce(db, String(req.query.nonce ?? ''))) {
-      return reply.status(403).send({ error: 'Telegram login challenge expired or already used' });
-    }
-
-    if (!isTelegramUserAllowed(data.id, config.telegram.allowedUserId)) {
-      return reply.status(403).send({ error: 'Access denied' });
-    }
-
-    const userId = getOrCreateUser(db, data.id, data.username, data.first_name);
-    const sessionId = createWebSession(db, userId);
-    const cookie = buildSessionCookie(sessionId, config.web.sessionTtlHours, req.headers);
-
     return reply
       .header('Cache-Control', 'no-store')
-      .header('Set-Cookie', cookie)
-      .redirect('/app');
+      .redirect(buildEveAuthorizeUrl(state));
   });
 
-  // GET /auth/eve/start -- requires web session, redirects to EVE SSO
-  app.get('/auth/eve/start', async (req, reply) => {
-    const userId = resolveSessionUser(db, req);
-    if (!userId) {
-      return reply.status(401).send({ error: 'Not authenticated. Login via Telegram first.' });
-    }
-
-    const state = createAuthRequestToken(db, 'eve_sso', userId, {
-      ttlSeconds: 600,
-    });
-
-    const scopes = ALL_REQUESTED_SCOPES.join(' ');
-    const metadata = await getEveSsoMetadata();
-    const url = new URL(metadata.authorization_endpoint);
-    url.searchParams.set('response_type', 'code');
-    url.searchParams.set('redirect_uri', config.eve.callbackUrl);
-    url.searchParams.set('client_id', config.eve.clientId);
-    url.searchParams.set('scope', scopes);
-    url.searchParams.set('state', state);
-
-    return reply.redirect(url.toString());
-  });
-
-  // GET /auth/eve/callback -- handle OAuth callback (both bot and web origins)
+  // GET /auth/eve/callback -- EVE SSO OAuth callback. Login links are issued
+  // by the bots (/eve_login); together with /auth/eve/login, these are the
+  // browser-facing auth routes.
   app.get<{ Querystring: CallbackQuery }>('/auth/eve/callback', async (req, reply) => {
     const { code, state, error, error_description } = req.query;
     if (error) {
@@ -136,7 +96,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
 
       if (!tokenRes.ok) {
         const errBody = await tokenRes.text();
-        console.error('[auth] Token exchange failed:', errBody);
+        log.error('Token exchange failed: %s', errBody);
         return reply.status(502).send({ error: 'Token exchange failed' });
       }
 
@@ -175,63 +135,22 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       void refreshUserProfile(db, ctx)
         .then((result) => {
           if (!result.ok) {
-            console.warn(`[auth] USER.md refresh skipped: ${result.error}`);
+            log.warn('USER.md refresh skipped: %s', result.error);
           } else {
-            console.log(`[auth] USER.md updated: ${result.data.path}`);
+            log.info('USER.md updated: %s', result.data.path);
           }
         })
         .catch((err) => {
-          console.warn(`[auth] USER.md refresh failed: ${(err as Error).message}`);
+          log.warn('USER.md refresh failed: %s', (err as Error).message);
         });
 
-      console.log(`[auth] Character linked: ${payload.name} (${characterId}), ${scopes.length} scopes, user_id=${ctx.userId}`);
+      log.info('Character linked: %s (%d), %d scopes, user_id=%d', payload.name, characterId, scopes.length, ctx.userId);
 
-      // If from web, redirect to dashboard
-      const sessionUser = resolveSessionUser(db, req);
-      if (sessionUser) {
-        return reply.redirect('/app');
-      }
-
-      return reply.type('text/html').send(
-        `<h1>Success!</h1><p>Character <strong>${escapeHtml(payload.name)}</strong> linked with ${scopes.length} scopes. You can close this tab and return to Telegram.</p>`,
-      );
+      return reply.type('text/html').send(buildSuccessPage(payload.name, scopes.length));
     } catch (err) {
-      console.error('[auth] Callback error:', err);
-      return reply.status(500).send({ error: `Auth error: ${(err as Error).message}` });
+      log.error('Callback error: %s', err instanceof Error ? err.message : String(err));
+      return reply.status(500).send({ error: 'Authentication failed. Please try /eve_login again.' });
     }
-  });
-
-  // POST /auth/tg-handoff/exchange -- one-time token from bot -> web session
-  app.post<{ Body: { token?: string } }>('/auth/tg-handoff/exchange', async (req, reply) => {
-    const token = typeof req.body?.token === 'string' ? req.body.token : '';
-    if (!token) {
-      return reply.status(400).send({ error: 'Missing token' });
-    }
-
-    const userId = consumeHandoffToken(db, token);
-    if (!userId) {
-      return reply.status(403).send({ error: 'Invalid or expired handoff token' });
-    }
-
-    const sessionId = createWebSession(db, userId);
-    const cookie = buildSessionCookie(sessionId, config.web.sessionTtlHours, req.headers);
-
-    return reply
-      .header('Cache-Control', 'no-store')
-      .header('Set-Cookie', cookie)
-      .send({ ok: true });
-  });
-
-  // POST /auth/logout
-  app.post('/auth/logout', async (req, reply) => {
-    const sessionId = extractSessionCookie(req);
-    if (sessionId) {
-      deleteWebSession(db, sessionId);
-    }
-    return reply
-      .header('Cache-Control', 'no-store')
-      .header('Set-Cookie', buildLogoutCookie(req.headers))
-      .send({ ok: true });
   });
 
   // Alias: GET /callback -- for EVE apps registered with http://localhost:PORT/callback
@@ -245,23 +164,36 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
   });
 }
 
-function resolveSessionUser(db: Db, req: { headers: Record<string, string | string[] | undefined> }): number | null {
-  const sessionId = extractSessionCookie(req);
-  if (!sessionId) return null;
-  return resolveUserFromWebSession(db, sessionId);
+function buildSuccessPage(characterName: string, scopeCount: number): string {
+  const name = escapeHtml(characterName);
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>EVE AI — Character linked</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0b0e14; color: #e6e6e6; display: flex; min-height: 100vh; align-items: center; justify-content: center; margin: 0; }
+  main { text-align: center; padding: 2rem; }
+  h1 { color: #7ee787; }
+  p { color: #9da5b4; }
+</style></head>
+<body><main>
+  <h1>Character linked</h1>
+  <p><strong>${name}</strong> is now connected with ${scopeCount} scopes.</p>
+  <p>You can close this tab and return to the chat.</p>
+</main></body>
+</html>`;
 }
 
-function extractSessionCookie(req: { headers: Record<string, string | string[] | undefined> }): string | null {
-  const cookieHeader = req.headers.cookie;
-  if (!cookieHeader || typeof cookieHeader !== 'string') return null;
-
-  for (const part of cookieHeader.split(';')) {
-    const trimmed = part.trim();
-    if (trimmed.startsWith(`${SESSION_COOKIE_NAME}=`)) {
-      return trimmed.slice(SESSION_COOKIE_NAME.length + 1);
-    }
-  }
-  return null;
+function buildNoticePage(message: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>EVE AI</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0b0e14; color: #e6e6e6; display: flex; min-height: 100vh; align-items: center; justify-content: center; margin: 0; }
+  main { text-align: center; padding: 2rem; max-width: 32rem; }
+  p { color: #9da5b4; }
+</style></head>
+<body><main><p>${escapeHtml(message)}</p></main></body>
+</html>`;
 }
 
 function extractCharacterId(sub: string): number {

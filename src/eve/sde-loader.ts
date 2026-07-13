@@ -14,14 +14,20 @@
  * Some files may be nested in subdirectories after zip extraction.
  */
 
+import 'dotenv/config';
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join, basename } from 'node:path';
-import { config } from '../config.js';
+import { pathToFileURL } from 'node:url';
 import { initDb } from '../db/sqlite.js';
 import { runMigrations } from '../db/migrations.js';
 
-interface LoaderConfig {
+// Deliberately no src/config.js import: setup must work before the operator
+// has filled in the rest of .env (bot tokens, OpenAI key, EVE credentials).
+const SDE_DATA_DIR = process.env.SDE_DATA_DIR || './data/sde';
+const DB_PATH = process.env.DB_PATH || './data/eve-agent.db';
+
+export interface LoaderConfig {
   /** Possible file names to look for (without path) */
   filePatterns: string[];
   table: string;
@@ -282,7 +288,7 @@ function findJsonlFile(sdeDir: string, patterns: string[]): string | null {
   return searchDir(sdeDir, 0);
 }
 
-async function loadJsonlFile(
+export async function loadJsonlFile(
   db: ReturnType<typeof initDb>,
   loader: LoaderConfig,
   sdeDir: string,
@@ -342,6 +348,10 @@ async function loadJsonlFile(
         id = obj._key;
       }
       if (id === undefined) continue; // skip records without valid ID
+      // A non-scalar id (e.g. {"type_id": {...}}) can't bind to an INTEGER
+      // PRIMARY KEY and would otherwise throw at flush time — outside the
+      // per-line try — crashing the whole load with the table already cleared.
+      if (typeof id === 'object') { skipped++; continue; }
 
       // Extract name -- handle localized format
       let name = '';
@@ -362,8 +372,9 @@ async function loadJsonlFile(
       }
       for (const col of extraKeys) {
         const jsonField = loader.extraCols![col];
-        let val = getFieldValue(obj, jsonField);
-        row.push(val ?? null);
+        const val = getFieldValue(obj, jsonField);
+        // Non-scalar values can't bind — store null rather than throwing.
+        row.push(val !== null && typeof val === 'object' ? null : (val ?? null));
       }
       row.push(JSON.stringify(obj));
 
@@ -371,7 +382,13 @@ async function loadJsonlFile(
       count++;
 
       if (batch.length >= BATCH_SIZE) {
-        insertMany(batch.splice(0));
+        try {
+          insertMany(batch.splice(0));
+        } catch (err) {
+          console.warn(`  [warn] ${basename(filePath)}: batch insert failed: ${(err as Error).message}`);
+          skipped += BATCH_SIZE;
+          count -= BATCH_SIZE;
+        }
       }
     } catch {
       skipped++;
@@ -379,7 +396,14 @@ async function loadJsonlFile(
   }
 
   if (batch.length > 0) {
-    insertMany(batch);
+    // Guard the final flush too — it is outside the per-line try above.
+    try {
+      insertMany(batch);
+    } catch (err) {
+      console.warn(`  [warn] ${basename(filePath)}: final batch insert failed: ${(err as Error).message}`);
+      skipped += batch.length;
+      count -= batch.length;
+    }
   }
 
   if (skipped > 0) {
@@ -467,7 +491,7 @@ async function loadGenericJsonlFile(
 }
 
 async function main() {
-  const sdeDir = config.sde.dataDir;
+  const sdeDir = SDE_DATA_DIR;
   console.log(`[sde-loader] Loading SDE from ${sdeDir}`);
 
   if (!existsSync(sdeDir)) {
@@ -476,7 +500,7 @@ async function main() {
     process.exit(1);
   }
 
-  const db = initDb(config.db.path);
+  const db = initDb(DB_PATH);
   runMigrations(db);
 
   let totalRecords = 0;
@@ -515,11 +539,41 @@ async function main() {
     `INSERT OR REPLACE INTO sde_meta (build_number, loaded_at) VALUES (?, datetime('now'))`
   ).run('manual-' + new Date().toISOString().slice(0, 10));
 
+  // Fail loudly if a critical table is empty. These power the most common
+  // queries (item/price lookups and route planning); a silent partial load
+  // otherwise looks "done" but leaves the agent unable to answer basic
+  // questions. Exit non-zero so `npm run setup` surfaces the problem.
+  const CRITICAL_TABLES = ['sde_types', 'sde_systems', 'sde_groups', 'sde_regions'];
+  const empty = CRITICAL_TABLES.filter((table) => {
+    try {
+      return (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n === 0;
+    } catch {
+      return true;
+    }
+  });
+
   db.close();
   console.log(`[sde-loader] Done. Total: ${totalRecords} records loaded.`);
+
+  if (empty.length > 0) {
+    console.error(
+      `[sde-loader] ERROR: critical tables empty after load: ${empty.join(', ')}. ` +
+        'Check that the matching *.jsonl files downloaded correctly, then re-run `npm run setup`.',
+    );
+    process.exit(1);
+  }
 }
 
-main().catch((err) => {
-  console.error('[sde-loader] Error:', err);
-  process.exit(1);
-});
+// Only run the full load when executed directly (npm run sde:load) — importing
+// this module (e.g. for loadJsonlFile in tests) must not trigger a load or a
+// process.exit.
+const isMain = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
+
+if (isMain) {
+  main().catch((err) => {
+    console.error('[sde-loader] Error:', err);
+    process.exit(1);
+  });
+}

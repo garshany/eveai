@@ -1,4 +1,11 @@
 import { config } from '../config.js';
+import {
+  toApiReasoningEffort,
+  type ReasoningEffort,
+  type ReasoningMode,
+  type TextVerbosity,
+} from '../openai-options.js';
+import { getActivitySink, reportActivity } from './activity.js';
 
 export type NativeInputItem =
   | NativeInputMessage
@@ -62,6 +69,7 @@ export type NativeUsage = {
   output: number;
   total: number;
   cached: number;
+  cacheWrite?: number;
   reasoning: number;
 };
 
@@ -87,8 +95,6 @@ type NativeResponseEnvelope = {
   output_text?: string;
 };
 
-const RESPONSES_TIMEOUT_MS = 90_000;
-
 export async function createNativeResponse(input: {
   instructions: string;
   items: NativeInputItem[];
@@ -99,15 +105,33 @@ export async function createNativeResponse(input: {
   parallelToolCalls?: boolean;
   truncation?: string;
   contextManagement?: Array<{ type: string; compact_threshold: number }>;
-  textVerbosity?: string;
-  chatId?: number;
-  reasoningEffort?: string;
+  textVerbosity?: TextVerbosity;
+  reasoningEffort?: ReasoningEffort;
+  reasoningMode?: ReasoningMode;
+  safetyIdentifier?: string;
   maxOutputTokens?: number;
+  /**
+   * When true (the top-level agent loop only), stream output/reasoning to an
+   * attached activity sink. Internal calls — compaction, OSINT, route advisor —
+   * leave this false so their text never leaks into the CLI answer stream.
+   */
+  streamToActivity?: boolean;
 }): Promise<NativeResponseResult> {
   const baseUrl = normalizeBaseUrl(config.openai.baseUrl);
-  const effectiveEffort = input.reasoningEffort ?? config.openai.reasoningEffort;
+  const effectiveEffort = toApiReasoningEffort(input.reasoningEffort ?? config.openai.reasoningEffort);
+  const effectiveMode = input.reasoningMode ?? 'standard';
   const maxTokens = input.maxOutputTokens || config.openai.maxOutputTokens || 0;
   const textVerbosity = input.textVerbosity ?? config.openai.textVerbosity;
+  const timeoutMs = config.openai.responsesTimeoutMs;
+  // Ask for a concise reasoning summary only for the top-level agent turn with an
+  // activity sink attached (the interactive CLI) so it can show a "thinking" line.
+  // Bots (no sink) and internal calls (compaction/OSINT/advisor, streamToActivity
+  // false) get an unchanged request — no extra summary tokens, no leaked text.
+  const streamThisCall = input.streamToActivity === true && getActivitySink() !== undefined;
+  const wantReasoningSummary = streamThisCall;
+  const reasoningPayload: Record<string, unknown> = { effort: effectiveEffort };
+  if (effectiveMode === 'pro') reasoningPayload.mode = 'pro';
+  if (wantReasoningSummary) reasoningPayload.summary = 'auto';
   const bodyPayload: Record<string, unknown> = {
       model: input.model ?? config.openai.model,
       instructions: input.instructions,
@@ -118,16 +142,13 @@ export async function createNativeResponse(input: {
       tool_choice: 'auto',
       parallel_tool_calls: input.parallelToolCalls ?? false,
       text: textVerbosity ? { verbosity: textVerbosity } : undefined,
-      reasoning: effectiveEffort
-        ? { effort: effectiveEffort }
-        : undefined,
+      reasoning: reasoningPayload,
+      safety_identifier: input.safetyIdentifier || undefined,
       store: false,
       stream: true,
       include: [],
     };
   // Only send optional parameters when explicitly configured.
-  // ChatGPT proxy rejects unknown parameters (user, max_output_tokens,
-  // prompt_cache_retention, reasoning.summary) with a 400 error.
   if (maxTokens > 0) bodyPayload.max_output_tokens = maxTokens;
   if (input.truncation) {
     bodyPayload.truncation = input.truncation;
@@ -140,8 +161,9 @@ export async function createNativeResponse(input: {
     baseUrl, bodyJson.length, input.tools.length, input.items.length,
     input.previousResponseId ?? 'none');
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RESPONSES_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
+  let rawText: string;
   try {
     response = await fetch(`${baseUrl}/responses`, {
       method: 'POST',
@@ -149,23 +171,27 @@ export async function createNativeResponse(input: {
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${config.openai.apiKey}`,
-        ...(input.chatId ? { 'x-chat-id': String(input.chatId) } : {}),
       },
       body: bodyJson,
     });
+    // Keep the deadline active across the streamed body read: with stream:true,
+    // fetch resolves on headers, so a stalled body would otherwise hang forever.
+    rawText = await response.text();
   } catch (error) {
-    if ((error as Error).name === 'AbortError') {
-      throw new Error(`Responses API timed out after ${Math.round(RESPONSES_TIMEOUT_MS / 1000)}s`);
+    if ((error as Error).name === 'AbortError' || (error as Error).name === 'TimeoutError') {
+      throw new Error(`Responses API timed out after ${Math.round(timeoutMs / 1000)}s`);
     }
     throw error;
   } finally {
     clearTimeout(timer);
   }
 
-  const rawText = await response.text();
   if (!response.ok) {
-    const detail = extractErrorMessage(rawText) ?? `HTTP ${response.status}`;
-    throw new Error(detail);
+    // Always carry the status code: transient-error classification upstream
+    // keys on "HTTP 429/5xx", and plain-text gateway bodies ("Bad Gateway",
+    // "Too Many Requests") say nothing machine-readable on their own.
+    const detail = extractErrorMessage(rawText);
+    throw new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
   }
 
   const events = parseSse(rawText);
@@ -187,25 +213,41 @@ export async function createNativeResponse(input: {
   const outputTextFromStream = extractStreamedOutputText(events);
   const outputText = completedPayload?.output_text
     ?? (outputTextFromStream || outputTextFromItems);
+  // A stream that ends without a terminal event and produced nothing usable was
+  // truncated mid-flight — surface it as a (retriable) error instead of a
+  // silent empty completion that looks like a deliberate blank answer.
+  const sawTerminalEvent = events.some(
+    (event) => event.event === 'response.completed' || event.event === 'response.done',
+  );
+  const incompleteStream = !sawTerminalEvent
+    && output.length === 0
+    && !outputText.trim();
   const errorMessage = completedPayload?.error?.message
     ?? findStreamError(events)
-    ?? null;
+    ?? (incompleteStream ? 'Incomplete response stream (no terminal event received)' : null);
 
   const toolSearchPaths = extractToolSearchPaths(output);
 
   // Debug: log usage, reasoning summary, and tool_search activity
   const usage = (completedPayload as Record<string, unknown> | null)?.usage as Record<string, unknown> | undefined;
   if (usage) {
-    console.log('[usage] input=%s output=%s total=%s cached=%s reasoning=%s',
+    console.log('[usage] input=%s output=%s total=%s cached=%s cache_write=%s reasoning=%s',
       usage.input_tokens ?? '?', usage.output_tokens ?? '?', usage.total_tokens ?? '?',
       (usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens ?? '0',
+      (usage.input_tokens_details as Record<string, unknown> | undefined)?.cache_write_tokens ?? '0',
       (usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens ?? '0');
   }
 
-  // Log reasoning summary if present (enabled by reasoning.summary='concise')
+  // Log reasoning summary if present (enabled by reasoning.summary='auto').
+  // When streaming (activityWantsTokens), the reasoning line was already emitted
+  // live from the stream, before the answer — don't emit it again post-parse.
   const reasoningSummary = extractReasoningSummary(output);
   if (reasoningSummary) {
     console.log('[reasoning] %s', reasoningSummary.slice(0, 500));
+    // Surface reasoning only for the top-level agent turn with a sink attached
+    // (the CLI). Internal calls (streamThisCall false) and the bots (no sink)
+    // never emit it.
+    if (streamThisCall) reportActivity({ type: 'reasoning', text: reasoningSummary });
   }
 
   const toolSearchItems = output.filter((item) => item.type === 'tool_search_output');
@@ -230,6 +272,7 @@ export async function createNativeResponse(input: {
       output: Number(usage.output_tokens ?? 0),
       total: Number(usage.total_tokens ?? 0),
       cached: Number((usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens ?? 0),
+      cacheWrite: Number((usage.input_tokens_details as Record<string, unknown> | undefined)?.cache_write_tokens ?? 0),
       reasoning: Number((usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens ?? 0),
     } : null,
   };
@@ -495,7 +538,6 @@ export const __test__ = {
   extractStreamedOutputText,
   collectDoneItems,
   findCompletedPayload,
-  RESPONSES_TIMEOUT_MS,
 };
 
 function reconstructFunctionCallsFromStream(events: NativeSseEvent[]): NativeResponseOutputItem[] {

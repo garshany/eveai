@@ -2,7 +2,7 @@
 
 ## Product
 
-EVE Agent is a multi-user EVE Online assistant with Telegram as the primary interface, EVE SSO for private data, local SDE for static knowledge, and a lightweight web surface for login and character management.
+EVE Agent is a multi-user EVE Online assistant with Telegram as the primary interface, EVE SSO for private data, local SDE for static knowledge, and a lightweight browser surface for login callbacks and health checks.
 
 ## Primary User Jobs
 

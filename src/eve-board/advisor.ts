@@ -253,10 +253,13 @@ export function detectPursuit(
   if (!approaching) return null;
 
   // Confidence based on system count and recency
-  const mostRecentKillMs = Math.max(
-    ...behindKills.map((k) => new Date(k.time).getTime()),
-  );
-  const minutesSinceLatest = (Date.now() - mostRecentKillMs) / 60_000;
+  const killTimes = behindKills
+    .map((k) => new Date(k.time).getTime())
+    .filter((t) => Number.isFinite(t));
+  const mostRecentKillMs = killTimes.length > 0 ? Math.max(...killTimes) : NaN;
+  const minutesSinceLatest = Number.isFinite(mostRecentKillMs)
+    ? (Date.now() - mostRecentKillMs) / 60_000
+    : Number.POSITIVE_INFINITY;
 
   let confidence: PursuitSignal['confidence'];
   if (systemSet.size >= 4 || minutesSinceLatest < 5) {

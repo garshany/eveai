@@ -1,5 +1,6 @@
 # Completed Execution Plans
 
+- [gpt-5-6-migration.md](./gpt-5-6-migration.md): verified GPT-5.6 Sol/Terra/Luna operator selection, reasoning and Pro controls, prompt migration, privacy identifiers, and strict official Responses smoke coverage.
 - [aggregate-latency-hardening.md](./aggregate-latency-hardening.md): deterministic local-SDE counters plus reduced toolsets and server-side fast-finalize for simple static geography count questions.
 - [eve-board-ux-unification.md](./eve-board-ux-unification.md): unified pre-flight and live ESP cockpit UX so `plan_route`, `briefing`, and `route-monitor` act like one travel assistant instead of separate analytical dumps.
 - [osint-home-inference.md](./osint-home-inference.md): top-level OSINT tool for probabilistic residence/staging inference with deterministic graph scoring and optional compact LLM pattern analysis.

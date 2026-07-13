@@ -24,6 +24,7 @@ export interface HeartbeatState {
   last_notification_id?: number;
   last_order_ids?: number[];
   last_industry_job_ids?: number[];
+  empty_queue_notified?: boolean;
 }
 
 export interface HeartbeatConfigRow {

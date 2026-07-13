@@ -30,7 +30,7 @@ vi.mock('../../src/config.js', () => ({
   },
 }));
 
-import { callEsiOperation } from '../../src/eve/esi-client.js';
+import { callEsiOperation, pruneExpiredEsiCache } from '../../src/eve/esi-client.js';
 
 let db: Database.Database;
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -85,6 +85,35 @@ describe('esi client', () => {
 
     const secondCallHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers as HeadersInit);
     expect(secondCallHeaders.get('If-None-Match')).toBe('"etag-1"');
+  });
+
+  it('returns the cached body on a 304 that omits an Expires header', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ players: 456 }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          ETag: '"etag-2"',
+          Expires: new Date(Date.now() + 60_000).toUTCString(),
+        },
+      }))
+      // 304 with NO Expires header — must still return the cached body, not 502.
+      .mockResolvedValueOnce(new Response(null, {
+        status: 304,
+        headers: { ETag: '"etag-2"' },
+      }));
+
+    const first = await callEsiOperation<{ players: number }>(db, 'get_status', {}, { userId: 0 });
+    expect(first.ok).toBe(true);
+
+    db.prepare("UPDATE esi_cache SET expires_at = datetime('now', '-1 second')").run();
+
+    const second = await callEsiOperation<{ players: number }>(db, 'get_status', {}, { userId: 0 });
+    expect(second.ok).toBe(true);
+    if (!second.ok) throw new Error('Expected 304-without-Expires to serve the cached body');
+    expect(second.status).toBe(200);
+    expect(second.cached).toBe(true);
+    expect(second.data.players).toBe(456);
   });
 
   it('retries 429 responses and respects Retry-After', async () => {
@@ -209,5 +238,18 @@ describe('esi client', () => {
     expect(result.status).toBe(409);
     expect(result.error).toContain('changed during collection');
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('pruneExpiredEsiCache deletes rows past the grace window and keeps fresh ones', () => {
+    db.prepare("INSERT INTO esi_cache (cache_key, response_text, expires_at, created_at) VALUES ('fresh', '{}', datetime('now','+1 hour'), datetime('now'))").run();
+    db.prepare("INSERT INTO esi_cache (cache_key, response_text, expires_at, created_at) VALUES ('recent', '{}', datetime('now','-1 hour'), datetime('now'))").run();
+    db.prepare("INSERT INTO esi_cache (cache_key, response_text, expires_at, created_at) VALUES ('stale', '{}', datetime('now','-2 days'), datetime('now'))").run();
+
+    const removed = pruneExpiredEsiCache(db);
+
+    expect(removed).toBe(1);
+    const keys = (db.prepare('SELECT cache_key FROM esi_cache ORDER BY cache_key').all() as Array<{ cache_key: string }>)
+      .map((r) => r.cache_key);
+    expect(keys).toEqual(['fresh', 'recent']);
   });
 });

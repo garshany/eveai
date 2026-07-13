@@ -1,1 +1,0 @@
-Integration tests not run: task touched prompt policy, hosted namespace metadata, unit tests, and docs only; no Telegram/auth seam changes required.

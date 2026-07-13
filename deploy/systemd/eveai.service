@@ -8,6 +8,7 @@ Type=simple
 # Adjust these paths for your server before installing.
 WorkingDirectory=/srv/eveai
 EnvironmentFile=/srv/eveai/.env
+Environment=NODE_ENV=production
 ExecStart=/usr/bin/node /srv/eveai/dist/app.js
 Restart=always
 RestartSec=5
