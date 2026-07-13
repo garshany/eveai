@@ -22,7 +22,7 @@
     "sde"
   ],
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.19.0"
   },
   "scripts": {
     "build": "tsc",
@@ -49,21 +49,21 @@
     "better-sqlite3": "^12.11.1",
     "croner": "^10.0.1",
     "discord.js": "^14.26.4",
-    "dotenv": "^16.4.0",
-    "fastify": "^5.2.0",
-    "grammy": "^1.35.0",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.10.0",
+    "grammy": "^1.44.0",
     "https-proxy-agent": "^9.1.0",
-    "jose": "^6.2.1",
+    "jose": "^6.2.3",
     "socks-proxy-agent": "^10.1.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
-    "@types/node": "^22.0.0",
-    "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0",
+    "@types/node": "^26.1.0",
+    "@typescript-eslint/eslint-plugin": "^8.63.0",
+    "@typescript-eslint/parser": "^8.63.0",
     "eslint": "^10.6.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
   }
 }

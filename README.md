@@ -50,7 +50,7 @@ Hard constraints:
 
 ## Requirements
 
-- Node.js 20+.
+- Node.js 20.19+.
 - npm.
 - At least one bot token:
   - Telegram bot token from [@BotFather](https://t.me/BotFather), and/or

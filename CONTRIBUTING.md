@@ -14,7 +14,7 @@ This project is a self-hosted Telegram-first EVE Online assistant with a Discord
 
 ## Local Setup
 
-1. Install Node.js 20+.
+1. Install Node.js 20.19+.
 2. Copy `.env.example` to `.env` and fill local credentials.
 3. Install dependencies with `npm ci`.
 4. Load static EVE data with `npm run setup` when your change needs SDE-backed behavior.
