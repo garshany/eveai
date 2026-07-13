@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { createHash, createHmac } from 'node:crypto';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import { runMigrations } from '../../src/db/migrations.js';
 
@@ -26,7 +25,7 @@ vi.mock('../../src/config.js', () => ({
     server: { port: 3000, host: '127.0.0.1' },
     db: { path: ':memory:' },
     sde: { dataDir: './data/sde' },
-    web: { baseUrl: 'http://localhost:3000', sessionTtlHours: 720, handoffTtlSeconds: 300 },
+    web: { baseUrl: 'http://localhost:3000' },
   },
 }));
 
@@ -42,9 +41,7 @@ vi.mock('../../src/eve/user-profile.js', () => ({
 import Fastify from 'fastify';
 import { registerAuthRoutes } from '../../src/web/auth-routes.js';
 import { registerHealthRoute } from '../../src/web/health.js';
-import { createWebSession } from '../../src/auth/session.js';
 import { createAuthRequestToken } from '../../src/auth/auth-request.js';
-import { createTelegramLoginNonce } from '../../src/auth/telegram-login.js';
 import { getAccessToken } from '../../src/eve/sso.js';
 import { resetEveSsoMetadataCacheForTests } from '../../src/eve/sso-auth.js';
 
@@ -83,59 +80,6 @@ describe('health route', () => {
 });
 
 describe('auth routes', () => {
-  it('GET /auth/telegram/callback rejects users outside allowlist', async () => {
-    const app = Fastify();
-    registerAuthRoutes(app, db);
-
-    const nonce = createTelegramLoginNonce(db);
-    const query = buildTelegramLoginQuery({
-      id: 2,
-      first_name: 'Blocked',
-      username: 'blocked',
-      nonce,
-    });
-
-    const res = await app.inject({ method: 'GET', url: `/auth/telegram/callback?${query}` });
-    expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body).error).toContain('Access denied');
-
-    await app.close();
-  });
-
-  it('GET /auth/telegram/callback consumes the login challenge once', async () => {
-    const app = Fastify();
-    registerAuthRoutes(app, db);
-
-    const nonce = createTelegramLoginNonce(db);
-    const query = buildTelegramLoginQuery({
-      id: 1,
-      first_name: 'Pilot',
-      username: 'pilot',
-      nonce,
-    });
-
-    const first = await app.inject({ method: 'GET', url: `/auth/telegram/callback?${query}` });
-    expect(first.statusCode).toBe(302);
-    expect(first.headers['set-cookie']).toContain('eve_session=');
-
-    const replay = await app.inject({ method: 'GET', url: `/auth/telegram/callback?${query}` });
-    expect(replay.statusCode).toBe(403);
-    expect(JSON.parse(replay.body).error).toContain('challenge expired or already used');
-
-    await app.close();
-  });
-
-  it('GET /auth/eve/start rejects unauthenticated requests', async () => {
-    const app = Fastify();
-    registerAuthRoutes(app, db);
-
-    const res = await app.inject({ method: 'GET', url: '/auth/eve/start' });
-    expect(res.statusCode).toBe(401);
-    expect(JSON.parse(res.body).error).toContain('Not authenticated');
-
-    await app.close();
-  });
-
   it('GET /auth/eve/callback rejects missing code', async () => {
     const app = Fastify();
     registerAuthRoutes(app, db);
@@ -151,6 +95,31 @@ describe('auth routes', () => {
     const res = await app.inject({ method: 'GET', url: '/auth/eve/callback?code=abc' });
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body).error).toContain('Missing state');
+    await app.close();
+  });
+
+  it('issues a short /eve_login link that /auth/eve/login redirects to EVE SSO', async () => {
+    const { createEveLoginLink } = await import('../../src/eve/eve-login.js');
+    db.prepare("INSERT INTO users (user_id, display_name, created_at, updated_at) VALUES (1, 'pilot', datetime('now'), datetime('now'))").run();
+
+    const link = createEveLoginLink(db, 1, 555);
+    // Must be short enough for a Discord message/button (real SSO URL is ~2.1KB).
+    expect(link.length).toBeLessThan(200);
+    expect(link).toContain('/auth/eve/login?state=');
+    const state = new URL(link).searchParams.get('state') as string;
+
+    const app = Fastify();
+    registerAuthRoutes(app, db);
+
+    const redirect = await app.inject({ method: 'GET', url: `/auth/eve/login?state=${encodeURIComponent(state)}` });
+    expect(redirect.statusCode).toBe(302);
+    expect(redirect.headers.location).toContain('https://login.eveonline.com/v2/oauth/authorize');
+    expect((redirect.headers.location as string).length).toBeGreaterThan(1500); // full scopes on the redirect, not the chat message
+
+    const bogus = await app.inject({ method: 'GET', url: '/auth/eve/login?state=nope' });
+    expect(bogus.statusCode).toBe(403);
+    const missing = await app.inject({ method: 'GET', url: '/auth/eve/login' });
+    expect(missing.statusCode).toBe(400);
     await app.close();
   });
 
@@ -171,35 +140,6 @@ describe('auth routes', () => {
     const res = await app.inject({ method: 'GET', url: '/auth/eve/callback?code=abc&state=state-0' });
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body).error).toContain('Invalid or expired state parameter');
-    await app.close();
-  });
-
-  it('GET /auth/eve/start stores only a protected auth state at rest', async () => {
-    const app = Fastify();
-    registerAuthRoutes(app, db);
-
-    db.prepare("INSERT INTO users (user_id, display_name, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))")
-      .run(1, 'pilot');
-    const sessionId = createWebSession(db, 1);
-
-    const res = await app.inject({
-      method: 'GET',
-      url: '/auth/eve/start',
-      headers: {
-        cookie: `eve_session=${sessionId}`,
-      },
-    });
-
-    expect(res.statusCode).toBe(302);
-    const location = res.headers.location;
-    expect(location).toBeTruthy();
-    const state = new URL(location ?? 'http://localhost').searchParams.get('state');
-    expect(state).toBeTruthy();
-
-    const row = db.prepare("SELECT state FROM auth_requests WHERE type = 'eve_sso'").get() as { state: string };
-    expect(row.state).not.toBe(state);
-    expect(row.state.startsWith('h1:')).toBe(true);
-
     await app.close();
   });
 
@@ -259,59 +199,36 @@ describe('auth routes', () => {
     await app.close();
   });
 
-  it('POST /auth/tg-handoff/exchange creates a session without query bearer tokens', async () => {
+  it('GET /auth/eve/callback does not leak internal error details', async () => {
     const app = Fastify();
     registerAuthRoutes(app, db);
 
     db.prepare("INSERT INTO users (user_id, display_name, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))")
       .run(1, 'pilot');
-    const token = createAuthRequestToken(db, 'tg_handoff', 1, { chatId: 99, ttlSeconds: 300 });
+    const state = createAuthRequestToken(db, 'eve_sso', 1, { ttlSeconds: 600 });
+
+    fetchMock.mockRejectedValue(new Error('ECONNREFUSED 10.0.0.5:443 internal-sso-gateway'));
 
     const res = await app.inject({
-      method: 'POST',
-      url: '/auth/tg-handoff/exchange',
-      payload: { token },
+      method: 'GET',
+      url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
     });
 
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({ ok: true });
-    expect(res.headers['set-cookie']).toContain('eve_session=');
+    expect(res.statusCode).toBe(500);
+    expect(res.body).not.toContain('ECONNREFUSED');
+    expect(res.body).not.toContain('internal-sso-gateway');
 
-    const replay = await app.inject({
-      method: 'POST',
-      url: '/auth/tg-handoff/exchange',
-      payload: { token },
-    });
-    expect(replay.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it('GET /callback forwards query params to /auth/eve/callback', async () => {
+    const app = Fastify();
+    registerAuthRoutes(app, db);
+
+    const res = await app.inject({ method: 'GET', url: '/callback?code=abc&state=xyz' });
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe('/auth/eve/callback?code=abc&state=xyz');
 
     await app.close();
   });
 });
-
-function buildTelegramLoginQuery(input: {
-  id: number;
-  first_name: string;
-  username: string;
-  nonce: string;
-}): string {
-  const auth_date = Math.floor(Date.now() / 1000);
-  const payload: Record<string, string> = {
-    id: String(input.id),
-    first_name: input.first_name,
-    username: input.username,
-    auth_date: String(auth_date),
-  };
-
-  const checkString = Object.entries(payload)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}=${value}`)
-    .join('\n');
-  const secretKey = createHash('sha256').update('test').digest();
-  const hash = createHmac('sha256', secretKey).update(checkString).digest('hex');
-
-  return new URLSearchParams({
-    ...payload,
-    hash,
-    nonce: input.nonce,
-  }).toString();
-}

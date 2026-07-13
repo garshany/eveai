@@ -32,8 +32,48 @@ export function getEveKillConfig(): EveKillConfig {
 
 type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string; status?: number };
 
+/** Cap on a single killboard response body — a hostile/oversized payload must not OOM the process. */
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
 function retryOpts(cfg: EveKillConfig) {
   return { maxAttempts: cfg.retryMaxAttempts, backoffMaxMs: cfg.backoffMaxMs, timeoutMs: cfg.timeoutMs };
+}
+
+/**
+ * Read a response body with a hard byte cap. Rejects early on an oversized
+ * Content-Length, and otherwise streams while counting bytes so a chunked
+ * response without a length header still can't buffer unbounded memory.
+ */
+async function readJsonCapped<T>(res: Response): Promise<T> {
+  const declared = Number(res.headers.get('content-length') ?? '');
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    throw new Error(`response too large (${declared} bytes)`);
+  }
+  if (!res.body) {
+    return await res.json() as T;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.length;
+      if (total > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error('response exceeded size cap');
+      }
+      chunks.push(value);
+    }
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return JSON.parse(new TextDecoder().decode(merged)) as T;
 }
 
 async function apiGet<T>(path: string, params?: Record<string, string | number>): Promise<ApiResult<T>> {
@@ -58,7 +98,7 @@ async function apiGet<T>(path: string, params?: Record<string, string | number>)
       console.warn('[eve-kill] GET %s → %d', path, res.status);
       return { ok: false, error: `EVE-KILL HTTP ${res.status}`, status: res.status };
     }
-    const data = await res.json() as T;
+    const data = await readJsonCapped<T>(res);
     return { ok: true, data };
   } catch (err) {
     console.warn('[eve-kill] GET %s failed: %s', path, (err as Error).message);
@@ -86,7 +126,7 @@ async function apiPost<T>(path: string, body: unknown): Promise<ApiResult<T>> {
       console.warn('[eve-kill] POST %s → %d', path, res.status);
       return { ok: false, error: `EVE-KILL HTTP ${res.status}`, status: res.status };
     }
-    const data = await res.json() as T;
+    const data = await readJsonCapped<T>(res);
     return { ok: true, data };
   } catch (err) {
     console.warn('[eve-kill] POST %s failed: %s', path, (err as Error).message);
@@ -180,10 +220,29 @@ export async function getKillmail(db: Db, id: number): Promise<ApiResult<EveKill
   return cachedGet(db, 'km', `killmail/${id}`, undefined, 600);
 }
 
+/** Ids per request — bounds request/response size and cache-key length. */
+const BATCH_CHUNK = 100;
+/** Overall ceiling to bound fan-out on pathological input (10 requests). */
+const MAX_BATCH_IDS = 1000;
+
 export async function getKillmailBatch(db: Db, ids: number[]): Promise<ApiResult<EveKillKillmail[]>> {
   if (ids.length === 0) return { ok: true, data: [] };
-  const hashKey = ids.slice().sort((a, b) => a - b).join(',');
-  return cachedPost(db, 'km-batch', hashKey, 'killmail/batch', { ids }, 600);
+  const bounded = ids.length > MAX_BATCH_IDS ? ids.slice(0, MAX_BATCH_IDS) : ids;
+  if (ids.length > MAX_BATCH_IDS) {
+    console.warn('[eve-kill] killmail_batch capped %d → %d ids', ids.length, MAX_BATCH_IDS);
+  }
+
+  // Chunk into ≤100-id requests and merge so callers get results for every
+  // requested id instead of a silently-truncated first 100.
+  const merged: EveKillKillmail[] = [];
+  for (let i = 0; i < bounded.length; i += BATCH_CHUNK) {
+    const chunk = bounded.slice(i, i + BATCH_CHUNK);
+    const hashKey = chunk.slice().sort((a, b) => a - b).join(',');
+    const res = await cachedPost<EveKillKillmail[]>(db, 'km-batch', hashKey, 'killmail/batch', { ids: chunk }, 600);
+    if (!res.ok) return res;
+    if (Array.isArray(res.data)) merged.push(...res.data);
+  }
+  return { ok: true, data: merged };
 }
 
 export async function getKillmailSibling(db: Db, id: number): Promise<ApiResult<EveKillKillmail>> {

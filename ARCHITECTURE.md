@@ -3,20 +3,22 @@
 ## System Context
 
 ```text
-Telegram private chat
-  -> grammY bot
-  -> agent runtime
-  -> native /v1/responses
-  -> hosted tool_search + deferred ESI/SDE tools
-  -> SQLite + local SDE + EVE SSO
+Telegram private chat -> grammY bot ─┐
+                                     ├─> shared chat pipeline -> agent runtime
+Discord DM -> discord.js gateway bot ┘            │
+                                                  v
+                             native /v1/responses (official OpenAI API)
+                                                  │
+                                                  v
+                     hosted tool_search + deferred ESI/SDE tools
+                                                  │
+                                                  v
+                              SQLite + local SDE + EVE SSO
 
-Browser
-  -> Fastify
-  -> Telegram web auth + EVE SSO callback + dashboard API + health
-  -> same SQLite state
+Browser -> Fastify -> EVE SSO login redirect/callback + health -> same SQLite state
 ```
 
-The app is a single-process Node.js service. There is no job queue, no event bus, and no separate background worker tier.
+The app is a single-process Node.js service. There is no job queue, no event bus, no separate background worker tier, and no web frontend.
 
 ## How To Read This Repo
 
@@ -30,14 +32,26 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 
 ## Runtime Boundaries
 
+### Chat Boundary (shared)
+
+- `src/chat/shared.ts` is the platform-neutral pipeline: chat-session rows, thread resolution, in-flight request tracking and dedupe, rate limiting, agent invocation, EVE SSO login links, and user-facing error normalization.
+- `src/messaging/outbound.ts` routes user-keyed notifications to the right platform: positive chat ids go to Telegram, negative chat keys go to Discord.
+
 ### Telegram Boundary
 
 - `src/telegram/bot.ts` creates the grammY bot and enforces private-chat usage.
-- `src/telegram/handlers.ts` handles commands, request dedupe, thread reset, and agent handoff.
+- `src/telegram/handlers.ts` handles commands and hands text messages to the shared pipeline.
+- `src/telegram/formatting.ts` picks the HTML parse mode; `splitForTelegram` chunks replies at 4096 chars.
+
+### Discord Boundary
+
+- `src/discord/bot.ts` creates the discord.js client, registers slash commands, and handles DMs, slash commands, and character-switch buttons.
+- `src/discord/session.ts` maps snowflakes to internal identity: `discord_accounts` (user), `discord_sessions` (DM channel -> negative `chat_key`).
+- `src/discord/format.ts` converts agent HTML output to Discord markdown and chunks replies at 2000 chars.
 
 ### Agent Boundary
 
-- `src/agent/native-responses.ts` owns the native responses API loop.
+- `src/agent/native-responses.ts` owns the native responses API loop against the official OpenAI endpoint.
 - `src/agent/executor.ts` drives tool execution, tool audit persistence, and response continuation.
 - `src/agent/planner.ts`, `replanner.ts`, and `compact.ts` handle plan state and history reduction.
 - `src/agent/prompts.ts` is the model-policy boundary.
@@ -45,11 +59,9 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 
 ### Web Boundary
 
-- `src/web/server.ts` registers HTTP concerns only.
-- `src/web/auth-routes.ts` handles Telegram login, EVE callback, logout, and bot-to-web handoff.
-- `src/web/api-routes.ts` exposes authenticated dashboard APIs.
-- `src/web/frontend.ts` serves the built Vite client and HTML shell.
-- `src/web/health.ts` exposes runtime and dependency health.
+- `src/web/server.ts` registers HTTP concerns only: security headers, the EVE SSO login redirect/callback, and health.
+- `src/web/auth-routes.ts` validates the one-time login state at `/auth/eve/login`, handles the EVE OAuth callback (`/auth/eve/callback` plus the `/callback` alias), and renders a minimal success page.
+- `src/web/health.ts` exposes runtime and dependency health for both bot platforms.
 
 ### EVE Boundary
 
@@ -70,14 +82,16 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 
 ### Identity and Session
 
-- `users` and `telegram_accounts` represent durable user identity.
-- `web_sessions` stores browser sessions.
-- `telegram_sessions` stores per-chat session state and backward-compatible auth state.
-- `auth_requests` and `telegram_login_attempts` store one-time auth state.
+- `users` represents durable user identity across platforms.
+- `telegram_accounts` maps Telegram user ids to internal users.
+- `discord_accounts` maps Discord snowflakes (TEXT) to internal users.
+- `telegram_sessions` stores per-chat session state for all lanes; Discord lanes use negative chat keys.
+- `discord_sessions` maps Discord DM channels to negative chat keys.
+- `auth_requests` stores one-time EVE SSO state tokens.
 
 ### Agent Memory
 
-- `agent_threads` stores a thread per conversation lane.
+- `agent_threads` stores a thread per conversation lane, keyed by `(chat_id, character_id)`.
 - `messages` stores user, assistant, and tool audit messages.
 - `thread_summaries` stores compaction snapshots.
 - `thread_artifacts` stores durable thread-side artifacts.
@@ -96,33 +110,42 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 
 ## Request Flows
 
-### Telegram Request Flow
+### Chat Request Flow (Telegram or Discord)
 
-1. User sends a message in a private chat.
-2. grammY middleware validates access and session context.
-3. The handler resolves user/chat identity and active character.
-4. The agent runtime chooses a warm or cold context path: it reuses a fresh `last_response_id` as `previous_response_id` for warm turns, or rebuilds context from SQLite history for cold starts.
+1. User sends a message in a Telegram private chat or a Discord DM.
+2. Platform middleware validates access (private-chat/DM only, optional allowlist).
+3. The handler resolves user identity and the chat lane (Discord DMs map to a negative chat key), applies rate limits and in-flight dedupe.
+4. The agent runtime rebuilds each top-level turn from SQLite history. During a tool turn it replays the preceding `function_call` item with its matching `function_call_output`; provider-retained response state is not used.
 5. When a linked character has fresh private location access, the developer prompt also carries current live location context resolved as system plus constellation and region via local SDE.
 6. The model uses hosted `tool_search` to discover/load deferred tools when endpoint selection is unclear or the needed namespace is not yet loaded, then reuses the loaded tools directly instead of repeating discovery.
 7. Tool calls and final messages are written back to SQLite.
+8. The reply is formatted per platform: Telegram HTML (4096-char chunks) or Discord markdown (2000-char chunks).
 
-### Web Auth Flow
+### EVE SSO Linking Flow
 
-1. Browser authenticates with Telegram login widget.
-2. Fastify verifies Telegram login data and sets `web_sessions`.
-3. Authenticated user starts EVE SSO from `/auth/eve/start`.
-4. Callback stores encrypted tokens in `eve_accounts`.
-5. Character ownership is linked back to the same user/chat graph.
+1. User runs `/eve_login` in either bot.
+2. The bot stores a one-time hashed state token (`auth_requests`) bound to the user and chat lane, and sends the EVE SSO authorize URL.
+3. EVE redirects the browser to `GET /auth/eve/callback` with code and state.
+4. The callback validates the state, exchanges the code, verifies the JWT, stores encrypted tokens in `eve_accounts`, and links the character to the originating user and chat lane.
+5. The browser shows a minimal success page; the user returns to the chat.
+
+### Outbound Notification Flow
+
+1. Producers (heartbeat worker, route monitor, kill watch) address a chat id.
+2. `sendOutbound` routes by sign: positive -> Telegram `sendMessage`, negative -> Discord DM channel resolved via `discord_sessions`.
+3. Failures are logged and never crash the producer.
 
 ## Package Map
 
 - `src/agent/`: model runtime and tool orchestration
 - `src/auth/`: auth state and user resolution
+- `src/chat/`: shared platform-neutral chat pipeline
 - `src/db/`: schema and migrations
+- `src/discord/`: Discord bot, sessions, formatting
 - `src/eve/`: EVE integrations and domain logic
-- `src/telegram/`: bot commands and message entrypoint
-- `src/web/`: Fastify routes and browser shell
-- `client/src/`: React landing page and dashboard
+- `src/messaging/`: outbound platform-routing dispatcher
+- `src/telegram/`: Telegram bot and command handlers
+- `src/web/`: Fastify SSO login redirect/callback + health
 - `tests/unit/`: module and policy regression coverage
 - `tests/integration/`: auth and Telegram seam coverage
 - `deploy/systemd/`: generic self-host service examples
@@ -133,6 +156,5 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - File-and-domain map: [docs/repo-map.md](./docs/repo-map.md)
 - Product and UX intent: [docs/PRODUCT_SENSE.md](./docs/PRODUCT_SENSE.md)
 - Design constraints: [docs/DESIGN.md](./docs/DESIGN.md)
-- Frontend behavior: [docs/FRONTEND.md](./docs/FRONTEND.md)
 - DB inventory: [docs/generated/db-schema.md](./docs/generated/db-schema.md)
 - Reliability and security posture: [docs/RELIABILITY.md](./docs/RELIABILITY.md), [docs/SECURITY.md](./docs/SECURITY.md)

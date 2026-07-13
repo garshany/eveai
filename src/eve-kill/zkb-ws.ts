@@ -70,6 +70,13 @@ let db: Db | null = null;
 let send: NotifySender | null = null;
 let running = false;
 let killsProcessed = 0;
+let consecutive404s = 0;
+
+// A 404 can mean "caught up" OR "sequence expired from ephemeral retention"
+// (process slept, long backoff, or the startup sequence fetch failed).
+// After this many consecutive 404s (~2 min), re-sync from sequence.json so
+// the poller can never die silently forever.
+const RESYNC_AFTER_404S = 20;
 
 const recentNotifs = new Map<string, number>();
 
@@ -135,6 +142,8 @@ async function poll(): Promise<void> {
   let fetched = 0;
 
   while (fetched < MAX_CATCH_UP) {
+    if (!running) return;
+
     const nextSeq = seq + 1;
     let kill: R2Z2Kill | null = null;
 
@@ -145,6 +154,10 @@ async function poll(): Promise<void> {
       });
 
       if (res.status === 404) {
+        consecutive404s += 1;
+        if (consecutive404s >= RESYNC_AFTER_404S || seq === 0) {
+          await resyncSequence();
+        }
         schedule(DELAY_EMPTY_MS);
         return;
       }
@@ -162,6 +175,7 @@ async function poll(): Promise<void> {
       return;
     }
 
+    consecutive404s = 0;
     seq = nextSeq;
     fetched++;
     killsProcessed++;
@@ -187,6 +201,24 @@ async function poll(): Promise<void> {
 
   // Yielded after MAX_CATCH_UP — continue immediately
   schedule(0);
+}
+
+async function resyncSequence(): Promise<void> {
+  try {
+    const res = await fetch(`${BASE}/sequence.json`, {
+      headers: { 'User-Agent': config.zkill.userAgent },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return;
+    const data = await res.json() as { sequence: number };
+    if (Number.isFinite(data.sequence) && data.sequence > seq) {
+      console.warn(`${LOG} sequence resync: ${seq} -> ${data.sequence}`);
+      seq = data.sequence;
+    }
+    consecutive404s = 0;
+  } catch (err) {
+    console.error(`${LOG} sequence resync failed:`, (err as Error).message);
+  }
 }
 
 function sleep(ms: number): Promise<void> {

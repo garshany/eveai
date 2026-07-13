@@ -28,7 +28,12 @@ export function addWatch(db: Db, chatId: number, topic: string, label: string): 
   const existing = db.prepare('SELECT id FROM kill_watches WHERE chat_id = ? AND topic = ?').get(chatId, topic) as { id: number } | undefined;
   if (existing) return { ok: false, error: `Already watching: ${label || topic}` };
 
-  const count = (db.prepare('SELECT COUNT(*) as c FROM kill_watches WHERE chat_id = ?').get(chatId) as { c: number }).c;
+  // Auto-created route-monitor watches (label '[route] …') are bounded by the
+  // route length and cleaned up when the monitor stops, so they must not count
+  // against the user's manual-watch budget.
+  const count = (db.prepare(
+    "SELECT COUNT(*) as c FROM kill_watches WHERE chat_id = ? AND label NOT LIKE '[route] %'",
+  ).get(chatId) as { c: number }).c;
   if (count >= 20) return { ok: false, error: 'Maximum 20 watches per chat. Remove some first.' };
 
   db.prepare('INSERT INTO kill_watches (chat_id, topic, label) VALUES (?, ?, ?)').run(chatId, topic, label);

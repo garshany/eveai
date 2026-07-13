@@ -1,11 +1,46 @@
 import 'dotenv/config';
+import { parseOptionalEnumEnv, parseOptionalPositiveIntEnv } from '../src/config-env.js';
+import {
+  REASONING_EFFORTS,
+  REASONING_MODES,
+  TEXT_VERBOSITIES,
+  toApiReasoningEffort,
+} from '../src/openai-options.js';
+import { validateOpenAiSmokeCompletion } from '../src/openai-smoke-validation.js';
 
-const baseUrl = normalizeBaseUrl(process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1');
+const baseUrl = 'https://api.openai.com/v1';
 const apiKey = process.env.OPENAI_API_KEY || '';
-const model = process.env.OPENAI_MODEL || 'gpt-5.5';
-const reasoningEffort = process.env.OPENAI_REASONING_EFFORT || 'medium';
-const textVerbosity = process.env.OPENAI_TEXT_VERBOSITY || 'low';
-const timeoutMs = Number(process.env.OPENAI_SMOKE_TIMEOUT_MS || 90000);
+const model = process.env.OPENAI_MODEL || 'gpt-5.6-sol';
+const configuredReasoningEffort = parseOptionalEnumEnv(
+  process.env,
+  'OPENAI_REASONING_EFFORT',
+  REASONING_EFFORTS,
+  'auto',
+);
+const reasoningEffort = toApiReasoningEffort(configuredReasoningEffort);
+const reasoningMode = parseOptionalEnumEnv(
+  process.env,
+  'OPENAI_REASONING_MODE',
+  REASONING_MODES,
+  'standard',
+);
+const textVerbosity = parseOptionalEnumEnv(
+  process.env,
+  'OPENAI_TEXT_VERBOSITY',
+  TEXT_VERBOSITIES,
+  'low',
+);
+const responsesTimeoutMs = parseOptionalPositiveIntEnv(
+  process.env,
+  'OPENAI_RESPONSES_TIMEOUT_MS',
+  90000,
+);
+const timeoutMs = parseOptionalPositiveIntEnv(
+  process.env,
+  'OPENAI_SMOKE_TIMEOUT_MS',
+  responsesTimeoutMs,
+);
+const expectedText = 'eveai-openai-smoke-ok';
 
 if (!apiKey) {
   fail('OPENAI_API_KEY is required for authenticated OpenAI smoke test.');
@@ -20,12 +55,15 @@ const payload: Record<string, unknown> = {
   input: [{
     type: 'message',
     role: 'user',
-    content: [{ type: 'input_text', text: 'Reply with exactly: eveai-openai-smoke-ok' }],
+    content: [{ type: 'input_text', text: `Reply with exactly: ${expectedText}` }],
   }],
   tools: [],
   tool_choice: 'auto',
   parallel_tool_calls: false,
-  reasoning: reasoningEffort ? { effort: reasoningEffort } : undefined,
+  reasoning: {
+    effort: reasoningEffort,
+    ...(reasoningMode === 'pro' ? { mode: 'pro' } : {}),
+  },
   text: textVerbosity ? { verbosity: textVerbosity } : undefined,
   store: false,
   stream: true,
@@ -48,16 +86,20 @@ try {
 
   const events = parseSse(raw);
   const completed = findCompletedResponse(events);
-  const text = extractText(completed) || extractStreamText(events);
-  const id = typeof completed?.id === 'string' ? completed.id : null;
-  const returnedModel = typeof completed?.model === 'string' ? completed.model : null;
+  const validated = validateOpenAiSmokeCompletion(
+    completed,
+    extractStreamText(events),
+    expectedText,
+  );
 
   console.log(JSON.stringify({
     ok: true,
     endpoint: `${baseUrl}/responses`,
-    model: returnedModel ?? model,
-    response_id_prefix: id ? id.slice(0, 12) : null,
-    text_preview: text.slice(0, 120),
+    model: validated.model ?? model,
+    reasoning_effort: reasoningEffort,
+    reasoning_mode: reasoningMode,
+    response_id_prefix: validated.id ? validated.id.slice(0, 12) : null,
+    text_preview: validated.text,
   }, null, 2));
 } catch (error) {
   if ((error as Error).name === 'AbortError') {
@@ -66,10 +108,6 @@ try {
   fail((error as Error).message);
 } finally {
   clearTimeout(timer);
-}
-
-function normalizeBaseUrl(value: string): string {
-  return value.trim().replace(/\/$/, '') || 'https://api.openai.com/v1';
 }
 
 function fail(message: string): never {
@@ -140,20 +178,6 @@ function findCompletedResponse(events: SseEvent[]): Record<string, unknown> | nu
     return response && typeof response === 'object' ? response as Record<string, unknown> : data;
   }
   return null;
-}
-
-function extractText(response: Record<string, unknown> | null): string {
-  if (!response) return '';
-  if (typeof response.output_text === 'string') return response.output_text.trim();
-  const output = Array.isArray(response.output) ? response.output : [];
-  const chunks: string[] = [];
-  for (const item of output as Array<Record<string, unknown>>) {
-    if (item.type !== 'message' || !Array.isArray(item.content)) continue;
-    for (const part of item.content as Array<Record<string, unknown>>) {
-      if (part.type === 'output_text' && typeof part.text === 'string') chunks.push(part.text);
-    }
-  }
-  return chunks.join('\n').trim();
 }
 
 function extractStreamText(events: SseEvent[]): string {

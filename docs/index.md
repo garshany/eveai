@@ -1,7 +1,7 @@
 # Docs Index
 
 Status: active
-Verified against code: 2026-03-25
+Verified against code: 2026-07-13
 
 This directory is the repository knowledge system of record.
 
@@ -17,13 +17,14 @@ Read the smallest document that answers the current question. Start here, then d
 
 - [DESIGN.md](./DESIGN.md): documentation and repo-structure design rules
 - [PRODUCT_SENSE.md](./PRODUCT_SENSE.md): product shape, primary user jobs, deliberate non-goals
-- [FRONTEND.md](./FRONTEND.md): browser surface boundaries and delivery rules
 - [PLANS.md](./PLANS.md): how execution plans and tech debt are stored in-repo
 - [QUALITY_SCORE.md](./QUALITY_SCORE.md): scored view of domain quality and major gaps
 - [RELIABILITY.md](./RELIABILITY.md): runtime failure model and operational checks
 - [SECURITY.md](./SECURITY.md): auth, secret, and web protection rules
 - [deployment.md](./deployment.md): generic self-host deployment guide
+- [legal.md](./legal.md): CCP legal notices, Developer License Agreement, and Community Showcase readiness
 - [open-source-release.md](./open-source-release.md): clean public release and history-safety checklist
+- [community-showcase.md](./community-showcase.md): CCP Community Showcase submission bundle and eligibility gate
 - [heartbeat.md](./heartbeat.md): periodic background checks and notifications system
 - [osint.md](./osint.md): probabilistic residence/staging inference from activity graphs
 

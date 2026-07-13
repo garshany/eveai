@@ -1,0 +1,19 @@
+name: Question
+description: Ask a setup, usage, or architecture question
+title: "[Question]: "
+labels: [question]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to understand or configure?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Include sanitized env names, deployment type, or commands. Do not paste secrets.
+    validations:
+      required: false

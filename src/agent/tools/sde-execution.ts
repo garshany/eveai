@@ -385,6 +385,15 @@ function validateSdeSqlSources(db: Db, sql: string): string | null {
     return 'Query must read from at least one SDE table';
   }
 
+  // Guard against cartesian products. A full table SCAN visits every row; two or
+  // more unconstrained SCANs multiply (e.g. sde_types × sde_types ≈ 51k² rows),
+  // which pins the single-threaded event loop and freezes both bots. An indexed
+  // join shows up as SEARCH (bounded), so only count SCAN rows.
+  const fullScans = planRows.filter((row) => /^SCAN\b/i.test(row.detail.trim())).length;
+  if (fullScans >= 2) {
+    return 'Query would scan multiple tables in full (possible cartesian product). Add an indexed JOIN condition (e.g. ON a.group_id = b.group_id) or query one table at a time.';
+  }
+
   return null;
 }
 
@@ -762,13 +771,20 @@ export function executeSdeSql(db: Db, sql: string): { ok: boolean; rows: unknown
 
   try {
     const stmt = db.prepare(trimmed);
-    const rows = stmt.all() as unknown[];
+    // Iterate lazily and stop one past the cap: SQLite produces rows on demand,
+    // so a query that would return millions of rows is halted after ~50 steps
+    // instead of being fully materialized into memory.
+    const rows: unknown[] = [];
+    for (const row of stmt.iterate()) {
+      rows.push(row);
+      if (rows.length > MAX_SDE_ROWS) break;
+    }
     const truncated = rows.length > MAX_SDE_ROWS;
     return {
       ok: true,
       rows: truncated ? rows.slice(0, MAX_SDE_ROWS) : rows,
       count: rows.length,
-      error: truncated ? `Truncated to ${MAX_SDE_ROWS} rows (total: ${rows.length})` : null,
+      error: truncated ? `Truncated to ${MAX_SDE_ROWS} rows (more available — narrow the query)` : null,
     };
   } catch (err) {
     return { ok: false, rows: [], count: 0, error: `SQL error: ${(err as Error).message}` };

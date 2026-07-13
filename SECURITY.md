@@ -6,7 +6,7 @@ Do not open public issues for vulnerabilities that expose tokens, sessions, priv
 
 ## Supported Surface
 
-This project is a self-hosted application. Each operator is responsible for protecting their `.env`, SQLite database, generated `data/` files, Telegram bot token, OpenAI-compatible provider key, EVE SSO secret, and host credentials.
+This project is a self-hosted application. Each operator is responsible for protecting their `.env`, SQLite database, generated `data/` files, Telegram and Discord bot tokens, OpenAI API key, EVE SSO secret, and host credentials.
 
 ## Before Publishing A Fork
 

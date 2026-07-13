@@ -31,6 +31,8 @@ interface SdeRegionRow {
 // ---------------------------------------------------------------------------
 
 const MAX_NOTE_LENGTH = 2000;
+/** Per-user retention cap: the oldest note is evicted once this is exceeded. */
+const MAX_NOTES_PER_USER = 500;
 const MAX_RESULTS = 30;
 
 // ---------------------------------------------------------------------------
@@ -130,6 +132,15 @@ function saveNote(
     INSERT INTO intel_notes (user_id, system_id, system_name, region_id, region_name, entity_name, tag, text)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(userId, systemId, systemName, regionId, regionName, entityName, tag, text);
+
+  // Bound per-user growth: evict the oldest notes past the retention cap.
+  db.prepare(`
+    DELETE FROM intel_notes
+    WHERE user_id = ?
+      AND note_id NOT IN (
+        SELECT note_id FROM intel_notes WHERE user_id = ? ORDER BY note_id DESC LIMIT ?
+      )
+  `).run(userId, userId, MAX_NOTES_PER_USER);
 
   console.log(`[intel_note] saved note #${result.lastInsertRowid} for user=${userId}, system=${systemName ?? 'none'}, tag=${tag}`);
 

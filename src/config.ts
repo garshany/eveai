@@ -1,29 +1,48 @@
 import 'dotenv/config';
+import {
+  parseOptionalEnumEnv,
+  parseOptionalIntEnv,
+  parseOptionalPositiveIntEnv,
+  parseRequiredIntEnv,
+  readOptionalEnv,
+  readRequiredEnv,
+} from './config-env.js';
+import {
+  REASONING_EFFORTS,
+  REASONING_MODES,
+  RESPONSE_STATE_MODES,
+  type ResponseStateMode,
+  TEXT_VERBOSITIES,
+} from './openai-options.js';
 
+// Strict parsing: malformed integers (e.g. "3000.5", "1e3", unsafe ints) fail
+// fast at startup instead of being silently coerced. See src/config-env.ts.
 function required(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing required env var: ${name}`);
-  return value;
+  return readRequiredEnv(process.env, name);
 }
 
 function requiredInt(name: string): number {
-  const raw = required(name);
-  const num = Number(raw);
-  if (!Number.isFinite(num)) throw new Error(`Env var ${name} must be a number, got: "${raw}"`);
-  return num;
+  return parseRequiredIntEnv(process.env, name);
 }
 
 function optional(name: string, fallback: string): string {
-  const value = process.env[name];
-  return (value !== undefined && value !== '') ? value : fallback;
+  return readOptionalEnv(process.env, name, fallback);
 }
 
 function optionalInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) return fallback;
-  const num = Number(raw);
-  if (!Number.isFinite(num)) throw new Error(`Env var ${name} must be a number, got: "${raw}"`);
-  return num;
+  return parseOptionalIntEnv(process.env, name, fallback);
+}
+
+function optionalPositiveInt(name: string, fallback: number): number {
+  return parseOptionalPositiveIntEnv(process.env, name, fallback);
+}
+
+function parseResponseStateMode(): ResponseStateMode {
+  const value = parseOptionalEnumEnv(process.env, 'OPENAI_RESPONSE_STATE_MODE', RESPONSE_STATE_MODES, 'stateless');
+  if (value === 'server') {
+    throw new Error('OPENAI_RESPONSE_STATE_MODE=server is unsupported: EVE AI Agent requires stateless Responses with store=false');
+  }
+  return value;
 }
 
 export const config = {
@@ -31,26 +50,35 @@ export const config = {
     secretKey: optional('AUTH_SECRET_KEY', ''),
   },
   telegram: {
-    botToken: required('TELEGRAM_BOT_TOKEN'),
-    botUsername: optional('TELEGRAM_BOT_USERNAME', ''),
+    botToken: optional('TELEGRAM_BOT_TOKEN', ''),
     allowedUserId: optionalInt('ALLOWED_TELEGRAM_USER_ID', 0),
     requestWindowMs: optionalInt('TELEGRAM_REQUEST_WINDOW_MS', 60000),
     maxRequestsPerWindow: optionalInt('TELEGRAM_MAX_REQUESTS_PER_WINDOW', 6),
     maxActiveRequestsGlobal: optionalInt('TELEGRAM_MAX_ACTIVE_REQUESTS_GLOBAL', 24),
   },
+  discord: {
+    botToken: optional('DISCORD_BOT_TOKEN', ''),
+    // Discord user id (snowflake) allowlist. Empty = allow any user in DMs.
+    allowedUserId: optional('ALLOWED_DISCORD_USER_ID', ''),
+  },
   openai: {
     apiKey: required('OPENAI_API_KEY'),
-    model: optional('OPENAI_MODEL', 'gpt-5.5'),
-    baseUrl: optional('OPENAI_BASE_URL', ''),
-    apiMode: optional('OPENAI_API_MODE', 'native_responses'),
-    responseStateMode: optional('OPENAI_RESPONSE_STATE_MODE', 'stateless'),
-    reasoningEffort: optional('OPENAI_REASONING_EFFORT', 'medium'),
-    textVerbosity: optional('OPENAI_TEXT_VERBOSITY', 'low'),
+    model: optional('OPENAI_MODEL', 'gpt-5.6-sol'),
+    // The application deliberately uses the official OpenAI Responses API.
+    // Keeping the endpoint fixed prevents a self-hosting typo from sending the
+    // API key and chat data to an arbitrary OpenAI-compatible gateway.
+    baseUrl: 'https://api.openai.com/v1',
+    responseStateMode: parseResponseStateMode(),
+    reasoningEffort: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_EFFORT', REASONING_EFFORTS, 'auto'),
+    reasoningMode: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_MODE', REASONING_MODES, 'standard'),
+    textVerbosity: parseOptionalEnumEnv(process.env, 'OPENAI_TEXT_VERBOSITY', TEXT_VERBOSITIES, 'low'),
+    responsesTimeoutMs: optionalPositiveInt('OPENAI_RESPONSES_TIMEOUT_MS', 90_000),
     responseLanguage: optional('OPENAI_RESPONSE_LANGUAGE', 'Russian'),
     maxOutputTokens: optionalInt('OPENAI_MAX_OUTPUT_TOKENS', 0),
-    store: optional('OPENAI_STORE', 'true') === 'true',
     compactThreshold: optionalInt('OPENAI_COMPACT_THRESHOLD', 0),
-    modelContextWindow: optionalInt('OPENAI_MODEL_CONTEXT_WINDOW', 200_000),
+    // Floor the window so a misconfigured 0/negative value can't make
+    // autoCompactLimit 0 and trigger compaction on every single turn.
+    modelContextWindow: Math.max(8_000, optionalInt('OPENAI_MODEL_CONTEXT_WINDOW', 200_000)),
   },
   eve: {
     clientId: required('EVE_CLIENT_ID'),
@@ -64,10 +92,10 @@ export const config = {
     catalogCachePath: optional('ESI_CATALOG_CACHE_PATH', './data/cache/esi-swagger.json'),
     compatibilityDate: optional('ESI_COMPATIBILITY_DATE', '2026-03-15'),
     userAgent: optional('ESI_USER_AGENT', 'EVEAI/2.1 (+https://github.com/example/eveai; contact=operator@example.com)'),
-    maxPages: optionalInt('ESI_MAX_PAGES', 5),
-    backoffMaxSeconds: optionalInt('ESI_BACKOFF_MAX_SECONDS', 10),
+    maxPages: Math.max(1, optionalInt('ESI_MAX_PAGES', 5)),
+    backoffMaxSeconds: Math.max(1, optionalInt('ESI_BACKOFF_MAX_SECONDS', 10)),
     requestTimeoutMs: optionalInt('ESI_REQUEST_TIMEOUT_MS', 8000),
-    retryMaxAttempts: optionalInt('ESI_RETRY_MAX_ATTEMPTS', 3),
+    retryMaxAttempts: Math.max(1, optionalInt('ESI_RETRY_MAX_ATTEMPTS', 3)),
   },
   server: {
     port: optionalInt('PORT', 3000),
@@ -75,8 +103,6 @@ export const config = {
   },
   web: {
     baseUrl: optional('WEB_BASE_URL', 'http://localhost:3000'),
-    sessionTtlHours: optionalInt('WEB_SESSION_TTL_HOURS', 720),
-    handoffTtlSeconds: optionalInt('TG_HANDOFF_TTL_SECONDS', 300),
   },
   db: {
     path: optional('DB_PATH', './data/eve-agent.db'),

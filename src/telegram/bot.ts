@@ -39,7 +39,7 @@ export function createBot(db: Db): Bot<Context> {
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;
     if (!isTelegramUserAllowed(userId, config.telegram.allowedUserId)) {
-      console.warn(`[bot] Access denied for user_id=${userId ?? 'unknown'}`);
+      console.warn('[bot] Access denied for Telegram user');
       await ctx.reply('Access denied.');
       return;
     }
@@ -58,7 +58,7 @@ export function createBot(db: Db): Bot<Context> {
     { command: 'use', description: 'Переключить активного персонажа' },
     { command: 'clear', description: 'Очистить диалог' },
   ]).catch((err) => {
-    console.warn('[bot] setMyCommands failed:', err);
+    console.warn('[bot] setMyCommands failed: %s', err instanceof Error ? err.message : String(err));
   });
 
   bot.catch((err) => {

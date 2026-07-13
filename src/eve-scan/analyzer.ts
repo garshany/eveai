@@ -481,7 +481,22 @@ function analyzeFleet(db: Db, lines: string[]): unknown {
     }
   }
 
-  const pilotCol = bestCol === 0 ? 1 : 0;
+  // Pilot column = the non-ship column with the most name-like (non-numeric)
+  // values. The old `bestCol === 0 ? 1 : 0` picked a count column whenever the
+  // ship column was at index >= 2 (e.g. "count  pilot  ship").
+  let pilotCol = bestCol === 0 ? 1 : bestCol - 1;
+  let bestPilotScore = -1;
+  for (let col = 0; col < maxCols; col++) {
+    if (col === bestCol) continue;
+    const nameLike = sample.filter((r) => {
+      const v = r[col]?.trim();
+      return Boolean(v) && !/^\d+$/.test(v);
+    }).length;
+    if (nameLike > bestPilotScore) {
+      bestPilotScore = nameLike;
+      pilotCol = col;
+    }
+  }
 
   const allShipNames = [...new Set(raw.map((r) => r[bestCol]).filter(Boolean))];
   const nameMap = resolveByNames(db, allShipNames);

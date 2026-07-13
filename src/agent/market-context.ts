@@ -10,8 +10,11 @@ export function resolveMarketRegion(
   db: Db,
   userProfile: string | null,
 ): { id: number; name: string } {
-  const systemId = Number(/- System:\s+.+\((\d+)\)/.exec(userProfile ?? '')?.[1] ?? '');
-  if (!Number.isFinite(systemId)) return DEFAULT_MARKET_REGION;
+  // Number('') is 0, not NaN, so an absent System line must be caught explicitly
+  // rather than running a pointless `WHERE system_id = 0` query.
+  const systemIdRaw = /- System:\s+.+\((\d+)\)/.exec(userProfile ?? '')?.[1];
+  const systemId = systemIdRaw ? Number(systemIdRaw) : NaN;
+  if (!Number.isFinite(systemId) || systemId <= 0) return DEFAULT_MARKET_REGION;
 
   const row = db.prepare(`
     SELECT r.region_id AS region_id, r.name AS region_name

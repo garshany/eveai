@@ -1,7 +1,0 @@
-Command: npm run build
-Exit code: 0
-
-Output summary:
-- `build:client` completed successfully with Vite production build output.
-- `build:server` completed successfully with `tsc`.
-- No errors were reported.

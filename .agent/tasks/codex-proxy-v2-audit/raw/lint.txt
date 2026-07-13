@@ -1,8 +1,0 @@
-
-> eve-agent@1.0.0 lint
-> eslint src/ --max-warnings 0
-
-
-> eve-agent@1.0.0 typecheck
-> tsc --noEmit
-

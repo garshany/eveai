@@ -28,6 +28,21 @@ type EsiCacheRow = {
   last_modified: string | null;
 };
 
+/**
+ * Delete expired esi_cache rows. The cache key embeds the full request URL, so
+ * high-cardinality endpoints (per-killmail, per-type market, universe/names)
+ * mint unbounded distinct keys that are only ever overwritten on an exact
+ * repeat — without this sweep the table grows without bound. Shared by the ESI,
+ * eve-kill, zkill, and eve-scout clients (same table). Retains a 1-day grace so
+ * conditional revalidation (ETag/If-None-Match) can still reuse recent rows.
+ */
+export function pruneExpiredEsiCache(db: Db): number {
+  const result = db.prepare(
+    "DELETE FROM esi_cache WHERE expires_at < datetime('now', '-1 day')",
+  ).run();
+  return result.changes;
+}
+
 export async function callEsiOperation<T = unknown>(
   db: Db,
   operationName: string,
@@ -315,7 +330,10 @@ async function fetchEsiWithRetry(
         body,
       }, config.esi.requestTimeoutMs);
     } catch (error) {
-      if (attempt < maxAttempts) {
+      // Network failure is safe to retry for idempotent verbs. A POST may have
+      // reached ESI and been processed (mail sent, fitting created) — retrying
+      // could duplicate the side effect, so only retry idempotent methods.
+      if (attempt < maxAttempts && isIdempotentMethod(operation.method)) {
         await sleep(computeBackoffMs(new Headers(), attempt));
         continue;
       }
@@ -333,7 +351,10 @@ async function fetchEsiWithRetry(
       return { ok: true, value: response };
     }
 
-    const shouldRetry = response.status === 420 || response.status === 429 || response.status >= 500;
+    // 420/429 are rate-limit signals with no side effect, so retrying is always
+    // safe. 5xx is only retried for idempotent verbs (see above).
+    const isRateLimit = response.status === 420 || response.status === 429;
+    const shouldRetry = isRateLimit || (response.status >= 500 && isIdempotentMethod(operation.method));
     if (shouldRetry && attempt < maxAttempts) {
       await sleep(computeBackoffMs(response.headers, attempt));
       continue;
@@ -404,22 +425,28 @@ function revalidateCachedResponse<T>(
   headers: Record<string, string>,
 ): EsiCallResult<T> | null {
   if (!row) return null;
-  const cached = readFreshCachedResponse<T>({
-    ...row,
-    expires_at: normalizeExpires(headers.expires ?? row.expires_at),
-  });
-  if (!cached) return null;
+  // A 304 is ESI explicitly confirming the cached body is current, so always
+  // return it — never gate on the old (now stale) expiry. If the 304 carries no
+  // fresh Expires, normalizeExpires defaults to now+60s so we don't immediately
+  // re-request on the next call.
+  let data: T;
+  try {
+    data = JSON.parse(row.response_text) as T;
+  } catch {
+    return null;
+  }
+  const freshExpiry = normalizeExpires(headers.expires ?? null);
   writeCachedResponse(db, cacheKey, row.response_text, {
-    expires: headers.expires ?? row.expires_at,
+    expires: freshExpiry,
     etag: headers.etag ?? row.etag,
     'last-modified': headers['last-modified'] ?? row.last_modified,
   });
   return {
-    ...cached,
-    headers: {
-      ...cached.headers,
-      ...headers,
-    },
+    ok: true,
+    status: 200,
+    data,
+    cached: true,
+    headers: { expires: freshExpiry, ...headers },
   };
 }
 
@@ -441,6 +468,11 @@ function isCacheFresh(expiresAt: string): boolean {
   return Date.parse(expiresAt.replace(' ', 'T') + 'Z') > Date.now();
 }
 
+function isIdempotentMethod(method: string): boolean {
+  const m = method.toUpperCase();
+  return m === 'GET' || m === 'HEAD' || m === 'PUT' || m === 'DELETE';
+}
+
 function matchesSnapshot(
   previous: { etag: string | null; lastModified: string | null },
   current: { etag: string | null; lastModified: string | null },
@@ -451,15 +483,26 @@ function matchesSnapshot(
   return true;
 }
 
+/** Hard ceiling for honoring ESI's own error-limit reset window (still bounded). */
+const ERROR_LIMIT_MAX_MS = 60_000;
+
 function computeBackoffMs(headers: Headers, attempt: number): number {
   const maxMs = Math.max(1000, config.esi.backoffMaxSeconds * 1000);
   const retryAfterMs = parseRetryAfterMs(headers.get('retry-after'), 0);
   const ratelimitResetMs = headerSecondsToMs(headers, 'x-ratelimit-reset');
   const errorLimitResetMs = headerSecondsToMs(headers, 'x-esi-error-limit-reset');
   const exponentialMs = Math.min(maxMs, 1000 * (2 ** (attempt - 1)));
-  const baseMs = Math.max(exponentialMs, retryAfterMs, ratelimitResetMs, errorLimitResetMs);
+  // Exponential/Retry-After/ratelimit are clamped to the configured backoff cap.
+  // The error-limit reset is ESI's own penalty window: retrying before it clears
+  // digs the 420 hole deeper, so honor it up to a higher (still bounded) ceiling.
+  const clampedBase = Math.min(maxMs, Math.max(exponentialMs, retryAfterMs, ratelimitResetMs));
+  const errorLimitMs = Math.min(ERROR_LIMIT_MAX_MS, errorLimitResetMs);
+  const baseMs = Math.max(clampedBase, errorLimitMs);
   const jitterMs = Math.min(250, baseMs / 4);
-  return Math.min(maxMs, Math.round(baseMs + Math.random() * jitterMs));
+  // Ceiling is the configured backoff cap, raised to the error-limit window
+  // only when ESI is actively error-limiting us.
+  const ceilingMs = Math.max(maxMs, errorLimitMs);
+  return Math.min(ceilingMs, Math.round(baseMs + Math.random() * jitterMs));
 }
 
 async function throttleIfNeeded(headers: Headers): Promise<void> {

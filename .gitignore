@@ -9,8 +9,6 @@ data/
 .agent/tasks/*
 !.agent/tasks/opensource-readiness-20260525/
 !.agent/tasks/opensource-readiness-20260525/**
-!.agent/tasks/refactor-modernization-20260525/
-!.agent/tasks/refactor-modernization-20260525/**
 .agents/
 .claude/
 hooks/

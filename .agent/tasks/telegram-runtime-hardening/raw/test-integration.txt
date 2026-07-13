@@ -1,2 +1,0 @@
-Not run.
-Reason: the fix stayed within existing executor/tool/auth runtime seams and was covered by targeted unit tests plus production reproduction.

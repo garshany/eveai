@@ -2,16 +2,9 @@
 
 Status: active
 
-## Do Not Publish The Existing Git History
+## Public Repository Boundary
 
-This working repository previously contained private deployment details and credentials in commits and local artifacts. Do not make the existing repository public by changing visibility.
-
-Safe release options:
-
-1. Create a clean export with no `.git` history and initialize a new public repository from that export.
-2. Or rewrite history with a dedicated history-rewrite tool, verify the rewritten history, and force-push only after all exposed credentials are rotated.
-
-The clean export option is simpler and safer for a first public release.
+The canonical repository is already public. Before making a new fork or mirror public, verify that its own current tree and reachable history contain no private deployment details or credentials. If a private source repository ever contained sensitive material, create a clean export or rewrite and verify its history before publishing it.
 
 ## Credential Rotation
 
@@ -24,7 +17,7 @@ Before publishing, rotate any credential that appeared in:
 - `.env` files
 - private deployment runbooks
 
-At minimum, rotate model-provider tokens, Telegram bot tokens, EVE SSO client secrets, SSH keys/passwords, dashboard/session secrets, and any proxy credentials that were ever disclosed.
+At minimum, rotate model-provider tokens, Telegram and Discord bot tokens, EVE SSO client secrets, SSH keys/passwords, auth secrets, and any proxy credentials that were ever disclosed.
 
 ## Clean Export
 

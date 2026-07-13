@@ -1,70 +1,75 @@
 <p align="center">
   <img src="https://img.shields.io/badge/EVE%20Online-AI%20Assistant-1a1a2e?style=for-the-badge" alt="EVE AI" />
   <img src="https://img.shields.io/badge/Telegram-Long%20Polling-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram" />
+  <img src="https://img.shields.io/badge/Discord-Bot-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord" />
   <img src="https://img.shields.io/badge/TypeScript-Strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
 </p>
 
 # EVE AI Agent
 
-Self-hosted Telegram-first AI assistant for EVE Online. It combines local EVE SDE data, live ESI data, killboard intelligence, route planning, and an OpenAI-compatible Responses API model loop with tool calling.
+> **Landing-page source:** [`index.html`](./index.html). GitHub Pages is optional and is not currently a deployed product endpoint.
 
-This repository is designed for operators to run their own instance. It does not require Redis, Postgres, queues, workers, webhooks, or a private model proxy.
+Self-hosted chat-first AI assistant for EVE Online with Telegram and Discord bots. It combines local EVE SDE data, live ESI data, killboard intelligence, route planning, and the official OpenAI Responses API model loop with tool calling.
+
+This repository is designed for operators to run their own instance in a terminal. It does not require Redis, Postgres, queues, workers, webhooks, or a web frontend.
 
 ## Capabilities
 
-- Natural-language Telegram assistant for EVE Online questions and workflows.
+- Natural-language Telegram and Discord assistant for EVE Online questions and workflows.
 - EVE SSO linking for private character data, with scope-aware capability gating.
 - Local SDE SQLite lookups for static game data such as systems, items, dogma, blueprints, and routes.
 - Live ESI access for character, corporation, market, location, mail, skills, industry, assets, and related data when scopes are granted.
 - Route planning with live danger analysis, killmail context, gate-camp signals, Thera/Turnur shortcut support, and monitor mode.
-- D-scan, fleet, local, OSINT, EVE-KILL, EVE-Scout, zKillboard, intel notes, and dashboard support.
+- D-scan, fleet, local, OSINT, EVE-KILL, EVE-Scout, zKillboard, and intel notes.
+- Heartbeat notifications (mail, skills, wallet, industry, kills, and more) delivered to the chat where you talk to the bot.
 
 ## Architecture
 
 ```text
-Telegram private chat
-  -> grammY long polling bot
-  -> agent runtime
-  -> OpenAI-compatible /v1/responses endpoint
-  -> ESI/SDE/EVE tools
-  -> SQLite
+Telegram private chat ──> grammY long polling bot ─┐
+                                                   ├─> shared agent runtime
+Discord DM ───────────────> discord.js gateway bot ─┘        │
+                                                             v
+                                        OpenAI Responses API (/v1/responses)
+                                                             │
+                                                             v
+                                          ESI / SDE / killboard tools ──> SQLite
 
-Browser
-  -> Fastify
-  -> Telegram web auth + EVE SSO callback + dashboard + health
-  -> same SQLite state
+Browser ──> Fastify ──> EVE SSO login redirect + callback + /health ──> same SQLite state
 ```
 
 Hard constraints:
 
 - Single-process Node.js app.
 - SQLite only.
-- Telegram long polling only; no webhooks.
-- Fastify is limited to auth, dashboard support, frontend serving, and health.
+- Telegram long polling only; no webhooks. Discord standard gateway connection.
+- Fastify is limited to the EVE SSO login redirect/callback and the health endpoint. There is no web frontend.
 - Static game data comes from local SDE SQLite; live data comes from ESI.
-- Private ESI access is isolated per Telegram user/chat and gated by `get_eve_capabilities`.
+- Private ESI access is isolated per user/chat and gated by `get_eve_capabilities`.
 - The model must not see tokens, refresh flow, pagination internals, retry logic, or secrets.
 
 ## Requirements
 
-- Node.js 20+.
+- Node.js 20.19+.
 - npm.
-- Telegram bot token from [@BotFather](https://t.me/BotFather).
+- At least one bot token:
+  - Telegram bot token from [@BotFather](https://t.me/BotFather), and/or
+  - Discord bot token from <https://discord.com/developers/applications> (no privileged intents needed; the bot works in DMs).
 - EVE Developer application from <https://developers.eveonline.com/>.
-- OpenAI API key or an OpenAI-compatible provider that supports the Responses API.
+- OpenAI API key (official Responses API).
 
 ## Quick Start
 
 ```bash
 git clone <your-public-fork-url> eveai
 cd eveai
-cp .env.example .env
+cp .env.example .env       # fill in the tokens
 npm install
-npm run setup
+npm run setup              # download + load EVE static data (SDE)
 npm run dev
 ```
 
-Then open a private chat with your Telegram bot.
+Then open a private chat with your Telegram bot, or DM your Discord bot.
 
 For local EVE SSO callbacks, set the callback URL in the EVE Developer Portal to:
 
@@ -74,17 +79,18 @@ http://localhost:3000/auth/eve/callback
 
 ## Required Environment
 
-Minimum local `.env` values:
+Minimum local `.env` values (at least one bot token is required):
 
 ```env
-TELEGRAM_BOT_TOKEN=...
+TELEGRAM_BOT_TOKEN=...        # and/or DISCORD_BOT_TOKEN
+DISCORD_BOT_TOKEN=...
 OPENAI_API_KEY=...
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-5.5
-OPENAI_REASONING_EFFORT=medium
+OPENAI_MODEL=gpt-5.6-sol
+OPENAI_REASONING_EFFORT=auto
+OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
+OPENAI_RESPONSES_TIMEOUT_MS=90000
 OPENAI_RESPONSE_LANGUAGE=Russian
-OPENAI_RESPONSE_STATE_MODE=stateless
 EVE_CLIENT_ID=...
 EVE_CLIENT_SECRET=...
 AUTH_SECRET_KEY=replace-with-random-secret
@@ -100,29 +106,110 @@ Generate `AUTH_SECRET_KEY` with:
 openssl rand -base64 32
 ```
 
-Model provider defaults:
+Model defaults:
 
-- `OPENAI_MODEL=gpt-5.5` uses the current OpenAI latest-model guidance for tool-heavy Responses API agents.
-- `OPENAI_REASONING_EFFORT=medium` is the balanced starting point; evaluate `low` for latency-sensitive deployments.
-- `OPENAI_TEXT_VERBOSITY=low` keeps Telegram answers compact; set `medium` if your community wants longer explanations.
-- `OPENAI_RESPONSE_LANGUAGE=Russian` sets the default final-answer language. Aliases like `ru`, `русский`, `en`, `English`, and custom language names are accepted; an explicit user request can override it for that answer.
-- `OPENAI_RESPONSE_STATE_MODE=stateless` is the default and is recommended for OpenAI-compatible gateways that do not retain `previous_response_id` state.
-- `OPENAI_RESPONSE_STATE_MODE=server` is only for providers that support stored Responses continuation.
+- `OPENAI_MODEL=gpt-5.6-sol` is the quality-first default. Use `gpt-5.6-terra` for a capability/cost balance or `gpt-5.6-luna` for latency-sensitive, high-volume deployments. The `gpt-5.6` alias routes to Sol.
+- `OPENAI_REASONING_EFFORT=auto` preserves EVE Agent's goal-based `low|medium|high` routing. Set `none`, `low`, `medium`, `high`, `xhigh`, or `max` to override it globally.
+- `OPENAI_REASONING_MODE=standard` is the normal path. Set `pro` only for difficult quality-first workloads that justify higher latency and token use; Pro is a mode, not a separate model name.
+- `OPENAI_TEXT_VERBOSITY=low` keeps chat answers compact; set `medium` if your community wants longer explanations.
+- `OPENAI_RESPONSES_TIMEOUT_MS=90000` controls the Responses transport deadline; raise it deliberately when evaluating Pro.
+- `OPENAI_RESPONSE_LANGUAGE=Russian` sets the default final-answer language. Aliases like `ru`, `русский`, `en`, `English`, and custom language names are accepted; an explicit user request can override it per answer.
+
+These are process-wide self-hosting controls shared by Telegram, Discord, and CLI. They are not per-chat preferences. See [OpenAI integration](./docs/openai-integration.md) and OpenAI's [GPT-5.6 guide](https://developers.openai.com/api/docs/guides/latest-model).
+
+## EVE SSO Setup (private character data)
+
+The current process configuration requires EVE Developer credentials at startup,
+even if an operator initially uses only public data. Character linking itself is
+optional: after credentials are configured, public SDE, market, route,
+killboard, and OSINT workflows work without linking a character. To unlock
+**private ESI** (skills, assets, wallet, location, mail, …), register a free
+EVE Developer application (~5 minutes):
+
+1. Open <https://developers.eveonline.com/applications/create> and sign in with
+   your EVE account.
+2. **Connection Type:** choose *Authentication & API Access*, then select the
+   scopes you want to support (or all of them for full parity).
+3. **Callback URL:** set it to *exactly* your `EVE_CALLBACK_URL`. For local use:
+
+   ```text
+   http://localhost:3000/auth/eve/callback
+   ```
+
+4. Copy the **Client ID** and **Secret Key** into `.env`:
+
+   ```env
+   EVE_CLIENT_ID=your_client_id
+   EVE_CLIENT_SECRET=your_secret_key
+   ```
+
+5. Restart. `/login` in the CLI and `/eve_login` in Telegram or Discord now
+   return a working SSO link.
+
+## Terminal CLI (no bot token needed)
+
+Talk to the agent directly in your terminal — a third platform adapter beside
+Telegram and Discord, driving the same runtime. It needs the same local `.env`
+configuration as the app, but no Telegram or Discord bot token:
+
+```bash
+npm run cli
+```
+
+```text
+┌─ EVE AI Agent · CLI ───────────────────────────────┐
+│ Talk to the agent in your terminal. Commands:      │
+│   /login   link an EVE character (opens SSO)       │
+│   /whoami  show the active character               │
+│   /clear   wipe this conversation                  │
+│   /exit    quit                                    │
+└────────────────────────────────────────────────────┘
+eve> route from Jita to Amarr, is it dangerous?
+```
+
+Public tools (SDE lookups, market, route planning with danger analysis,
+killboards, OSINT) work without a linked character. Run `/login` to link an EVE
+character via SSO and unlock private ESI (skills, assets, location, mail, …).
+The full bots still need a Telegram or Discord token; the CLI does not.
+
+While the agent works, the CLI shows a **live activity feed** — a brief
+"thinking" note and one line per tool/skill as it runs (e.g. `🗄 SDE query`,
+`💰 market prices`, `🛰 ESI · …`) — then renders the finished answer:
+
+```text
+eve> Сколько стоит Plex?
+  💭 Checking PLEX price; resolve type_id, then market price
+  🗄  SDE query · query
+  💰 market prices · 1 item
+PLEX: 4,621,543 ISK (global average — no regional order book).
+```
+
+This feed is CLI-only: the Telegram and Discord bots reply with one finished
+message and are unaffected. The answer is rendered once from the finalized
+(sanitized) text, not streamed token by token, so it is always clean and
+complete.
 
 ## Scripts
 
 ```bash
-npm run build       # client (Vite) + server (tsc)
-npm run dev         # concurrent watch mode
-npm run check       # typecheck + tests + lint
-npm test            # vitest
-npm run smoke       # env, model endpoint, app health checks
-npm run smoke:openai # authenticated /v1/responses probe
+npm run cli            # interactive terminal agent (no bot token required)
+npm run dev            # tsx watch mode (recommended for running the bots)
+npm run build          # compile server (tsc)
+npm start              # run built app: node dist/app.js
+npm run check          # typecheck + tests + lint
+npm test               # vitest
+npm run smoke          # env, model endpoint, app health checks
+npm run smoke:openai   # authenticated /v1/responses probe
 npm run smoke:eve-tool # authenticated model + EVE SDE tool probe
-npm run db:migrate  # run SQLite migrations
-npm run setup       # download and load SDE data
-npm start           # run built app
+npm run db:migrate     # run SQLite migrations
+npm run setup          # download and load SDE data
 ```
+
+On startup the app prints a status banner with database, SDE, HTTP, platform,
+OpenAI, and heartbeat state. Structured logger output is timestamped and redacts
+recognizable credentials; request-level diagnostics can still contain short user
+goals, tool arguments, reasoning summaries, or provider-error snippets. Treat
+process logs as private operational data.
 
 ## Runtime Smoke Test
 
@@ -144,7 +231,7 @@ For a DB-only SDE tool check without calling the model:
 EVE_TOOL_SMOKE_MODE=direct npm run smoke:eve-tool
 ```
 
-For OpenAI-compatible providers, also set `OPENAI_BASE_URL`. The scripts print only sanitized endpoint/model/tool metadata and answer previews. They never log API keys.
+The scripts print only sanitized endpoint/model/tool metadata and answer previews. They never log API keys.
 
 ## Self-Hosting
 
@@ -158,8 +245,24 @@ See [docs/deployment.md](./docs/deployment.md) for a generic production deployme
 - [docs/SECURITY.md](./docs/SECURITY.md): security rules and current gaps.
 - [docs/RELIABILITY.md](./docs/RELIABILITY.md): reliability model.
 - [docs/deployment.md](./docs/deployment.md): generic self-host guide.
-- [docs/openai-integration.md](./docs/openai-integration.md): OpenAI Responses API and GPT-5.5 configuration.
+- [docs/openai-integration.md](./docs/openai-integration.md): OpenAI Responses API configuration.
 - [docs/generated/db-schema.md](./docs/generated/db-schema.md): SQLite schema reference.
+
+## Contributing
+
+Contributions are welcome. Start with [CONTRIBUTING.md](./CONTRIBUTING.md), keep PRs focused, and run `npm run check` when feasible. Good first areas include documentation, reproducible bug fixes, prompt tests, EVE SDE lookups, chat formatting, and self-hosting troubleshooting.
+
+Please do not include secrets, private deployment notes, server IPs, logs, database files, or SDE dumps in issues or pull requests.
+
+## Legal Notice
+
+EVE Online and all related logos, images, and trademarks are the property of CCP hf. This project is a third-party tool and is not affiliated with, endorsed by, or supported by CCP Games.
+
+Use of EVE Online SSO, ESI, SDE, and related game data is subject to the [EVE Online Developer License Agreement](https://developers.eveonline.com/license-agreement). Each self-hosting operator is responsible for accepting and complying with that agreement when creating an EVE Developer application and running an instance.
+
+## Community Showcase Readiness
+
+The ready-to-copy Showcase page and evidence-backed eligibility matrix are in [docs/community-showcase.md](./docs/community-showcase.md). As checked on 2026-07-13, the public-repository age requirement prevents submission before 2026-08-26; do not open a CCP PR until the remaining gates in that document pass.
 
 ## Open-Source Safety Notice
 

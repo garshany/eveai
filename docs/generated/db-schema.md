@@ -1,14 +1,15 @@
 # Database Schema
 
-Generated from `src/db/schema.ts` on 2026-03-25.
+Generated from `src/db/schema.ts` on 2026-07-13. Runtime migrations in
+`src/db/migrations.ts` may add operational tables to an existing database.
 
-## Identity and Session
+## Identity, chat lanes, and SSO
 
 - `users`
 - `telegram_accounts`
-- `web_sessions`
+- `discord_accounts`
+- `discord_sessions`
 - `auth_requests`
-- `telegram_login_attempts`
 - `telegram_sessions`
 
 ## Agent Memory
@@ -19,6 +20,11 @@ Generated from `src/db/schema.ts` on 2026-03-25.
 - `thread_artifacts`
 - `plans`
 - `plan_steps`
+
+## Scheduled and user intelligence
+
+- `heartbeat_config`
+- `intel_notes`
 
 ## EVE and Cache
 
@@ -55,4 +61,4 @@ Generated from `src/db/schema.ts` on 2026-03-25.
 
 ## Source
 
-Canonical schema definition: `/home/antipedik/eveai/src/db/schema.ts`
+Canonical schema definition: [`src/db/schema.ts`](../../src/db/schema.ts).

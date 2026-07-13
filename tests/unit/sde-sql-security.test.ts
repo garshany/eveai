@@ -13,8 +13,8 @@ beforeEach(() => {
 
   db.prepare('INSERT INTO users (display_name) VALUES (?)').run('pilot');
   db.prepare('INSERT INTO telegram_accounts (telegram_user_id, user_id, username, first_name) VALUES (?, ?, ?, ?)').run(1001, 1, 'pilot', 'Pilot');
-  db.prepare('INSERT INTO web_sessions (session_id, user_id, expires_at) VALUES (?, ?, datetime(\'now\', \'+1 day\'))').run('sess-1', 1);
   db.prepare('INSERT INTO auth_requests (state, type, user_id, chat_id, expires_at) VALUES (?, ?, ?, ?, datetime(\'now\', \'+10 minutes\'))').run('state-1', 'eve_sso', 1, 2001);
+  db.prepare('INSERT INTO intel_notes (user_id, system_id, system_name, text) VALUES (?, ?, ?, ?)').run(1, 30000142, 'Jita', 'secret note');
   db.prepare('INSERT INTO telegram_sessions (chat_id, username) VALUES (?, ?)').run(2001, 'pilot');
   db.prepare('INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)').run('thread-1', 2001);
   db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run('thread-1', 'user', 'secret');
@@ -95,7 +95,7 @@ describe('executeSdeSql security boundary', () => {
 
   it.each([
     'eve_accounts',
-    'web_sessions',
+    'intel_notes',
     'messages',
     'auth_requests',
     'agent_threads',
@@ -135,5 +135,33 @@ describe('executeSdeSql security boundary', () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toBe('Query must read from at least one SDE table');
+  });
+
+  it('rejects cartesian products that would scan multiple tables in full', () => {
+    const result = executeSdeSql(db as Db, 'SELECT COUNT(*) FROM sde_types, sde_groups');
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('cartesian');
+  });
+
+  it('allows an indexed join (one full scan + indexed lookups)', () => {
+    const result = executeSdeSql(
+      db as Db,
+      'SELECT t.name, g.name AS group_name FROM sde_types t JOIN sde_groups g ON g.group_id = t.group_id',
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('bounds result rows without materializing an unbounded set', () => {
+    for (let i = 1; i <= 120; i += 1) {
+      db.prepare('INSERT INTO sde_types (type_id, name, group_id, data_json) VALUES (?, ?, ?, ?)')
+        .run(1000 + i, `Item ${i}`, 25, '{}');
+    }
+    const result = executeSdeSql(db as Db, 'SELECT type_id FROM sde_types');
+
+    expect(result.ok).toBe(true);
+    expect(result.rows.length).toBeLessThanOrEqual(50);
+    expect(result.error).toContain('narrow the query');
   });
 });

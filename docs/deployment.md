@@ -8,10 +8,10 @@ Recommended baseline:
 
 - one Node.js process running `dist/app.js`
 - SQLite database on local disk
-- Telegram grammY long polling, not webhooks
-- Fastify bound to localhost or a private interface unless you intentionally expose the dashboard
-- optional reverse proxy such as Caddy, nginx, or a platform load balancer for HTTPS
-- no Redis, Postgres, background workers, or queue system
+- Telegram grammY long polling (not webhooks) and/or a Discord gateway bot
+- Fastify bound to localhost or a private interface; the EVE SSO login redirect and callback need browser reachability
+- optional reverse proxy such as Caddy, nginx, or a platform load balancer for HTTPS on the SSO callback
+- no Redis, Postgres, background workers, queue system, or web frontend
 
 ## Build
 
@@ -29,12 +29,17 @@ npm start
 At minimum configure:
 
 ```env
-TELEGRAM_BOT_TOKEN=...
+TELEGRAM_BOT_TOKEN=...        # and/or DISCORD_BOT_TOKEN — at least one is required
+DISCORD_BOT_TOKEN=...
+TELEGRAM_REQUEST_WINDOW_MS=60000
+TELEGRAM_MAX_REQUESTS_PER_WINDOW=6
+TELEGRAM_MAX_ACTIVE_REQUESTS_GLOBAL=24
 OPENAI_API_KEY=...
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-5.5
-OPENAI_REASONING_EFFORT=medium
+OPENAI_MODEL=gpt-5.6-sol
+OPENAI_REASONING_EFFORT=auto
+OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
+OPENAI_RESPONSES_TIMEOUT_MS=90000
 OPENAI_RESPONSE_STATE_MODE=stateless
 EVE_CLIENT_ID=...
 EVE_CLIENT_SECRET=...
@@ -56,6 +61,10 @@ openssl rand -base64 32
 
 Create an application at <https://developers.eveonline.com/> and configure the callback URL to match `EVE_CALLBACK_URL`.
 
+By creating and using an EVE Developer application, each operator is responsible for accepting and complying with the EVE Online Developer License Agreement: <https://developers.eveonline.com/license-agreement>.
+
+Keep the application non-commercial unless your use fits CCP's permitted monetization terms or you have separate written permission from CCP. Do not present this project or your deployment as affiliated with, endorsed by, or supported by CCP Games.
+
 For local development:
 
 ```text
@@ -70,31 +79,28 @@ https://your-domain.example/auth/eve/callback
 
 ## Model Provider
 
-The app talks to an OpenAI-compatible Responses API endpoint.
-
-Use official OpenAI by default:
+The app uses the fixed official OpenAI Responses API endpoint
+`https://api.openai.com/v1`; it does not accept an alternate base URL:
 
 ```env
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-5.5
-OPENAI_REASONING_EFFORT=medium
+OPENAI_MODEL=gpt-5.6-sol
+OPENAI_REASONING_EFFORT=auto
+OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
+OPENAI_RESPONSES_TIMEOUT_MS=90000
 OPENAI_RESPONSE_STATE_MODE=stateless
 ```
 
-The integration uses the Responses API with streaming, function tools, `store=false`, prompt cache keys, and stateless tool-call replay by default. The replay path preserves assistant output item fields such as `phase`, which GPT-5.5 guidance requires when manually passing output items back between turns.
+Choose `gpt-5.6-sol` for maximum capability, `gpt-5.6-terra` for a balanced deployment, or `gpt-5.6-luna` for efficient high-volume traffic. The integration uses streaming, function tools, `store=false`, prompt cache keys, and stateless tool-call replay by default. The replay path preserves assistant output item fields such as `phase` when passing output items between tool rounds.
 
-For compatible gateways, keep `OPENAI_RESPONSE_STATE_MODE=stateless` unless the provider explicitly supports stored `previous_response_id` continuation. Stateless mode sends the previous `function_call` item together with `function_call_output`, which avoids provider-side response-state assumptions.
-
-Use `server` mode only when the provider supports stored Responses state:
-
-```env
-OPENAI_RESPONSE_STATE_MODE=server
-```
+Keep `OPENAI_RESPONSE_STATE_MODE=stateless`; this is the only accepted value. It sends the previous
+`function_call` item together with `function_call_output` and keeps `store=false`.
+Server-side Responses continuation is not a supported deployment mode because
+this project deliberately does not store Responses at the API provider.
 
 ## Reverse Proxy
 
-A reverse proxy is optional but recommended for HTTPS dashboard access and secure cookies.
+A reverse proxy is optional but recommended for serving the EVE SSO callback over HTTPS.
 
 Generic Caddy example:
 
@@ -145,7 +151,9 @@ curl -fsS http://127.0.0.1:3000/health
 npm run smoke
 ```
 
-`npm run smoke` checks required env vars, the configured model `/responses` endpoint, and the app health endpoint.
+`npm run smoke` checks the configured startup env subset, the official model
+`/responses` endpoint, and app health. It is not a substitute for a production
+startup check, which also requires `AUTH_SECRET_KEY`.
 
 ## Operations
 

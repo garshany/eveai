@@ -67,8 +67,10 @@ function resolveSystemsBatch(db: Db, systemIds: number[]): Map<number, SystemInf
 }
 
 function sortByTime(kills: OsintKillmail[]): OsintKillmail[] {
+  // Drop unparseable timestamps — a NaN comparator key gives implementation-
+  // defined ordering, which breaks the deterministic-output guarantee.
   return [...kills]
-    .filter((k) => k.killmail_time && k.solar_system_id)
+    .filter((k) => k.killmail_time && k.solar_system_id && Number.isFinite(new Date(k.killmail_time).getTime()))
     .sort((a, b) => new Date(a.killmail_time!).getTime() - new Date(b.killmail_time!).getTime());
 }
 

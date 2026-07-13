@@ -16,10 +16,14 @@
  *   - bsd/universe folders removed
  */
 
+import 'dotenv/config';
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
-import { config } from '../config.js';
+
+// Deliberately no src/config.js import: setup must work before the operator
+// has filled in the rest of .env (bot tokens, OpenAI key, EVE credentials).
+const SDE_DATA_DIR = process.env.SDE_DATA_DIR || './data/sde';
 
 const SDE_URL = 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip';
 
@@ -45,9 +49,15 @@ async function extractZip(zipPath: string, destDir: string): Promise<void> {
 
   // Use node's built-in unzip via child_process since node:zlib doesn't handle zip archives
   const { execFileSync } = await import('node:child_process');
+  const EXTRACT_TIMEOUT_MS = 5 * 60_000; // bound extraction so a hung/corrupt archive can't block forever
   try {
-    execFileSync('unzip', ['-o', zipPath, '-d', destDir], { stdio: 'inherit' });
-  } catch {
+    execFileSync('unzip', ['-o', zipPath, '-d', destDir], { stdio: 'inherit', timeout: EXTRACT_TIMEOUT_MS });
+  } catch (err) {
+    // ENOENT means unzip is not installed; any other error means the archive
+    // itself is bad — don't silently fall through to a confusing Python trace.
+    if ((err as NodeJS.ErrnoException).code && (err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(`unzip failed (archive may be corrupt): ${(err as Error).message}`);
+    }
     // Fallback: try with python3 (paths passed via sys.argv, not string interpolation)
     console.log('[sde-download] unzip not found, trying python3...');
     execFileSync('python3', [
@@ -55,12 +65,12 @@ async function extractZip(zipPath: string, destDir: string): Promise<void> {
       'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); z.extractall(sys.argv[2]); print("Extracted",len(z.namelist()),"files")',
       zipPath,
       destDir,
-    ], { stdio: 'inherit' });
+    ], { stdio: 'inherit', timeout: EXTRACT_TIMEOUT_MS });
   }
 }
 
 async function main() {
-  const sdeDir = config.sde.dataDir;
+  const sdeDir = SDE_DATA_DIR;
   mkdirSync(sdeDir, { recursive: true });
 
   const zipPath = join(sdeDir, 'sde-latest.zip');

@@ -1,5 +1,6 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
+import type { ApiReasoningEffort, ReasoningEffort } from '../openai-options.js';
 import { buildDeveloperPrompt } from './prompts.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
 import {
@@ -35,6 +36,7 @@ import {
   type NativeInputItem,
 } from './native-responses.js';
 import { callEsiOperation } from '../eve/esi-client.js';
+import { isTurnAborted, reportActivity, summarizeToolArgs, TURN_ABORTED_MESSAGE } from './activity.js';
 import { ESI_FIELD_WHITELIST, filterEsiFields, validateEsiFields } from './esi-field-filter.js';
 import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
@@ -64,6 +66,7 @@ import {
   tryBuildDeterministicCountAnswer,
   tryHandleStaticAggregateFastPath,
 } from './static-aggregate.js';
+import { buildSafetyIdentifier } from './safety-identifier.js';
 
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_EVE_KILL_CALLS_PER_TURN = 30;
@@ -102,9 +105,17 @@ async function executeBatchMarketPrices(
   console.log('[batch_market] region=%d types=%d ids=%j', regionId, typeIds.length, typeIds);
 
   type OrderData = { price: number; volume_remain: number; is_buy_order: boolean };
+  type MarketResult = {
+    type_id: number;
+    error?: string;
+    sell: { min_price: number; volume: number; orders: number } | null;
+    buy: { max_price: number; volume: number; orders: number } | null;
+    global_average_price?: number;
+    note?: string;
+  };
 
-  const results = await Promise.all(
-    typeIds.map(async (typeId) => {
+  const results: MarketResult[] = await Promise.all(
+    typeIds.map(async (typeId): Promise<MarketResult> => {
       const esiResult = await callEsiOperation<OrderData[]>(
         db,
         'get_markets_region_id_orders',
@@ -112,7 +123,7 @@ async function executeBatchMarketPrices(
         ctx,
       );
       if (!esiResult.ok || !Array.isArray(esiResult.data)) {
-        return { type_id: typeId, error: !esiResult.ok ? esiResult.error : 'failed' };
+        return { type_id: typeId, error: !esiResult.ok ? esiResult.error : 'failed', sell: null, buy: null };
       }
       const orders = esiResult.data;
       const sell = orders.filter((o) => !o.is_buy_order);
@@ -129,10 +140,36 @@ async function executeBatchMarketPrices(
     }),
   );
 
+  // PLEX and a few other items trade on a global cross-region market, so the
+  // regional order book is empty and would leave the model with two nulls
+  // (which reads as "no data" and makes it give up). Backfill those with the
+  // ESI global average price so every item gets a usable number. One extra
+  // call, only when needed; the global list is ETag-cached.
+  const needsGlobal = results.filter((r) => !r.error && r.sell === null && r.buy === null);
+  if (needsGlobal.length > 0) {
+    type GlobalPrice = { type_id: number; average_price?: number; adjusted_price?: number };
+    const globalResult = await callEsiOperation<GlobalPrice[]>(db, 'get_markets_prices', {}, ctx);
+    if (globalResult.ok && Array.isArray(globalResult.data)) {
+      // Use ONLY average_price (the ESI trade average). adjusted_price is CCP's
+      // internal valuation, not a market quote — falling back to it would report a
+      // fake price for non-traded/stale items.
+      const priceMap = new Map(
+        globalResult.data.map((p) => [p.type_id, p.average_price] as const),
+      );
+      for (const r of needsGlobal) {
+        const avg = priceMap.get(r.type_id);
+        if (typeof avg === 'number' && avg > 0) {
+          r.global_average_price = avg;
+          r.note = 'No regional order book (global-market item, e.g. PLEX); ESI global average price shown.';
+        }
+      }
+    }
+  }
+
   const totalChars = JSON.stringify(results).length;
   console.log('[batch_market] done items=%d result=%d chars', results.length, totalChars);
 
-  return { ok: true, prices: results };
+  return { ok: true, region_id: regionId, prices: results };
 }
 
 function stripRedundantFields(data: unknown, requestArgs: Record<string, unknown>): unknown {
@@ -219,30 +256,40 @@ export async function handleAgentMessage(
 
   // Codex-style pre-turn compaction: compact before first API call if accumulated
   // tokens exceed 90% of model context window.
-  await runPreTurnCompact(db, threadId);
+  await runPreTurnCompactSafe(db, threadId);
 
-  const summary = getThreadSummary(db, threadId);
   const promptMode = isSimpleStaticAggregateCountGoal(userText) ? 'static_aggregate' : 'full';
 
-  const developerPrompt = buildDeveloperPrompt(
-    {
-      authenticated: Boolean(linked),
-      characterId: linked?.characterId ?? null,
-      characterName: linked?.characterName ?? null,
-      grantedScopes: linked?.scopes ?? [],
-    },
-    summary,
-    userProfile,
-    liveContext?.summary ?? null,
-    promptMode,
-    config.openai.responseLanguage,
-  );
+  // Rebuild the developer prompt from current thread state. Called once up front
+  // and again after mid-turn compaction so `instructions` always carries the
+  // freshest thread summary. Everything except the summary is turn-stable.
+  const rebuildDeveloperPrompt = (): string =>
+    buildDeveloperPrompt(
+      {
+        authenticated: Boolean(linked),
+        characterId: linked?.characterId ?? null,
+        characterName: linked?.characterName ?? null,
+        grantedScopes: linked?.scopes ?? [],
+      },
+      getThreadSummary(db, threadId),
+      userProfile,
+      liveContext?.summary ?? null,
+      promptMode,
+      config.openai.responseLanguage,
+    );
 
-  const result = await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt);
+  const developerPrompt = rebuildDeveloperPrompt();
 
-  // Track cumulative token usage for compaction trigger.
-  // Use peakInputTokens (max of single iteration) — reflects actual context size.
-  // Summing across iterations double-counts because each iteration resends instructions+tools.
+  const result = await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt, rebuildDeveloperPrompt);
+
+  // Advance the pre-turn compaction counter. In the default stateless mode the
+  // prompt is rebuilt from buildSmartContext (capped to MAX_CONTEXT_MESSAGES /
+  // MAX_CONTEXT_CHARS), so peakInputTokens is roughly constant regardless of
+  // backlog — accumulating it across turns therefore acts as a periodic "summarize
+  // the growing SQLite history" cadence that reaches autoCompactLimit after enough
+  // turns. Reset to 0 happens only inside compaction. Do NOT switch to storing the
+  // latest peak: that would make the counter constant and stop pre-turn compaction
+  // from ever firing in stateless mode.
   db.prepare(
     'UPDATE agent_threads SET total_tokens = COALESCE(total_tokens, 0) + ? WHERE thread_id = ?'
   ).run(result.peakInputTokens, threadId);
@@ -380,27 +427,79 @@ function resolveSystemLocationContext(db: Db, systemId: number): SystemLocationC
   };
 }
 
+/**
+ * Pre-turn compaction must never fail the user's turn: buildSmartContext caps
+ * the prompt regardless of backlog size, and mid-turn compaction failure in
+ * this same file is already deliberately non-fatal. While total_tokens stays
+ * over the limit the next turn simply retries compaction.
+ */
+async function runPreTurnCompactSafe(db: Db, threadId: string): Promise<void> {
+  // An abandoned turn (CLI Ctrl-C during the pre-loop work) must not spend a
+  // summarizer model call or rewrite thread history — the loop would throw
+  // TURN_ABORTED_MESSAGE right after anyway.
+  if (isTurnAborted()) return;
+  try {
+    await runPreTurnCompact(db, threadId);
+  } catch (error) {
+    console.error('[executor] pre-turn compaction failed, continuing without compaction:', error);
+  }
+}
+
+/**
+ * Transient model/transport failures that are safe to retry with the exact
+ * same request: our 90s deadline, truncated SSE streams, provider 429/5xx,
+ * and undici/socket-level drops. Tool side effects only happen after a
+ * successful response, so re-sending the identical call cannot duplicate them.
+ */
+function isTransientModelError(message: string): boolean {
+  return /timed out|Incomplete response stream|HTTP (429|5\d\d)|terminated|fetch failed|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|rate.?limit|server had an error|server_error|overloaded|too many requests|bad gateway|service unavailable|gateway time-?out/i.test(message);
+}
+
+const MAX_TRANSIENT_RETRIES = 3;
+const TRANSIENT_RETRY_BASE_DELAY_MS = 1000;
+
+function transientRetryDelayMs(attempt: number): number {
+  // Bounded linear backoff: 1s, 2s, 3s — worst case adds ~6s to a turn.
+  return TRANSIENT_RETRY_BASE_DELAY_MS * attempt;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function runNativeAgentLoop(
   db: Db,
   threadId: string,
   ctx: UserContext,
   goal: string,
   developerPrompt: string,
+  rebuildDeveloperPrompt: () => string,
 ): Promise<AgentResult> {
-  const chatId = ctx.chatId ?? ctx.userId;
   const requestId = createRequestId();
   const tools = await buildNativeAgentTools(
     isSimpleStaticAggregateCountGoal(goal) ? 'static_aggregate' : 'full',
   );
   const webSearchState = createWebSearchState();
-  const reasoningEffort = classifyReasoningEffort(goal);
-  console.log('[executor] reasoning effort=%s for goal="%s"', reasoningEffort, goal.slice(0, 60));
+  const reasoningEffort = resolveReasoningEffort(goal, config.openai.reasoningEffort);
+  const safetyIdentifier = buildSafetyIdentifier(ctx.userId, config.auth.secretKey);
+  console.log(
+    '[executor] reasoning effort=%s source=%s mode=%s for goal="%s"',
+    reasoningEffort,
+    config.openai.reasoningEffort === 'auto' ? 'auto' : 'fixed',
+    config.openai.reasoningMode,
+    goal.slice(0, 60),
+  );
 
   const continuation = planConversationContinuation(db, threadId);
   const useServerResponseState = config.openai.responseStateMode === 'server';
   let pendingItems: NativeInputItem[] = useServerResponseState
     ? continuation.items
     : buildSmartContext(db, threadId);
+  // The Responses API rejects an empty input without previous_response_id.
+  // History can be empty on a brand-new thread; fall back to the goal itself.
+  if (pendingItems.length === 0 && !continuation.previousResponseId) {
+    pendingItems = [toNativeMessage(goal)];
+  }
   let previousResponseId: string | null = useServerResponseState
     ? continuation.previousResponseId
     : null;
@@ -422,29 +521,45 @@ async function runNativeAgentLoop(
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCachedTokens = 0;
+  let totalCacheWriteTokens = 0;
   let totalReasoningTokens = 0;
   /** Peak input tokens in a single iteration — reflects actual context size for compaction. */
   let peakInputTokens = 0;
   let toolStateRecoveryCount = 0;
   const MAX_TOOL_STATE_RECOVERIES = 3;
   let usedMidTurnCompact = false;
+  // Per-turn budget for retrying the same request after a transient failure.
+  // Without this, one dropped connection on iteration N throws away all tool
+  // work from iterations 0..N-1 (the recovery paths below require
+  // previousResponseId and are dead code in the default stateless mode).
+  let transientRetries = 0;
 
-  console.log('[executor] === NEW REQUEST chat=%d thread=%s goal="%s" ===', chatId, threadId.slice(0, 12), goal.slice(0, 80));
+  console.log('[executor] === NEW REQUEST request=%s goal="%s" ===', requestId, goal.slice(0, 80));
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
+    // Cooperative cancellation (CLI Ctrl-C): stop before spending another
+    // model call. The CLI discards the turn's rows, so nothing is lost.
+    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+    reportActivity({ type: 'model_turn', iteration });
     let response;
     try {
       response = await createNativeResponse({
         instructions: developerPrompt,
         items: pendingItems,
         previousResponseId,
-        promptCacheKey: threadId,
+        // Reuse the opaque per-user key for cache routing. Never send the raw
+        // conversation/database identifier to the model provider.
+        promptCacheKey: safetyIdentifier,
         tools,
         parallelToolCalls: true,
         truncation: 'auto',
         contextManagement,
-        chatId,
         reasoningEffort,
+        reasoningMode: config.openai.reasoningMode,
+        safetyIdentifier,
+        // Only this top-level loop streams to the CLI activity feed; internal
+        // model calls (compaction/OSINT/advisor) must not leak into the answer.
+        streamToActivity: true,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -458,18 +573,38 @@ async function runNativeAgentLoop(
         console.warn('[executor] tool state lost, switching to cold recovery context: %s', message);
         continue;
       }
+      if (isTransientModelError(message) && transientRetries < MAX_TRANSIENT_RETRIES) {
+        transientRetries += 1;
+        const delay = transientRetryDelayMs(transientRetries);
+        console.warn('[executor] transient model error (retry %d/%d in %dms): %s',
+          transientRetries, MAX_TRANSIENT_RETRIES, delay, message);
+        await sleep(delay);
+        // pendingItems/previousResponseId are untouched — re-send the same call.
+        // No model response was processed, so the retry must not consume the
+        // tool-iteration budget or shift iteration-gated checks (mid-turn
+        // compaction fires only at iteration > 0).
+        iteration -= 1;
+        continue;
+      }
       throw error;
     }
+
+    // Cooperative cancellation, immediately after sampling: an abort during
+    // the model call must stop the turn BEFORE mid-turn compaction (another
+    // model call + history mutation) or any tool execution.
+    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
 
     // Track token usage
     if (response.usage) {
       totalInputTokens += response.usage.input;
       totalOutputTokens += response.usage.output;
       totalCachedTokens += response.usage.cached;
+      totalCacheWriteTokens += response.usage.cacheWrite ?? 0;
       totalReasoningTokens += response.usage.reasoning;
       if (response.usage.input > peakInputTokens) peakInputTokens = response.usage.input;
-      console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d reasoning=%d',
-        iteration, response.usage.input, response.usage.output, response.usage.cached, response.usage.reasoning);
+      console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d cache_write=%d reasoning=%d',
+        iteration, response.usage.input, response.usage.output, response.usage.cached,
+        response.usage.cacheWrite ?? 0, response.usage.reasoning);
     }
 
     // Silent context loss detection: if we are in warm mode (prevId set) on the first
@@ -486,6 +621,7 @@ async function runNativeAgentLoop(
       totalInputTokens = 0;
       totalOutputTokens = 0;
       totalCachedTokens = 0;
+      totalCacheWriteTokens = 0;
       totalReasoningTokens = 0;
       peakInputTokens = 0;
       previousResponseId = null;
@@ -508,12 +644,22 @@ async function runNativeAgentLoop(
         usedMidTurnCompact = true;
         try {
           await runMidTurnCompact(db, threadId);
+          // Refresh `instructions` so the newly written summary reaches the model
+          // for the rest of this turn; the prompt captured before the loop still
+          // holds the pre-compaction summary state.
+          developerPrompt = rebuildDeveloperPrompt();
           previousResponseId = null;
           pendingItems = buildSmartContext(db, threadId);
+          // The summary only covers user/assistant history — re-inject the
+          // freshest tool results so this turn's collected data survives.
+          const toolSummary = buildRecentToolSummaryMessage(db, threadId);
+          if (toolSummary) {
+            pendingItems.push(toNativeAssistantMessage(toolSummary));
+          }
           pendingItems.push({
             type: 'message',
             role: 'user',
-            content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку выше. Если нужные данные уже есть в сводке — используй их, не вызывай tools повторно.' }],
+            content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку и восстановленные tool-результаты выше. Если нужные данные уже есть — используй их, не вызывай tools повторно.' }],
           } as NativeInputItem);
           continue;
         } catch (compactError) {
@@ -534,12 +680,24 @@ async function runNativeAgentLoop(
         console.warn('[executor] tool state lost in response payload, switching to cold recovery context: %s', response.error.message);
         continue;
       }
+      if (isTransientModelError(response.error.message) && transientRetries < MAX_TRANSIENT_RETRIES) {
+        transientRetries += 1;
+        const delay = transientRetryDelayMs(transientRetries);
+        console.warn('[executor] transient error in response payload (retry %d/%d in %dms): %s',
+          transientRetries, MAX_TRANSIENT_RETRIES, delay, response.error.message);
+        await sleep(delay);
+        // response.error is checked before outputs are built, so pendingItems
+        // still holds this request's input — re-send the same call. As above,
+        // a failed call must not consume the tool-iteration budget.
+        iteration -= 1;
+        continue;
+      }
       console.error('[executor] model error:', response.error.message);
       const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
       storeAssistantMessage(db, threadId, message);
       saveLastResponseId(db, threadId, null);
-      console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
-        totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
+      console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d ===',
+        totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens, totalReasoningTokens);
       return { text: message, peakInputTokens };
     }
 
@@ -567,8 +725,9 @@ async function runNativeAgentLoop(
       if (response.outputText.trim()) {
         storeAssistantMessage(db, threadId, response.outputText);
         saveLastResponseId(db, threadId, useServerResponseState ? response.id : null);
-        console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
-          iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, response.outputText.length);
+        console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d answer=%d chars ===',
+          iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
+          totalReasoningTokens, response.outputText.length);
         return { text: response.outputText, peakInputTokens };
       }
       if (response.toolSearchPaths.length > 0 && response.id && useServerResponseState) {
@@ -594,6 +753,10 @@ async function runNativeAgentLoop(
     }
     emptyResponseRetries = 0;
 
+    // Re-check right before dispatch: an abort while extracting/answer-building
+    // must not let any tool run — especially write tools (route_monitor,
+    // intel_note, …). Sequential batches re-check before each tool too.
+    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
     const policies = await Promise.all(toolCalls.map((toolCall) => getToolPolicy(toolCall.name)));
     const argsList = toolCalls.map((toolCall) => safeParseArguments(toolCall.argumentsText));
     const results = policies.every((policy) => policy === 'read')
@@ -630,8 +793,9 @@ async function runNativeAgentLoop(
     if (deterministicAnswer) {
       storeAssistantMessage(db, threadId, deterministicAnswer);
       saveLastResponseId(db, threadId, null);
-      console.log('[executor] === DONE (deterministic-count) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
-        iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, deterministicAnswer.length);
+      console.log('[executor] === DONE (deterministic-count) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d answer=%d chars ===',
+        iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
+        totalReasoningTokens, deterministicAnswer.length);
       return { text: deterministicAnswer, peakInputTokens };
     }
 
@@ -647,8 +811,9 @@ async function runNativeAgentLoop(
         // Save null — the response has a dangling function_call (plan_route) without tool output,
         // so continuing from this prevId would cause "No tool output found" API error.
         saveLastResponseId(db, threadId, null);
-        console.log('[executor] === DONE (route-shortcircuit) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
-          iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, summary.length);
+        console.log('[executor] === DONE (route-shortcircuit) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d answer=%d chars ===',
+          iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
+          totalReasoningTokens, summary.length);
         return { text: summary, peakInputTokens };
       }
     }
@@ -665,7 +830,15 @@ async function runNativeAgentLoop(
       pendingItems = buildFunctionCallOutputs(outputs);
     } else {
       previousResponseId = null;
+      // Stateless mode is memoryless (store:false, no previous_response_id):
+      // each request's input is the model's entire view of the turn. Append
+      // this round's calls/outputs to the accumulated items instead of
+      // replacing them — otherwise the user's goal and earlier tool results
+      // vanish after the first round and multi-step turns answer blind.
+      // Growth is bounded by MAX_TOOL_ITERATIONS, the 12k/tool output budget,
+      // truncation:'auto', and mid-turn compaction.
       pendingItems = [
+        ...pendingItems,
         ...buildFunctionCallInputItems(response.output),
         ...buildFunctionCallOutputs(outputs),
       ];
@@ -686,8 +859,9 @@ async function runNativeAgentLoop(
   const timeout = 'Остановился после слишком большого числа tool iterations.';
   storeAssistantMessage(db, threadId, timeout);
   saveLastResponseId(db, threadId, null);
-  console.log('[executor] === DONE (timeout) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
-    MAX_TOOL_ITERATIONS, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
+  console.log('[executor] === DONE (timeout) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d ===',
+    MAX_TOOL_ITERATIONS, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
+    totalReasoningTokens);
   return { text: timeout, peakInputTokens };
 }
 
@@ -702,6 +876,9 @@ async function executeToolCallsSequentially(
 ): Promise<unknown[]> {
   const results: unknown[] = [];
   for (let index = 0; index < toolCalls.length; index += 1) {
+    // Sequential batches contain at least one write tool — an abort during an
+    // earlier tool in the batch must stop later writes from starting.
+    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
     results.push(await executeToolCall(
       db, requestId, goal, ctx, toolCalls[index].name, argsList[index] ?? {}, webSearchState,
     ));
@@ -718,6 +895,11 @@ async function executeToolCall(
   args: Record<string, unknown>,
   webSearchState: WebSearchState,
 ): Promise<unknown> {
+  // Live activity: surface which tool ("skill") is running to any attached sink
+  // (the interactive CLI). No-op for the bots. Single point so it covers both
+  // the parallel and sequential dispatch paths.
+  reportActivity({ type: 'tool_start', name, detail: summarizeToolArgs(name, args) });
+
   if (name === 'web_search') {
     const query = String(args.query ?? '');
     const guard = registerWebSearch(webSearchState, query);
@@ -1176,7 +1358,7 @@ function isRecentSqliteTimestamp(value: string | null, maxAgeMs: number): boolea
  * Classify user message complexity to select optimal reasoning effort.
  * Returns 'low' for trivial messages, 'medium' for standard, 'high' for complex analysis.
  */
-export function classifyReasoningEffort(goal: string): string {
+export function classifyReasoningEffort(goal: string): ApiReasoningEffort {
   const lower = goal.toLowerCase().trim();
   const len = lower.length;
 
@@ -1220,7 +1402,19 @@ export function classifyReasoningEffort(goal: string): string {
   return 'medium';
 }
 
+export function resolveReasoningEffort(
+  goal: string,
+  configured: ReasoningEffort,
+): ApiReasoningEffort {
+  return configured === 'auto'
+    ? classifyReasoningEffort(goal)
+    : configured;
+}
+
 export const __test__ = {
+  runNativeAgentLoop,
+  runPreTurnCompactSafe,
+  isTransientModelError,
   buildSmartContext,
   buildToolStateRecoveryContext,
   buildRecentToolSummaryMessage,
@@ -1238,6 +1432,7 @@ export const __test__ = {
   planConversationContinuation,
   isRecentSqliteTimestamp,
   classifyReasoningEffort,
+  resolveReasoningEffort,
 };
 
 function compactToolResult(value: unknown): unknown {

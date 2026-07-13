@@ -1,13 +1,12 @@
-import { access, readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/sqlite.js';
 
-export type TelegramBotHealthStatus = 'ok' | 'starting' | 'failed';
+export type BotPlatform = 'telegram' | 'discord';
+export type BotHealthStatus = 'ok' | 'starting' | 'failed' | 'disabled';
 export type DependencyHealthStatus = 'ok' | 'failed' | 'skipped';
 
-type TelegramBotHealth = {
-  status: TelegramBotHealthStatus;
+type PlatformHealth = {
+  status: BotHealthStatus;
   error: string | null;
 };
 
@@ -19,81 +18,88 @@ export type DependencyHealthCheck = {
 
 export interface HealthRouteOptions {
   db?: Db;
-  clientManifestPath?: string;
-  openaiBaseUrl?: string;
-  fetchImpl?: typeof fetch;
 }
 
-interface ClientManifestEntry {
-  file: string;
-}
-
-const OK_HEALTH: TelegramBotHealth = {
-  status: 'ok',
-  error: null,
-};
-
-const DEFAULT_CLIENT_MANIFEST_PATH = resolve(process.cwd(), 'dist/client/.vite/manifest.json');
-const CLIENT_ENTRY_KEY = 'client/src/main.tsx';
-const HEALTH_TIMEOUT_MS = 2_000;
-
-let telegramBotHealth: TelegramBotHealth = { ...OK_HEALTH };
-
-export function resetTelegramBotHealth(): void {
-  telegramBotHealth = { ...OK_HEALTH };
-}
-
-export function markTelegramBotHealthStarting(): void {
-  telegramBotHealth = {
-    status: 'starting',
-    error: null,
+function defaultHealth(): Record<BotPlatform, PlatformHealth> {
+  return {
+    telegram: { status: 'ok', error: null },
+    discord: { status: 'disabled', error: null },
   };
 }
 
-export function markTelegramBotHealthReady(): void {
-  telegramBotHealth = { ...OK_HEALTH };
+let botHealth = defaultHealth();
+
+export function resetBotHealth(): void {
+  botHealth = defaultHealth();
 }
 
-export function markTelegramBotHealthFailed(error: unknown): void {
-  telegramBotHealth = {
-    status: 'failed',
-    error: stringifyError(error),
-  };
+export function markBotDisabled(platform: BotPlatform): void {
+  botHealth[platform] = { status: 'disabled', error: null };
 }
+
+export function markBotStarting(platform: BotPlatform): void {
+  botHealth[platform] = { status: 'starting', error: null };
+}
+
+export function markBotReady(platform: BotPlatform): void {
+  botHealth[platform] = { status: 'ok', error: null };
+}
+
+export function markBotFailed(platform: BotPlatform, error: unknown): void {
+  botHealth[platform] = { status: 'failed', error: stringifyError(error) };
+}
+
+// Backward-compatible Telegram-named wrappers (used across app and tests).
+export const resetTelegramBotHealth = resetBotHealth;
+export const markTelegramBotHealthStarting = (): void => markBotStarting('telegram');
+export const markTelegramBotHealthReady = (): void => markBotReady('telegram');
+export const markTelegramBotHealthFailed = (error: unknown): void => markBotFailed('telegram', error);
 
 export function registerHealthRoute(app: FastifyInstance, options: HealthRouteOptions = {}): void {
   app.get('/health', async (_req, reply) => {
     const checks = await collectDependencyChecks(options);
     const dependencyFailures = Object.values(checks).some((check) => check.status === 'failed');
-    const botHealthy = telegramBotHealth.status === 'ok';
-    const statusCode = botHealthy && !dependencyFailures ? 200 : 503;
+
+    const enabled = (Object.keys(botHealth) as BotPlatform[])
+      .filter((platform) => botHealth[platform].status !== 'disabled');
+    const failedPlatform = enabled.find((platform) => botHealth[platform].status === 'failed');
+    const startingPlatform = enabled.find((platform) => botHealth[platform].status === 'starting');
+
+    const botsHealthy = !failedPlatform && !startingPlatform;
+    const statusCode = botsHealthy && !dependencyFailures ? 200 : 503;
+    const status = statusCode === 200
+      ? 'ok'
+      : failedPlatform
+        ? 'failed'
+        : startingPlatform
+          ? 'starting'
+          : 'degraded';
+    const firstError = failedPlatform ? botHealth[failedPlatform].error : null;
 
     return reply.status(statusCode).send({
-      status: statusCode === 200 ? 'ok' : telegramBotHealth.status === 'ok' ? 'degraded' : telegramBotHealth.status,
+      status,
       timestamp: new Date().toISOString(),
-      error: telegramBotHealth.error ?? undefined,
+      error: firstError ?? undefined,
       checks: {
-        telegram_bot: {
-          status: telegramBotHealth.status,
-          error: telegramBotHealth.error ?? undefined,
-        },
+        telegram_bot: platformCheck('telegram'),
+        discord_bot: platformCheck('discord'),
         ...checks,
       },
     });
   });
 }
 
-async function collectDependencyChecks(options: HealthRouteOptions): Promise<Record<string, DependencyHealthCheck>> {
-  const [database, clientAssets, openaiProxy] = await Promise.all([
-    checkDatabase(options.db),
-    checkClientAssets(options.clientManifestPath ?? DEFAULT_CLIENT_MANIFEST_PATH),
-    checkOpenAiProxy(options.openaiBaseUrl ?? '', options.fetchImpl ?? fetch),
-  ]);
-
+function platformCheck(platform: BotPlatform): { status: string; error?: string } {
+  const health = botHealth[platform];
   return {
-    database,
-    client_assets: clientAssets,
-    openai_proxy: openaiProxy,
+    status: health.status === 'disabled' ? 'skipped' : health.status,
+    error: health.error ?? undefined,
+  };
+}
+
+async function collectDependencyChecks(options: HealthRouteOptions): Promise<Record<string, DependencyHealthCheck>> {
+  return {
+    database: await checkDatabase(options.db),
   };
 }
 
@@ -113,78 +119,6 @@ async function checkDatabase(db?: Db): Promise<DependencyHealthCheck> {
   }
 }
 
-async function checkClientAssets(manifestPath: string): Promise<DependencyHealthCheck> {
-  try {
-    await access(manifestPath);
-    const raw = await readFile(manifestPath, 'utf8');
-    const manifest = JSON.parse(raw) as Record<string, ClientManifestEntry>;
-    const entry = manifest[CLIENT_ENTRY_KEY];
-    if (!entry?.file) {
-      return { status: 'failed', error: `Client manifest missing ${CLIENT_ENTRY_KEY}` };
-    }
-    return {
-      status: 'ok',
-      details: {
-        manifest: manifestPath,
-        entry: entry.file,
-      },
-    };
-  } catch (error) {
-    return { status: 'failed', error: stringifyError(error) };
-  }
-}
-
-async function checkOpenAiProxy(baseUrl: string, fetchImpl: typeof fetch): Promise<DependencyHealthCheck> {
-  const healthUrl = deriveOpenAiHealthUrl(baseUrl);
-  if (!healthUrl) {
-    return { status: 'skipped' };
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-  try {
-    const response = await fetchImpl(healthUrl, { signal: controller.signal });
-    if (!response.ok) {
-      return { status: 'failed', error: `Health probe returned HTTP ${response.status}` };
-    }
-    return {
-      status: 'ok',
-      details: {
-        url: healthUrl,
-      },
-    };
-  } catch (error) {
-    if ((error as Error).name === 'AbortError') {
-      return { status: 'failed', error: `Health probe timed out after ${HEALTH_TIMEOUT_MS}ms` };
-    }
-    return { status: 'failed', error: stringifyError(error) };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function deriveOpenAiHealthUrl(baseUrl: string): string | null {
-  const trimmed = baseUrl.trim();
-  if (!trimmed) return null;
-
-  try {
-    const url = new URL(trimmed);
-    if (url.hostname === 'api.openai.com') {
-      return null;
-    }
-
-    const normalizedPath = url.pathname.replace(/\/+$/, '');
-    url.pathname = normalizedPath.endsWith('/v1')
-      ? `${normalizedPath.slice(0, -3) || ''}/health`
-      : `${normalizedPath || ''}/health`;
-    url.search = '';
-    url.hash = '';
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
 function stringifyError(error: unknown): string {
   if (error instanceof Error) {
     return error.message || error.name;
@@ -192,5 +126,5 @@ function stringifyError(error: unknown): string {
   if (typeof error === 'string') {
     return error;
   }
-  return 'Telegram bot failed to start';
+  return 'Bot failed to start';
 }
