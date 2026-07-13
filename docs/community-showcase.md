@@ -1,6 +1,6 @@
 # EVE Community Showcase Submission
 
-Status: blocked pending eligibility gates
+Status: blocked until public-age and operator-attestation gates pass
 
 This is the ready-to-copy submission bundle for CCP's [Community Showcase](https://developers.eveonline.com/docs/community/). The Showcase is maintained in [`esi/esi-docs`](https://github.com/esi/esi-docs); it is not an application-form registration.
 
@@ -35,7 +35,7 @@ EVE AI Agent is a self-hosted chat-first assistant for EVE Online. Run it with T
 
 <div class="grid cards" markdown>
 
-- [:octicons-mark-github-16: __GitHub__](https://github.com/garshany/eveonline_ai){ .esi-card-link }
+- [:octicons-mark-github-16: __GitHub__](https://github.com/garshany/eveai){ .esi-card-link }
 
 </div>
 
@@ -60,11 +60,11 @@ If images are later added, place them in that same target directory. Each must b
 | --- | --- | --- |
 | Directly related to EVE Online | PASS | The public repository describes EVE SSO, ESI, local SDE, route planning, and EVE intelligence. |
 | Complies with the Developer License Agreement | NEEDS OPERATOR ATTESTATION | The project documents the agreement, non-affiliation, non-commercial boundary, and prohibited misuse. Only the responsible operator can attest that their EVE account/application and deployment comply with the agreement. |
-| Public service/resource | PASS | `garshany/eveonline_ai` is publicly visible on GitHub under MIT. |
+| Public service/resource | PASS | The canonical source repository, [`garshany/eveai`](https://github.com/garshany/eveai), is publicly visible on GitHub under MIT. |
 | Production-ready | NEEDS OPERATOR DEPLOYMENT ATTESTATION | The public v3.0.0 release has a reproducible install path and validation gate. A responsible operator must still attest that their own deployment is live and complies with CCP requirements before submission. |
-| Public for at least three months | FAIL UNTIL 2026-08-26 | The public GitHub repository was created on 2026-05-26. Three full calendar months complete on 2026-08-26. |
-| Actively maintained within the last year | PASS | The public default branch was pushed on 2026-07-09. |
+| Public for at least three months | CONSERVATIVE FAIL UNTIL 2026-10-13 | GitHub records the repository's initial `PublicEvent` on 2026-03-24, but the source did not remain public continuously before this v3 release. Do not use that event to claim uninterrupted public availability. Use the current public-release date, 2026-07-13, as the conservative start; three full calendar months complete on 2026-10-13. |
+| Actively maintained within the last year | PASS | The public default branch and immutable v3.0.0 release were updated and verified on 2026-07-13. |
 
 ## Publication Gate
 
-Do **not** open the CCP pull request yet. Before 2026-08-26, publish the current validated code and documentation to the public repository, make the legal/operator attestation, and retain production-readiness evidence. On or after that date, repeat this matrix against the live public repository, then fork `esi/esi-docs` and submit the page above as a focused PR.
+Do **not** open the CCP pull request yet. Before 2026-10-13, keep the current validated code and documentation public, make the legal/operator attestation, and retain production-readiness evidence. On or after that date, repeat this matrix against the live public repository, then fork `esi/esi-docs` and submit the page above as a focused PR.

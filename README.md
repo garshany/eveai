@@ -268,7 +268,7 @@ Use of EVE Online SSO, ESI, SDE, and related game data is subject to the [EVE On
 
 ## Community Showcase Readiness
 
-The ready-to-copy Showcase page and evidence-backed eligibility matrix are in [docs/community-showcase.md](./docs/community-showcase.md). As checked on 2026-07-13, the public-repository age requirement prevents submission before 2026-08-26; do not open a CCP PR until the remaining gates in that document pass.
+The ready-to-copy Showcase page and evidence-backed eligibility matrix are in [docs/community-showcase.md](./docs/community-showcase.md). GitHub records the canonical `garshany/eveai` repository's initial public event on 2026-03-24; because its current public release followed a private period, this project uses the conservative public-age start of 2026-07-13 and does not open a CCP PR before 2026-10-13 or until the remaining gates in that document pass.
 
 ## Open-Source Safety Notice
 
