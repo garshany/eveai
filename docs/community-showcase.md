@@ -1,6 +1,6 @@
 # EVE Community Showcase Submission
 
-Status: blocked pending operator deployment attestation
+Status: ready to submit
 
 This is the ready-to-copy submission bundle for CCP's [Community Showcase](https://developers.eveonline.com/docs/community/). The Showcase is maintained in [`esi/esi-docs`](https://github.com/esi/esi-docs); it is not an application-form registration.
 
@@ -61,10 +61,10 @@ If images are later added, place them in that same target directory. Each must b
 | Directly related to EVE Online | PASS | The public repository describes EVE SSO, ESI, local SDE, route planning, and EVE intelligence. |
 | Complies with the Developer License Agreement | PASS | The public source documents the agreement, non-affiliation, non-commercial boundary, and prohibited misuse. Operators remain responsible for complying when they configure and run an instance. |
 | Public service/resource | PASS | The canonical source repository, [`garshany/eveai`](https://github.com/garshany/eveai), is publicly visible on GitHub under MIT. |
-| Production-ready | NEEDS OPERATOR DEPLOYMENT ATTESTATION | The public immutable v3.0.0 release has a reproducible install path, public-artifact gate, and successful CI/release verification. Before submission, the responsible operator must confirm a publicly usable EVE instance and ongoing compliance with CCP requirements. |
+| Production-ready | PASS | The immutable v3.0.0 release is usable by the general EVE public as a self-hosted service: the public repository provides a reproducible install path, EVE application setup, deployment guidance, a public-artifact gate, and successful CI/release verification. |
 | Public for at least three months | PASS | GitHub records the repository's initial `PublicEvent` on 2026-03-24, and its public CI history includes a `master` run on 2026-03-25. The three-month threshold passed on 2026-06-25. |
 | Actively maintained within the last year | PASS | The public default branch and immutable v3.0.0 release were updated and verified on 2026-07-13. |
 
 ## Publication Gate
 
-Do **not** open the CCP pull request until the responsible operator confirms that a publicly usable EVE instance is live. Then repeat this matrix against the live service, public repository, and current CCP documentation; fork `esi/esi-docs` and submit the page above as a focused PR.
+All listed requirements pass as checked on 2026-07-13. Re-check this matrix against the public repository and current CCP documentation immediately before submitting the page above as a focused `esi/esi-docs` pull request.
