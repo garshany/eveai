@@ -109,12 +109,12 @@ describe('CLI activity renderer', () => {
 
   it('redacts secrets in reasoning and tool-detail feed lines', () => {
     const { screen, renderer } = harness(true);
-    renderer.sink.emit({ type: 'reasoning', text: 'using Bearer sk-abcdefghij0123456789XYZ to call' });
-    renderer.sink.emit({ type: 'tool_start', name: 'web_search', detail: 'Bearer sk-abcdefghij0123456789XYZ' });
+    renderer.sink.emit({ type: 'reasoning', text: 'using Bearer 0123456789abcdefghij to call' });
+    renderer.sink.emit({ type: 'tool_start', name: 'web_search', detail: 'Bearer 0123456789abcdefghij' });
     renderer.finish('done');
     const out = screen.screen();
     expect(out).toContain('Bearer [REDACTED]');
-    expect(out).not.toContain('sk-abcdefghij0123456789XYZ');
+    expect(out).not.toContain('0123456789abcdefghij');
   });
 
   it('mutes all output after abort() — an abandoned turn must not print over the prompt', () => {

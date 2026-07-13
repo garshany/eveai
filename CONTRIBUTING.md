@@ -2,7 +2,7 @@
 
 Thanks for helping improve EVE Online AI.
 
-This project is a self-hosted Telegram-first EVE Online assistant with a Discord DM adapter. Contributions should preserve the current operating model and avoid adding infrastructure that self-hosters do not need.
+This project is a self-hosted, chat-first EVE Online assistant. Telegram private chats, Discord DMs, and the terminal CLI share one runtime; contributions should preserve that model and avoid infrastructure that self-hosters do not need.
 
 ## Good First Areas
 
@@ -27,6 +27,7 @@ Run the strongest feasible check before opening a PR:
 ```bash
 npm run check
 npm run build
+npm run audit:public
 ```
 
 Optional runtime checks when env is available:

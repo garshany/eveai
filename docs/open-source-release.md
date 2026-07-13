@@ -27,14 +27,22 @@ From the repository root:
 ./scripts/export-public.sh ../eveai-public-export
 cd ../eveai-public-export
 rg -n "<old-ip>|<old-ssh-user>|<old-domain>|<old-password-fragment>|OPENAI_API_KEY=.+|TELEGRAM_BOT_TOKEN=.+|EVE_CLIENT_SECRET=." -S .
-npm install
-npm run check
 git init
 git add .
+npm ci
+npm run audit:public
+npm run check
+npm run build
 git commit -m "Initial public release"
 ```
 
 The `rg` command should return no private host, domain, credential, or deployment matches.
+
+`npm run audit:public` is the repeatable current-tree gate used by CI. It
+rejects tracked runtime data, local agent artifacts, credentials, and key-like
+files while allowing the documented `.env.example` template. It does not scan
+deleted or reachable history; perform that review before publishing a source
+repository with private ancestry.
 
 ## Public Surface Rules
 

@@ -9,9 +9,15 @@
 
 > **Landing-page source:** [`index.html`](./index.html). GitHub Pages is optional and is not currently a deployed product endpoint.
 
-Self-hosted chat-first AI assistant for EVE Online with Telegram and Discord bots. It combines local EVE SDE data, live ESI data, killboard intelligence, route planning, and the official OpenAI Responses API model loop with tool calling.
+Self-hosted, chat-first AI assistant for EVE Online. Run it through Telegram, Discord DMs, or the terminal CLI; it combines local EVE SDE data, live ESI data, killboard intelligence, route planning, and the official OpenAI Responses API model loop with tool calling.
 
 This repository is designed for operators to run their own instance in a terminal. It does not require Redis, Postgres, queues, workers, webhooks, or a web frontend.
+
+## v3.0.0 public release
+
+v3 makes the public self-hosting contract explicit: one Node.js process, local SQLite state, the official OpenAI Responses API, and no hosted dashboard or provider proxy. Every pull request now runs a tracked-file public-artifact audit in addition to build, tests, and linting.
+
+For a public SSO callback, use HTTPS, set the callback URL exactly in the EVE Developer Portal, generate a strong `AUTH_SECRET_KEY`, give ESI a reachable operator contact, and keep `.env` plus `data/` on the host only. The detailed production checklist is in [docs/deployment.md](./docs/deployment.md).
 
 ## Capabilities
 
@@ -64,7 +70,7 @@ Hard constraints:
 git clone <your-public-fork-url> eveai
 cd eveai
 cp .env.example .env       # fill in the tokens
-npm install
+npm ci
 npm run setup              # download + load EVE static data (SDE)
 npm run dev
 ```
@@ -97,7 +103,7 @@ AUTH_SECRET_KEY=replace-with-random-secret
 EVE_CALLBACK_URL=http://localhost:3000/auth/eve/callback
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
-ESI_USER_AGENT=EVEAI/2.1 (+https://github.com/your-org/eveai; contact=you@example.com)
+ESI_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
 ```
 
 Generate `AUTH_SECRET_KEY` with:
@@ -235,7 +241,7 @@ The scripts print only sanitized endpoint/model/tool metadata and answer preview
 
 ## Self-Hosting
 
-See [docs/deployment.md](./docs/deployment.md) for a generic production deployment guide. Keep operator-specific server addresses, credentials, logs, certificates, and runbooks outside this repository.
+See [docs/deployment.md](./docs/deployment.md) for a generic production deployment guide. Before publishing a fork or a release, run `npm run audit:public`, `npm run check`, and `npm run build`. Keep operator-specific server addresses, credentials, logs, certificates, and runbooks outside this repository.
 
 ## Documentation
 

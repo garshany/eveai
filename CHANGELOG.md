@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.0.0] - 2026-07-13
+
+### Changed
+
+- Established the v3 public self-hosting release contract: Telegram, Discord DMs, and the terminal CLI share one Node.js and SQLite runtime; Fastify remains limited to EVE SSO and health; the model provider is the official OpenAI Responses API.
+- Updated the default ESI, zKillboard, EVE-KILL, and EVE-Scout User-Agent examples to `EVEAI/3.0` so operators can identify the current release while retaining their own reachable contact.
+- Rewrote the public quick-start and deployment path around deterministic `npm ci`, HTTPS SSO callbacks, local-only secret/data storage, and the v3 validation sequence.
+- Updated the feature-request taxonomy to reflect the SSO callback and health surface rather than the removed web dashboard.
+
+### Added
+
+- `npm run audit:public`, enforced in CI, rejects tracked local runtime artifacts and common credential-like values before a public release.
+
+### Release verification
+
+- The release gate is `npm run audit:public`, `npm run check`, and `npm run build` on the exact release commit.
+
 ## [2.2.0] - 2026-07-06
 
 ### Added

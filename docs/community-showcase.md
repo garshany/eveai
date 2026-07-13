@@ -61,7 +61,7 @@ If images are later added, place them in that same target directory. Each must b
 | Directly related to EVE Online | PASS | The public repository describes EVE SSO, ESI, local SDE, route planning, and EVE intelligence. |
 | Complies with the Developer License Agreement | NEEDS OPERATOR ATTESTATION | The project documents the agreement, non-affiliation, non-commercial boundary, and prohibited misuse. Only the responsible operator can attest that their EVE account/application and deployment comply with the agreement. |
 | Public service/resource | PASS | `garshany/eveonline_ai` is publicly visible on GitHub under MIT. |
-| Production-ready | NEEDS PUBLIC RELEASE EVIDENCE | Current local verification is strong, but there is no public hosted instance or published release evidence proving the exact Showcase description is production-ready. Publish the current validated release and retain a reproducible install path before submission. |
+| Production-ready | NEEDS OPERATOR DEPLOYMENT ATTESTATION | The public v3.0.0 release has a reproducible install path and validation gate. A responsible operator must still attest that their own deployment is live and complies with CCP requirements before submission. |
 | Public for at least three months | FAIL UNTIL 2026-08-26 | The public GitHub repository was created on 2026-05-26. Three full calendar months complete on 2026-08-26. |
 | Actively maintained within the last year | PASS | The public default branch was pushed on 2026-07-09. |
 

@@ -136,7 +136,7 @@ async function fetchEveUni(query: string): Promise<Array<{ title: string; url: s
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WEB_SEARCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url.toString(), { signal: controller.signal, headers: { 'User-Agent': 'EVEAI/2.1 (+https://github.com/example/eveai; contact=operator@example.com)' } });
+    const res = await fetch(url.toString(), { signal: controller.signal, headers: { 'User-Agent': 'EVEAI/3.0 (+https://github.com/example/eveai; contact=operator@example.com)' } });
     if (!res.ok) return [];
     const data = await res.json() as { query?: { search?: Array<{ title?: string; snippet?: string }> } };
     return (data?.query?.search ?? [])

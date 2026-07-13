@@ -1,7 +1,8 @@
 {
   "name": "eveonline-ai",
-  "version": "2.2.0",
-  "description": "Self-hosted Telegram and Discord AI assistant for EVE Online using the OpenAI Responses API, EVE SSO, ESI, and local SDE",
+  "version": "3.0.0",
+  "description": "Self-hosted EVE Online AI assistant for Telegram, Discord, and the terminal, powered by EVE SSO, ESI, local SDE, and the OpenAI Responses API",
+  "private": true,
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -33,6 +34,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/ --max-warnings 0",
+    "audit:public": "bash scripts/public-artifact-audit.sh",
     "lint:fix": "eslint src/ --fix",
     "typecheck": "tsc --noEmit",
     "check": "tsc --noEmit && vitest run && npm run lint",

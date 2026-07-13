@@ -115,7 +115,7 @@ EVE_KILL_CACHE_TTL_SECONDS=300
 # zKillboard (REST + R2Z2)
 ZKILL_BASE_URL=https://zkillboard.com/api/
 ZKILL_TIMEOUT_MS=8000
-ZKILL_USER_AGENT=EVEAI/2.1 (+https://github.com/your-org/eveai; contact=you@example.com)
+ZKILL_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
 ```
 
 ## DB Tables

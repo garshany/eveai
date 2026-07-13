@@ -16,7 +16,7 @@ Recommended baseline:
 ## Build
 
 ```bash
-npm install
+npm ci
 cp .env.example .env
 npm run setup
 npm run build
@@ -48,7 +48,7 @@ EVE_CALLBACK_URL=https://your-domain.example/auth/eve/callback
 WEB_BASE_URL=https://your-domain.example
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
-ESI_USER_AGENT=EVEAI/2.1 (+https://github.com/your-org/eveai; contact=you@example.com)
+ESI_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
 ```
 
 Generate `AUTH_SECRET_KEY` with:
@@ -162,12 +162,30 @@ startup check, which also requires `AUTH_SECRET_KEY`.
 - Rotate `AUTH_SECRET_KEY` only with an explicit session/token migration plan; it derives storage keys for protected local secrets.
 - Never publish tokens, SSH details, IP addresses, real domains, private reverse-proxy paths, or production runbooks in this repository.
 
+## v3 Release Gate
+
+Before publishing a public release or making a fork public, run these commands
+against the exact commit that will be released:
+
+```bash
+npm ci
+npm run audit:public
+npm run check
+npm run build
+```
+
+`npm run audit:public` rejects tracked credential-like values and private
+artifacts such as nested `.env` files, runtime data, logs, database variants,
+and local agent artifacts. It is a release guard, not a replacement for
+rotating a credential that has ever been exposed or for reviewing reachable Git
+history.
+
 ## Open-Source Publishing Checklist
 
 Before making a fork public:
 
 1. Rotate any token, password, SSH key, or provider credential that ever appeared in chat logs, commits, CI logs, or local docs.
 2. Publish from a clean sanitized export or rewrite history; do not expose a repo history that previously contained secrets or private infrastructure.
-3. Run a current-tree secret scan and a history scan.
+3. Run `npm run audit:public`, then run a history secret scan.
 4. Confirm `.env`, `.env.*`, `data/`, `.agent/`, `.claude/`, local hooks, logs, and database files are ignored.
 5. Confirm public docs describe self-hosting only.

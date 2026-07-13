@@ -26,7 +26,9 @@ body:
         - EVE SDE
         - ESI / auth
         - Telegram bot
-        - Web dashboard
+        - Discord bot
+        - Terminal CLI
+        - Browser SSO / health
         - Documentation
         - Other
     validations:
