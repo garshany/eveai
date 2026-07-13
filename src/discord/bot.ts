@@ -154,7 +154,7 @@ async function handleMessage(db: Db, message: Message): Promise<void> {
   if (message.channel.type !== ChannelType.DM) return;
 
   if (!isDiscordUserAllowed(message.author.id, config.discord.allowedUserId)) {
-    log.warn('access denied for discord user %s', message.author.id);
+    log.warn('access denied for discord user');
     await message.reply('Access denied.').catch(() => {});
     return;
   }
@@ -203,7 +203,7 @@ async function handleMessage(db: Db, message: Message): Promise<void> {
   const stopTyping = startTyping(message.channel as DMChannel);
 
   try {
-    log.info('message chat_key=%d user_id=%d len=%d', chatKey, userCtx.userId, text.length);
+    log.info('message len=%d', text.length);
     const cleaned = await runAgentTurn(db, threadId, userCtx, text);
     await thinkingMsg?.delete().catch(() => {});
     await sendChunks(message.channel as DMChannel, cleaned);

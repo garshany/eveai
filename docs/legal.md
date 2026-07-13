@@ -2,6 +2,10 @@
 
 EVE Online and all related logos, images, and trademarks are the property of CCP hf. EVE AI Agent is a third-party tool and is not affiliated with, endorsed by, or supported by CCP Games.
 
+The MIT license applies only to this project's original source code. It does not grant rights to CCP marks or game data. Preserve the following CCP proprietary notice wherever EVE or Licensed Materials are used or displayed:
+
+> © 2014 CCP hf. All rights reserved. "EVE", "EVE Online", "CCP", and all related logos and images are trademarks or registered trademarks of CCP hf.
+
 ## EVE Developer License Agreement
 
 This project uses EVE Online SSO, ESI, SDE, and related game data. Those materials are subject to CCP's EVE Online Developer License Agreement:
@@ -18,7 +22,7 @@ CCP's community documentation explains how to submit public EVE community tools 
 
 As of the current community documentation, submitted services/resources must be directly related to EVE Online, comply with the Developer License Agreement, be public, be production-ready, be public for at least three months, and be actively maintained within the last year.
 
-This repository being public does not automatically make a hosted instance eligible for the Community Showcase. Submit only after the deployed service satisfies CCP's current requirements.
+The current ready-to-copy page, evidence matrix, and publication gate are in [community-showcase.md](./community-showcase.md). A public repository alone does not prove production readiness or legal compliance; submit only after every current CCP requirement passes.
 
 ## Operator Responsibilities
 

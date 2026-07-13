@@ -274,7 +274,7 @@
 
       <div class="stat-row rise d5">
         <div class="stat"><div class="n">2</div><div class="l">Chat platforms</div></div>
-        <div class="stat"><div class="n">175+</div><div class="l">ESI tools</div></div>
+        <div class="stat"><div class="n">Live</div><div class="l">ESI data</div></div>
         <div class="stat"><div class="n">SQLite</div><div class="l">No Redis · No Postgres</div></div>
         <div class="stat"><div class="n">1 process</div><div class="l">Single Node.js service</div></div>
       </div>
@@ -288,10 +288,11 @@
 <span class="box">┌─ EVE AI Agent v2.2.0 ───────────────────────────┐</span>
 <span class="box">│</span> <span class="k">Database </span> <span class="ok">✔</span> ./data/eve-agent.db              <span class="box">│</span>
 <span class="box">│</span> <span class="k">SDE data </span> <span class="ok">✔</span> 8490 systems loaded              <span class="box">│</span>
+<span class="box">│</span> <span class="k">HTTP     </span> <span class="ok">✔</span> SSO callback + /health           <span class="box">│</span>
 <span class="box">│</span> <span class="k">Telegram </span> <span class="ok">✔</span> long polling                     <span class="box">│</span>
 <span class="box">│</span> <span class="k">Discord  </span> <span class="ok">✔</span> gateway connection               <span class="box">│</span>
-<span class="box">│</span> <span class="k">OpenAI   </span> <span class="ok">✔</span> gpt-5.5 @ api.openai.com/v1       <span class="box">│</span>
-<span class="box">│</span> <span class="k">Killfeed </span> <span class="ok">✔</span> zKillboard R2Z2 stream           <span class="box">│</span>
+<span class="box">│</span> <span class="k">OpenAI   </span> <span class="ok">✔</span> gpt-5.6-sol · auto/standard · low <span class="box">│</span>
+<span class="box">│</span> <span class="k">Heartbeat</span> <span class="ok">✔</span> every 5 min                     <span class="box">│</span>
 <span class="box">└─────────────────────────────────────────────────┘</span>
 <span class="t">ready.</span> <span class="cursor"></span></div>
       </div>
@@ -319,19 +320,19 @@
   <section id="data">
     <div class="wrap">
       <div class="sec-head">
-        <span class="sec-idx">02</span><h2>What updates automatically</h2><span class="rule"></span>
+        <span class="sec-idx">02</span><h2>What stays current</h2><span class="rule"></span>
       </div>
-      <p class="sec-sub">Everything <b>live</b> from the EVE API refreshes on its own — killfeeds, character data, tokens, even the API schema. Only the <b>static</b> game data (SDE) is a deliberate manual step, because it changes only on EVE patches.</p>
+      <p class="sec-sub">Configured watches and heartbeat checks run on a schedule. Character, market, and route data are fetched on demand and cached according to upstream rules. The static SDE snapshot is a deliberate manual update because it changes on EVE patches.</p>
       <div class="split">
         <div class="feed live reticle">
           <h3>◈ Live · automatic</h3>
-          <div class="sub">pulled from ESI / killboards without you asking</div>
+          <div class="sub">scheduled only when a matching monitor or heartbeat row is configured</div>
           <div class="row"><span class="led"></span><span class="rt">Killboard stream<em>zKillboard R2Z2 poller runs from boot, matches your watches</em></span><span class="rc">real-time</span></div>
           <div class="row"><span class="led"></span><span class="rt">Heartbeat checks<em>mail · skills · wallet · industry · contracts · PI · kills</em></span><span class="rc">every 5 min</span></div>
           <div class="row"><span class="led"></span><span class="rt">Route monitor<em>location, kills &amp; online status while a route is active</em></span><span class="rc">15–60 s</span></div>
           <div class="row"><span class="led"></span><span class="rt">On-demand ESI<em>every tool call, cached &amp; revalidated per CCP cache headers</em></span><span class="rc">on request</span></div>
           <div class="row"><span class="led"></span><span class="rt">SSO token refresh<em>access tokens renewed before they expire</em></span><span class="rc">auto</span></div>
-          <div class="row"><span class="led"></span><span class="rt">ESI schema catalog<em>swagger spec fetched &amp; cached, 175+ tools generated</em></span><span class="rc">on load</span></div>
+          <div class="row"><span class="led"></span><span class="rt">ESI schema catalog<em>operation catalog fetched and cached on first use</em></span><span class="rc">on demand</span></div>
         </div>
         <div class="feed static reticle">
           <h3>◈ Static · manual</h3>
@@ -364,7 +365,7 @@
                                           ▼
                               <span class="a3">SQLite  +  local SDE  +  EVE SSO</span>
 
-Browser ─▶ Fastify ─▶ EVE SSO callback + /health ─▶ same SQLite state</pre>
+Browser ─▶ Fastify ─▶ EVE SSO login redirect + callback + /health ─▶ same SQLite state</pre>
       </div>
     </div>
   </section>

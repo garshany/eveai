@@ -27,18 +27,18 @@ CI (`.github/workflows/ci.yml`) runs build + typecheck + tests + lint. Tests are
 
 ## Architecture
 
-Single-process Node.js app (ES modules, TypeScript strict). The Telegram and Discord bots are the product surface; the web layer is only the EVE SSO callback plus health. There is no web frontend.
+Single-process Node.js app (ES modules, TypeScript strict). The Telegram and Discord bots are the product surface; the web layer is limited to the EVE SSO login redirect/callback plus health. There is no web frontend.
 
 ```
 Telegram private chat → grammY bot (long polling) ─┐
 Discord DM → discord.js gateway bot ───────────────┴→ shared chat pipeline → agent runtime → official OpenAI /v1/responses → ESI + SDE tools → SQLite
-Browser → Fastify → EVE SSO callback + health → same SQLite
+Browser → Fastify → EVE SSO login redirect/callback + health → same SQLite
 ```
 
 **Entry point:** `src/app.ts` boots DB, runs migrations, starts Fastify server, starts whichever bots have tokens (at least one required), registers graceful shutdown, and prints a startup status banner.
 
 **Domain boundaries:**
-- `src/agent/` — model runtime: responses loop (`native-responses.ts`), tool execution (`executor.ts`), planning, compaction, prompts. Warm turns reuse `previous_response_id` (server state mode); cold starts rebuild context from SQLite history.
+- `src/agent/` — model runtime: responses loop (`native-responses.ts`), tool execution (`executor.ts`), planning, compaction, prompts. Top-level turns rebuild context from SQLite history; tool continuations replay the preceding `function_call` and its output without provider-retained state.
 - `src/auth/` — EVE SSO state tokens, user resolution (Telegram + Discord), encrypted secret storage
 - `src/chat/` — shared platform-neutral pipeline: session rows, thread resolution, in-flight dedupe, rate limiting, agent turn, error normalization
 - `src/db/` — SQLite schema (`schema.ts` is source of truth), migrations, helpers
@@ -52,7 +52,7 @@ Browser → Fastify → EVE SSO callback + health → same SQLite
 - `src/scheduled/` — heartbeat worker (croner-based scheduled tasks)
 - `src/observability/` — colored, secret-redacting logger + startup banner
 - `src/telegram/` — grammY bot setup, command handlers, access control
-- `src/web/` — Fastify: EVE SSO callback, security headers, health
+- `src/web/` — Fastify: EVE SSO login redirect/callback, security headers, health
 
 **Config:** `src/config.ts` is the single config boundary. All env vars resolved there with `required()`/`optional()` helpers.
 
@@ -60,7 +60,7 @@ Browser → Fastify → EVE SSO callback + health → same SQLite
 
 - No workers, queues, Redis, or Postgres. SQLite only.
 - Telegram uses grammY long polling only (no webhooks); Discord uses the standard gateway, DMs only.
-- No web frontend. Fastify is limited to the EVE SSO callback and health.
+- No web frontend. Fastify is limited to the EVE SSO login redirect/callback and health.
 - Model provider: official OpenAI Responses API only.
 - Private ESI access stays isolated per user and chat lane.
 - Private ESI access must be gated by `get_eve_capabilities` when access is not already fresh.

@@ -69,6 +69,9 @@ beforeEach(() => {
   process.env.DEFAULT_MARKET_REGION_ID = '10000002';
   process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
   process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
+  process.env.OPENAI_REASONING_EFFORT = 'auto';
+  process.env.OPENAI_REASONING_MODE = 'standard';
+  process.env.AUTH_SECRET_KEY = 'test-secret';
   vi.resetModules();
   createNativeResponseMock.mockReset();
   runPreTurnCompactMock.mockReset();
@@ -144,6 +147,31 @@ describe('stateless tool loop context accumulation', () => {
     const outputItems = second.filter((item) => item.type === 'function_call_output');
     expect(callItems).toHaveLength(1);
     expect(outputItems).toHaveLength(1);
+  });
+});
+
+describe('top-level GPT-5.6 reasoning selection', () => {
+  it('uses the goal classifier only when the operator selects auto', async () => {
+    createNativeResponseMock.mockResolvedValueOnce(textResponse('ответ'));
+    await runLoop();
+    expect(createNativeResponseMock.mock.calls[0][0].reasoningEffort).toBe('high');
+    expect(createNativeResponseMock.mock.calls[0][0].reasoningMode).toBe('standard');
+  });
+
+  it('keeps a fixed effort, Pro mode, and opaque safety identifier', async () => {
+    process.env.OPENAI_REASONING_EFFORT = 'max';
+    process.env.OPENAI_REASONING_MODE = 'pro';
+    vi.resetModules();
+    createNativeResponseMock.mockResolvedValueOnce(textResponse('ответ'));
+
+    await runLoop();
+    const request = createNativeResponseMock.mock.calls[0][0];
+    expect(request.reasoningEffort).toBe('max');
+    expect(request.reasoningMode).toBe('pro');
+    expect(request.safetyIdentifier).toMatch(/^[a-f0-9]{64}$/);
+    expect(request.safetyIdentifier).not.toBe('1');
+    expect(request.promptCacheKey).toBe(request.safetyIdentifier);
+    expect(request.promptCacheKey).not.toBe('t1');
   });
 });
 

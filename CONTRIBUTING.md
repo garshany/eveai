@@ -2,14 +2,14 @@
 
 Thanks for helping improve EVE Online AI.
 
-This project is a self-hosted Telegram-first EVE Online assistant. Contributions should preserve the current operating model and avoid adding infrastructure that self-hosters do not need.
+This project is a self-hosted Telegram-first EVE Online assistant with a Discord DM adapter. Contributions should preserve the current operating model and avoid adding infrastructure that self-hosters do not need.
 
 ## Good First Areas
 
 - Improve documentation, setup instructions, screenshots, and troubleshooting notes.
-- Add or improve unit tests around EVE SDE lookups, prompt behavior, Telegram formatting, and ESI field filtering.
+- Add or improve unit tests around EVE SDE lookups, prompt behavior, Telegram/Discord formatting, and ESI field filtering.
 - Fix reproducible bugs with small, focused changes.
-- Improve frontend/dashboard usability without changing the backend architecture.
+- Improve the small browser SSO login redirect/callback and health surfaces without turning them into a web frontend or dashboard.
 - Add safe read-only EVE data workflows that respect the private ESI access rules.
 
 ## Local Setup
@@ -42,8 +42,8 @@ npm run smoke:eve-tool
 
 - Keep the app single-process Node.js with SQLite.
 - Do not add workers, queues, Redis, Postgres, or Telegram webhooks.
-- Keep Fastify limited to auth callback, web auth, dashboard support, and health.
-- Keep private ESI access isolated per Telegram user and chat.
+- Keep Fastify limited to the EVE SSO login redirect/callback and health.
+- Keep private ESI access isolated per user and chat lane across Telegram and Discord.
 - Private ESI access must be gated by `get_eve_capabilities` when access is not already fresh.
 - The model must not see tokens, refresh flow, pagination internals, retry logic, or secrets.
 - Static game data comes from local SDE in SQLite. Live character and market data comes from ESI.

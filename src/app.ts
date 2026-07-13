@@ -197,7 +197,11 @@ async function main() {
       value: config.discord.botToken ? 'gateway connection' : 'disabled (no DISCORD_BOT_TOKEN)',
       state: config.discord.botToken ? 'ok' : 'off',
     },
-    { label: 'OpenAI', value: `${config.openai.model} @ ${config.openai.baseUrl}`, state: 'ok' },
+    {
+      label: 'OpenAI',
+      value: `${config.openai.model} · reasoning ${config.openai.reasoningEffort}/${config.openai.reasoningMode} · verbosity ${config.openai.textVerbosity}`,
+      state: 'ok',
+    },
     { label: 'Heartbeat', value: 'every 5 min', state: 'ok' },
   ];
   printStartupBanner(version ? `EVE AI Agent v${version}` : 'EVE AI Agent', rows);

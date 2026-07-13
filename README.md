@@ -7,7 +7,7 @@
 
 # EVE AI Agent
 
-> **Landing page:** [`index.html`](./index.html) — enable GitHub Pages (Settings → Pages → Deploy from branch → root) to publish it.
+> **Landing-page source:** [`index.html`](./index.html). GitHub Pages is optional and is not currently a deployed product endpoint.
 
 Self-hosted chat-first AI assistant for EVE Online with Telegram and Discord bots. It combines local EVE SDE data, live ESI data, killboard intelligence, route planning, and the official OpenAI Responses API model loop with tool calling.
 
@@ -35,7 +35,7 @@ Discord DM ───────────────> discord.js gateway bot
                                                              v
                                           ESI / SDE / killboard tools ──> SQLite
 
-Browser ──> Fastify ──> EVE SSO callback + /health ──> same SQLite state
+Browser ──> Fastify ──> EVE SSO login redirect + callback + /health ──> same SQLite state
 ```
 
 Hard constraints:
@@ -43,7 +43,7 @@ Hard constraints:
 - Single-process Node.js app.
 - SQLite only.
 - Telegram long polling only; no webhooks. Discord standard gateway connection.
-- Fastify is limited to the EVE SSO OAuth callback and the health endpoint. There is no web frontend.
+- Fastify is limited to the EVE SSO login redirect/callback and the health endpoint. There is no web frontend.
 - Static game data comes from local SDE SQLite; live data comes from ESI.
 - Private ESI access is isolated per user/chat and gated by `get_eve_capabilities`.
 - The model must not see tokens, refresh flow, pagination internals, retry logic, or secrets.
@@ -85,10 +85,11 @@ Minimum local `.env` values (at least one bot token is required):
 TELEGRAM_BOT_TOKEN=...        # and/or DISCORD_BOT_TOKEN
 DISCORD_BOT_TOKEN=...
 OPENAI_API_KEY=...
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-5.5
-OPENAI_REASONING_EFFORT=medium
+OPENAI_MODEL=gpt-5.6-sol
+OPENAI_REASONING_EFFORT=auto
+OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
+OPENAI_RESPONSES_TIMEOUT_MS=90000
 OPENAI_RESPONSE_LANGUAGE=Russian
 EVE_CLIENT_ID=...
 EVE_CLIENT_SECRET=...
@@ -96,7 +97,7 @@ AUTH_SECRET_KEY=replace-with-random-secret
 EVE_CALLBACK_URL=http://localhost:3000/auth/eve/callback
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
-ESI_USER_AGENT=EVEAI/2.2 (+https://github.com/your-org/eveai; contact=you@example.com)
+ESI_USER_AGENT=EVEAI/2.1 (+https://github.com/your-org/eveai; contact=you@example.com)
 ```
 
 Generate `AUTH_SECRET_KEY` with:
@@ -107,17 +108,23 @@ openssl rand -base64 32
 
 Model defaults:
 
-- `OPENAI_MODEL=gpt-5.5` — the current OpenAI recommendation for tool-heavy Responses API agents.
-- `OPENAI_REASONING_EFFORT=medium` is the balanced starting point; evaluate `low` for latency-sensitive deployments.
+- `OPENAI_MODEL=gpt-5.6-sol` is the quality-first default. Use `gpt-5.6-terra` for a capability/cost balance or `gpt-5.6-luna` for latency-sensitive, high-volume deployments. The `gpt-5.6` alias routes to Sol.
+- `OPENAI_REASONING_EFFORT=auto` preserves EVE Agent's goal-based `low|medium|high` routing. Set `none`, `low`, `medium`, `high`, `xhigh`, or `max` to override it globally.
+- `OPENAI_REASONING_MODE=standard` is the normal path. Set `pro` only for difficult quality-first workloads that justify higher latency and token use; Pro is a mode, not a separate model name.
 - `OPENAI_TEXT_VERBOSITY=low` keeps chat answers compact; set `medium` if your community wants longer explanations.
+- `OPENAI_RESPONSES_TIMEOUT_MS=90000` controls the Responses transport deadline; raise it deliberately when evaluating Pro.
 - `OPENAI_RESPONSE_LANGUAGE=Russian` sets the default final-answer language. Aliases like `ru`, `русский`, `en`, `English`, and custom language names are accepted; an explicit user request can override it per answer.
 
-## EVE SSO Setup (optional — enables private character data)
+These are process-wide self-hosting controls shared by Telegram, Discord, and CLI. They are not per-chat preferences. See [OpenAI integration](./docs/openai-integration.md) and OpenAI's [GPT-5.6 guide](https://developers.openai.com/api/docs/guides/latest-model).
 
-Public data (SDE lookups, market prices, route planning, killboards, OSINT)
-works with no EVE credentials. To let users link a character with `/login` and
-unlock **private ESI** (skills, assets, wallet, location, mail, …), register a
-free EVE Developer application (~5 minutes):
+## EVE SSO Setup (private character data)
+
+The current process configuration requires EVE Developer credentials at startup,
+even if an operator initially uses only public data. Character linking itself is
+optional: after credentials are configured, public SDE, market, route,
+killboard, and OSINT workflows work without linking a character. To unlock
+**private ESI** (skills, assets, wallet, location, mail, …), register a free
+EVE Developer application (~5 minutes):
 
 1. Open <https://developers.eveonline.com/applications/create> and sign in with
    your EVE account.
@@ -136,17 +143,14 @@ free EVE Developer application (~5 minutes):
    EVE_CLIENT_SECRET=your_secret_key
    ```
 
-5. Restart. `/login` now returns a working SSO link in the CLI and both bots.
-
-Until real credentials are set, `/login` (CLI), `/eve_login` (Discord), and the
-login command (Telegram) reply with this same setup guide instead of a dead
-link, so the app stays usable in public-data-only mode.
+5. Restart. `/login` in the CLI and `/eve_login` in Telegram or Discord now
+   return a working SSO link.
 
 ## Terminal CLI (no bot token needed)
 
 Talk to the agent directly in your terminal — a third platform adapter beside
-Telegram and Discord, driving the same runtime. Great for trying it out or for
-headless use with **only an OpenAI key**:
+Telegram and Discord, driving the same runtime. It needs the same local `.env`
+configuration as the app, but no Telegram or Discord bot token:
 
 ```bash
 npm run cli
@@ -164,9 +168,9 @@ eve> route from Jita to Amarr, is it dangerous?
 ```
 
 Public tools (SDE lookups, market, route planning with danger analysis,
-killboards, OSINT) work immediately. Run `/login` to link an EVE character via
-SSO and unlock private ESI (skills, assets, location, mail, …). The full bots
-still need a Telegram or Discord token; the CLI does not.
+killboards, OSINT) work without a linked character. Run `/login` to link an EVE
+character via SSO and unlock private ESI (skills, assets, location, mail, …).
+The full bots still need a Telegram or Discord token; the CLI does not.
 
 While the agent works, the CLI shows a **live activity feed** — a brief
 "thinking" note and one line per tool/skill as it runs (e.g. `🗄 SDE query`,
@@ -201,7 +205,11 @@ npm run db:migrate     # run SQLite migrations
 npm run setup          # download and load SDE data
 ```
 
-On startup the app prints a status banner with every subsystem (database, SDE data, HTTP, Telegram, Discord, OpenAI, heartbeat), and logs are colored, timestamped, and secret-redacted — everything an operator needs lives in the terminal.
+On startup the app prints a status banner with database, SDE, HTTP, platform,
+OpenAI, and heartbeat state. Structured logger output is timestamped and redacts
+recognizable credentials; request-level diagnostics can still contain short user
+goals, tool arguments, reasoning summaries, or provider-error snippets. Treat
+process logs as private operational data.
 
 ## Runtime Smoke Test
 
@@ -254,9 +262,7 @@ Use of EVE Online SSO, ESI, SDE, and related game data is subject to the [EVE On
 
 ## Community Showcase Readiness
 
-CCP's community documentation lists requirements for services/resources submitted to the EVE Developer Community Showcase: the project must be directly related to EVE Online, comply with the Developer License Agreement, be public, be production-ready, be public for at least three months, and be actively maintained within the last year. See [Community tools and Services](https://developers.eveonline.com/docs/community/).
-
-This repository is public and EVE-related, but operators should only submit a hosted instance once it has been production-ready, publicly available for the required period, and actively maintained.
+The ready-to-copy Showcase page and evidence-backed eligibility matrix are in [docs/community-showcase.md](./docs/community-showcase.md). As checked on 2026-07-13, the public-repository age requirement prevents submission before 2026-08-26; do not open a CCP PR until the remaining gates in that document pass.
 
 ## Open-Source Safety Notice
 

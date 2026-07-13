@@ -34,6 +34,25 @@ export function parseOptionalIntEnv(env: EnvSource, name: string, fallback: numb
   return parseInteger(name, raw.trim());
 }
 
+export function parseOptionalPositiveIntEnv(env: EnvSource, name: string, fallback: number): number {
+  const value = parseOptionalIntEnv(env, name, fallback);
+  if (value <= 0) {
+    throw new Error(`Env var ${name} must be a positive integer, got: "${value}"`);
+  }
+  return value;
+}
+
+export function parseOptionalEnumEnv<const Values extends readonly string[]>(
+  env: EnvSource,
+  name: string,
+  values: Values,
+  fallback: Values[number],
+): Values[number] {
+  const value = readOptionalEnv(env, name, fallback);
+  if ((values as readonly string[]).includes(value)) return value as Values[number];
+  throw new Error(`Env var ${name} must be one of: ${values.join(', ')}; got: "${value}"`);
+}
+
 export function parseOptionalBooleanEnv(env: EnvSource, name: string, fallback: boolean): boolean {
   const raw = env[name];
   if (raw === undefined || raw.trim() === '') return fallback;

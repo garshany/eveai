@@ -12,14 +12,14 @@
 
 ### Changed
 
-- Model provider is the official OpenAI Responses API only; `OPENAI_BASE_URL` defaults to `https://api.openai.com/v1`.
+- Model provider is the official OpenAI Responses API only; the runtime uses the fixed `https://api.openai.com/v1` endpoint and does not support provider overrides.
 - Telegram message handling moved to a shared platform-neutral chat pipeline (`src/chat/shared.ts`).
 - `TELEGRAM_BOT_TOKEN` is now optional; at least one of `TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN` is required.
 - Heartbeat summaries are plain text (platform-agnostic).
 
 ### Removed
 
-- Entire web frontend: React/Vite client, landing page, dashboard, dashboard API, Telegram Login Widget, web sessions, and the `/web` handoff flow. Fastify now serves only the EVE SSO callback and `/health`. The `web_sessions` and `telegram_login_attempts` tables are dropped by migration.
+- Entire web frontend: React/Vite client, landing page, dashboard, dashboard API, Telegram Login Widget, web sessions, and the `/web` handoff flow. Fastify now serves only the EVE SSO login redirect/callback and `/health`. The `web_sessions` and `telegram_login_attempts` tables are dropped by migration.
 - Legacy local-proxy (codex_proxy) support: proxy health checks in smoke/health, the `x-chat-id` request header, and the dead `OPENAI_API_MODE` / `OPENAI_STORE` config keys.
 
 ### Security & resource bounds

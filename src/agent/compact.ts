@@ -30,7 +30,7 @@ const COMPACT_MAX_RETRIES = 2;
  * guard — the mid-turn trigger uses the API's exact usage for that. UTF-8 bytes/4
  * is a dependency-free BPE proxy: ASCII is ~1 byte/char (so ≈ chars/4 as before),
  * while Cyrillic is ~2 bytes/char, so Russian text counts ~2x higher — much closer
- * to real gpt-5.5 tokenization than a flat chars/4, which underclaimed Cyrillic and
+ * to modern GPT-5-family tokenization than a flat chars/4, which underclaimed Cyrillic and
  * silently kept ~2x too much recent history for the default Russian output.
  */
 export function estimateTokens(text: string): number {

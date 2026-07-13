@@ -327,7 +327,7 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     try {
       const stopTyping = startTyping(ctx);
       try {
-        log.info('message chat_id=%d user_id=%d len=%d', chatId, userCtx.userId, text.length);
+        log.info('message len=%d', text.length);
         const cleaned = await runAgentTurn(db, threadId, userCtx, text);
         // Delete thinking placeholder, then send real response
         if (thinkingMsg) await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
@@ -355,7 +355,7 @@ function ensureSession(db: Db, ctx: Context): void {
 async function clearConversation(db: Db, ctx: Context): Promise<void> {
   if (!ctx.chat) return;
   const cleared = clearChatConversation(db, ctx.chat.id);
-  log.info('chat=%d cleared %d threads', ctx.chat.id, cleared);
+  log.info('cleared %d threads', cleared);
   await ctx.reply('Диалог очищен.');
 }
 

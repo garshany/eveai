@@ -8,7 +8,7 @@ Repository knowledge lives in versioned docs under `docs/`. Read only the next d
 
 - Single-process Node.js app. No workers, queues, Redis, or Postgres.
 - Chat platforms: Telegram (grammY long polling, no webhooks) and Discord (discord.js gateway, DMs only). Both share one agent runtime; at least one bot token must be configured.
-- There is no web frontend. Fastify is limited to the EVE SSO callback and health.
+- There is no web frontend. Fastify is limited to the EVE SSO login redirect/callback and health.
 - Model provider: official OpenAI Responses API only.
 - Private ESI access stays isolated per user and chat lane.
 - Private ESI access must be gated by `get_eve_capabilities` when access is not already fresh.

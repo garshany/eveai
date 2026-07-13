@@ -97,8 +97,8 @@ PvP killboard integration (EVE-KILL, replaces zKillboard). See `docs/eve-kill.md
 
 ### `src/web/`
 
-- `server.ts`: Fastify server assembly (SSO callback + health only)
-- `auth-routes.ts`: EVE SSO OAuth callback and `/callback` alias
+- `server.ts`: Fastify server assembly (SSO login redirect/callback + health only)
+- `auth-routes.ts`: one-time EVE SSO login redirect, OAuth callback, and `/callback` alias
 - `health.ts`: runtime/dependency health endpoint for both bot platforms
 - `security.ts`: security headers
 

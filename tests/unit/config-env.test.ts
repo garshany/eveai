@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseOptionalEnumEnv,
   parseOptionalBooleanEnv,
   parseOptionalIntEnv,
+  parseOptionalPositiveIntEnv,
   parseRequiredIntEnv,
   readOptionalEnv,
   readRequiredEnv,
@@ -23,6 +25,26 @@ describe('config env parsing', () => {
     expect(() => parseRequiredIntEnv({ PORT: '3000.5' }, 'PORT')).toThrow(/must be an integer/);
     expect(() => parseRequiredIntEnv({ PORT: '1e3' }, 'PORT')).toThrow(/must be an integer/);
     expect(() => parseRequiredIntEnv({ PORT: '9007199254740993' }, 'PORT')).toThrow(/safe integer/);
+  });
+
+  it('parses positive integers and rejects zero or negative values', () => {
+    expect(parseOptionalPositiveIntEnv({ TIMEOUT: '120000' }, 'TIMEOUT', 90000)).toBe(120000);
+    expect(parseOptionalPositiveIntEnv({}, 'TIMEOUT', 90000)).toBe(90000);
+    expect(() => parseOptionalPositiveIntEnv({ TIMEOUT: '0' }, 'TIMEOUT', 90000)).toThrow(
+      /must be a positive integer/,
+    );
+    expect(() => parseOptionalPositiveIntEnv({ TIMEOUT: '-1' }, 'TIMEOUT', 90000)).toThrow(
+      /must be a positive integer/,
+    );
+  });
+
+  it('parses optional enums and reports allowed values', () => {
+    const values = ['auto', 'low', 'high'] as const;
+    expect(parseOptionalEnumEnv({ EFFORT: 'high' }, 'EFFORT', values, 'auto')).toBe('high');
+    expect(parseOptionalEnumEnv({}, 'EFFORT', values, 'auto')).toBe('auto');
+    expect(() => parseOptionalEnumEnv({ EFFORT: 'extreme' }, 'EFFORT', values, 'auto')).toThrow(
+      /must be one of: auto, low, high/,
+    );
   });
 
   it('parses common boolean aliases and rejects ambiguous values', () => {

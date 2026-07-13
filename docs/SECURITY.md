@@ -4,7 +4,7 @@
 
 - model-facing code must not get raw secrets, refresh logic, pagination internals, or shell access
 - private ESI access must remain isolated per user and chat
-- Telegram bot is private-chat only
+- Telegram and Discord bots are private-chat/DM only
 - auth state is one-time and expires
 - encrypted storage is used for EVE token material
 - generated `USER.md` may contain rich gameplay data, but prompt ingestion must treat it as untrusted data, not instructions
@@ -20,11 +20,10 @@
 
 ## Auth Protections
 
-- Telegram login data is verified server-side
-- Telegram login nonce is one-time and expiring
-- EVE callback accepts only live `auth_requests` state and marks it used; legacy `telegram_sessions.oauth_state` is not accepted on the live callback path
-- Telegram-to-web handoff completes through a fragment-carried one-time token and `POST /auth/tg-handoff/exchange`, so the bearer token is not placed in server-observed query strings
-- logout clears the web session cookie and returns `Cache-Control: no-store`
+- a bot-issued `/auth/eve/login?state=...` link validates a one-time EVE SSO state before it redirects to CCP
+- the EVE callback accepts only a live `auth_requests` state and marks it used before exchanging tokens
+- EVE SSO access and refresh tokens are encrypted before local storage
+- browser success/error pages do not create a dashboard session or expose bearer tokens
 
 ## Runtime Isolation
 
@@ -34,9 +33,9 @@
 
 ## Abuse Controls
 
-- Telegram ingress allows only one active agent request per chat at a time
-- recent Telegram request rate is bounded per user or chat in-process
-- a global in-process ceiling limits concurrent active Telegram requests and fails closed with a user-facing overload message
+- Telegram and Discord ingress allow only one active agent request per chat lane at a time
+- recent Telegram and Discord request rate is bounded per user or chat lane in-process; the shared settings retain `TELEGRAM_*` names for compatibility
+- a global in-process ceiling limits concurrent active Telegram and Discord requests and fails closed with a user-facing overload message
 
 ## Data Retention
 

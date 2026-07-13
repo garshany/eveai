@@ -1,10 +1,19 @@
 import 'dotenv/config';
 import {
+  parseOptionalEnumEnv,
   parseOptionalIntEnv,
+  parseOptionalPositiveIntEnv,
   parseRequiredIntEnv,
   readOptionalEnv,
   readRequiredEnv,
 } from './config-env.js';
+import {
+  REASONING_EFFORTS,
+  REASONING_MODES,
+  RESPONSE_STATE_MODES,
+  type ResponseStateMode,
+  TEXT_VERBOSITIES,
+} from './openai-options.js';
 
 // Strict parsing: malformed integers (e.g. "3000.5", "1e3", unsafe ints) fail
 // fast at startup instead of being silently coerced. See src/config-env.ts.
@@ -22,6 +31,18 @@ function optional(name: string, fallback: string): string {
 
 function optionalInt(name: string, fallback: number): number {
   return parseOptionalIntEnv(process.env, name, fallback);
+}
+
+function optionalPositiveInt(name: string, fallback: number): number {
+  return parseOptionalPositiveIntEnv(process.env, name, fallback);
+}
+
+function parseResponseStateMode(): ResponseStateMode {
+  const value = parseOptionalEnumEnv(process.env, 'OPENAI_RESPONSE_STATE_MODE', RESPONSE_STATE_MODES, 'stateless');
+  if (value === 'server') {
+    throw new Error('OPENAI_RESPONSE_STATE_MODE=server is unsupported: EVE AI Agent requires stateless Responses with store=false');
+  }
+  return value;
 }
 
 export const config = {
@@ -42,11 +63,16 @@ export const config = {
   },
   openai: {
     apiKey: required('OPENAI_API_KEY'),
-    model: optional('OPENAI_MODEL', 'gpt-5.5'),
-    baseUrl: optional('OPENAI_BASE_URL', 'https://api.openai.com/v1'),
-    responseStateMode: optional('OPENAI_RESPONSE_STATE_MODE', 'stateless'),
-    reasoningEffort: optional('OPENAI_REASONING_EFFORT', 'medium'),
-    textVerbosity: optional('OPENAI_TEXT_VERBOSITY', 'low'),
+    model: optional('OPENAI_MODEL', 'gpt-5.6-sol'),
+    // The application deliberately uses the official OpenAI Responses API.
+    // Keeping the endpoint fixed prevents a self-hosting typo from sending the
+    // API key and chat data to an arbitrary OpenAI-compatible gateway.
+    baseUrl: 'https://api.openai.com/v1',
+    responseStateMode: parseResponseStateMode(),
+    reasoningEffort: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_EFFORT', REASONING_EFFORTS, 'auto'),
+    reasoningMode: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_MODE', REASONING_MODES, 'standard'),
+    textVerbosity: parseOptionalEnumEnv(process.env, 'OPENAI_TEXT_VERBOSITY', TEXT_VERBOSITIES, 'low'),
+    responsesTimeoutMs: optionalPositiveInt('OPENAI_RESPONSES_TIMEOUT_MS', 90_000),
     responseLanguage: optional('OPENAI_RESPONSE_LANGUAGE', 'Russian'),
     maxOutputTokens: optionalInt('OPENAI_MAX_OUTPUT_TOKENS', 0),
     compactThreshold: optionalInt('OPENAI_COMPACT_THRESHOLD', 0),

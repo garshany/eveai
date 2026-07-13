@@ -1,5 +1,6 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
+import type { ApiReasoningEffort, ReasoningEffort } from '../openai-options.js';
 import { buildDeveloperPrompt } from './prompts.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
 import {
@@ -65,6 +66,7 @@ import {
   tryBuildDeterministicCountAnswer,
   tryHandleStaticAggregateFastPath,
 } from './static-aggregate.js';
+import { buildSafetyIdentifier } from './safety-identifier.js';
 
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_EVE_KILL_CALLS_PER_TURN = 30;
@@ -473,14 +475,20 @@ async function runNativeAgentLoop(
   developerPrompt: string,
   rebuildDeveloperPrompt: () => string,
 ): Promise<AgentResult> {
-  const chatId = ctx.chatId ?? ctx.userId;
   const requestId = createRequestId();
   const tools = await buildNativeAgentTools(
     isSimpleStaticAggregateCountGoal(goal) ? 'static_aggregate' : 'full',
   );
   const webSearchState = createWebSearchState();
-  const reasoningEffort = classifyReasoningEffort(goal);
-  console.log('[executor] reasoning effort=%s for goal="%s"', reasoningEffort, goal.slice(0, 60));
+  const reasoningEffort = resolveReasoningEffort(goal, config.openai.reasoningEffort);
+  const safetyIdentifier = buildSafetyIdentifier(ctx.userId, config.auth.secretKey);
+  console.log(
+    '[executor] reasoning effort=%s source=%s mode=%s for goal="%s"',
+    reasoningEffort,
+    config.openai.reasoningEffort === 'auto' ? 'auto' : 'fixed',
+    config.openai.reasoningMode,
+    goal.slice(0, 60),
+  );
 
   const continuation = planConversationContinuation(db, threadId);
   const useServerResponseState = config.openai.responseStateMode === 'server';
@@ -513,6 +521,7 @@ async function runNativeAgentLoop(
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCachedTokens = 0;
+  let totalCacheWriteTokens = 0;
   let totalReasoningTokens = 0;
   /** Peak input tokens in a single iteration — reflects actual context size for compaction. */
   let peakInputTokens = 0;
@@ -525,7 +534,7 @@ async function runNativeAgentLoop(
   // previousResponseId and are dead code in the default stateless mode).
   let transientRetries = 0;
 
-  console.log('[executor] === NEW REQUEST chat=%d thread=%s goal="%s" ===', chatId, threadId.slice(0, 12), goal.slice(0, 80));
+  console.log('[executor] === NEW REQUEST request=%s goal="%s" ===', requestId, goal.slice(0, 80));
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
     // Cooperative cancellation (CLI Ctrl-C): stop before spending another
@@ -538,12 +547,16 @@ async function runNativeAgentLoop(
         instructions: developerPrompt,
         items: pendingItems,
         previousResponseId,
-        promptCacheKey: threadId,
+        // Reuse the opaque per-user key for cache routing. Never send the raw
+        // conversation/database identifier to the model provider.
+        promptCacheKey: safetyIdentifier,
         tools,
         parallelToolCalls: true,
         truncation: 'auto',
         contextManagement,
         reasoningEffort,
+        reasoningMode: config.openai.reasoningMode,
+        safetyIdentifier,
         // Only this top-level loop streams to the CLI activity feed; internal
         // model calls (compaction/OSINT/advisor) must not leak into the answer.
         streamToActivity: true,
@@ -586,10 +599,12 @@ async function runNativeAgentLoop(
       totalInputTokens += response.usage.input;
       totalOutputTokens += response.usage.output;
       totalCachedTokens += response.usage.cached;
+      totalCacheWriteTokens += response.usage.cacheWrite ?? 0;
       totalReasoningTokens += response.usage.reasoning;
       if (response.usage.input > peakInputTokens) peakInputTokens = response.usage.input;
-      console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d reasoning=%d',
-        iteration, response.usage.input, response.usage.output, response.usage.cached, response.usage.reasoning);
+      console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d cache_write=%d reasoning=%d',
+        iteration, response.usage.input, response.usage.output, response.usage.cached,
+        response.usage.cacheWrite ?? 0, response.usage.reasoning);
     }
 
     // Silent context loss detection: if we are in warm mode (prevId set) on the first
@@ -606,6 +621,7 @@ async function runNativeAgentLoop(
       totalInputTokens = 0;
       totalOutputTokens = 0;
       totalCachedTokens = 0;
+      totalCacheWriteTokens = 0;
       totalReasoningTokens = 0;
       peakInputTokens = 0;
       previousResponseId = null;
@@ -680,8 +696,8 @@ async function runNativeAgentLoop(
       const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
       storeAssistantMessage(db, threadId, message);
       saveLastResponseId(db, threadId, null);
-      console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
-        totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
+      console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d ===',
+        totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens, totalReasoningTokens);
       return { text: message, peakInputTokens };
     }
 
@@ -709,8 +725,9 @@ async function runNativeAgentLoop(
       if (response.outputText.trim()) {
         storeAssistantMessage(db, threadId, response.outputText);
         saveLastResponseId(db, threadId, useServerResponseState ? response.id : null);
-        console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
-          iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, response.outputText.length);
+        console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d answer=%d chars ===',
+          iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
+          totalReasoningTokens, response.outputText.length);
         return { text: response.outputText, peakInputTokens };
       }
       if (response.toolSearchPaths.length > 0 && response.id && useServerResponseState) {
@@ -776,8 +793,9 @@ async function runNativeAgentLoop(
     if (deterministicAnswer) {
       storeAssistantMessage(db, threadId, deterministicAnswer);
       saveLastResponseId(db, threadId, null);
-      console.log('[executor] === DONE (deterministic-count) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
-        iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, deterministicAnswer.length);
+      console.log('[executor] === DONE (deterministic-count) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d answer=%d chars ===',
+        iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
+        totalReasoningTokens, deterministicAnswer.length);
       return { text: deterministicAnswer, peakInputTokens };
     }
 
@@ -793,8 +811,9 @@ async function runNativeAgentLoop(
         // Save null — the response has a dangling function_call (plan_route) without tool output,
         // so continuing from this prevId would cause "No tool output found" API error.
         saveLastResponseId(db, threadId, null);
-        console.log('[executor] === DONE (route-shortcircuit) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d answer=%d chars ===',
-          iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens, summary.length);
+        console.log('[executor] === DONE (route-shortcircuit) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d answer=%d chars ===',
+          iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
+          totalReasoningTokens, summary.length);
         return { text: summary, peakInputTokens };
       }
     }
@@ -840,8 +859,9 @@ async function runNativeAgentLoop(
   const timeout = 'Остановился после слишком большого числа tool iterations.';
   storeAssistantMessage(db, threadId, timeout);
   saveLastResponseId(db, threadId, null);
-  console.log('[executor] === DONE (timeout) iterations=%d total_in=%d total_out=%d total_cached=%d total_reasoning=%d ===',
-    MAX_TOOL_ITERATIONS, totalInputTokens, totalOutputTokens, totalCachedTokens, totalReasoningTokens);
+  console.log('[executor] === DONE (timeout) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d ===',
+    MAX_TOOL_ITERATIONS, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
+    totalReasoningTokens);
   return { text: timeout, peakInputTokens };
 }
 
@@ -1338,7 +1358,7 @@ function isRecentSqliteTimestamp(value: string | null, maxAgeMs: number): boolea
  * Classify user message complexity to select optimal reasoning effort.
  * Returns 'low' for trivial messages, 'medium' for standard, 'high' for complex analysis.
  */
-export function classifyReasoningEffort(goal: string): string {
+export function classifyReasoningEffort(goal: string): ApiReasoningEffort {
   const lower = goal.toLowerCase().trim();
   const len = lower.length;
 
@@ -1382,6 +1402,15 @@ export function classifyReasoningEffort(goal: string): string {
   return 'medium';
 }
 
+export function resolveReasoningEffort(
+  goal: string,
+  configured: ReasoningEffort,
+): ApiReasoningEffort {
+  return configured === 'auto'
+    ? classifyReasoningEffort(goal)
+    : configured;
+}
+
 export const __test__ = {
   runNativeAgentLoop,
   runPreTurnCompactSafe,
@@ -1403,6 +1432,7 @@ export const __test__ = {
   planConversationContinuation,
   isRecentSqliteTimestamp,
   classifyReasoningEffort,
+  resolveReasoningEffort,
 };
 
 function compactToolResult(value: unknown): unknown {

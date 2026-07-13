@@ -1,7 +1,7 @@
 # Docs Index
 
 Status: active
-Verified against code: 2026-03-25
+Verified against code: 2026-07-13
 
 This directory is the repository knowledge system of record.
 
@@ -24,6 +24,7 @@ Read the smallest document that answers the current question. Start here, then d
 - [deployment.md](./deployment.md): generic self-host deployment guide
 - [legal.md](./legal.md): CCP legal notices, Developer License Agreement, and Community Showcase readiness
 - [open-source-release.md](./open-source-release.md): clean public release and history-safety checklist
+- [community-showcase.md](./community-showcase.md): CCP Community Showcase submission bundle and eligibility gate
 - [heartbeat.md](./heartbeat.md): periodic background checks and notifications system
 - [osint.md](./osint.md): probabilistic residence/staging inference from activity graphs
 

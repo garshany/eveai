@@ -52,7 +52,8 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
   });
 
   // GET /auth/eve/callback -- EVE SSO OAuth callback. Login links are issued
-  // by the bots (/eve_login); this is the only browser-facing auth endpoint.
+  // by the bots (/eve_login); together with /auth/eve/login, these are the
+  // browser-facing auth routes.
   app.get<{ Querystring: CallbackQuery }>('/auth/eve/callback', async (req, reply) => {
     const { code, state, error, error_description } = req.query;
     if (error) {

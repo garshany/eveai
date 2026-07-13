@@ -122,8 +122,8 @@ async function checkOpenAiResponses(): Promise<SmokeCheck> {
     return { name: 'model_responses', status: 'skip', detail: 'OPENAI_API_KEY is not set' };
   }
 
-  const baseUrl = normalizeBaseUrl(process.env.OPENAI_BASE_URL) || 'https://api.openai.com/v1';
-  const model = process.env.OPENAI_MODEL?.trim() || 'gpt-5.5';
+  const baseUrl = 'https://api.openai.com/v1';
+  const model = process.env.OPENAI_MODEL?.trim() || 'gpt-5.6-sol';
   const url = `${baseUrl}/responses`;
   const payload = {
     model,

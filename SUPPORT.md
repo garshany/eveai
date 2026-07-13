@@ -14,7 +14,7 @@ Use the bug report template and include:
 - reproduction steps
 - sanitized logs
 
-Do not paste `.env`, database files, Telegram tokens, OpenAI-compatible provider keys, EVE SSO secrets, server IPs, SSH usernames, or private runbooks.
+Do not paste `.env`, database files, Telegram or Discord tokens, OpenAI API keys, EVE SSO secrets, server IPs, SSH usernames, or private runbooks.
 
 ## Security
 

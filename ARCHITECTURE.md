@@ -15,7 +15,7 @@ Discord DM -> discord.js gateway bot ┘            │
                                                   v
                               SQLite + local SDE + EVE SSO
 
-Browser -> Fastify -> EVE SSO callback + health -> same SQLite state
+Browser -> Fastify -> EVE SSO login redirect/callback + health -> same SQLite state
 ```
 
 The app is a single-process Node.js service. There is no job queue, no event bus, no separate background worker tier, and no web frontend.
@@ -59,8 +59,8 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 
 ### Web Boundary
 
-- `src/web/server.ts` registers HTTP concerns only: security headers, health, and the EVE SSO callback.
-- `src/web/auth-routes.ts` handles the EVE OAuth callback (`/auth/eve/callback` plus the `/callback` alias) and renders a minimal success page.
+- `src/web/server.ts` registers HTTP concerns only: security headers, the EVE SSO login redirect/callback, and health.
+- `src/web/auth-routes.ts` validates the one-time login state at `/auth/eve/login`, handles the EVE OAuth callback (`/auth/eve/callback` plus the `/callback` alias), and renders a minimal success page.
 - `src/web/health.ts` exposes runtime and dependency health for both bot platforms.
 
 ### EVE Boundary
@@ -115,7 +115,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 1. User sends a message in a Telegram private chat or a Discord DM.
 2. Platform middleware validates access (private-chat/DM only, optional allowlist).
 3. The handler resolves user identity and the chat lane (Discord DMs map to a negative chat key), applies rate limits and in-flight dedupe.
-4. The agent runtime chooses a warm or cold context path: it reuses a fresh `last_response_id` as `previous_response_id` for warm turns (server state mode), or rebuilds context from SQLite history for cold starts.
+4. The agent runtime rebuilds each top-level turn from SQLite history. During a tool turn it replays the preceding `function_call` item with its matching `function_call_output`; provider-retained response state is not used.
 5. When a linked character has fresh private location access, the developer prompt also carries current live location context resolved as system plus constellation and region via local SDE.
 6. The model uses hosted `tool_search` to discover/load deferred tools when endpoint selection is unclear or the needed namespace is not yet loaded, then reuses the loaded tools directly instead of repeating discovery.
 7. Tool calls and final messages are written back to SQLite.
@@ -145,7 +145,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/eve/`: EVE integrations and domain logic
 - `src/messaging/`: outbound platform-routing dispatcher
 - `src/telegram/`: Telegram bot and command handlers
-- `src/web/`: Fastify SSO callback + health
+- `src/web/`: Fastify SSO login redirect/callback + health
 - `tests/unit/`: module and policy regression coverage
 - `tests/integration/`: auth and Telegram seam coverage
 - `deploy/systemd/`: generic self-host service examples
