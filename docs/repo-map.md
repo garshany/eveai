@@ -59,6 +59,7 @@ Use it when you need to find the right file or folder before reading implementat
 - `capabilities.ts`: scope-aware private-access gating
 - `sde.ts`, `sde-loader.ts`, `sde-downloader.ts`: static data ingestion and lookup
 - `route-planner.ts`, `killmail.ts`: higher-level EVE features
+- `eve-scout-client.ts`, `eve-scout-executor.ts`, `eve-scout-tools.ts`: fixed public EVE-Scout transport, bounded projections, and deferred tool schemas; see `docs/eve-scout.md`
 - `user-profile.ts`: generated user snapshot/profile flow
 - `scopes.ts`, `eve-links.ts`, `http.ts`: support modules
 
@@ -75,7 +76,8 @@ Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integratio
 - `client.ts`: fixed-base defensive v1 REST client, cache, search/window chunking, stats, and battles
 - `normalize.ts`: runtime payload validation and source-neutral killmail normalization
 - `feed-poll.ts`: one durable global poller, startup readiness handoff, active-platform watch matching, and delivery dedup
-- `tools.ts`: six deferred public EVE-KILL tools
+- `tools.ts`: six deferred public EVE-KILL tools plus the bounded top-level activity-summary descriptor
+- `activity-summary.ts`: strict public kill-activity aggregation without raw killmail output
 - `executor.ts`: validated tool router with provenance/limitation projection
 - `analytics-tools.ts`: four strict deferred public analytics function schemas
 - `mcp-analytics.ts`: fixed-endpoint JSON-RPC transport with pre-egress validation and bounded parsing

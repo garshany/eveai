@@ -60,6 +60,24 @@ The deferred `eve_kill` namespace contains exactly six local tools:
 | `kill_battles` | list or inspect EVE-KILL battle clusters |
 | `kill_watch` | manage system, region, victim, and attacker feed alerts |
 
+`kill_activity_summary` is a separate top-level public facade. It requires one
+explicit system/character/corporation/alliance ID and a canonical UTC window no
+longer than seven days, examines at most 100 deduplicated observations, and
+returns only role/value aggregates, coverage, freshness, and one-to-ten newest
+evidence killmail IDs. It never returns hashes, participants, ships, items,
+fits, positions, raw kill arrays, pages, cursors, request counts, retries, or
+response bodies. System scope has no attacker/victim split and therefore uses
+`activity=all`.
+
+The facade is directly callable. With the default-off Programmatic Tool Calling
+feature enabled, a hosted program may compare two-to-four public targets or
+non-overlapping windows with `evidence_limit <= 5`; the application still
+enforces exact caller linkage, one tool family, a four-call/400-observation
+ceiling, and fixed schema-valid output. The original `kill_activity` and all
+other raw/detail/analytics/watch tools remain direct-only. The source is always
+non-authoritative EVE-KILL observation; search cache freshness is bounded at 90
+seconds and coverage may be incomplete.
+
 The namespace intentionally does not expose competing identity, affiliation,
 history, roster, war, static-data, market, build-cost, arbitrary-query, or
 private-character operations. Official detail is still resolved by
@@ -196,7 +214,7 @@ the EVE-KILL per-turn budget with an additional four-call analytics cap.
 
 ```env
 EVE_KILL_TIMEOUT_MS=8000
-EVE_KILL_USER_AGENT=EVEAI/3.2 (+https://github.com/example/eveai; contact=operator@example.com)
+EVE_KILL_USER_AGENT=EVEAI/3.3 (+https://github.com/example/eveai; contact=operator@example.com)
 EVE_KILL_RETRY_MAX_ATTEMPTS=3
 EVE_KILL_BACKOFF_MAX_MS=10000
 ```
@@ -225,7 +243,8 @@ retry attempts are hard-capped at five.
 | `src/eve-kill/normalize.ts` | runtime validation and normalization |
 | `src/eve-kill/feed-poll.ts` | global durable feed and watch matching |
 | `src/eve-kill/watch.ts` | watch CRUD |
-| `src/eve-kill/tools.ts` | six-tool namespace schema |
+| `src/eve-kill/tools.ts` | six-tool raw namespace plus the bounded summary descriptor |
+| `src/eve-kill/activity-summary.ts` | strict public summary validation and deterministic aggregation |
 | `src/eve-kill/executor.ts` | validated tool execution and provenance projection |
 | `src/eve-kill/analytics-tools.ts` | four strict deferred local analytics schemas |
 | `src/eve-kill/mcp-analytics.ts` | validated fixed-endpoint MCP JSON-RPC transport |

@@ -2,6 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { buildDeveloperPrompt, normalizeResponseLanguage } from '../../src/agent/prompts.js';
 
 describe('buildDeveloperPrompt', () => {
+  it('adds the bounded five-tool orchestration contract only when the feature is enabled', () => {
+    const capabilities = {
+      authenticated: false,
+      characterId: null,
+      characterName: null,
+      grantedScopes: [],
+    };
+    const disabled = buildDeveloperPrompt(capabilities, null, null, null, 'static_aggregate', 'Russian', false);
+    const enabled = buildDeveloperPrompt(capabilities, null, null, null, 'static_aggregate', 'Russian', true);
+
+    expect(disabled).not.toContain('<tool_orchestration>');
+    expect(enabled).toContain('<tool_orchestration>');
+    expect(enabled).toContain('exactly one eligible tool family');
+    expect(enabled).toContain('count_universe_objects: exactly two');
+    expect(enabled).toContain('batch_market_prices: the same ordered 1-10 type_ids');
+    expect(enabled).toContain('compare_wormhole_types: exactly one facade call');
+    expect(enabled).toContain('scout_systems: 2-4 distinct bounded searches');
+    expect(enabled).toContain('kill_activity_summary: 2-4 public targets');
+    expect(enabled).toContain('Resolve names to numeric IDs/type IDs directly before');
+    expect(enabled).toContain('Never mix tools, retry, loop, discover identifiers, use private ESI, web_search, sde_sql, raw kill tools, or mutate state');
+    expect(enabled).toContain('Use a direct call for a single count, market region, system search, or kill summary');
+  });
   it('keeps the main prompt compact and focused', () => {
     const prompt = buildDeveloperPrompt({
       authenticated: false,

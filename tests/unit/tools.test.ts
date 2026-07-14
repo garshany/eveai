@@ -1,6 +1,91 @@
 import { describe, expect, it, vi } from 'vitest';
 
 describe('agent tools', () => {
+  it('keeps the feature absent by default and decorates exactly five public read tools when enabled', async () => {
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'false';
+    vi.resetModules();
+    let { buildNativeAgentTools } = await import('../../src/agent/tools.js');
+    let tools = await buildNativeAgentTools('static_aggregate');
+    expect(tools.some((tool) => tool.type === 'programmatic_tool_calling')).toBe(false);
+    expect(tools.some((tool) => 'allowed_callers' in tool || 'output_schema' in tool)).toBe(false);
+
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    process.env.TAVILY_API_KEY = 'tvly-test-key';
+    vi.resetModules();
+    const enabledModule = await import('../../src/agent/tools.js');
+    ({ buildNativeAgentTools } = enabledModule);
+    tools = await buildNativeAgentTools('static_aggregate');
+    expect(tools.filter((tool) => tool.type === 'programmatic_tool_calling')).toEqual([
+      { type: 'programmatic_tool_calling' },
+    ]);
+    const eligible = tools.filter((tool) => tool.type === 'function' && tool.allowed_callers);
+    expect(eligible).toHaveLength(1);
+    expect(eligible[0]).toMatchObject({
+      name: 'count_universe_objects',
+      allowed_callers: ['direct', 'programmatic'],
+      output_schema: { anyOf: expect.any(Array) },
+    });
+    expect(eligible[0]?.output_schema).toMatchObject({
+      anyOf: [
+        expect.any(Object),
+        {
+          properties: {
+            ok: { const: false },
+            error: { type: 'string' },
+            blocked: { type: 'boolean' },
+          },
+          required: ['ok', 'error'],
+          additionalProperties: false,
+        },
+      ],
+    });
+
+    const fullTools = await buildNativeAgentTools('full');
+    const allFunctionTools = fullTools.flatMap((tool) => {
+      if (tool.type === 'function') return [tool];
+      if (tool.type === 'namespace') return tool.tools;
+      return [];
+    });
+    expect(fullTools.filter((tool) => tool.type === 'programmatic_tool_calling')).toEqual([
+      { type: 'programmatic_tool_calling' },
+    ]);
+    expect(allFunctionTools.filter((tool) => tool.allowed_callers || tool.output_schema).map((tool) => tool.name)).toEqual([
+      'count_universe_objects',
+      'batch_market_prices',
+      'kill_activity_summary',
+      'compare_wormhole_types',
+      'scout_systems',
+    ]);
+    const market = allFunctionTools.find((tool) => tool.name === 'batch_market_prices');
+    const wormholes = allFunctionTools.find((tool) => tool.name === 'compare_wormhole_types');
+    expect((market?.parameters.properties as Record<string, unknown>).type_ids).not.toHaveProperty('uniqueItems');
+    expect((wormholes?.parameters.properties as Record<string, unknown>).identifiers).not.toHaveProperty('uniqueItems');
+    for (const forbidden of [
+      'web_search',
+      'get_eve_capabilities',
+      'plan_route',
+      'sde_sql',
+      'update_plan',
+      'route_monitor',
+      'heartbeat_config',
+      'kill_watch',
+      'doctrine_detect',
+      'scout_route',
+      'scout_wormhole_types',
+      'kill_activity',
+      'kill_search',
+      'get_characters_character_id_assets',
+      'get_characters_character_id_fittings',
+    ]) {
+      expect(enabledModule.isProgrammaticToolAllowed(forbidden), forbidden).toBe(false);
+    }
+    delete process.env.TAVILY_API_KEY;
+  });
   it('preloads deferred tool catalogs as hosted namespaces', async () => {
     process.env.ALLOWED_TELEGRAM_USER_ID = '1';
     process.env.TELEGRAM_BOT_TOKEN = 'test';
@@ -37,6 +122,7 @@ describe('agent tools', () => {
     expect(functionNames).toContain('count_universe_objects');
     expect(functionNames).toContain('sde_sql');
     expect(functionNames).toContain('batch_market_prices');
+    expect(functionNames).toContain('kill_activity_summary');
     // get_markets_region_id_orders is now in ESI namespace (eve_public_market_orders), not top-level
     expect(functionNames).not.toContain('get_markets_region_id_orders');
     expect(functionNames).not.toContain('sde_lookup_types');
@@ -114,6 +200,7 @@ describe('agent tools', () => {
     expect(eveScoutNamespace?.tools.some((tool) => tool.name === 'scout_signatures')).toBe(true);
     expect(eveScoutNamespace?.tools.some((tool) => tool.name === 'scout_observations')).toBe(true);
     expect(eveScoutNamespace?.tools.some((tool) => tool.name === 'scout_wormhole_types')).toBe(true);
+    expect(eveScoutNamespace?.tools.some((tool) => tool.name === 'compare_wormhole_types')).toBe(true);
     expect(eveScoutNamespace?.tools.some((tool) => tool.name === 'scout_systems')).toBe(true);
     expect(eveScoutNamespace?.tools.every((tool) => tool.defer_loading === true)).toBe(true);
 

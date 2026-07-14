@@ -14,6 +14,7 @@ import {
 } from './client.js';
 import type { KillmailSearchRequest, NormalizedKillmail, SearchFilterKey } from './types.js';
 import type { EveKillToolName } from './tools.js';
+import { executeKillActivitySummary } from './activity-summary.js';
 import { addWatch, listWatches, removeAllWatches, removeWatch } from './watch.js';
 
 export async function executeEveKillTool(
@@ -29,6 +30,7 @@ export async function executeEveKillTool(
     case 'kill_intel': return await executeIntel(db, args);
     case 'kill_battles': return await executeBattles(db, args);
     case 'kill_watch': return executeWatch(db, args, chatId);
+    case 'kill_activity_summary': return await executeKillActivitySummary(db, args);
   }
 }
 

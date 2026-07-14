@@ -41,6 +41,7 @@ export type {
 } from './types.js';
 
 export const EVE_KILL_API_BASE_URL = 'https://api.eve-kill.com/';
+export const EVE_KILL_SEARCH_CACHE_MAX_AGE_SECONDS = 90;
 const CACHE_VERSION = 'evekill:v2';
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_PAGE_SIZE = 100;
@@ -230,7 +231,15 @@ export async function searchKillmails(
         };
         if (after !== undefined) body.after = after;
         requestCount += 1;
-        const page = await cachedParsed(db, 'POST', 'killmails/search', undefined, body, parseSearchPage, 90);
+        const page = await cachedParsed(
+          db,
+          'POST',
+          'killmails/search',
+          undefined,
+          body,
+          parseSearchPage,
+          EVE_KILL_SEARCH_CACHE_MAX_AGE_SECONDS,
+        );
         if (!page.ok) return page;
         for (const kill of page.data.kills) byId.set(kill.killmailId, kill);
         if (byId.size >= limit) {

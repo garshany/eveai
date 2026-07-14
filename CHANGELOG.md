@@ -1,5 +1,30 @@
 # Changelog
 
+## [3.3.0] - 2026-07-14
+
+### Added
+
+- Default-off OpenAI Programmatic Tool Calling for exactly five bounded public-read tools: static geography counts, batched market prices, wormhole-type comparison, system scouting, and compact kill-activity summaries.
+- Fixed output schemas, a shared 12,000-character schema-safe serializer, caller/program accounting, atomic batch validation, per-family work budgets, and terminal minimum-shape enforcement.
+- Real public-source, OpenAI wire-schema, hosted-program, and negative dispatch-gate smoke matrices with sanitized evidence only.
+
+### Changed
+
+- Public market comparisons always use unauthenticated CCP ESI, even in a linked-character chat lane.
+- EVE-Scout system search now uses the current upstream `query` contract and strict local class filtering; wormhole comparison uses a narrow bounded facade.
+- Public EVE-KILL summaries expose deterministic aggregates and bounded evidence IDs without raw killmail rows, hashes, participants, fits, or transport internals.
+- First-party User-Agent defaults and examples now identify `EVEAI/3.3`.
+
+### Security and reliability
+
+- Programmatic callers cannot reach private ESI, capabilities, SQL, writes, UI, web search, routes, broad Scout tools, raw EVE-KILL tools, or arbitrary unlisted functions.
+- Unknown callers, malformed linkage, mixed families, duplicates, overlapping windows, undersized terminal shapes, oversized outputs, and over-budget batches fail closed before unsafe dispatch or final acceptance.
+- Override Discord's transitive `undici` dependency to patched `6.27.0`, clearing the release audit without downgrading `discord.js`.
+
+### Release verification
+
+- Full local gate passed: public artifact audit, TypeScript strict check, 511 Vitest tests, ESLint, production build, npm package inspection, real bounded source/wire/program smokes, and independent review.
+
 ## [3.2.0] - 2026-07-14
 
 ### Added

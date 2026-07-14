@@ -13,14 +13,23 @@ const TRITANIUM = 34;
 
 type PriceResult = {
   type_id: number;
-  error?: string;
+  error: string | null;
   sell: { min_price: number } | null;
   buy: { max_price: number } | null;
-  global_average_price?: number;
-  note?: string;
+  global_average_price: number | null;
 };
 
-async function runBatch(typeIds: number[]): Promise<PriceResult[]> {
+type BatchResult = {
+  ok: boolean;
+  source?: string;
+  authoritative?: boolean;
+  freshness?: Record<string, unknown>;
+  prices?: PriceResult[];
+  error?: string;
+  blocked?: boolean;
+};
+
+async function runBatch(typeIds: number[]): Promise<BatchResult> {
   const { __test__ } = await import('../../src/agent/executor.js');
   const { createWebSearchState } = await import('../../src/agent/web-search.js');
   const db = {} as never;
@@ -33,8 +42,8 @@ async function runBatch(typeIds: number[]): Promise<PriceResult[]> {
     'batch_market_prices',
     { region_id: 10000002, type_ids: typeIds },
     createWebSearchState(),
-  )) as { ok: boolean; prices: PriceResult[] };
-  return result.prices;
+  )) as BatchResult;
+  return result;
 }
 
 describe('batch_market_prices global-average fallback', () => {
@@ -54,12 +63,15 @@ describe('batch_market_prices global-average fallback', () => {
       return { ok: false, error: `unexpected op ${operation}` };
     });
 
-    const prices = await runBatch([PLEX]);
+    const result = await runBatch([PLEX]);
+    const prices = result.prices!;
+    expect(result).toMatchObject({ ok: true, source: 'CCP ESI', authoritative: true });
+    expect(result.freshness).toMatchObject({ data_through: null, cache_max_age_seconds: null });
     expect(prices).toHaveLength(1);
     expect(prices[0].sell).toBeNull();
     expect(prices[0].buy).toBeNull();
     expect(prices[0].global_average_price).toBeCloseTo(4621543.38, 2);
-    expect(prices[0].note).toMatch(/global/i);
+    expect(prices[0].error).toBeNull();
     // The global list must be fetched exactly once for the empty item.
     const globalCalls = callEsiOperationMock.mock.calls.filter((c) => c[1] === 'get_markets_prices');
     expect(globalCalls).toHaveLength(1);
@@ -75,11 +87,11 @@ describe('batch_market_prices global-average fallback', () => {
       return { ok: false, error: `unexpected op ${operation}` };
     });
 
-    const prices = await runBatch([PLEX]);
+    const prices = (await runBatch([PLEX])).prices!;
     expect(prices[0].sell).toBeNull();
     expect(prices[0].buy).toBeNull();
     // adjusted_price must NOT be surfaced as a market price.
-    expect(prices[0].global_average_price).toBeUndefined();
+    expect(prices[0].global_average_price).toBeNull();
   });
 
   it('uses regional order book and skips the global list when orders exist', async () => {
@@ -96,12 +108,18 @@ describe('batch_market_prices global-average fallback', () => {
       return { ok: false, error: `should not be called: ${operation}` };
     });
 
-    const prices = await runBatch([TRITANIUM]);
+    const prices = (await runBatch([TRITANIUM])).prices!;
     expect(prices[0].sell?.min_price).toBe(5.5);
     expect(prices[0].buy?.max_price).toBe(4.0);
-    expect(prices[0].global_average_price).toBeUndefined();
+    expect(prices[0].global_average_price).toBeNull();
     // No empty items → global price list must NOT be fetched.
     const globalCalls = callEsiOperationMock.mock.calls.filter((c) => c[1] === 'get_markets_prices');
     expect(globalCalls).toHaveLength(0);
+  });
+
+  it('rejects malformed or duplicate ids before ESI egress', async () => {
+    const duplicate = await runBatch([TRITANIUM, TRITANIUM]);
+    expect(duplicate).toMatchObject({ ok: false, source: 'CCP ESI', blocked: false });
+    expect(callEsiOperationMock).not.toHaveBeenCalled();
   });
 });

@@ -13,14 +13,14 @@ Self-hosted, chat-first AI assistant for EVE Online. Run it through Telegram, Di
 
 This repository is designed for operators to run their own instance in a terminal. It does not require Redis, Postgres, queues, workers, webhooks, or a web frontend.
 
-## v3.2.0 public release
+## v3.3.0 public release
 
-v3.2 adds durable EVE-KILL watches and route monitoring to the terminal CLI,
-safe prompt-aware asynchronous output, single-process runtime ownership, and
-read-only stable-release checks across CLI, Telegram, and Discord. The v3
-self-hosting contract remains unchanged: one Node.js process, local SQLite
-state, the official OpenAI Responses API, and no hosted dashboard or provider
-proxy.
+v3.3 adds default-off Programmatic Tool Calling for five bounded public-read
+facades: static counts, multi-region market prices, wormhole-type comparisons,
+system scouting, and compact kill-activity summaries. The application enforces
+caller linkage, homogeneous programs, work budgets, output schemas, and
+fail-closed exclusions for private ESI, SQL, writes, raw kill detail, web, and
+every unlisted tool. The v3 self-hosting contract remains unchanged.
 
 For a public SSO callback, use HTTPS, set the callback URL exactly in the EVE Developer Portal, generate a strong `AUTH_SECRET_KEY`, give ESI a reachable operator contact, and keep `.env` plus `data/` on the host only. The detailed production checklist is in [docs/deployment.md](./docs/deployment.md).
 
@@ -97,6 +97,7 @@ TELEGRAM_BOT_TOKEN=...        # and/or DISCORD_BOT_TOKEN
 DISCORD_BOT_TOKEN=...
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-5.6-sol
+OPENAI_PROGRAMMATIC_TOOL_CALLING=false
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
@@ -108,8 +109,8 @@ AUTH_SECRET_KEY=replace-with-random-secret
 EVE_CALLBACK_URL=http://localhost:3000/auth/eve/callback
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
-ESI_USER_AGENT=EVEAI/3.2 (+https://github.com/your-org/eveai; contact=you@example.com)
-EVE_KILL_USER_AGENT=EVEAI/3.2 (+https://github.com/your-org/eveai; contact=you@example.com)
+ESI_USER_AGENT=EVEAI/3.3 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_USER_AGENT=EVEAI/3.3 (+https://github.com/your-org/eveai; contact=you@example.com)
 ```
 
 Generate `AUTH_SECRET_KEY` with:
@@ -121,6 +122,7 @@ openssl rand -base64 32
 Model defaults:
 
 - `OPENAI_MODEL=gpt-5.6-sol` is the quality-first default. Use `gpt-5.6-terra` for a capability/cost balance or `gpt-5.6-luna` for latency-sensitive, high-volume deployments. The `gpt-5.6` alias routes to Sol.
+- `OPENAI_PROGRAMMATIC_TOOL_CALLING=false` keeps the default direct-tool path. Setting it to `true` opts into provider-entitled hosted programs for exactly five bounded public-read tools: static counts, batch market prices, wormhole-type comparisons, Scout system searches, and compact kill-activity summaries. Restart after changing it. See [OpenAI integration](./docs/openai-integration.md) for schemas, budgets, exclusions, real smoke matrices, and rollback.
 - `OPENAI_REASONING_EFFORT=auto` preserves EVE Agent's goal-based `low|medium|high` routing. Set `none`, `low`, `medium`, `high`, `xhigh`, or `max` to override it globally.
 - `OPENAI_REASONING_MODE=standard` is the normal path. Set `pro` only for difficult quality-first workloads that justify higher latency and token use; Pro is a mode, not a separate model name.
 - `OPENAI_TEXT_VERBOSITY=low` keeps chat answers compact; set `medium` if your community wants longer explanations.
@@ -169,7 +171,7 @@ npm run cli
 ```
 
 ```text
-┌─ EVE AI Agent v3.2.0 · CLI ────────────────────────┐
+┌─ EVE AI Agent v3.3.0 · CLI ────────────────────────┐
 │ Talk to the agent in your terminal. Commands:      │
 │   /login   link an EVE character (opens SSO)       │
 │   /whoami  show the active character               │

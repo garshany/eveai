@@ -153,7 +153,7 @@ export type BannerRow = { label: string; value: string; state?: 'ok' | 'off' | '
 /**
  * Print a boxed startup summary, e.g.:
  *
- *   ┌─ EVE AI Agent v3.2.0 ──────────────────┐
+ *   ┌─ EVE AI Agent v3.3.0 ──────────────────┐
  *   │ Database   ✔ ./data/eve-agent.db       │
  *   │ Telegram   ✔ long polling              │
  *   │ Discord    − disabled (no token)       │

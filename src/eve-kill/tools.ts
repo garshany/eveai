@@ -1,12 +1,17 @@
 import type { NativeFunctionTool, NativeNamespaceTool } from '../agent/native-responses.js';
 
-export const EVE_KILL_TOOL_NAMES = [
+export const EVE_KILL_NAMESPACE_TOOL_NAMES = [
   'kill_search',
   'kill_activity',
   'kill_detail',
   'kill_intel',
   'kill_battles',
   'kill_watch',
+] as const;
+
+export const EVE_KILL_TOOL_NAMES = [
+  ...EVE_KILL_NAMESPACE_TOOL_NAMES,
+  'kill_activity_summary',
 ] as const;
 
 export type EveKillToolName = typeof EVE_KILL_TOOL_NAMES[number];
@@ -144,6 +149,39 @@ const tools: NativeFunctionTool[] = [
     },
   },
 ];
+
+export const KILL_ACTIVITY_SUMMARY_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: 'kill_activity_summary',
+  description:
+    'Summarize at most 100 public EVE-KILL observations for one system, character, corporation, or alliance ' +
+    'in an explicit window of at most seven days. Returns compact aggregates, coverage, provenance, and bounded ' +
+    'evidence IDs only; never raw killmail rows, hashes, participants, fits, items, positions, or private ESI data.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      scope: { type: 'string', enum: ['system', 'character', 'corporation', 'alliance'] },
+      id: {
+        type: 'integer',
+        minimum: 1,
+        maximum: Number.MAX_SAFE_INTEGER,
+        description: 'Positive public CCP entity or solar-system ID.',
+      },
+      activity: { type: 'string', enum: ['kills', 'losses', 'all'] },
+      from: { type: 'string', description: 'Canonical UTC ISO-8601 window start.' },
+      to: { type: 'string', description: 'Canonical UTC ISO-8601 window end, strictly after from.' },
+      evidence_limit: {
+        type: ['integer', 'null'],
+        minimum: 1,
+        maximum: 10,
+        description: 'Evidence ID cap. null means 5; programmatic calls are limited to 5.',
+      },
+    },
+    required: ['scope', 'id', 'activity', 'from', 'to', 'evidence_limit'],
+    additionalProperties: false,
+  },
+};
 
 export function buildEveKillNamespace(
   options: { includeWatch?: boolean } = {},

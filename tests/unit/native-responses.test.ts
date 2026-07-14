@@ -155,6 +155,32 @@ describe('parseSse + streamed outputs', () => {
       },
     ]);
   });
+
+  it('reconstructs indexed program chains in provider order without stripping caller fields', async () => {
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    const { __test__ } = await import('../../src/agent/native-responses.js');
+    const raw = [
+      'event: response.output_item.done',
+      'data: {"output_index":2,"item":{"type":"program_output","id":"po_1","call_id":"prog_call_1","result":"partial","status":"incomplete","provider_extension":{"x":1}}}',
+      '',
+      'event: response.output_item.done',
+      'data: {"output_index":0,"item":{"type":"program","id":"prog_1","call_id":"prog_call_1","code":"opaque","fingerprint":"fp_1"}}',
+      '',
+      'event: response.output_item.done',
+      'data: {"output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"count_1","name":"count_universe_objects","arguments":"{}","caller":{"type":"program","caller_id":"prog_call_1"}}}',
+      '',
+    ].join('\n');
+
+    expect(__test__.collectDoneItems(__test__.parseSse(raw))).toEqual([
+      { type: 'program', id: 'prog_1', call_id: 'prog_call_1', code: 'opaque', fingerprint: 'fp_1' },
+      { type: 'function_call', id: 'fc_1', call_id: 'count_1', name: 'count_universe_objects', arguments: '{}', caller: { type: 'program', caller_id: 'prog_call_1' } },
+      { type: 'program_output', id: 'po_1', call_id: 'prog_call_1', result: 'partial', status: 'incomplete', provider_extension: { x: 1 } },
+    ]);
+  });
 });
 
 describe('createNativeResponse request body', () => {
@@ -485,7 +511,24 @@ describe('createNativeResponse request body', () => {
       reasoning,
       call,
       { type: 'message', content: [{ type: 'output_text', text: 'ignored' }] },
-    ])).toEqual([reasoning, call]);
+    ])).toEqual([
+      reasoning,
+      call,
+      { type: 'message', content: [{ type: 'output_text', text: 'ignored' }] },
+    ]);
+  });
+
+  it('preserves program items and copies the validated caller to function outputs', async () => {
+    const { buildOrderedContinuationInputItems, buildFunctionCallOutputs } = await import('../../src/agent/native-responses.js');
+    const caller = { type: 'program' as const, caller_id: 'prog_call_1' };
+    const items = [
+      { type: 'program', id: 'prog_1', call_id: 'prog_call_1', code: 'opaque', fingerprint: 'fp_1' },
+      { type: 'program_output', id: 'po_1', call_id: 'prog_call_1', result: 'partial', status: 'incomplete', provider_extension: { x: 1 } },
+    ];
+    expect(buildOrderedContinuationInputItems(items)).toEqual(items);
+    expect(buildFunctionCallOutputs([{ callId: 'fc_1', output: '{"ok":true}', caller }])).toEqual([{
+      type: 'function_call_output', call_id: 'fc_1', output: '{"ok":true}', caller,
+    }]);
   });
 
   it('uses done items when response.completed.output is empty', async () => {

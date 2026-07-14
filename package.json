@@ -1,6 +1,6 @@
 {
   "name": "eveonline-ai",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Self-hosted EVE Online AI assistant for Telegram, Discord, and the terminal, powered by EVE SSO, ESI, local SDE, and the OpenAI Responses API",
   "private": true,
   "type": "module",
@@ -58,6 +58,9 @@
     "https-proxy-agent": "^9.1.0",
     "jose": "^6.2.3",
     "socks-proxy-agent": "^10.1.0"
+  },
+  "overrides": {
+    "undici": "6.27.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
