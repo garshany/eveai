@@ -27,6 +27,8 @@ import {
 } from '../chat/shared.js';
 import { pickTelegramParseMode } from './formatting.js';
 import { createLogger } from '../observability/logger.js';
+import { checkForProjectUpdate } from '../update/check.js';
+import { formatUpdateStatus } from '../update/format.js';
 
 const log = createLogger('telegram');
 
@@ -45,6 +47,7 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     '/use <id|name> — переключить активного персонажа\n' +
     '/market <type_id> — открыть рынок предмета в клиенте EVE\n' +
     '/info <target_id> — открыть окно информации в клиенте EVE\n' +
+    '/version (/update) — проверить обновления проекта\n' +
     '/clear (/reset) — очистить диалог\n' +
     '/help (/commands) — показать этот список';
 
@@ -64,6 +67,14 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     ensureSession(db, ctx);
     await ctx.reply(commandsText);
   });
+
+  const handleVersion = async (ctx: Context) => {
+    ensureSession(db, ctx);
+    const status = await checkForProjectUpdate();
+    await ctx.reply(formatUpdateStatus(status));
+  };
+  bot.command('version', handleVersion);
+  bot.command('update', handleVersion);
 
   // /eve_login and /eve-login
   const handleEveLogin = async (ctx: Context) => {

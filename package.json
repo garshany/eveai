@@ -1,17 +1,17 @@
 {
   "name": "eveonline-ai",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Self-hosted EVE Online AI assistant for Telegram, Discord, and the terminal, powered by EVE SSO, ESI, local SDE, and the OpenAI Responses API",
   "private": true,
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/garshany/eveonline_ai.git"
+    "url": "git+https://github.com/garshany/eveai.git"
   },
-  "homepage": "https://github.com/garshany/eveonline_ai#readme",
+  "homepage": "https://github.com/garshany/eveai#readme",
   "bugs": {
-    "url": "https://github.com/garshany/eveonline_ai/issues"
+    "url": "https://github.com/garshany/eveai/issues"
   },
   "keywords": [
     "eve-online",
@@ -45,7 +45,8 @@
     "setup": "npm run sde:download && npm run sde:load",
     "smoke": "tsx src/smoke.ts",
     "smoke:openai": "tsx scripts/openai-smoke.ts",
-    "smoke:eve-tool": "tsx scripts/eve-tool-smoke.ts"
+    "smoke:eve-tool": "tsx scripts/eve-tool-smoke.ts",
+    "update:check": "tsx src/update/check-cli.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",

@@ -50,6 +50,8 @@ import {
 } from './session.js';
 import { MAX_DISCORD_LENGTH, splitForDiscord } from './format.js';
 import { createLogger } from '../observability/logger.js';
+import { checkForProjectUpdate } from '../update/check.js';
+import { formatUpdateStatus } from '../update/format.js';
 
 const log = createLogger('discord');
 
@@ -61,11 +63,12 @@ const COMMANDS_TEXT =
   '/use <id|name> — переключить активного персонажа\n' +
   '/market <type_id> — открыть рынок предмета в клиенте EVE\n' +
   '/info <target_id> — открыть окно информации в клиенте EVE\n' +
+  '/version (/update) — проверить обновления проекта\n' +
   '/clear — очистить диалог\n' +
   '/help — показать этот список\n\n' +
   'Любое обычное сообщение в личке — запрос к EVE-агенту.';
 
-const SLASH_COMMANDS = [
+export const DISCORD_SLASH_COMMANDS = [
   new SlashCommandBuilder().setName('start').setDescription('Начать работу с EVE-агентом'),
   new SlashCommandBuilder().setName('help').setDescription('Список команд'),
   new SlashCommandBuilder().setName('eve_login').setDescription('Привязать персонажа EVE'),
@@ -77,6 +80,8 @@ const SLASH_COMMANDS = [
     .addIntegerOption((opt) => opt.setName('type_id').setDescription('ID предмета').setRequired(true).setMinValue(1)),
   new SlashCommandBuilder().setName('info').setDescription('Открыть окно информации в клиенте EVE')
     .addIntegerOption((opt) => opt.setName('target_id').setDescription('ID цели').setRequired(true).setMinValue(1)),
+  new SlashCommandBuilder().setName('version').setDescription('Проверить обновления проекта'),
+  new SlashCommandBuilder().setName('update').setDescription('Проверить обновления проекта'),
   new SlashCommandBuilder().setName('clear').setDescription('Очистить диалог'),
 ].map((builder) => builder.setContexts(
   InteractionContextType.Guild,
@@ -104,7 +109,7 @@ export function createDiscordBot(db: Db): Client {
 
   client.once(Events.ClientReady, (ready) => {
     log.info('logged in as %s', ready.user.tag);
-    ready.application.commands.set(SLASH_COMMANDS.map((cmd) => cmd.toJSON())).catch((err) => {
+    ready.application.commands.set(DISCORD_SLASH_COMMANDS.map((cmd) => cmd.toJSON())).catch((err) => {
       log.warn('slash command registration failed: %s', err instanceof Error ? err.message : String(err));
     });
   });
@@ -387,6 +392,13 @@ async function handleSlashCommand(db: Db, interaction: ChatInputCommandInteracti
       await interaction.editReply(result.ok
         ? `Открыл окно информации в клиенте для target_id \`${targetId}\`.`
         : normalizeUiCommandError(result.error));
+      return;
+    }
+    case 'version':
+    case 'update': {
+      await interaction.deferReply();
+      const status = await checkForProjectUpdate();
+      await interaction.editReply(formatUpdateStatus(status));
       return;
     }
     case 'clear': {

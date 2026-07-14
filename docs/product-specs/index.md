@@ -7,6 +7,8 @@ Verified against code: 2026-07-13
 
 - [telegram-bot.md](./telegram-bot.md)
 - [discord-bot.md](./discord-bot.md)
+- [cli.md](./cli.md)
+- [update-management.md](./update-management.md)
 - [browser-sso.md](./browser-sso.md)
 - [identity-and-linking.md](./identity-and-linking.md)
 

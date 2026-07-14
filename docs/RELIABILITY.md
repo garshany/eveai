@@ -3,6 +3,7 @@
 ## Current Mechanisms
 
 - `/health` reports Telegram and Discord startup state plus SQLite database readiness.
+- both runtime entrypoints atomically own a DB-adjacent process lock; PID plus process-start identity rejects a live second owner without letting a recycled PID pin stale state, and a crashed owner's lock is reclaimed atomically.
 - `npm run smoke` verifies required env vars, the configured model `/responses` endpoint, and app health.
 - normal agent turns honor fixed `OPENAI_REASONING_EFFORT` values; `auto` alone invokes the local low/medium/high goal classifier.
 - `OPENAI_REASONING_MODE=pro` is scoped to the top-level user turn so internal compaction, OSINT, and advisor calls retain standard-mode latency.
@@ -14,6 +15,7 @@
 - token refresh is deduplicated in-flight per character.
 - EVE-KILL REST responses are size-capped and runtime-validated; search windows, ID chunks, cursor progress, request budgets, deduplication, and result truncation are enforced locally.
 - one global EVE-KILL feed cursor is durable in SQLite. A missing cursor bootstraps to the current head without history replay; restored route listeners are registered before any resumed event is processed.
+- the open CLI is an explicit feed delivery platform at `chat_id = 0`; prompt-aware alerts are awaited, route/watch rows survive restart, and missed events are not replayed while the CLI is closed.
 - feed/watch delivery is at-least-once for retryable failures: the cursor moves only after awaited active listeners and active-platform chat sends, while per-chat killmail dedup skips recipients already accepted during a partial retry. A definitive platform rejection (for example, a blocked Telegram bot or deleted/inaccessible Discord DM) is recorded as a terminal acknowledgement so one unreachable recipient cannot freeze the shared cursor; transport errors and rate limits remain retryable. Watches and restored route monitors for a platform disabled in the current process are suspended rather than allowed to hold the one global cursor; events missed while disabled are not replayed.
 - resumed route-feed events older than the one-hour threat window are acknowledged without enrichment, alerts, stats, pursuit state, or ganker-cache promotion. Current events are serialized per monitor and commit the per-monitor-run killmail dedup marker, ganker update, and stats in one SQLite transaction; baseline-overlap, concurrent, and post-restart replays are absorbed.
 - route planning, briefing, and monitor startup share one bounded baseline; matching events captured during the snapshot-to-live handoff are drained by the monitor without a second scan. The temporary listener does not acknowledge a captured event until the permanent monitor listener is registered, so a crash leaves the durable cursor unchanged; a full buffer likewise rejects the next event.
@@ -24,6 +26,7 @@
 - Telegram and Discord ingress reject overlapping agent turns in the same chat lane, rate-limit recent requests per actor, and cap global in-process concurrency.
 - simple static aggregate count questions use local-SDE deterministic paths instead of exploratory web or live-ESI loops.
 - when a deterministic static count tool fully answers the user request, the executor finalizes the reply server-side and skips the extra model round-trip.
+- project update checks are outside the startup/health critical path. They use one process-wide 15-minute cache, coalesce concurrent checks, cap the response at 64 KiB, time out after five seconds, and degrade to an informational unavailable state.
 
 ### Context compaction
 

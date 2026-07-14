@@ -59,6 +59,10 @@ export interface RendererDeps {
   /** Injected so tests can drive the spinner with fake timers. */
   setInterval: (fn: () => void, ms: number) => ReturnType<typeof setInterval>;
   clearInterval: (handle: ReturnType<typeof setInterval>) => void;
+  /** Whether readline currently owns a partially typed next command. */
+  hasPendingInput: () => boolean;
+  /** Redraw readline's exact buffer and cursor after output is printed above it. */
+  redrawInput: () => void;
 }
 
 export interface ActivityRenderer {
@@ -67,6 +71,12 @@ export interface ActivityRenderer {
    *  covers pre-loop work (profile refresh, live-context fetch, compaction). */
   begin: () => void;
   finish: (answer: string) => void;
+  /**
+   * Print one awaited background alert without losing the active spinner.
+   * Returns false after abort() so the caller can redraw it at the idle prompt
+   * instead of acknowledging an alert that was never shown.
+   */
+  notify: (text: string) => boolean;
   abort: () => void;
 }
 
@@ -83,8 +93,17 @@ export function createActivityRenderer(deps: RendererDeps): ActivityRenderer {
   const say = (text: string) => write(text + '\n');
 
   const startSpinner = () => {
-    if (!isTty || timer) return;
+    if (!isTty || timer || deps.hasPendingInput()) return;
     timer = deps.setInterval(() => {
+      if (deps.hasPendingInput()) {
+        // Readline stays active during a model turn so Ctrl-C and queued input
+        // keep working. Once typing starts, remove the spinner and give the
+        // terminal line back to readline instead of overwriting its buffer.
+        stopSpinner();
+        write('\r\x1b[K');
+        deps.redrawInput();
+        return;
+      }
       // Neutral, honest label — the real work shows as tool/reasoning lines. A
       // flavor phrase here reads as a fake action ("checking Jita") not happening.
       write(`\r${colorize('cyan', SPINNER_FRAMES[frame % SPINNER_FRAMES.length])} ${colorize('gray', 'думаю…')}`);
@@ -98,10 +117,17 @@ export function createActivityRenderer(deps: RendererDeps): ActivityRenderer {
     if (timer) { deps.clearInterval(timer); timer = null; }
     if (spinnerOnLine) { write('\r\x1b[K'); spinnerOnLine = false; }
   };
-  const printLine = (text: string) => {
+  const prepareOutput = (): boolean => {
+    const preserveInput = deps.hasPendingInput();
     stopSpinner();
+    if (preserveInput) write('\r\x1b[K');
+    return preserveInput;
+  };
+  const printLine = (text: string) => {
+    const preserveInput = prepareOutput();
     say(text);
-    startSpinner();
+    if (preserveInput) deps.redrawInput();
+    else startSpinner();
   };
 
   const onEvent = (event: AgentActivityEvent) => {
@@ -133,8 +159,14 @@ export function createActivityRenderer(deps: RendererDeps): ActivityRenderer {
     // the live feed above shows tools/reasoning, this shows the result.
     finish: (answer: string) => {
       if (dead) return;
-      stopSpinner();
+      const preserveInput = prepareOutput();
       say('\n' + render(answer));
+      if (preserveInput) deps.redrawInput();
+    },
+    notify: (text: string) => {
+      if (dead) return false;
+      printLine(colorize('yellow', '🔔 ') + render(sanitize(text)));
+      return true;
     },
     abort: () => {
       dead = true;

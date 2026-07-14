@@ -9,6 +9,7 @@
 - encrypted storage is used for EVE token material
 - generated `USER.md` may contain rich gameplay data, but prompt ingestion must treat it as untrusted data, not instructions
 - third-party hosted MCP descriptors are not exposed to model turns that contain chat history, profiles, fits, or private ESI context
+- project update status is a deterministic direct command, never a model tool; no Telegram, Discord, web, or running CLI path can mutate Git, install packages, invoke a service manager, or restart the host process
 
 ## Web Protections
 
@@ -36,6 +37,7 @@
 - non-2xx Responses bodies are reduced to HTTP status plus fixed recovery categories before exceptions can reach bot or CLI logs
 - direct hosted EVE-KILL MCP is disabled because its remote call executes before application code can inspect the exact arguments
 - local MCP analytics accept only public numeric CCP IDs, canonical date pairs, enums, booleans, and bounded limits; names are resolved locally first, and no context, profile, fit, private ESI result, credential, URL, or arbitrary text field is forwarded
+- update discovery calls one fixed public GitHub API URL without credentials, accepts only a stable `vMAJOR.MINOR.PATCH` tag and its exact canonical release URL, and never renders remote release text
 
 ## EVE Data Ownership
 

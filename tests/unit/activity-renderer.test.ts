@@ -41,6 +41,7 @@ function harness(isTty: boolean) {
   const screen = new VirtualScreen();
   const timers = new Map<number, () => void>();
   let nextId = 1;
+  let pendingInput = '';
   const deps: RendererDeps = {
     write: (t) => screen.write(t),
     isTty,
@@ -55,8 +56,18 @@ function harness(isTty: boolean) {
     },
     // Faithful to the real timer: a cleared interval stops firing.
     clearInterval: (handle) => { timers.delete(handle as unknown as number); },
+    hasPendingInput: () => pendingInput.length > 0,
+    redrawInput: () => { screen.write(`eve> ${pendingInput}`); },
   };
-  return { screen, tickSpinner: () => { for (const fn of timers.values()) fn(); }, renderer: createActivityRenderer(deps) };
+  return {
+    screen,
+    tickSpinner: () => { for (const fn of [...timers.values()]) fn(); },
+    typePendingInput: (text: string) => {
+      pendingInput = text;
+      screen.write(text);
+    },
+    renderer: createActivityRenderer(deps),
+  };
 }
 
 describe('CLI activity renderer', () => {
@@ -135,9 +146,50 @@ describe('CLI activity renderer', () => {
     renderer.begin();
     tickSpinner();
     renderer.finish('late answer');
+    expect(renderer.notify('late alert')).toBe(false);
 
     expect(screen.screen()).toBe(after);
     expect(screen.screen()).not.toContain('late');
+  });
+
+  it('prints a background alert between spinner activity and the final answer', () => {
+    const { screen, renderer, tickSpinner } = harness(true);
+    renderer.begin();
+    tickSpinner();
+    expect(renderer.notify('hostile Bearer 0123456789abcdefghij')).toBe(true);
+    tickSpinner();
+    renderer.finish('done');
+
+    const out = screen.screen();
+    expect(out).toContain('🔔 RENDERED(hostile Bearer [REDACTED])');
+    expect(out).toContain('RENDERED(done)');
+    expect(out).not.toContain('0123456789abcdefghij');
+    expect(out).not.toContain('думаю');
+  });
+
+  it('preserves partially typed readline input across spinner, alert, activity, and answer output', () => {
+    const { screen, renderer, tickSpinner, typePendingInput } = harness(true);
+    renderer.begin();
+    tickSpinner();
+    typePendingInput('/next command');
+
+    // The next animation tick notices readline input, removes the spinner, and
+    // redraws the exact buffered command instead of overwriting it.
+    tickSpinner();
+    expect(screen.screen()).toContain('eve> /next command');
+    expect(screen.screen()).not.toContain('думаю');
+
+    expect(renderer.notify('route alert')).toBe(true);
+    renderer.sink.emit({ type: 'reasoning', text: 'late activity' });
+    tickSpinner();
+    renderer.finish('done');
+
+    const out = screen.screen();
+    expect(out).toContain('RENDERED(route alert)');
+    expect(out).toContain('late activity');
+    expect(out).toContain('RENDERED(done)');
+    expect(out).toContain('eve> /next command');
+    expect(out).not.toContain('думаю');
   });
 
   it('maps tool names to friendly labels', () => {

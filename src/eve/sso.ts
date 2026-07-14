@@ -149,7 +149,7 @@ export function listLinkedCharacters(
 export function linkCharacterToChat(db: Db, ctx: UserContext, characterId: number): void {
   const chatId = ctx.chatId ?? getUserTelegramChatId(db, ctx.userId);
 
-  if (chatId) {
+  if (chatId !== null && chatId !== undefined) {
     db.prepare(
       'INSERT OR IGNORE INTO eve_character_links (chat_id, character_id, user_id) VALUES (?, ?, ?)',
     ).run(chatId, characterId, ctx.userId);

@@ -1,5 +1,28 @@
 # Changelog
 
+## [3.2.0] - 2026-07-14
+
+### Added
+
+- Durable EVE-KILL watches and route-monitor alerts in the open terminal CLI, with restart-restorable zero-lane state, prompt-safe asynchronous output, and a shared process lock that prevents competing feed pollers.
+- Read-only `/version` and `/update` checks in CLI, Telegram, and Discord plus `npm run update:check`, using strict canonical stable-release validation, bounded network input, and a shared cache.
+
+### Changed
+
+- CLI EVE SSO now preserves `chat_id = 0`, and restored route monitors resolve the real CLI owner for private ESI access.
+- CLI activity and durable alerts now suspend the spinner while a next command is partially typed, print output above it, and restore the exact readline buffer/cursor.
+- Project metadata now points at the canonical `garshany/eveai` repository.
+
+### Security and reliability
+
+- Update discovery is not a model tool and cannot mutate Git, install packages, invoke a service manager, or restart a running process.
+
+### Release verification
+
+- Full local gate passed: clean dependency install, public artifact audit,
+  TypeScript strict check, 434 Vitest tests, ESLint, production build, npm
+  package inspection, and independent review.
+
 ## [3.1.0] - 2026-07-14
 
 ### Added

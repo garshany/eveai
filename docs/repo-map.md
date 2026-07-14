@@ -103,6 +103,20 @@ Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integratio
 - `session.ts`: snowflake identity mapping and negative chat-key allocation
 - `format.ts`: HTML -> Discord markdown conversion and 2000-char chunking
 
+### `src/cli/`
+
+- `chat.ts`: local `chat_id = 0` adapter, feed lifecycle, commands, and graceful shutdown
+- `activity-renderer.ts`: spinner/tool/reasoning/final-answer terminal renderer
+- `async-output.ts`: serialized prompt-aware durable notification output
+- `input-queue.ts`, `term-sanitize.ts`: readline serialization and terminal-control removal
+
+### `src/runtime/` and `src/update/`
+
+- `runtime/process-lock.ts`: atomic DB-adjacent single-process ownership with stale recovery
+- `update/version.ts`: reliable package version source
+- `update/check.ts`: bounded, cached canonical GitHub stable-release check
+- `update/format.ts`, `update/check-cli.ts`: shared UX text and `npm run update:check`
+
 ### `src/web/`
 
 - `server.ts`: Fastify server assembly (SSO login redirect/callback + health only)

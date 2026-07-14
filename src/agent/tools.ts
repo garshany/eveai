@@ -376,7 +376,7 @@ export function isSetActiveFitTool(name: string): boolean {
 
 export async function buildNativeAgentTools(
   mode: 'full' | 'static_aggregate' = 'full',
-  options: { includeDurableNotifications?: boolean } = {},
+  options: { notificationCapability?: 'all' | 'feed' | 'none' } = {},
 ): Promise<NativeTool[]> {
   if (mode === 'static_aggregate') {
     return ALWAYS_ON_FUNCTION_TOOLS.flatMap((tool) => {
@@ -396,18 +396,21 @@ export async function buildNativeAgentTools(
     ? ALWAYS_ON_FUNCTION_TOOLS
     : ALWAYS_ON_FUNCTION_TOOLS.filter((tool) => tool.name !== WEB_SEARCH_TOOL_NAME);
 
-  const includeDurableNotifications = options.includeDurableNotifications !== false;
+  const notificationCapability = options.notificationCapability ?? 'all';
+  const includeFeedNotifications = notificationCapability !== 'none';
+  const includeHeartbeat = notificationCapability === 'all';
   return [
     { type: 'tool_search' },
     ...alwaysOn,
-    ...(includeDurableNotifications ? [ROUTE_MONITOR_TOOL, HEARTBEAT_CONFIG_TOOL] : []),
+    ...(includeFeedNotifications ? [ROUTE_MONITOR_TOOL] : []),
+    ...(includeHeartbeat ? [HEARTBEAT_CONFIG_TOOL] : []),
     BATCH_MARKET_TOOL,
     OSINT_INFER_TOOL,
     ANALYZE_LOCAL_TOOL,
     ANALYZE_SCAN_TOOL,
     INTEL_NOTE_TOOL,
     SET_ACTIVE_FIT_TOOL,
-    buildEveKillNamespace({ includeWatch: includeDurableNotifications }),
+    buildEveKillNamespace({ includeWatch: includeFeedNotifications }),
     buildEveKillAnalyticsNamespace(),
     buildEveScoutNamespace(),
     ...(await listEsiNamespaces()),

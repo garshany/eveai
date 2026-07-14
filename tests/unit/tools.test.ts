@@ -80,7 +80,7 @@ describe('agent tools', () => {
     ]);
 
     const transientTools = await buildNativeAgentTools('full', {
-      includeDurableNotifications: false,
+      notificationCapability: 'none',
     });
     const transientFunctions = transientTools
       .filter((tool): tool is Extract<(typeof transientTools)[number], { type: 'function' }> => tool.type === 'function')
@@ -92,6 +92,20 @@ describe('agent tools', () => {
     expect(transientFunctions).not.toContain('route_monitor');
     expect(transientFunctions).not.toContain('heartbeat_config');
     expect(transientEveKill?.tools.map((tool) => tool.name)).not.toContain('kill_watch');
+
+    const cliTools = await buildNativeAgentTools('full', {
+      notificationCapability: 'feed',
+    });
+    const cliFunctions = cliTools
+      .filter((tool): tool is Extract<(typeof cliTools)[number], { type: 'function' }> => tool.type === 'function')
+      .map((tool) => tool.name);
+    const cliEveKill = cliTools.find(
+      (tool): tool is Extract<(typeof cliTools)[number], { type: 'namespace' }> =>
+        tool.type === 'namespace' && tool.name === 'eve_kill',
+    );
+    expect(cliFunctions).toContain('route_monitor');
+    expect(cliFunctions).not.toContain('heartbeat_config');
+    expect(cliEveKill?.tools.map((tool) => tool.name)).toContain('kill_watch');
 
     const eveScoutNamespace = namespaces.find((tool) => tool.name === 'eve_scout');
     expect(eveScoutNamespace).toBeDefined();

@@ -6,6 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 # Adjust these paths for your server before installing.
+User=eveai
+Group=eveai
 WorkingDirectory=/srv/eveai
 EnvironmentFile=/srv/eveai/.env
 Environment=NODE_ENV=production
@@ -14,8 +16,10 @@ Restart=always
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=true
+# The checkout, package metadata, and built code remain read-only. Runtime
+# state and the adjacent single-process lock live under this explicit path.
 ReadWritePaths=/srv/eveai/data
 
 [Install]

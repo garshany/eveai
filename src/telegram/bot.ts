@@ -6,6 +6,19 @@ import type { Db } from '../db/sqlite.js';
 import { isTelegramUserAllowed } from './access.js';
 import { registerHandlers } from './handlers.js';
 
+export const TELEGRAM_COMMANDS = [
+  { command: 'start', description: 'Начать' },
+  { command: 'help', description: 'Список команд' },
+  { command: 'commands', description: 'Список команд' },
+  { command: 'eve_login', description: 'Привязать персонажа EVE' },
+  { command: 'whoami', description: 'Показать активного персонажа' },
+  { command: 'characters', description: 'Список персонажей' },
+  { command: 'use', description: 'Переключить активного персонажа' },
+  { command: 'version', description: 'Проверить обновления проекта' },
+  { command: 'update', description: 'Проверить обновления проекта' },
+  { command: 'clear', description: 'Очистить диалог' },
+];
+
 export function createBot(db: Db): Bot<Context> {
   const timeoutSeconds = parseTimeoutSeconds(process.env.TELEGRAM_TIMEOUT_SECONDS);
   const proxyUrl = process.env.TELEGRAM_PROXY || null;
@@ -48,16 +61,7 @@ export function createBot(db: Db): Bot<Context> {
 
   registerHandlers(bot, db);
 
-  bot.api.setMyCommands([
-    { command: 'start', description: 'Начать' },
-    { command: 'help', description: 'Список команд' },
-    { command: 'commands', description: 'Список команд' },
-    { command: 'eve_login', description: 'Привязать персонажа EVE' },
-    { command: 'whoami', description: 'Показать активного персонажа' },
-    { command: 'characters', description: 'Список персонажей' },
-    { command: 'use', description: 'Переключить активного персонажа' },
-    { command: 'clear', description: 'Очистить диалог' },
-  ]).catch((err) => {
+  bot.api.setMyCommands(TELEGRAM_COMMANDS).catch((err) => {
     console.warn('[bot] setMyCommands failed: %s', err instanceof Error ? err.message : String(err));
   });
 

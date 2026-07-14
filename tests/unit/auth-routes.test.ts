@@ -20,7 +20,7 @@ vi.mock('../../src/config.js', () => ({
       requestTimeoutMs: 5000,
     },
     esi: {
-      userAgent: 'EVEAI/3.1 (+https://github.com/example/eveai; contact=operator@example.com)',
+      userAgent: 'EVEAI/3.2 (+https://github.com/example/eveai; contact=operator@example.com)',
     },
     server: { port: 3000, host: '127.0.0.1' },
     db: { path: ':memory:' },
@@ -196,6 +196,45 @@ describe('auth routes', () => {
       }),
     );
 
+    await app.close();
+  });
+
+  it('keeps chat_id zero when an EVE callback links the CLI lane', async () => {
+    const app = Fastify();
+    registerAuthRoutes(app, db);
+    db.prepare("INSERT INTO users (user_id, display_name) VALUES (1, 'CLI')").run();
+    db.prepare("INSERT INTO cli_accounts (identity_key, user_id, chat_id) VALUES ('local', 1, 0)").run();
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (0, 'cli')").run();
+    const state = createAuthRequestToken(db, 'eve_sso', 1, { chatId: 0, ttlSeconds: 600 });
+
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        access_token: 'cli-access',
+        refresh_token: 'cli-refresh',
+        expires_in: 1200,
+        token_type: 'Bearer',
+      }),
+    });
+    jwtVerifyMock.mockResolvedValue({
+      payload: {
+        sub: 'CHARACTER:EVE:95465500',
+        name: 'Cli Pilot',
+        scp: ['esi-location.read_location.v1'],
+        aud: ['test-client', 'EVE Online'],
+      },
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(db.prepare('SELECT user_id FROM eve_character_links WHERE chat_id = 0 AND character_id = 95465500').get())
+      .toEqual({ user_id: 1 });
+    expect(db.prepare('SELECT active_character_id FROM telegram_sessions WHERE chat_id = 0').get())
+      .toEqual({ active_character_id: 95465500 });
     await app.close();
   });
 

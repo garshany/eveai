@@ -13,9 +13,14 @@ Self-hosted, chat-first AI assistant for EVE Online. Run it through Telegram, Di
 
 This repository is designed for operators to run their own instance in a terminal. It does not require Redis, Postgres, queues, workers, webhooks, or a web frontend.
 
-## v3.1.0 public release
+## v3.2.0 public release
 
-v3.1 completes the cutover to the current EVE-KILL v1 REST/feed contract, restores four public analytics methods through a local privacy-bounded MCP wrapper, and hardens the stateless GPT-5.6 tool loop. The v3 self-hosting contract remains unchanged: one Node.js process, local SQLite state, the official OpenAI Responses API, and no hosted dashboard or provider proxy.
+v3.2 adds durable EVE-KILL watches and route monitoring to the terminal CLI,
+safe prompt-aware asynchronous output, single-process runtime ownership, and
+read-only stable-release checks across CLI, Telegram, and Discord. The v3
+self-hosting contract remains unchanged: one Node.js process, local SQLite
+state, the official OpenAI Responses API, and no hosted dashboard or provider
+proxy.
 
 For a public SSO callback, use HTTPS, set the callback URL exactly in the EVE Developer Portal, generate a strong `AUTH_SECRET_KEY`, give ESI a reachable operator contact, and keep `.env` plus `data/` on the host only. The detailed production checklist is in [docs/deployment.md](./docs/deployment.md).
 
@@ -103,8 +108,8 @@ AUTH_SECRET_KEY=replace-with-random-secret
 EVE_CALLBACK_URL=http://localhost:3000/auth/eve/callback
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
-ESI_USER_AGENT=EVEAI/3.1 (+https://github.com/your-org/eveai; contact=you@example.com)
-EVE_KILL_USER_AGENT=EVEAI/3.1 (+https://github.com/your-org/eveai; contact=you@example.com)
+ESI_USER_AGENT=EVEAI/3.2 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_USER_AGENT=EVEAI/3.2 (+https://github.com/your-org/eveai; contact=you@example.com)
 ```
 
 Generate `AUTH_SECRET_KEY` with:
@@ -164,11 +169,12 @@ npm run cli
 ```
 
 ```text
-┌─ EVE AI Agent · CLI ───────────────────────────────┐
+┌─ EVE AI Agent v3.2.0 · CLI ────────────────────────┐
 │ Talk to the agent in your terminal. Commands:      │
 │   /login   link an EVE character (opens SSO)       │
 │   /whoami  show the active character               │
 │   /clear   wipe this conversation                  │
+│   /version check project updates                   │
 │   /exit    quit                                    │
 └────────────────────────────────────────────────────┘
 eve> route from Jita to Amarr, is it dangerous?
@@ -177,10 +183,16 @@ eve> route from Jita to Amarr, is it dangerous?
 Public tools (SDE lookups, market, route planning with danger analysis,
 killboards, OSINT) work without a linked character. Run `/login` to link an EVE
 character via SSO and unlock private ESI (skills, assets, location, mail, …).
-The full bots still need a Telegram or Discord token; the CLI does not.
-Durable background notifications (`kill_watch`, heartbeat configuration, and
-route monitoring) are intentionally unavailable in the transient CLI lane;
-configure them from a running Telegram or Discord bot instead.
+The full bots still need a Telegram or Discord token; the CLI does not. While
+the CLI process is open, `kill_watch` and route monitoring use the same durable
+EVE-KILL feed lifecycle as Telegram and Discord. Their SQLite state survives a
+restart and eligible route monitors are restored on the next CLI launch. Events
+missed while the CLI is closed are not replayed. Heartbeat configuration remains
+bot-service-only and is intentionally hidden in the CLI.
+
+Only one bot service or CLI may own a given `DB_PATH` at a time. A DB-adjacent
+runtime lock rejects a second process so two feed pollers cannot race the global
+cursor.
 
 While the agent works, the CLI shows a **live activity feed** — a brief
 "thinking" note and one line per tool/skill as it runs (e.g. `🗄 SDE query`,
@@ -211,6 +223,7 @@ npm test               # vitest
 npm run smoke          # env, model endpoint, app health checks
 npm run smoke:openai   # authenticated /v1/responses probe
 npm run smoke:eve-tool # authenticated model + EVE SDE tool probe
+npm run update:check   # read-only latest stable release check
 npm run db:migrate     # run SQLite migrations
 npm run setup          # download and load SDE data
 ```

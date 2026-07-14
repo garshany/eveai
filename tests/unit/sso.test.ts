@@ -18,7 +18,7 @@ vi.mock('../../src/config.js', () => ({
       requestTimeoutMs: 5000,
     },
     esi: {
-      userAgent: 'EVEAI/3.1 (+https://github.com/example/eveai; contact=operator@example.com)',
+      userAgent: 'EVEAI/3.2 (+https://github.com/example/eveai; contact=operator@example.com)',
     },
     server: { port: 3000, host: '127.0.0.1' },
     db: { path: ':memory:' },

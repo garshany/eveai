@@ -3,6 +3,7 @@ import {
   deliverOutbound,
   isOutboundAvailable,
   isPermanentOutboundFailure,
+  registerCliOutbound,
   registerDiscordOutbound,
   registerTelegramOutbound,
   resetOutboundForTests,
@@ -16,22 +17,31 @@ describe('durable outbound delivery', () => {
   it('awaits the sender selected by the internal chat lane', async () => {
     const telegram = vi.fn(async () => {});
     const discord = vi.fn(async () => {});
+    const cli = vi.fn(async () => {});
+    registerCliOutbound(cli);
     registerTelegramOutbound(telegram);
     registerDiscordOutbound(discord);
 
+    expect(isOutboundAvailable(0)).toBe(true);
     expect(isOutboundAvailable(42)).toBe(true);
     expect(isOutboundAvailable(-42)).toBe(true);
 
+    await deliverOutbound(0, 'cli message');
     await deliverOutbound(42, 'telegram message');
     await deliverOutbound(-42, 'discord message');
 
+    expect(cli).toHaveBeenCalledWith(0, 'cli message');
     expect(telegram).toHaveBeenCalledWith(42, 'telegram message');
     expect(discord).toHaveBeenCalledWith(-42, 'discord message');
   });
 
   it('rejects when the target platform is not running', async () => {
+    expect(isOutboundAvailable(0)).toBe(false);
     expect(isOutboundAvailable(42)).toBe(false);
     expect(isOutboundAvailable(-42)).toBe(false);
+    await expect(deliverOutbound(0, 'message')).rejects.toThrow(
+      'cli outbound sender is not registered',
+    );
     await expect(deliverOutbound(42, 'message')).rejects.toThrow(
       'telegram outbound sender is not registered',
     );

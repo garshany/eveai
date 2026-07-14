@@ -473,7 +473,7 @@ describe('cooperative turn abort (CLI Ctrl-C)', () => {
     const result = await __test__.runNativeAgentLoop(
       db as never,
       't1',
-      { userId: 1, chatId: 1, durableNotifications: false },
+      { userId: 1, chatId: 1, notificationCapability: 'none' },
       GOAL,
       'developer prompt',
       () => 'developer prompt',

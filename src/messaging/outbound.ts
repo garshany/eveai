@@ -2,8 +2,9 @@
  * Platform-routing outbound message dispatcher.
  *
  * Notification producers (heartbeat, route monitor, kill watch) address chats
- * by internal chat id: positive ids are Telegram private chats, negative ids
- * are Discord DM chat keys. Each platform registers its sender at boot; a
+ * by internal chat id: zero is the local CLI, positive ids are Telegram
+ * private chats, and negative ids are Discord DM chat keys. Each platform
+ * registers its sender at boot; a
  * Best-effort producers use sendOutbound(), while durable producers await
  * deliverOutbound() so a failed platform send cannot be mistaken for delivery.
  */
@@ -25,6 +26,11 @@ const log = createLogger('outbound');
 
 let telegramSender: OutboundSender | null = null;
 let discordSender: OutboundSender | null = null;
+let cliSender: OutboundSender | null = null;
+
+export function registerCliOutbound(sender: OutboundSender | null): void {
+  cliSender = sender;
+}
 
 export function registerTelegramOutbound(sender: OutboundSender | null): void {
   telegramSender = sender;
@@ -42,12 +48,21 @@ export function isDiscordOutboundRegistered(): boolean {
   return discordSender !== null;
 }
 
+export function isCliOutboundRegistered(): boolean {
+  return cliSender !== null;
+}
+
 export function isDiscordChatId(chatId: number): boolean {
   return chatId < 0;
 }
 
+export function isCliChatId(chatId: number): boolean {
+  return chatId === 0;
+}
+
 /** Whether the chat's platform has an active sender in this process. */
 export function isOutboundAvailable(chatId: number): boolean {
+  if (isCliChatId(chatId)) return isCliOutboundRegistered();
   return isDiscordChatId(chatId)
     ? isDiscordOutboundRegistered()
     : isTelegramOutboundRegistered();
@@ -61,8 +76,8 @@ export function isOutboundAvailable(chatId: number): boolean {
  * promise resolves.
  */
 export async function deliverOutbound(chatId: number, text: string): Promise<void> {
-  const platform = isDiscordChatId(chatId) ? 'discord' : 'telegram';
-  const sender = isDiscordChatId(chatId) ? discordSender : telegramSender;
+  const platform = isCliChatId(chatId) ? 'cli' : isDiscordChatId(chatId) ? 'discord' : 'telegram';
+  const sender = isCliChatId(chatId) ? cliSender : isDiscordChatId(chatId) ? discordSender : telegramSender;
   if (!sender) {
     throw new Error(`${platform} outbound sender is not registered`);
   }
@@ -130,6 +145,7 @@ export function sendOutbound(chatId: number, text: string): void {
 }
 
 export function resetOutboundForTests(): void {
+  cliSender = null;
   telegramSender = null;
   discordSender = null;
 }

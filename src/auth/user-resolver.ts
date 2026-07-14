@@ -1,12 +1,30 @@
 import type { Db } from '../db/sqlite.js';
 import { isDiscordOutboundRegistered, isTelegramOutboundRegistered } from '../messaging/outbound.js';
 
+export type NotificationCapability = 'all' | 'feed' | 'none';
+
 export type UserContext = {
   userId: number;
   chatId?: number;
-  /** False for transient lanes that cannot receive durable background alerts. */
-  durableNotifications?: boolean;
+  /** Defaults to all. CLI uses feed; explicitly transient lanes use none. */
+  notificationCapability?: NotificationCapability;
 };
+
+export function resolveUserContextForChat(db: Db, chatId: number): UserContext | null {
+  if (chatId === 0) {
+    const row = db.prepare('SELECT user_id FROM cli_accounts WHERE chat_id = 0')
+      .get() as { user_id: number } | undefined;
+    return row ? { userId: row.user_id, chatId, notificationCapability: 'feed' } : null;
+  }
+  if (chatId < 0) {
+    const row = db.prepare('SELECT user_id FROM discord_sessions WHERE chat_key = ?')
+      .get(chatId) as { user_id: number } | undefined;
+    return row ? { userId: row.user_id, chatId } : null;
+  }
+  const row = db.prepare('SELECT user_id FROM telegram_accounts WHERE telegram_user_id = ?')
+    .get(chatId) as { user_id: number } | undefined;
+  return row ? { userId: row.user_id, chatId } : null;
+}
 
 export function getOrCreateUser(
   db: Db,

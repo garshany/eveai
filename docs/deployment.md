@@ -7,6 +7,7 @@ This guide describes a generic deployment model for running your own EVE AI Agen
 Recommended baseline:
 
 - one Node.js process running `dist/app.js`
+- a dedicated unprivileged OS account (the sample unit uses `eveai`)
 - SQLite database on local disk
 - Telegram grammY long polling (not webhooks) and/or a Discord gateway bot
 - Fastify bound to localhost or a private interface; the EVE SSO login redirect and callback need browser reachability
@@ -48,9 +49,9 @@ EVE_CALLBACK_URL=https://your-domain.example/auth/eve/callback
 WEB_BASE_URL=https://your-domain.example
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
-ESI_USER_AGENT=EVEAI/3.1 (+https://github.com/your-org/eveai; contact=you@example.com)
+ESI_USER_AGENT=EVEAI/3.2 (+https://github.com/your-org/eveai; contact=you@example.com)
 EVE_KILL_TIMEOUT_MS=8000
-EVE_KILL_USER_AGENT=EVEAI/3.1 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_USER_AGENT=EVEAI/3.2 (+https://github.com/your-org/eveai; contact=you@example.com)
 EVE_KILL_RETRY_MAX_ATTEMPTS=3
 EVE_KILL_BACKOFF_MAX_MS=10000
 ```
@@ -124,7 +125,10 @@ suspension are not replayed when the platform is enabled later.
 
 The terminal CLI uses an explicit `cli_accounts` identity at `chat_id = 0`.
 It does not create a Telegram account, and migrations never infer CLI ownership
-from a positive numeric Telegram id.
+from a positive numeric Telegram id. The CLI and bot service acquire the same
+lock next to `DB_PATH`; start only one of them for a given database. CLI route
+monitors and EVE-KILL watches deliver while the CLI is open and restore their
+state on its next launch, without replaying events missed while it was closed.
 
 Direct hosted EVE-KILL MCP is disabled. Full agent mode uses the local
 `eve_kill` REST namespace plus the local `eve_kill_analytics` namespace for
@@ -167,6 +171,9 @@ server {
 ## systemd Example
 
 Copy and adapt the generic unit at `deploy/systemd/eveai.service` if you deploy on a Linux host with systemd.
+Create the dedicated `eveai` account first, grant it read access to the release
+and environment file, and grant write access only to the configured `data/`
+directory. Do not run the service as root.
 
 Install example:
 
@@ -196,6 +203,64 @@ startup check, which also requires `AUTH_SECRET_KEY`.
 - Back up `data/` if you need to preserve local users, sessions, EVE links, feed cursors/dedup, route monitors, cache, and notes.
 - Rotate `AUTH_SECRET_KEY` only with an explicit session/token migration plan; it derives storage keys for protected local secrets.
 - Never publish tokens, SSH details, IP addresses, real domains, private reverse-proxy paths, or production runbooks in this repository.
+
+## Updating
+
+All chat surfaces are read-only with respect to project updates. Check the
+canonical latest stable release from CLI, Telegram, Discord, or an operator
+shell:
+
+```bash
+npm run update:check
+```
+
+Do not run `git pull`, `npm ci`, or a service restart from a chat command or from
+inside the live process. The current release tags are not a cryptographic trust
+mechanism, package lifecycle scripts execute code, and an in-place failure can
+leave a mixed installation. Use a local operator/supervisor workflow:
+
+1. Read the validated release link and choose its exact `vMAJOR.MINOR.PATCH` tag.
+2. Fetch that explicit tag from the fixed canonical repository into a
+   namespaced ref. Do not trust `origin` (a self-hosted checkout may be a fork),
+   and do not reuse a possibly conflicting local tag:
+
+   ```bash
+   git fetch --no-tags --force https://github.com/garshany/eveai.git \
+     +refs/tags/vX.Y.Z:refs/eveai-releases/vX.Y.Z
+   git rev-parse 'refs/eveai-releases/vX.Y.Z^{commit}'
+   git show --no-patch --decorate refs/eveai-releases/vX.Y.Z
+   ```
+
+3. Stage outside the live directory and verify before activation:
+
+   ```bash
+   git worktree add --detach /srv/eveai-releases/vX.Y.Z \
+     'refs/eveai-releases/vX.Y.Z^{commit}'
+   cd /srv/eveai-releases/vX.Y.Z
+   npm ci
+   npm run audit:public
+   npm run check
+   npm run build
+   ```
+
+4. Stop the service through its supervisor, make a consistent SQLite/data
+   backup, and keep `.env` plus writable `data/` outside the immutable release.
+   Configure absolute `DB_PATH`, SDE, and profile paths when the working
+   directory changes.
+5. Point the supervisor at the staged `dist/app.js`, start it, and verify the
+   exact version banner, `/health`, enabled bot connectivity, logs, and a real
+   user command.
+6. Retain the prior release for a forward rollback, but do not switch old code
+   back blindly after migrations. Restore compatibility or data through an
+   explicit migration-aware recovery plan.
+
+The sample systemd unit uses `ProtectSystem=strict`: the checkout and built code
+are read-only, and only `/srv/eveai/data` is writable for runtime state and its
+DB-adjacent process lock. Before installing it, create that directory for the
+dedicated account (for example, `install -d -o eveai -g eveai -m 0700
+/srv/eveai/data`) while keeping `/srv/eveai`, `.env`, `dist/`, and
+`package.json` non-writable by `eveai`. Adapt release-directory paths to your
+own supervisor without committing host-specific values here.
 
 ## v3 Release Gate
 

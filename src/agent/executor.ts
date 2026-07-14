@@ -483,7 +483,7 @@ async function runNativeAgentLoop(
   const requestId = createRequestId();
   const tools = await buildNativeAgentTools(
     isSimpleStaticAggregateCountGoal(goal) ? 'static_aggregate' : 'full',
-    { includeDurableNotifications: ctx.durableNotifications !== false },
+    { notificationCapability: ctx.notificationCapability ?? 'all' },
   );
   const webSearchState = createWebSearchState();
   const reasoningEffort = resolveReasoningEffort(goal, config.openai.reasoningEffort);
@@ -915,14 +915,17 @@ async function executeToolCall(
     detail: isEveKillAnalyticsToolName(name) ? 'public analytics request' : summarizeToolArgs(name, args),
   });
 
-  if (
-    ctx.durableNotifications === false
-    && (name === 'kill_watch' || isHeartbeatConfigTool(name) || isRouteMonitorTool(name))
-  ) {
+  const notificationCapability = ctx.notificationCapability ?? 'all';
+  const notificationBlocked = notificationCapability === 'none'
+    ? name === 'kill_watch' || isHeartbeatConfigTool(name) || isRouteMonitorTool(name)
+    : notificationCapability === 'feed' && isHeartbeatConfigTool(name);
+  if (notificationBlocked) {
     return {
       ok: false,
       blocked: true,
-      error: 'Durable background notifications are unavailable in this transient chat lane. Use Telegram or Discord.',
+      error: notificationCapability === 'feed'
+        ? 'Heartbeat scheduling is unavailable in the terminal CLI. Route monitoring and EVE-KILL watches remain available while the CLI is running.'
+        : 'Durable background notifications are unavailable in this transient chat lane. Use Telegram, Discord, or the interactive CLI.',
     };
   }
 

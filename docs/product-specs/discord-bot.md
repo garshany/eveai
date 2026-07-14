@@ -14,6 +14,8 @@ Discord is a DM-only chat adapter that shares the same agent runtime and EVE-cha
 - `/use <id|name>`
 - `/market <type_id>`
 - `/info <target_id>`
+- `/version`
+- `/update`
 - `/clear`
 
 ## Behavior
@@ -23,3 +25,4 @@ Discord is a DM-only chat adapter that shares the same agent runtime and EVE-cha
 - ordinary DM text is routed to the shared agent runtime
 - `/eve_login` sends a short one-time browser link for EVE SSO; the callback confirms success in the browser and tells the user to return to Discord
 - `/clear` clears the conversation state for that Discord DM lane
+- `/version` and `/update` are read-only; they never grant checkout, package-manager, or restart control

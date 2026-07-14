@@ -64,11 +64,11 @@ The namespace intentionally does not expose competing identity, affiliation,
 history, roster, war, static-data, market, build-cost, arbitrary-query, or
 private-character operations. Official detail is still resolved by
 `src/eve/killmail.ts` through CCP ESI after `(id, hash)` discovery.
-The transient terminal CLI receives the first five tools only: it has no
-background-producer lifecycle, so `kill_watch`, heartbeat configuration, and
-route-monitor tools are omitted and rejected at execution time if stale model
-state attempts to call them. A one-time migration removes legacy CLI-lane
-watches, route monitors, route dedup, and heartbeat configuration.
+The interactive terminal CLI receives `kill_watch` and `route_monitor` because
+it owns a real feed-poller lifecycle and explicit `chat_id = 0` outbound sender
+while open. Heartbeat configuration remains omitted and fails closed: the CLI
+does not start the user-addressed heartbeat scheduler. Historical sentinel-lane
+cleanup is not reversed; newly created zero-lane watches and monitors persist.
 
 ## Durable Global Feed
 
@@ -102,12 +102,14 @@ recipient is not retried for the same killmail.
 Only consumers whose chat platform has an active sender participate in a run.
 Watches and route-monitor rows for a disabled platform remain durable but are
 suspended, cannot hold the global cursor, and do not receive historical replay
-when that platform is enabled later.
+when that platform is enabled later. CLI rows therefore resume when the CLI is
+next opened, but events missed while it was closed are not replayed.
 
 The poller uses bounded exponential backoff, never resets a valid cursor, prunes
 old delivery dedup rows daily, and is awaited during graceful shutdown. Changing
 a watch updates SQLite only; it does not reconnect or duplicate the global
-poller.
+poller. A DB-adjacent process lock prevents the bot entrypoint and CLI from
+running competing pollers against the same cursor.
 
 Watch topics are:
 
@@ -194,7 +196,7 @@ the EVE-KILL per-turn budget with an additional four-call analytics cap.
 
 ```env
 EVE_KILL_TIMEOUT_MS=8000
-EVE_KILL_USER_AGENT=EVEAI/3.1 (+https://github.com/example/eveai; contact=operator@example.com)
+EVE_KILL_USER_AGENT=EVEAI/3.2 (+https://github.com/example/eveai; contact=operator@example.com)
 EVE_KILL_RETRY_MAX_ATTEMPTS=3
 EVE_KILL_BACKOFF_MAX_MS=10000
 ```

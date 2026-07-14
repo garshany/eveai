@@ -11,7 +11,7 @@ import { callEsiOperation } from '../eve/esi-client.js';
 import { getEveCapabilities, hasFreshCapabilitySnapshot } from '../eve/capabilities.js';
 import { subscribeEveKillFeed } from '../eve-kill/feed-poll.js';
 import type { FeedEvent } from '../eve-kill/types.js';
-import type { UserContext } from '../auth/user-resolver.js';
+import { resolveUserContextForChat, type UserContext } from '../auth/user-resolver.js';
 import {
   analyzeKillPattern,
   assessShip,
@@ -207,6 +207,10 @@ export function restoreMonitors(
 ): void {
   const rows = db.prepare('SELECT chat_id FROM route_monitors ORDER BY chat_id').all() as Array<{ chat_id: number }>;
   for (const row of rows) {
+    // A route can start while a brand-new feed cursor is bootstrapping. The
+    // readiness restore must not treat that already-active row as an error and
+    // delete its durable state.
+    if (activeMonitors.has(row.chat_id)) continue;
     // Preserve the durable row for a later run with that platform enabled, but
     // do not register a listener that could hold the process-wide feed cursor.
     if (!canDeliver(row.chat_id)) continue;
@@ -301,7 +305,7 @@ function activateMonitor(
     options.stopOnBaselineFailure === true,
   );
 
-  void getEveCapabilities(db, 'route-monitor', getMonitorUserContext(monitor.chatId)).catch(() => {});
+  void getEveCapabilities(db, 'route-monitor', getMonitorUserContext(db, monitor.chatId)).catch(() => {});
   void pollLocation(instance);
   void pollOnline(instance);
   instance.locationTimer = setInterval(() => void pollLocation(instance), LOCATION_INTERVAL_MS);
@@ -559,7 +563,7 @@ async function pollLocation(instance: MonitorInstance): Promise<void> {
       db,
       'get_characters_character_id_location',
       { character_id: monitor.characterId },
-      getMonitorUserContext(monitor.chatId),
+      getMonitorUserContext(db, monitor.chatId),
     );
     if (!result.ok || !result.data.solar_system_id) {
       instance.locationFailures += 1;
@@ -601,7 +605,7 @@ async function pollOnline(instance: MonitorInstance): Promise<void> {
       db,
       'get_characters_character_id_online',
       { character_id: monitor.characterId },
-      getMonitorUserContext(monitor.chatId),
+      getMonitorUserContext(db, monitor.chatId),
     );
     if (!result.ok) return;
     monitor.lastOnlineCheck = new Date().toISOString();
@@ -626,7 +630,7 @@ async function checkOwnDeath(instance: MonitorInstance): Promise<void> {
     db,
     'get_characters_character_id_killmails_recent',
     { character_id: monitor.characterId },
-    getMonitorUserContext(monitor.chatId),
+    getMonitorUserContext(db, monitor.chatId),
   );
   if (!recent.ok || recent.data.length === 0) return;
   const latest = recent.data[0]!;
@@ -829,12 +833,12 @@ function prunePursuitHistory(instance: MonitorInstance): void {
   }
 }
 
-function getMonitorUserContext(chatId: number): UserContext {
-  return { userId: 0, chatId };
+function getMonitorUserContext(db: Db, chatId: number): UserContext {
+  return resolveUserContextForChat(db, chatId) ?? { userId: 0, chatId };
 }
 
 async function ensureMonitorCapabilities(instance: MonitorInstance, intent: string): Promise<void> {
-  const ctx = getMonitorUserContext(instance.monitor.chatId);
+  const ctx = getMonitorUserContext(instance.db, instance.monitor.chatId);
   if (hasFreshCapabilitySnapshot(ctx, instance.monitor.characterId)) return;
   await getEveCapabilities(instance.db, intent, ctx);
 }

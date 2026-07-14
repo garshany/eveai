@@ -44,6 +44,8 @@ async function main() {
 
   const { initDb } = await import('./db/sqlite.js');
   const { runMigrations } = await import('./db/migrations.js');
+  const { acquireRuntimeLock } = await import('./runtime/process-lock.js');
+  const { getAppVersion } = await import('./update/version.js');
   const {
     markBotDisabled,
     markBotStarting,
@@ -62,7 +64,8 @@ async function main() {
     isOutboundAvailable,
   } = await import('./messaging/outbound.js');
 
-  // 2. Initialize database
+  // 2. Enforce the single-process feed/SQLite invariant, then initialize DB.
+  const runtimeLock = acquireRuntimeLock(config.db.path, 'bot service');
   const db = initDb(config.db.path);
   runMigrations(db);
   log.info('Database ready at %s', config.db.path);
@@ -109,6 +112,7 @@ async function main() {
     }
     await server.close();
     db.close();
+    runtimeLock.release();
     process.exit(exitCode);
   };
 
@@ -179,7 +183,7 @@ async function main() {
     onReady: () => restoreMonitors(db, deliverOutbound, isOutboundAvailable),
   });
 
-  const version = process.env.npm_package_version ?? '';
+  const version = getAppVersion();
   const rows: BannerRow[] = [
     { label: 'Database', value: config.db.path, state: 'ok' },
     {
@@ -206,7 +210,7 @@ async function main() {
     { label: 'Heartbeat', value: 'every 5 min', state: 'ok' },
     { label: 'EVE-KILL feed', value: 'durable poll', state: 'ok' },
   ];
-  printStartupBanner(version ? `EVE AI Agent v${version}` : 'EVE AI Agent', rows);
+  printStartupBanner(`EVE AI Agent v${version}`, rows);
 
   // Graceful shutdown
   process.on('SIGINT', () => {

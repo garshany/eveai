@@ -5,7 +5,8 @@
 ```text
 Telegram private chat -> grammY bot ─┐
                                      ├─> shared chat pipeline -> agent runtime
-Discord DM -> discord.js gateway bot ┘            │
+Discord DM -> discord.js gateway bot ┤            │
+Terminal CLI -> local chat_id 0 ─────┘            │
                                                   v
                              native /v1/responses (official OpenAI API)
                                                   │
@@ -21,7 +22,10 @@ Discord DM -> discord.js gateway bot ┘            │
 Browser -> Fastify -> EVE SSO login redirect/callback + health -> same SQLite state
 ```
 
-The app is a single-process Node.js service. There is no job queue, no event bus, no separate background worker tier, and no web frontend.
+The app is a single-process Node.js service. The bot entrypoint and interactive
+CLI acquire the same DB-adjacent ownership lock, so exactly one process owns the
+SQLite feed cursor for a `DB_PATH`. There is no job queue, event bus, separate
+background worker tier, or web frontend.
 
 ## How To Read This Repo
 
@@ -38,7 +42,13 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 ### Chat Boundary (shared)
 
 - `src/chat/shared.ts` is the platform-neutral pipeline: chat-session rows, thread resolution, in-flight request tracking and dedupe, rate limiting, agent invocation, EVE SSO login links, and user-facing error normalization.
-- `src/messaging/outbound.ts` routes user-keyed notifications to the right platform: positive chat ids go to Telegram, negative chat keys go to Discord.
+- `src/messaging/outbound.ts` routes notifications by an explicit three-lane contract: zero -> CLI, positive -> Telegram, negative -> Discord.
+
+### Terminal CLI Boundary
+
+- `src/cli/chat.ts` owns the local `chat_id = 0` identity, readline loop, feed lifecycle, and graceful shutdown.
+- `src/cli/async-output.ts` serializes background alerts with spinner/readline output and redraws an idle prompt without losing buffered input.
+- The CLI exposes feed-backed route monitoring and EVE-KILL watches while open; heartbeat remains a bot-service scheduler.
 
 ### Telegram Boundary
 
@@ -66,6 +76,12 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/web/server.ts` registers HTTP concerns only: security headers, the EVE SSO login redirect/callback, and health.
 - `src/web/auth-routes.ts` validates the one-time login state at `/auth/eve/login`, handles the EVE OAuth callback (`/auth/eve/callback` plus the `/callback` alias), and renders a minimal success page.
 - `src/web/health.ts` exposes runtime and dependency health for both bot platforms.
+
+### Project Update Boundary
+
+- `src/update/` reads the installed package version and checks only the fixed canonical GitHub latest-release endpoint.
+- `/version` and `/update` are deterministic platform commands, not agent tools. They use a bounded, cached request and never render release body text.
+- A running CLI or bot never mutates Git, installs packages, invokes a service manager, or restarts itself; activation remains an operator deployment action.
 
 ### EVE Boundary
 
@@ -119,7 +135,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 
 ## Request Flows
 
-### Chat Request Flow (Telegram or Discord)
+### Chat Request Flow (Telegram, Discord, or CLI)
 
 1. User sends a message in a Telegram private chat or a Discord DM.
 2. Platform middleware validates access (private-chat/DM only, optional allowlist).
@@ -141,7 +157,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 ### Outbound Notification Flow
 
 1. Producers (heartbeat worker, route monitor, kill watch) address a chat id.
-2. `deliverOutbound` routes by sign: positive -> Telegram `sendMessage`, negative -> Discord DM channel resolved via `discord_sessions`.
+2. `deliverOutbound` routes explicitly: zero -> prompt-aware CLI output, positive -> Telegram `sendMessage`, negative -> Discord DM channel resolved via `discord_sessions`.
 3. Durable producers await delivery before advancing cursors or heartbeat state. Failures propagate to their retry boundary; `sendOutbound` remains only the explicitly best-effort wrapper.
 
 ### EVE-KILL Feed And Route Flow
@@ -163,6 +179,9 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/eve-kill/`: current public EVE-KILL REST, feed, tools, and watches
 - `src/eve-board/`: route threat snapshot, deterministic analysis, briefing, and monitor
 - `src/messaging/`: outbound platform-routing dispatcher
+- `src/cli/`: interactive terminal adapter and prompt-safe background output
+- `src/runtime/`: single-process DB ownership
+- `src/update/`: bounded read-only canonical release discovery
 - `src/telegram/`: Telegram bot and command handlers
 - `src/web/`: Fastify SSO login redirect/callback + health
 - `tests/unit/`: module and policy regression coverage

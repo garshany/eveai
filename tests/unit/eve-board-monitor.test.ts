@@ -521,6 +521,39 @@ describe('eve-board monitor', () => {
     db.close();
   });
 
+  it('does not delete a monitor that became active before feed readiness restore', async () => {
+    vi.useFakeTimers();
+    const db = new Database(':memory:');
+    db.exec(SCHEMA_SQL);
+    runMigrations(db);
+    db.prepare('INSERT INTO sde_systems (system_id, name, data_json) VALUES (?, ?, ?)')
+      .run(30_000_142, 'Jita', JSON.stringify({ securityStatus: 0.9 }));
+    const sender = vi.fn(async () => {});
+    const baseline = {
+      routeSystems: [30_000_142],
+      systems: [],
+      jumpMap: new Map<number, number>(),
+      totalKills: 0,
+      totalValueM: 0,
+      truncated: false,
+      requestCount: 1,
+      error: null,
+      scannedAt: '2026-07-13T12:00:00Z',
+    };
+
+    await expect(startRouteMonitor(
+      db, 0, 90_000_001, [30_000_142], 648, 'Badger', sender, { baseline },
+    )).resolves.toBe(true);
+    restoreMonitors(db, sender, () => true);
+
+    expect(getActiveMonitor(0)).not.toBeNull();
+    expect(db.prepare('SELECT 1 FROM route_monitors WHERE chat_id = 0').get()).toBeDefined();
+    expect(monitorMocks.subscribe).toHaveBeenCalledTimes(1);
+    expect(monitorMocks.buildSnapshot).not.toHaveBeenCalled();
+    shutdownRouteMonitors();
+    db.close();
+  });
+
   it('re-sends actionable digest after heartbeat interval even without new deltas', () => {
     const digest: RouteThreatDigest = {
       timestamp: '2026-04-02T15:00:00Z',

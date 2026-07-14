@@ -29,6 +29,19 @@ import { htmlToDiscordMarkdown } from '../discord/format.js';
 import { colorize } from '../observability/logger.js';
 import { stripTerminalControls } from './term-sanitize.js';
 import { createInputQueue } from './input-queue.js';
+import { createCliAsyncOutput } from './async-output.js';
+import {
+  deliverOutbound,
+  isOutboundAvailable,
+  registerCliOutbound,
+} from '../messaging/outbound.js';
+import { setRouteMonitorSender } from '../eve/route-planner.js';
+import { restoreMonitors, shutdownRouteMonitors } from '../eve-board/monitor.js';
+import { startEveKillFeedPoller, stopEveKillFeedPoller } from '../eve-kill/feed-poll.js';
+import { acquireRuntimeLock } from '../runtime/process-lock.js';
+import { checkForProjectUpdate } from '../update/check.js';
+import { formatUpdateStatus } from '../update/format.js';
+import { getAppVersion } from '../update/version.js';
 
 // Explicit local-platform lane: Telegram private chats are positive and
 // allocated Discord DM lanes are negative. Ownership is persisted separately
@@ -91,16 +104,18 @@ function safeErrorText(err: unknown): string {
 function banner(): void {
   const c = (s: string) => colorize('cyan', s);
   const g = (s: string) => colorize('green', s);
-  say(c('┌─ EVE AI Agent · CLI ───────────────────────────────┐'));
+  say(c(`┌─ EVE AI Agent v${getAppVersion()} · CLI ────────────────────────┐`));
   say(c('│') + ' Talk to the agent in your terminal. Commands:      ' + c('│'));
   say(c('│') + '   ' + g('/login') + '   link an EVE character (opens SSO)     ' + c('│'));
   say(c('│') + '   ' + g('/whoami') + '  show the active character            ' + c('│'));
   say(c('│') + '   ' + g('/clear') + '   wipe this conversation               ' + c('│'));
+  say(c('│') + '   ' + g('/version') + ' check project updates                 ' + c('│'));
   say(c('│') + '   ' + g('/exit') + '    quit                                ' + c('│'));
   say(c('└────────────────────────────────────────────────────┘'));
 }
 
 async function main(): Promise<void> {
+  const runtimeLock = acquireRuntimeLock(config.db.path, 'interactive CLI');
   const db: Db = initDb(config.db.path);
   runMigrations(db);
 
@@ -146,9 +161,9 @@ async function main(): Promise<void> {
   const ctx: UserContext = {
     userId,
     chatId: CLI_CHAT_ID,
-    // The CLI process has no background-producer lifecycle. Persistent watch,
-    // heartbeat, and route-monitor tools are hidden and fail closed.
-    durableNotifications: false,
+    // Feed-backed watches and route monitoring have a real CLI lifecycle.
+    // Heartbeat remains a bot-service-only scheduler.
+    notificationCapability: 'feed',
   };
 
   banner();
@@ -167,6 +182,22 @@ async function main(): Promise<void> {
   // the renderer stops and the result is discarded when the turn completes.
   type ActiveTurn = { abandoned: boolean; activity: ActivityRenderer; threadId: string; watermark: number };
   let activeTurn: ActiveTurn | null = null;
+
+  const asyncOutput = createCliAsyncOutput({
+    write: (text) => { process.stdout.write(text); },
+    isTty: Boolean(process.stdout.isTTY),
+    render: renderForTerminal,
+    sanitize: (text) => stripTerminalControls(sanitizeOutput(text)),
+    prompt: (preserveCursor) => { rl.prompt(preserveCursor); },
+    activeRenderer: () => activeTurn?.activity ?? null,
+  });
+
+  registerCliOutbound(async (_chatId, text) => asyncOutput.deliver(text));
+  setRouteMonitorSender(deliverOutbound);
+  startEveKillFeedPoller(db, deliverOutbound, {
+    canDeliver: isOutboundAvailable,
+    onReady: () => restoreMonitors(db, deliverOutbound, isOutboundAvailable),
+  });
 
   // Delete everything an abandoned turn wrote to its thread (idempotent: the
   // watermark is the pre-turn MAX(id)), and drop any server-state response id
@@ -188,11 +219,16 @@ async function main(): Promise<void> {
     // into the next session.
     const abandonedTurn = activeTurn?.abandoned ? activeTurn : null;
     rl.close();
+    await stopEveKillFeedPoller();
+    shutdownRouteMonitors();
+    registerCliOutbound(null);
+    await asyncOutput.close();
     if (ssoServerReady) await server.close().catch(() => {});
     // SQLite is sync and there is no await between here and exit, so the
     // in-flight turn cannot write between this cleanup and process.exit.
     if (abandonedTurn) discardTurnRows(abandonedTurn);
     db.close();
+    runtimeLock.release();
     process.exit(0);
   };
 
@@ -217,6 +253,12 @@ async function main(): Promise<void> {
       say(l
         ? `${colorize('bold', l.characterName)} · id ${l.characterId} · ${l.scopes.length} scopes`
         : colorize('gray', 'no character linked — use /login'));
+      return false;
+    }
+
+    if (text === '/version' || /^\/update(?:\s+.*)?$/u.test(text)) {
+      say(colorize('gray', 'Проверяю последний стабильный релиз…'));
+      say(renderForTerminal(formatUpdateStatus(await checkForProjectUpdate())));
       return false;
     }
 
@@ -245,7 +287,10 @@ async function main(): Promise<void> {
     // abandon an in-flight turn (it would exit later, after the answer).
     // Overlap is impossible anyway — the input queue serializes lines; typing
     // during a turn just echoes and queues.
-    const activity = createActivityRenderer();
+    const activity = createActivityRenderer({
+      hasPendingInput: () => rl.line.length > 0,
+      redrawInput: () => { rl.prompt(true); },
+    });
     const threadId = resolveThreadForChat(db, CLI_CHAT_ID, ctx);
     // Watermark for Ctrl-C: an abandoned turn's rows (user message, tool and
     // assistant rows) are deleted once the turn settles — or in shutdown() if
@@ -319,7 +364,10 @@ async function main(): Promise<void> {
 }
 
 /** Wire the terminal activity renderer to real stdout/timers. */
-function createActivityRenderer(): ActivityRenderer {
+function createActivityRenderer(input: {
+  hasPendingInput: () => boolean;
+  redrawInput: () => void;
+}): ActivityRenderer {
   return buildActivityRenderer({
     write: (text) => { process.stdout.write(text); },
     isTty: Boolean(process.stdout.isTTY),
@@ -330,6 +378,8 @@ function createActivityRenderer(): ActivityRenderer {
     colorize,
     setInterval: (fn, ms) => setInterval(fn, ms),
     clearInterval: (handle) => { clearInterval(handle); },
+    hasPendingInput: input.hasPendingInput,
+    redrawInput: input.redrawInput,
   });
 }
 

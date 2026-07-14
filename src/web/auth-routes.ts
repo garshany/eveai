@@ -127,7 +127,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       );
 
       // Build UserContext for linking
-      const ctx: UserContext = chatId ? { userId, chatId } : { userId };
+      const ctx: UserContext = chatId !== null ? { userId, chatId } : { userId };
 
       await reassignCharacterOwnership(db, ctx.userId, characterId);
       linkCharacterToChat(db, ctx, characterId);
