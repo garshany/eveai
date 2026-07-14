@@ -61,9 +61,9 @@ If images are later added, place them in that same target directory. Each must b
 | Directly related to EVE Online | PASS | The public repository describes EVE SSO, ESI, local SDE, route planning, and EVE intelligence. |
 | Complies with the Developer License Agreement | PASS | The public source documents the agreement, non-affiliation, non-commercial boundary, and prohibited misuse. Operators remain responsible for complying when they configure and run an instance. |
 | Public service/resource | PASS | The canonical source repository, [`garshany/eveai`](https://github.com/garshany/eveai), is publicly visible on GitHub under MIT. |
-| Production-ready | PASS | The immutable v3.2.0 release is usable by the general EVE public as a self-hosted service: the public repository provides a reproducible install path, EVE application setup, deployment guidance, a public-artifact gate, and successful CI/release verification. |
+| Production-ready | PASS | The immutable v3.3.0 release is usable by the general EVE public as a self-hosted service: the public repository provides a reproducible install path, EVE application setup, deployment guidance, a public-artifact gate, and successful CI/release verification. |
 | Public for at least three months | PASS | GitHub records the repository's initial `PublicEvent` on 2026-03-24, and its public CI history includes a `master` run on 2026-03-25. The three-month threshold passed on 2026-06-25. |
-| Actively maintained within the last year | PASS | The public default branch and immutable v3.2.0 release were updated and verified on 2026-07-14. |
+| Actively maintained within the last year | PASS | The public default branch and immutable v3.3.0 release were updated and verified on 2026-07-14. |
 
 ## Publication Gate
 

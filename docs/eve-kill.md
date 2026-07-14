@@ -214,7 +214,7 @@ the EVE-KILL per-turn budget with an additional four-call analytics cap.
 
 ```env
 EVE_KILL_TIMEOUT_MS=8000
-EVE_KILL_USER_AGENT=EVEAI/3.2 (+https://github.com/example/eveai; contact=operator@example.com)
+EVE_KILL_USER_AGENT=EVEAI/3.3 (+https://github.com/example/eveai; contact=operator@example.com)
 EVE_KILL_RETRY_MAX_ATTEMPTS=3
 EVE_KILL_BACKOFF_MAX_MS=10000
 ```

@@ -4,7 +4,7 @@ import { compareStableVersions, getAppVersion, parseStableVersion } from '../../
 import { formatUpdateStatus } from '../../src/update/format.js';
 
 function releaseResponse(
-  tag = 'v3.2.0',
+  tag = 'v3.3.0',
   url = `https://github.com/garshany/eveai/releases/tag/${tag}`,
 ): Response {
   return new Response(JSON.stringify({
@@ -18,17 +18,17 @@ function releaseResponse(
 
 describe('project update checker', () => {
   it('reads the packaged version and compares strict stable semver', () => {
-    expect(getAppVersion()).toBe('3.2.0');
-    expect(parseStableVersion('3.1.0')).toEqual([3, 1, 0]);
-    expect(parseStableVersion('v3.1.0')).toBeNull();
-    expect(parseStableVersion('3.2.0-rc.1')).toBeNull();
-    expect(compareStableVersions('3.1.0', '3.2.0')).toBe(-1);
-    expect(compareStableVersions('3.2.0', '3.2.0')).toBe(0);
-    expect(compareStableVersions('4.0.0', '3.2.0')).toBe(1);
+    expect(getAppVersion()).toBe('3.3.0');
+    expect(parseStableVersion('3.2.0')).toEqual([3, 2, 0]);
+    expect(parseStableVersion('v3.2.0')).toBeNull();
+    expect(parseStableVersion('3.3.0-rc.1')).toBeNull();
+    expect(compareStableVersions('3.2.0', '3.3.0')).toBe(-1);
+    expect(compareStableVersions('3.3.0', '3.3.0')).toBe(0);
+    expect(compareStableVersions('4.0.0', '3.3.0')).toBe(1);
   });
 
   it('reports available/current/ahead and never renders the release body', async () => {
-    for (const [current, kind] of [['3.1.0', 'available'], ['3.2.0', 'current'], ['4.0.0', 'ahead']] as const) {
+    for (const [current, kind] of [['3.2.0', 'available'], ['3.3.0', 'current'], ['4.0.0', 'ahead']] as const) {
       const fetchImpl = vi.fn(async () => releaseResponse());
       const status = await createUpdateChecker({ fetchImpl, currentVersion: current }).check();
       expect(status.kind).toBe(kind);
@@ -42,9 +42,9 @@ describe('project update checker', () => {
 
   it('rejects prereleases, malformed versions, and non-canonical URLs', async () => {
     const badResponses = [
-      new Response(JSON.stringify({ tag_name: 'v3.2.0', html_url: 'https://evil.example/release', draft: false, prerelease: false })),
-      releaseResponse('v3.2.0-rc.1'),
-      new Response(JSON.stringify({ tag_name: 'v3.2.0', html_url: 'https://github.com/garshany/eveai/releases/tag/v3.2.0', draft: false, prerelease: true })),
+      new Response(JSON.stringify({ tag_name: 'v3.3.0', html_url: 'https://evil.example/release', draft: false, prerelease: false })),
+      releaseResponse('v3.3.0-rc.1'),
+      new Response(JSON.stringify({ tag_name: 'v3.3.0', html_url: 'https://github.com/garshany/eveai/releases/tag/v3.3.0', draft: false, prerelease: true })),
     ];
     for (const response of badResponses) {
       const status = await createUpdateChecker({
