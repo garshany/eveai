@@ -97,6 +97,7 @@ TELEGRAM_BOT_TOKEN=...        # and/or DISCORD_BOT_TOKEN
 DISCORD_BOT_TOKEN=...
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-5.6-sol
+OPENAI_PROGRAMMATIC_TOOL_CALLING=false
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
@@ -121,6 +122,7 @@ openssl rand -base64 32
 Model defaults:
 
 - `OPENAI_MODEL=gpt-5.6-sol` is the quality-first default. Use `gpt-5.6-terra` for a capability/cost balance or `gpt-5.6-luna` for latency-sensitive, high-volume deployments. The `gpt-5.6` alias routes to Sol.
+- `OPENAI_PROGRAMMATIC_TOOL_CALLING=false` keeps the default direct-tool path. Setting it to `true` opts into provider-entitled hosted programs for exactly five bounded public-read tools: static counts, batch market prices, wormhole-type comparisons, Scout system searches, and compact kill-activity summaries. Restart after changing it. See [OpenAI integration](./docs/openai-integration.md) for schemas, budgets, exclusions, real smoke matrices, and rollback.
 - `OPENAI_REASONING_EFFORT=auto` preserves EVE Agent's goal-based `low|medium|high` routing. Set `none`, `low`, `medium`, `high`, `xhigh`, or `max` to override it globally.
 - `OPENAI_REASONING_MODE=standard` is the normal path. Set `pro` only for difficult quality-first workloads that justify higher latency and token use; Pro is a mode, not a separate model name.
 - `OPENAI_TEXT_VERBOSITY=low` keeps chat answers compact; set `medium` if your community wants longer explanations.

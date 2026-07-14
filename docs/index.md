@@ -28,6 +28,7 @@ Read the smallest document that answers the current question. Start here, then d
 - [heartbeat.md](./heartbeat.md): periodic background checks and notifications system
 - [osint.md](./osint.md): probabilistic residence/staging inference from activity graphs
 - [eve-kill.md](./eve-kill.md): current EVE-KILL REST/feed, locally wrapped MCP analytics, source ownership, and route handoff
+- [eve-scout.md](./eve-scout.md): bounded EVE-Scout wormhole/system contracts, cache freshness, and programmatic boundary
 - [openai-integration.md](./openai-integration.md): stateless Responses loop and local function/MCP privacy boundary
 - [product-specs/update-management.md](./product-specs/update-management.md): bounded release checks and the local-operator update boundary
 

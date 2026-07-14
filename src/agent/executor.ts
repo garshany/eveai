@@ -22,6 +22,7 @@ import {
   isSetActiveFitTool,
   isRouteMonitorTool,
   isEveScoutToolName,
+  isProgrammaticToolAllowed,
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
 import { updatePlan } from './planner.js';
@@ -32,9 +33,11 @@ import {
   buildOrderedContinuationInputItems,
   createNativeResponse,
   extractFunctionCalls,
+  extractFinalAssistantText,
   toNativeMessage,
   toNativeAssistantMessage,
   type NativeInputItem,
+  type NativeFunctionCaller,
 } from './native-responses.js';
 import { callEsiOperation } from '../eve/esi-client.js';
 import { isTurnAborted, reportActivity, summarizeToolArgs, TURN_ABORTED_MESSAGE } from './activity.js';
@@ -43,7 +46,12 @@ import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
 import { getThreadSummary, runPreTurnCompact, needsMidTurnCompaction, runMidTurnCompact } from './compact.js';
 import { executeEveKillTool } from '../eve-kill/executor.js';
-import { executeEveScoutTool } from '../eve/eve-scout-executor.js';
+import { validateKillActivitySummaryArgs } from '../eve-kill/activity-summary.js';
+import {
+  executeEveScoutTool,
+  validateCompareWormholeTypesArgs,
+  validateScoutSystemsArgs,
+} from '../eve/eve-scout-executor.js';
 import type { EveScoutToolName } from '../eve/eve-scout-tools.js';
 import type { EveKillToolName } from '../eve-kill/tools.js';
 import { executeEveKillAnalyticsTool } from '../eve-kill/mcp-analytics.js';
@@ -70,8 +78,16 @@ import {
   tryHandleStaticAggregateFastPath,
 } from './static-aggregate.js';
 import { buildSafetyIdentifier } from './safety-identifier.js';
+import {
+  isProgrammaticToolName,
+  serializeProgrammaticToolOutput,
+  validateProgrammaticToolOutput,
+} from './programmatic-contracts.js';
 
 const MAX_TOOL_ITERATIONS = 16;
+const MAX_PROGRAMMATIC_CALLS_PER_BATCH = 4;
+const MAX_PROGRAMMATIC_CALLS_PER_TURN = 4;
+const MAX_PROGRAMMATIC_CALLS_PER_PROGRAM = 4;
 const MAX_EVE_KILL_CALLS_PER_TURN = 30;
 const MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN = 4;
 const MAX_CONSECUTIVE_SAME_TOOL = 3;
@@ -93,21 +109,37 @@ export { ESI_FIELD_WHITELIST, filterEsiFields, validateEsiFields } from './esi-f
 async function executeBatchMarketPrices(
   db: Db,
   args: Record<string, unknown>,
-  ctx: UserContext,
+  _ctx: UserContext,
 ): Promise<unknown> {
-  const regionId = Number(args.region_id ?? 10000002);
-  const typeIds = Array.isArray(args.type_ids)
-    ? args.type_ids.filter((v): v is number => typeof v === 'number')
-    : [];
-
-  if (typeIds.length === 0) {
-    return { ok: false, error: 'type_ids must be a non-empty array of integers' };
+  const invalid = (error: string): Record<string, unknown> => ({
+    ok: false,
+    source: 'CCP ESI',
+    authoritative: true,
+    error,
+    status: null,
+    blocked: false,
+  });
+  if (Object.keys(args).some((key) => key !== 'region_id' && key !== 'type_ids')) {
+    return invalid('Unknown batch_market_prices parameter');
   }
-  if (typeIds.length > 30) {
-    return { ok: false, error: 'Maximum 30 type_ids per batch' };
+  if (typeof args.region_id !== 'number' || !Number.isSafeInteger(args.region_id) || args.region_id <= 0) {
+    return invalid('region_id must be a positive safe integer');
   }
+  if (
+    !Array.isArray(args.type_ids)
+    || args.type_ids.length === 0
+    || args.type_ids.length > 30
+    || args.type_ids.some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
+  ) {
+    return invalid('type_ids must contain 1 to 30 positive safe integers');
+  }
+  const typeIds = args.type_ids as number[];
+  if (new Set(typeIds).size !== typeIds.length) {
+    return invalid('type_ids must be unique');
+  }
+  const regionId = args.region_id;
 
-  console.log('[batch_market] region=%d types=%d ids=%j', regionId, typeIds.length, typeIds);
+  console.log('[batch_market] types=%d', typeIds.length);
 
   type OrderData = { price: number; volume_remain: number; is_buy_order: boolean };
   type MarketResult = {
@@ -116,7 +148,6 @@ async function executeBatchMarketPrices(
     sell: { min_price: number; volume: number; orders: number } | null;
     buy: { max_price: number; volume: number; orders: number } | null;
     global_average_price?: number;
-    note?: string;
   };
 
   const results: MarketResult[] = await Promise.all(
@@ -125,10 +156,10 @@ async function executeBatchMarketPrices(
         db,
         'get_markets_region_id_orders',
         { region_id: regionId, order_type: 'all', type_id: typeId },
-        ctx,
+        null,
       );
       if (!esiResult.ok || !Array.isArray(esiResult.data)) {
-        return { type_id: typeId, error: !esiResult.ok ? esiResult.error : 'failed', sell: null, buy: null };
+        return { type_id: typeId, error: 'Market data unavailable', sell: null, buy: null };
       }
       const orders = esiResult.data;
       const sell = orders.filter((o) => !o.is_buy_order);
@@ -153,7 +184,7 @@ async function executeBatchMarketPrices(
   const needsGlobal = results.filter((r) => !r.error && r.sell === null && r.buy === null);
   if (needsGlobal.length > 0) {
     type GlobalPrice = { type_id: number; average_price?: number; adjusted_price?: number };
-    const globalResult = await callEsiOperation<GlobalPrice[]>(db, 'get_markets_prices', {}, ctx);
+    const globalResult = await callEsiOperation<GlobalPrice[]>(db, 'get_markets_prices', {}, null);
     if (globalResult.ok && Array.isArray(globalResult.data)) {
       // Use ONLY average_price (the ESI trade average). adjusted_price is CCP's
       // internal valuation, not a market quote — falling back to it would report a
@@ -165,16 +196,32 @@ async function executeBatchMarketPrices(
         const avg = priceMap.get(r.type_id);
         if (typeof avg === 'number' && avg > 0) {
           r.global_average_price = avg;
-          r.note = 'No regional order book (global-market item, e.g. PLEX); ESI global average price shown.';
         }
       }
     }
   }
 
-  const totalChars = JSON.stringify(results).length;
-  console.log('[batch_market] done items=%d result=%d chars', results.length, totalChars);
+  const prices = results.map((result) => ({
+    type_id: result.type_id,
+    sell: result.sell,
+    buy: result.buy,
+    global_average_price: result.global_average_price ?? null,
+    error: result.error ?? null,
+  }));
+  console.log('[batch_market] done items=%d', prices.length);
 
-  return { ok: true, region_id: regionId, prices: results };
+  return {
+    ok: true,
+    source: 'CCP ESI',
+    authoritative: true,
+    freshness: {
+      retrieved_at: new Date().toISOString(),
+      data_through: null,
+      cache_max_age_seconds: null,
+    },
+    region_id: regionId,
+    prices,
+  };
 }
 
 function stripRedundantFields(data: unknown, requestArgs: Record<string, unknown>): unknown {
@@ -281,6 +328,7 @@ export async function handleAgentMessage(
       liveContext?.summary ?? null,
       promptMode,
       config.openai.responseLanguage,
+      config.openai.programmaticToolCalling,
     );
 
   const developerPrompt = rebuildDeveloperPrompt();
@@ -479,6 +527,7 @@ async function runNativeAgentLoop(
   goal: string,
   developerPrompt: string,
   rebuildDeveloperPrompt: () => string,
+  responseFactory: typeof createNativeResponse = createNativeResponse,
 ): Promise<AgentResult> {
   const requestId = createRequestId();
   const tools = await buildNativeAgentTools(
@@ -539,6 +588,11 @@ async function runNativeAgentLoop(
   // work from iterations 0..N-1 (the recovery paths below require
   // previousResponseId and are dead code in the default stateless mode).
   let transientRetries = 0;
+  let programmaticCallsExecuted = 0;
+  const knownProgramIds = new Set<string>();
+  const rejectedProgramIds = new Set<string>();
+  const programmaticPrograms = new Map<string, ProgrammaticProgramState>();
+  let programInFlight = false;
 
   console.log('[executor] === NEW REQUEST request=%s goal="%s" ===', requestId, goal.slice(0, 80));
 
@@ -546,10 +600,11 @@ async function runNativeAgentLoop(
     // Cooperative cancellation (CLI Ctrl-C): stop before spending another
     // model call. The CLI discards the turn's rows, so nothing is lost.
     if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+
     reportActivity({ type: 'model_turn', iteration });
     let response;
     try {
-      response = await createNativeResponse({
+      response = await responseFactory({
         instructions: developerPrompt,
         items: pendingItems,
         previousResponseId,
@@ -603,6 +658,22 @@ async function runNativeAgentLoop(
     // model call + history mutation) or any tool execution.
     if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
 
+    if (response.status && response.status !== 'completed') {
+      console.error('[executor] non-completed model response status=%s', response.status);
+      const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
+      storeAssistantMessage(db, threadId, message);
+      saveLastResponseId(db, threadId, null);
+      return { text: message, peakInputTokens };
+    }
+
+    for (const item of response.output) {
+      if (item.type !== 'program') continue;
+      if (typeof item.call_id === 'string' && item.call_id.trim()) {
+        knownProgramIds.add(item.call_id);
+      }
+      programInFlight = true;
+    }
+
     // Track token usage
     if (response.usage) {
       totalInputTokens += response.usage.input;
@@ -644,6 +715,7 @@ async function runNativeAgentLoop(
     // needs follow-up (tool calls), compact and continue the loop.
     if (
       response.usage && needsMidTurnCompaction(response.usage.input) &&
+      !programInFlight &&
       iteration > 0 && !usedMidTurnCompact
     ) {
       const toolCalls = extractFunctionCalls(response.output);
@@ -731,13 +803,44 @@ async function runNativeAgentLoop(
     }
 
     if (toolCalls.length === 0) {
-      if (response.outputText.trim()) {
-        storeAssistantMessage(db, threadId, response.outputText);
+      const finalAssistantText = extractFinalAssistantText(response.output);
+      const convenienceText = response.outputText.trim();
+      if (finalAssistantText !== null) {
+        const shapeError = validateCompletedProgramShapes(
+          knownProgramIds,
+          programmaticPrograms,
+          rejectedProgramIds,
+        );
+        if (programInFlight && shapeError) {
+          console.error('[executor] rejected incomplete program shape: %s', shapeError);
+          const message = 'Не удалось завершить безопасную программную выборку. Попробуй ещё раз.';
+          storeAssistantMessage(db, threadId, message);
+          saveLastResponseId(db, threadId, null);
+          return { text: message, peakInputTokens };
+        }
+        programInFlight = false;
+        const finalText = finalAssistantText || convenienceText;
+        reportActivity({ type: 'final_assistant_message' });
+        storeAssistantMessage(db, threadId, finalText);
         saveLastResponseId(db, threadId, useServerResponseState ? response.id : null);
         console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d answer=%d chars ===',
           iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
-          totalReasoningTokens, response.outputText.length);
-        return { text: response.outputText, peakInputTokens };
+          totalReasoningTokens, finalText.length);
+        return { text: finalText, peakInputTokens };
+      }
+      if (!programInFlight && convenienceText) {
+        storeAssistantMessage(db, threadId, convenienceText);
+        saveLastResponseId(db, threadId, useServerResponseState ? response.id : null);
+        return { text: convenienceText, peakInputTokens };
+      }
+      if (!useServerResponseState && (response.output.length > 0 || convenienceText)) {
+        const continuationItems = buildOrderedContinuationInputItems(response.output);
+        if (programInFlight && convenienceText) {
+          continuationItems.push(toNativeAssistantMessage(convenienceText));
+        }
+        pendingItems = [...pendingItems, ...continuationItems];
+        previousResponseId = null;
+        continue;
       }
       if (response.toolSearchPaths.length > 0 && response.id && useServerResponseState) {
         previousResponseId = response.id;
@@ -766,41 +869,101 @@ async function runNativeAgentLoop(
     // must not let any tool run — especially write tools (route_monitor,
     // intel_note, …). Sequential batches re-check before each tool too.
     if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
-    const policies = await Promise.all(toolCalls.map((toolCall) => getToolPolicy(toolCall.name)));
-    const argsList = toolCalls.map((toolCall) => safeParseArguments(toolCall.argumentsText));
+    const validated = validateProgrammaticBatch(
+      toolCalls,
+      knownProgramIds,
+      programmaticCallsExecuted,
+      programmaticPrograms,
+    );
+    const hasProgrammaticBatch = validated.callers.some((caller) => caller !== undefined);
+    if (hasProgrammaticBatch) {
+      reportActivity({
+        type: 'programmatic_tool_batch',
+        accepted: validated.reservedProgrammaticCalls,
+        rejected: validated.callers.filter((caller, index) => caller && validated.rejections[index]).length,
+      });
+      for (let index = 0; index < validated.callers.length; index += 1) {
+        const caller = validated.callers[index];
+        if (caller && validated.rejections[index]) {
+          rejectedProgramIds.add(caller.caller_id);
+        }
+      }
+    }
+    programmaticCallsExecuted += validated.reservedProgrammaticCalls;
+    const argsList = toolCalls.map((toolCall, index) => validated.rejections[index]
+      ? {}
+      : validated.normalizedArgs[index] ?? safeParseArguments(toolCall.argumentsText));
+    const policies = await Promise.all(toolCalls.map((toolCall, index) => validated.rejections[index]
+      ? Promise.resolve('read' as const)
+      : getToolPolicy(toolCall.name)));
+    const runOne = async (toolCall: typeof toolCalls[number], index: number): Promise<unknown> => {
+      if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+      const rejection = validated.rejections[index];
+      if (rejection) return rejection;
+      return executeToolCall(
+        db,
+        requestId,
+        goal,
+        ctx,
+        toolCall.name,
+        argsList[index] ?? {},
+        webSearchState,
+        validated.callers[index] !== undefined,
+      );
+    };
     const results = policies.every((policy) => policy === 'read')
-      ? await Promise.all(toolCalls.map((toolCall, index) =>
-          executeToolCall(db, requestId, goal, ctx, toolCall.name, argsList[index] ?? {}, webSearchState),
-        ))
-      : await executeToolCallsSequentially(db, requestId, goal, ctx, toolCalls, argsList, webSearchState);
+      ? await Promise.all(toolCalls.map(runOne))
+      : await executeValidatedToolCallsSequentially(toolCalls, runOne);
 
-    const outputs: Array<{ callId: string; output: string }> = [];
+    const outputs: Array<{ callId: string; output: string; caller?: NativeFunctionCaller }> = [];
     for (let index = 0; index < toolCalls.length; index += 1) {
       const toolCall = toolCalls[index];
       const args = argsList[index] ?? {};
       const result = results[index];
       const isAnalytics = isEveKillAnalyticsToolName(toolCall.name);
-      const auditArgs = isAnalytics ? { fields: Object.keys(args).sort() } : args;
+      const isProgrammatic = validated.callers[index] !== undefined;
+      const output = isProgrammaticToolName(toolCall.name)
+        ? serializeProgrammaticToolOutput(toolCall.name, result)
+        : truncateToolOutput(JSON.stringify(result));
+      const auditArgs = isAnalytics || isProgrammatic
+        ? { fields: Object.keys(args).sort() }
+        : args;
+      let programmaticAudit: Record<string, unknown> | null = null;
+      if (isProgrammatic) {
+        const parsedOutput = safeParseJsonRecord(output);
+        const schemaValid = isProgrammaticToolName(toolCall.name)
+          && validateProgrammaticToolOutput(toolCall.name, parsedOutput).valid;
+        programmaticAudit = {
+          ok: parsedOutput?.ok === true,
+          blocked: parsedOutput?.blocked === true,
+          schema_valid: schemaValid,
+          output_chars: output.length,
+        };
+      }
+      const auditResult = programmaticAudit ?? compactToolResult(result);
       db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(
         threadId,
         'tool',
         JSON.stringify({
           tool: toolCall.name,
           args: auditArgs,
-          result: compactToolResult(result),
+          result: auditResult,
         }),
       );
-      const rawOutput = JSON.stringify(result);
-      const truncatedOutput = truncateToolOutput(rawOutput);
-      console.log('[tool] %s args=%s raw=%d chars sent=%d chars',
-        toolCall.name, JSON.stringify(auditArgs).slice(0, 120), rawOutput.length, truncatedOutput.length);
+      console.log('[tool] %s args=%s sent=%d chars',
+        toolCall.name,
+        isProgrammatic ? 'programmatic-bounded' : JSON.stringify(auditArgs).slice(0, 120),
+        output.length);
       outputs.push({
         callId: toolCall.callId,
-        output: truncatedOutput,
+        output,
+        ...(validated.callers[index] ? { caller: validated.callers[index] } : {}),
       });
     }
 
-    const deterministicAnswer = tryBuildDeterministicCountAnswer(goal, toolCalls, results);
+    const deterministicAnswer = hasProgrammaticBatch
+      ? null
+      : tryBuildDeterministicCountAnswer(goal, toolCalls, results);
     if (deterministicAnswer) {
       storeAssistantMessage(db, threadId, deterministicAnswer);
       saveLastResponseId(db, threadId, null);
@@ -813,7 +976,7 @@ async function runNativeAgentLoop(
     // Route shortcircuit: if plan_route returned formatted_summary, output it directly.
     // Saves one model iteration and guarantees the full danger report is shown.
     const hasRouteCall = toolCalls.some((tc) => tc.name === 'plan_route');
-    if (hasRouteCall) {
+    if (hasRouteCall && !hasProgrammaticBatch) {
       const routeIdx = toolCalls.findIndex((tc) => tc.name === 'plan_route');
       const routeResult = results[routeIdx] as Record<string, unknown> | null;
       const summary = routeResult?.formatted_summary;
@@ -876,23 +1039,352 @@ async function runNativeAgentLoop(
   return { text: timeout, peakInputTokens };
 }
 
-async function executeToolCallsSequentially(
-  db: Db,
-  requestId: string,
-  goal: string,
-  ctx: UserContext,
-  toolCalls: Array<{ callId: string; name: string; argumentsText: string }>,
-  argsList: Array<Record<string, unknown>>,
-  webSearchState: WebSearchState,
+type ExtractedToolCall = ReturnType<typeof extractFunctionCalls>[number];
+
+type ProgrammaticKillWindow = {
+  target: string;
+  fromMs: number;
+  toMs: number;
+};
+
+type ProgrammaticProgramState = {
+  toolName: string;
+  calls: number;
+  workUnits: number;
+  seenKeys: Set<string>;
+  marketTypeIdsKey?: string;
+  killWindows: ProgrammaticKillWindow[];
+};
+
+type ProgrammaticCallPolicy = {
+  args: Record<string, unknown>;
+  key: string;
+  workUnits: number;
+  maxCalls: number;
+  marketTypeIdsKey?: string;
+  killWindow?: ProgrammaticKillWindow;
+};
+
+function validateCompletedProgramShapes(
+  knownProgramIds: ReadonlySet<string>,
+  states: ReadonlyMap<string, ProgrammaticProgramState>,
+  rejectedProgramIds: ReadonlySet<string>,
+): string | null {
+  for (const programId of knownProgramIds) {
+    if (rejectedProgramIds.has(programId)) continue;
+    const state = states.get(programId);
+    if (!state) return 'Program completed without an eligible bounded tool call';
+    const minimum = state.toolName === 'compare_wormhole_types' ? 1 : 2;
+    if (state.calls < minimum) {
+      return `${state.toolName} requires at least ${minimum} programmatic calls`;
+    }
+    if (state.toolName === 'count_universe_objects' && state.calls !== 2) {
+      return 'count_universe_objects requires exactly two programmatic calls';
+    }
+  }
+  return null;
+}
+
+function validateProgrammaticBatch(
+  toolCalls: ExtractedToolCall[],
+  knownProgramIds: ReadonlySet<string>,
+  alreadyExecuted: number,
+  programStates: Map<string, ProgrammaticProgramState> = new Map(),
+): {
+  callers: Array<NativeFunctionCaller | undefined>;
+  rejections: Array<Record<string, unknown> | undefined>;
+  normalizedArgs: Array<Record<string, unknown> | undefined>;
+  reservedProgrammaticCalls: number;
+} {
+  const callers: Array<NativeFunctionCaller | undefined> = [];
+  const rejections: Array<Record<string, unknown> | undefined> = [];
+  const normalizedArgs: Array<Record<string, unknown> | undefined> = [];
+  const programmaticIndexes: number[] = [];
+
+  for (let index = 0; index < toolCalls.length; index += 1) {
+    const call = toolCalls[index]!;
+    if (call.caller === undefined) continue;
+    const caller = call.caller;
+    if (!caller || typeof caller !== 'object' || Array.isArray(caller)) {
+      throw new Error('Invalid programmatic tool caller');
+    }
+    const record = caller as Record<string, unknown>;
+    if (
+      Object.keys(record).some((key) => key !== 'type' && key !== 'caller_id')
+      || record.type !== 'program'
+      || typeof record.caller_id !== 'string'
+      || !record.caller_id.trim()
+    ) {
+      throw new Error('Invalid programmatic tool caller');
+    }
+    callers[index] = { type: 'program', caller_id: record.caller_id };
+    programmaticIndexes.push(index);
+  }
+
+  if (programmaticIndexes.length === 0) {
+    return { callers, rejections, normalizedArgs, reservedProgrammaticCalls: 0 };
+  }
+
+  const rejectBatch = (error: string) => {
+    for (const index of programmaticIndexes) {
+      rejections[index] = programmaticPolicyRejection(toolCalls[index]!.name, error);
+    }
+    return { callers, rejections, normalizedArgs, reservedProgrammaticCalls: 0 };
+  };
+
+  if (
+    programmaticIndexes.length > MAX_PROGRAMMATIC_CALLS_PER_BATCH
+    || alreadyExecuted + programmaticIndexes.length > MAX_PROGRAMMATIC_CALLS_PER_TURN
+  ) {
+    return rejectBatch('Programmatic tool call budget exceeded');
+  }
+
+  const draftStates = cloneProgrammaticStates(programStates);
+  for (const index of programmaticIndexes) {
+    const call = toolCalls[index]!;
+    const caller = callers[index]!;
+    if (!config.openai.programmaticToolCalling) {
+      return rejectBatch('Programmatic tool calling is disabled');
+    }
+    if (!knownProgramIds.has(caller.caller_id)) {
+      return rejectBatch('Unknown program caller');
+    }
+    if (!isProgrammaticToolAllowed(call.name)) {
+      return rejectBatch('Tool is not allowed for programmatic calling');
+    }
+    let parsed: Record<string, unknown>;
+    try {
+      const value = JSON.parse(call.argumentsText) as unknown;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid');
+      parsed = value as Record<string, unknown>;
+    } catch {
+      return rejectBatch('Invalid programmatic tool arguments');
+    }
+
+    const policy = validateProgrammaticCallPolicy(call.name, parsed);
+    if (!policy.ok) return rejectBatch(policy.error);
+
+    const existing = draftStates.get(caller.caller_id);
+    const state: ProgrammaticProgramState = existing ?? {
+      toolName: call.name,
+      calls: 0,
+      workUnits: 0,
+      seenKeys: new Set<string>(),
+      killWindows: [],
+    };
+    if (state.toolName !== call.name) {
+      return rejectBatch('A program may use only one eligible tool family');
+    }
+    if (
+      state.calls + 1 > Math.min(MAX_PROGRAMMATIC_CALLS_PER_PROGRAM, policy.data.maxCalls)
+      || state.workUnits + policy.data.workUnits > programmaticWorkUnitLimit(call.name)
+    ) {
+      return rejectBatch('Programmatic tool call budget exceeded');
+    }
+    if (state.seenKeys.has(policy.data.key)) {
+      return rejectBatch('Duplicate programmatic tool call');
+    }
+    if (
+      policy.data.marketTypeIdsKey
+      && state.marketTypeIdsKey
+      && state.marketTypeIdsKey !== policy.data.marketTypeIdsKey
+    ) {
+      return rejectBatch('Market comparison must use the same ordered type_ids');
+    }
+    if (policy.data.killWindow && state.killWindows.some((window) =>
+      window.target === policy.data.killWindow!.target
+      && policy.data.killWindow!.fromMs < window.toMs
+      && window.fromMs < policy.data.killWindow!.toMs)) {
+      return rejectBatch('Kill summary windows for the same target must not overlap');
+    }
+
+    state.calls += 1;
+    state.workUnits += policy.data.workUnits;
+    state.seenKeys.add(policy.data.key);
+    state.marketTypeIdsKey ??= policy.data.marketTypeIdsKey;
+    if (policy.data.killWindow) state.killWindows.push(policy.data.killWindow);
+    draftStates.set(caller.caller_id, state);
+    normalizedArgs[index] = policy.data.args;
+  }
+
+  programStates.clear();
+  for (const [programId, state] of draftStates) {
+    programStates.set(programId, state);
+  }
+  return {
+    callers,
+    rejections,
+    normalizedArgs,
+    reservedProgrammaticCalls: programmaticIndexes.length,
+  };
+}
+
+function cloneProgrammaticStates(
+  states: ReadonlyMap<string, ProgrammaticProgramState>,
+): Map<string, ProgrammaticProgramState> {
+  return new Map([...states].map(([programId, state]) => [programId, {
+    ...state,
+    seenKeys: new Set(state.seenKeys),
+    killWindows: state.killWindows.map((window) => ({ ...window })),
+  }]));
+}
+
+function validateProgrammaticCallPolicy(
+  name: string,
+  args: Record<string, unknown>,
+): { ok: true; data: ProgrammaticCallPolicy } | { ok: false; error: string } {
+  if (name === 'count_universe_objects') {
+    const keys = Object.keys(args);
+    const targetKinds = ['system', 'constellation', 'region'];
+    const objectKinds = ['constellations', 'systems', 'planets', 'moons', 'asteroid_belts', 'stations', 'stargates'];
+    if (
+      keys.length !== 3
+      || !keys.every((key) => key === 'target_kind' || key === 'target_name' || key === 'object_kind')
+      || typeof args.target_name !== 'string'
+      || args.target_name.trim().length === 0
+      || !targetKinds.includes(String(args.target_kind))
+      || !objectKinds.includes(String(args.object_kind))
+    ) {
+      return { ok: false, error: 'Invalid count_universe_objects programmatic arguments' };
+    }
+    const normalized = {
+      target_kind: args.target_kind,
+      target_name: args.target_name.trim(),
+      object_kind: args.object_kind,
+    };
+    return {
+      ok: true,
+      data: {
+        args: normalized,
+        key: `${normalized.target_kind}\u0000${normalized.target_name.toLowerCase()}\u0000${normalized.object_kind}`,
+        workUnits: 1,
+        maxCalls: 2,
+      },
+    };
+  }
+
+  if (name === 'batch_market_prices') {
+    const validated = validateBatchMarketArgs(args, 10);
+    if (!validated.ok) return validated;
+    const typeIdsKey = validated.data.type_ids.join(',');
+    return {
+      ok: true,
+      data: {
+        args: validated.data,
+        key: String(validated.data.region_id),
+        workUnits: validated.data.type_ids.length,
+        maxCalls: 4,
+        marketTypeIdsKey: typeIdsKey,
+      },
+    };
+  }
+
+  if (name === 'compare_wormhole_types') {
+    const validated = validateCompareWormholeTypesArgs(args);
+    if (!validated.ok) return { ok: false, error: validated.error };
+    return {
+      ok: true,
+      data: {
+        args: validated.args,
+        key: validated.args.identifiers.join(','),
+        workUnits: validated.args.identifiers.length,
+        maxCalls: 1,
+      },
+    };
+  }
+
+  if (name === 'scout_systems') {
+    const validated = validateScoutSystemsArgs(args, { programmatic: true });
+    if (!validated.ok) return { ok: false, error: validated.error };
+    return {
+      ok: true,
+      data: {
+        args: validated.args,
+        key: `${validated.args.query.toLowerCase()}\u0000${validated.args.space ?? ''}`,
+        workUnits: validated.args.limit,
+        maxCalls: 4,
+      },
+    };
+  }
+
+  if (name === 'kill_activity_summary') {
+    const validated = validateKillActivitySummaryArgs(args, { programmatic: true });
+    if (!validated.ok) return { ok: false, error: validated.error.error };
+    const target = `${validated.data.scope}:${validated.data.id}`;
+    return {
+      ok: true,
+      data: {
+        args: validated.data,
+        key: `${target}\u0000${validated.data.activity}\u0000${validated.data.from}\u0000${validated.data.to}`,
+        workUnits: 100,
+        maxCalls: 4,
+        killWindow: {
+          target,
+          fromMs: Date.parse(validated.data.from),
+          toMs: Date.parse(validated.data.to),
+        },
+      },
+    };
+  }
+
+  return { ok: false, error: 'Tool is not allowed for programmatic calling' };
+}
+
+function validateBatchMarketArgs(
+  args: Record<string, unknown>,
+  maxTypeIds: number,
+): { ok: true; data: { region_id: number; type_ids: number[] } } | { ok: false; error: string } {
+  if (
+    Object.keys(args).length !== 2
+    || Object.keys(args).some((key) => key !== 'region_id' && key !== 'type_ids')
+    || typeof args.region_id !== 'number'
+    || !Number.isSafeInteger(args.region_id)
+    || args.region_id <= 0
+    || !Array.isArray(args.type_ids)
+    || args.type_ids.length < 1
+    || args.type_ids.length > maxTypeIds
+    || args.type_ids.some((id) => typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)
+    || new Set(args.type_ids).size !== args.type_ids.length
+  ) {
+    return { ok: false, error: `Programmatic market calls require 1-${maxTypeIds} unique positive type_ids` };
+  }
+  return {
+    ok: true,
+    data: { region_id: args.region_id, type_ids: [...args.type_ids] as number[] },
+  };
+}
+
+function programmaticWorkUnitLimit(name: string): number {
+  if (name === 'batch_market_prices') return 40;
+  if (name === 'kill_activity_summary') return 400;
+  return Number.POSITIVE_INFINITY;
+}
+
+function programmaticPolicyRejection(name: string, error: string): Record<string, unknown> {
+  if (name === 'count_universe_objects' || !isProgrammaticToolName(name)) {
+    return { ok: false, blocked: true, error };
+  }
+  const source = name === 'batch_market_prices'
+    ? 'CCP ESI'
+    : name === 'kill_activity_summary' ? 'EVE-KILL' : 'EVE-Scout';
+  return {
+    ok: false,
+    source,
+    authoritative: name === 'batch_market_prices',
+    error,
+    status: null,
+    blocked: true,
+  };
+}
+
+async function executeValidatedToolCallsSequentially(
+  toolCalls: ExtractedToolCall[],
+  runOne: (toolCall: ExtractedToolCall, index: number) => Promise<unknown>,
 ): Promise<unknown[]> {
   const results: unknown[] = [];
   for (let index = 0; index < toolCalls.length; index += 1) {
-    // Sequential batches contain at least one write tool — an abort during an
-    // earlier tool in the batch must stop later writes from starting.
     if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
-    results.push(await executeToolCall(
-      db, requestId, goal, ctx, toolCalls[index].name, argsList[index] ?? {}, webSearchState,
-    ));
+    results.push(await runOne(toolCalls[index]!, index));
   }
   return results;
 }
@@ -905,6 +1397,7 @@ async function executeToolCall(
   name: string,
   args: Record<string, unknown>,
   webSearchState: WebSearchState,
+  programmatic = false,
 ): Promise<unknown> {
   // Live activity: surface which tool ("skill") is running to any attached sink
   // (the interactive CLI). No-op for the bots. Single point so it covers both
@@ -912,7 +1405,9 @@ async function executeToolCall(
   reportActivity({
     type: 'tool_start',
     name,
-    detail: isEveKillAnalyticsToolName(name) ? 'public analytics request' : summarizeToolArgs(name, args),
+    detail: programmatic
+      ? 'bounded public read'
+      : isEveKillAnalyticsToolName(name) ? 'public analytics request' : summarizeToolArgs(name, args),
   });
 
   const notificationCapability = ctx.notificationCapability ?? 'all';
@@ -965,7 +1460,18 @@ async function executeToolCall(
   }
 
   if (isBatchMarketTool(name)) {
-    return await executeBatchMarketPrices(db, args, ctx);
+    try {
+      return await executeBatchMarketPrices(db, args, ctx);
+    } catch {
+      return {
+        ok: false,
+        source: 'CCP ESI',
+        authoritative: true,
+        error: 'Market request failed',
+        status: null,
+        blocked: false,
+      };
+    }
   }
 
   if (isOsintInferTool(name)) {
@@ -1196,6 +1702,17 @@ function safeParseArguments(raw: string): Record<string, unknown> {
     // fall through
   }
   return {};
+}
+
+function safeParseJsonRecord(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function normalizePlanSteps(rawSteps: unknown): Array<{
@@ -1493,6 +2010,9 @@ export const __test__ = {
   isRecentSqliteTimestamp,
   classifyReasoningEffort,
   resolveReasoningEffort,
+  validateProgrammaticBatch,
+  validateCompletedProgramShapes,
+  truncateToolOutput,
 };
 
 function compactToolResult(value: unknown): unknown {
@@ -1531,9 +2051,16 @@ const SMART_AGGREGATE_THRESHOLD = 20;
  * per field, then attach a top-N sample. Works for any ESI array response.
  */
 function truncateToolOutput(json: string): string {
-  if (json.length <= MAX_TOOL_OUTPUT_CHARS) return json;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(json) as unknown;
+    parsed = JSON.parse(json) as unknown;
+  } catch {
+    return truncatedToolOutputNotice(json.length);
+  }
+
+  if (json.length <= MAX_TOOL_OUTPUT_CHARS) return json;
+
+  try {
 
     // Find the array to aggregate — either top-level or inside .data
     let targetArray: unknown[] | null = null;
@@ -1557,7 +2084,8 @@ function truncateToolOutput(json: string): string {
         if (result.length <= MAX_TOOL_OUTPUT_CHARS) return result;
         aggregated.top = aggregated.top.slice(0, 5);
         wrapperObj.data = aggregated;
-        return JSON.stringify(wrapperObj).slice(0, MAX_TOOL_OUTPUT_CHARS);
+        const smaller = stringifyWithinToolOutputBudget(wrapperObj);
+        if (smaller) return smaller;
       }
       const result = JSON.stringify(aggregated);
       if (result.length <= MAX_TOOL_OUTPUT_CHARS) return result;
@@ -1578,14 +2106,24 @@ function truncateToolOutput(json: string): string {
       const smallPayload = wrapperObj
         ? { ...wrapperObj, data: { items: smaller, truncated: true, total: targetArray.length } }
         : { items: smaller, truncated: true, total: targetArray.length };
-      return JSON.stringify(smallPayload);
+      const bounded = stringifyWithinToolOutputBudget(smallPayload);
+      if (bounded) return bounded;
     }
   } catch {
     // fall through
   }
+  return truncatedToolOutputNotice(json.length);
+}
+
+function stringifyWithinToolOutputBudget(value: unknown): string | null {
+  const serialized = JSON.stringify(value);
+  return serialized.length <= MAX_TOOL_OUTPUT_CHARS ? serialized : null;
+}
+
+function truncatedToolOutputNotice(totalChars: number): string {
   return JSON.stringify({
     truncated: true,
-    total_chars: json.length,
+    total_chars: totalChars,
     notice: 'Tool output exceeded the size budget and was reduced.',
   });
 }

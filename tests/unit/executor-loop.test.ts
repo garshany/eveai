@@ -32,6 +32,7 @@ type MockResponse = {
   toolSearchPaths: string[];
   rawEvents: Array<{ event: string; data: unknown }>;
   usage: { input: number; output: number; cached: number; reasoning: number } | null;
+  status?: string | null;
 };
 
 function toolCallResponse(callId: string, sql: string): MockResponse {
@@ -86,6 +87,7 @@ beforeEach(() => {
   process.env.DEFAULT_MARKET_REGION_ID = '10000002';
   process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
   process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
+  process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'false';
   process.env.OPENAI_REASONING_EFFORT = 'auto';
   process.env.OPENAI_REASONING_MODE = 'standard';
   process.env.AUTH_SECRET_KEY = 'test-secret';
@@ -120,7 +122,387 @@ async function runLoop(): Promise<{ text: string }> {
   );
 }
 
+describe('tool output truncation', () => {
+  it('preserves ordinary JSON output exactly', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const output = JSON.stringify({ ok: true, data: [{ id: 1, name: 'Jita' }] });
+
+    expect(__test__.truncateToolOutput(output)).toBe(output);
+  });
+
+  it('returns bounded valid JSON for malformed input', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+
+    const truncated = __test__.truncateToolOutput('{not valid JSON');
+    expect(truncated.length).toBeLessThanOrEqual(12_000);
+    expect(() => JSON.parse(truncated)).not.toThrow();
+  });
+
+  it('keeps an oversized aggregate wrapper bounded and valid JSON', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const output = JSON.stringify({
+      context: 'x'.repeat(13_000),
+      data: Array.from({ length: 20 }, (_, index) => ({ id: index, value: index * 2 })),
+    });
+
+    const truncated = __test__.truncateToolOutput(output);
+    expect(truncated.length).toBeLessThanOrEqual(12_000);
+    expect(() => JSON.parse(truncated)).not.toThrow();
+  });
+
+  it('keeps an oversized 20-item fallback bounded and valid JSON', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const output = JSON.stringify(Array.from({ length: 20 }, (_, index) => ({
+      id: index,
+      payload: 'x'.repeat(3_000),
+    })));
+
+    const truncated = __test__.truncateToolOutput(output);
+    expect(truncated.length).toBeLessThanOrEqual(12_000);
+    expect(() => JSON.parse(truncated)).not.toThrow();
+  });
+});
+
 describe('stateless tool loop context accumulation', () => {
+  it('continues a two-pause program, preserves callers and waits for a final message', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    db.exec(`
+      INSERT INTO sde_regions (region_id, name, data_json) VALUES (10000002, 'The Forge', '{}');
+      INSERT INTO sde_constellations (constellation_id, region_id, name, data_json) VALUES (20000020, 10000002, 'Kimotoro', '{}');
+      INSERT INTO sde_systems (system_id, constellation_id, name, data_json) VALUES (30000142, 20000020, 'Jita', '{}');
+    `);
+    const caller = { type: 'program', caller_id: 'prog_call_1' };
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', id: 'prog_1', call_id: 'prog_call_1', code: 'not persisted', fingerprint: 'opaque-fp' },
+        { type: 'function_call', call_id: 'count_1', name: 'count_universe_objects', arguments: JSON.stringify({ target_kind: 'region', target_name: 'The Forge', object_kind: 'systems' }), caller },
+      ]))
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'function_call', call_id: 'count_2', name: 'count_universe_objects', arguments: JSON.stringify({ target_kind: 'region', target_name: 'The Forge', object_kind: 'constellations' }), caller },
+      ]))
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program_output', id: 'po_1', call_id: 'prog_call_1', result: 'done', status: 'incomplete' },
+      ]))
+      .mockResolvedValueOnce(textResponse('финальный ответ'));
+
+    const result = await runLoop();
+    expect(result.text).toBe('финальный ответ');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(4);
+    const fourthItems = createNativeResponseMock.mock.calls[3][0].items as Array<Record<string, unknown>>;
+    expect(fourthItems.filter((item) => item.type === 'program')).toHaveLength(1);
+    expect(fourthItems.filter((item) => item.type === 'program_output')).toHaveLength(1);
+    expect(fourthItems.filter((item) => item.type === 'function_call_output')).toHaveLength(2);
+    expect(fourthItems.filter((item) => item.type === 'function_call_output').every((item) =>
+      JSON.stringify(item.caller) === JSON.stringify(caller))).toBe(true);
+    expect(runMidTurnCompactMock).not.toHaveBeenCalled();
+    const persisted = JSON.stringify(db.prepare('SELECT content FROM messages').all());
+    expect(persisted).not.toContain('opaque-fp');
+    expect(persisted).not.toContain('not persisted');
+  });
+
+  it('fails closed when a program reaches a final message below its minimum call shape', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    const caller = { type: 'program', caller_id: 'prog_too_short' };
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', call_id: 'prog_too_short', code: 'hosted' },
+        {
+          type: 'function_call',
+          call_id: 'count_only_one',
+          name: 'count_universe_objects',
+          arguments: JSON.stringify({ target_kind: 'region', target_name: 'The Forge', object_kind: 'systems' }),
+          caller,
+        },
+      ]))
+      .mockResolvedValueOnce(textResponse('must not be accepted'));
+
+    const result = await runLoop();
+    expect(result.text).toContain('Не удалось завершить безопасную программную выборку');
+    expect(result.text).not.toContain('must not be accepted');
+    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 1 });
+  });
+
+  it('reserves the whole programmatic batch and rejects more than four calls without dispatch', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    const caller = { type: 'program', caller_id: 'prog_batch' };
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', call_id: 'prog_batch', code: 'hosted' },
+        ...[1, 2, 3, 4, 5].map((n) => ({
+          type: 'function_call', call_id: `count_${n}`, name: 'count_universe_objects',
+          arguments: JSON.stringify({ target_kind: 'region', target_name: `Region ${n}`, object_kind: 'systems' }), caller,
+        })),
+      ]))
+      .mockResolvedValueOnce(textResponse('budget handled'));
+
+    expect((await runLoop()).text).toBe('budget handled');
+    const second = createNativeResponseMock.mock.calls[1][0].items as Array<Record<string, unknown>>;
+    const outputs = second.filter((item) => item.type === 'function_call_output');
+    expect(outputs).toHaveLength(5);
+    expect(outputs.every((item) => String(item.output).includes('budget exceeded'))).toBe(true);
+  });
+
+  it('fails closed on structurally unusable program caller data', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    createNativeResponseMock.mockResolvedValueOnce(outputResponse([
+      { type: 'program', call_id: 'prog_bad' },
+      { type: 'function_call', call_id: 'count_bad', name: 'count_universe_objects', arguments: '{}', caller: { type: 'program', caller_id: '' } },
+    ]));
+    await expect(runLoop()).rejects.toThrow('Invalid programmatic tool caller');
+    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 0 });
+  });
+
+  it('rejects disallowed and unlinked programmatic calls without generic dispatch', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', call_id: 'prog_safe' },
+        { type: 'function_call', call_id: 'sql_bad', name: 'sde_sql', arguments: '{"sql":"SELECT 1"}', caller: { type: 'program', caller_id: 'prog_safe' } },
+        { type: 'function_call', call_id: 'count_unlinked', name: 'count_universe_objects', arguments: '{}', caller: { type: 'program', caller_id: 'missing_program' } },
+      ]))
+      .mockResolvedValueOnce(textResponse('rejections handled'));
+
+    expect((await runLoop()).text).toBe('rejections handled');
+    const second = createNativeResponseMock.mock.calls[1][0].items as Array<Record<string, unknown>>;
+    const outputs = second.filter((item) => item.type === 'function_call_output');
+    expect(outputs).toHaveLength(2);
+    expect(String(outputs[0]?.output)).toContain('not allowed');
+    expect(String(outputs[1]?.output)).toContain('not allowed');
+    const audits = db.prepare("SELECT content FROM messages WHERE role = 'tool' ORDER BY id").all() as Array<{ content: string }>;
+    expect(audits.map((row) => JSON.parse(row.content).result.schema_valid)).toEqual([false, true]);
+  });
+
+  it('rejects an incoherent market comparison as one atomic programmatic batch', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    const caller = { type: 'program', caller_id: 'prog_market' };
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', call_id: 'prog_market', code: 'hosted' },
+        {
+          type: 'function_call',
+          call_id: 'market_1',
+          name: 'batch_market_prices',
+          arguments: JSON.stringify({ region_id: 10000002, type_ids: [34, 35] }),
+          caller,
+        },
+        {
+          type: 'function_call',
+          call_id: 'market_2',
+          name: 'batch_market_prices',
+          arguments: JSON.stringify({ region_id: 10000043, type_ids: [35, 34] }),
+          caller,
+        },
+      ]))
+      .mockResolvedValueOnce(textResponse('market rejected'));
+
+    expect((await runLoop()).text).toBe('market rejected');
+    const second = createNativeResponseMock.mock.calls[1][0].items as Array<Record<string, unknown>>;
+    const outputs = second.filter((item) => item.type === 'function_call_output');
+    expect(outputs).toHaveLength(2);
+    expect(outputs.every((item) => String(item.output).includes('same ordered type_ids'))).toBe(true);
+    const persisted = JSON.stringify(db.prepare("SELECT content FROM messages WHERE role = 'tool'").all());
+    expect(persisted).not.toContain('10000002');
+    expect(persisted).not.toContain('10000043');
+  });
+
+  it('rejects mixed eligible tool families for one program without dispatch', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    const caller = { type: 'program', caller_id: 'prog_mixed' };
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', call_id: 'prog_mixed', code: 'hosted' },
+        {
+          type: 'function_call',
+          call_id: 'count_mixed',
+          name: 'count_universe_objects',
+          arguments: JSON.stringify({ target_kind: 'region', target_name: 'The Forge', object_kind: 'systems' }),
+          caller,
+        },
+        {
+          type: 'function_call',
+          call_id: 'wh_mixed',
+          name: 'compare_wormhole_types',
+          arguments: JSON.stringify({ identifiers: ['C140', 'A239'] }),
+          caller,
+        },
+      ]))
+      .mockResolvedValueOnce(textResponse('mixed rejected'));
+
+    expect((await runLoop()).text).toBe('mixed rejected');
+    const second = createNativeResponseMock.mock.calls[1][0].items as Array<Record<string, unknown>>;
+    const outputs = second.filter((item) => item.type === 'function_call_output');
+    expect(outputs).toHaveLength(2);
+    expect(outputs.every((item) => String(item.output).includes('one eligible tool family'))).toBe(true);
+  });
+
+  it('preserves disabled direct completion from bare output text', async () => {
+    createNativeResponseMock.mockResolvedValueOnce({
+      ...outputResponse([]),
+      outputText: 'legacy direct answer',
+    });
+
+    expect((await runLoop()).text).toBe('legacy direct answer');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits an explicit completion signal only for a real final assistant message', async () => {
+    createNativeResponseMock.mockResolvedValueOnce(textResponse('real final'));
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+    const events: string[] = [];
+
+    await runWithActivitySink(
+      { emit: (event) => events.push(event.type) },
+      () => runLoop(),
+    );
+
+    expect(events).toContain('final_assistant_message');
+  });
+
+  it('carries active-program convenience text but rejects a final message with no bounded tool shape', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', id: 'prog_item', call_id: 'prog_call', code: 'hosted' },
+      ]))
+      .mockResolvedValueOnce({ ...outputResponse([]), outputText: 'provider convenience text only' })
+      .mockResolvedValueOnce(textResponse('real final message'));
+
+    expect((await runLoop()).text).toContain('Не удалось завершить безопасную программную выборку');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(3);
+    const thirdItems = createNativeResponseMock.mock.calls[2][0].items as Array<Record<string, unknown>>;
+    expect(thirdItems).toContainEqual({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'provider convenience text only' }],
+    });
+  });
+
+  it('fails closed when an unstarted program is followed by an unrelated unknown caller', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', id: 'prog_item_only', call_id: 'prog_call', code: 'hosted' },
+        {
+          type: 'function_call',
+          call_id: 'count_wrong_link',
+          name: 'count_universe_objects',
+          arguments: '{"target_kind":"region","target_name":"The Forge","object_kind":"systems"}',
+          caller: { type: 'program', caller_id: 'prog_item_only' },
+        },
+      ]))
+      .mockResolvedValueOnce(textResponse('rejection handled'));
+    const activityTypes: string[] = [];
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+
+    const result = await runWithActivitySink(
+      { emit: (event) => activityTypes.push(event.type), aborted: () => false },
+      () => __test__.runNativeAgentLoop(
+        db as never, 't1', { userId: 1, chatId: 1 }, GOAL, 'developer prompt', () => 'developer prompt',
+      ),
+    );
+
+    expect(result.text).toContain('Не удалось завершить безопасную программную выборку');
+    expect(result.text).not.toContain('rejection handled');
+    expect(activityTypes).not.toContain('tool_start');
+    const secondItems = createNativeResponseMock.mock.calls[1][0].items as Array<Record<string, unknown>>;
+    const output = secondItems.find((item) =>
+      item.type === 'function_call_output' && item.call_id === 'count_wrong_link');
+    expect(JSON.parse(String(output?.output))).toMatchObject({
+      ok: false,
+      blocked: true,
+      error: 'Unknown program caller',
+    });
+  });
+
+  it('does not let an unrelated unknown caller waive an active program minimum shape', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    const caller = { type: 'program', caller_id: 'prog_active' };
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', call_id: 'prog_active', code: 'hosted' },
+        {
+          type: 'function_call',
+          call_id: 'count_first',
+          name: 'count_universe_objects',
+          arguments: JSON.stringify({ target_kind: 'region', target_name: 'The Forge', object_kind: 'systems' }),
+          caller,
+        },
+      ]))
+      .mockResolvedValueOnce(outputResponse([
+        {
+          type: 'function_call',
+          call_id: 'unrelated_unknown',
+          name: 'count_universe_objects',
+          arguments: JSON.stringify({ target_kind: 'region', target_name: 'Domain', object_kind: 'systems' }),
+          caller: { type: 'program', caller_id: 'unknown_program' },
+        },
+      ]))
+      .mockResolvedValueOnce(textResponse('must not bypass the minimum'));
+
+    const result = await runLoop();
+    expect(result.text).toContain('Не удалось завершить безопасную программную выборку');
+    expect(result.text).not.toContain('must not bypass the minimum');
+    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 2 });
+  });
+
+  it('does not dispatch tools from a non-completed response envelope', async () => {
+    createNativeResponseMock.mockResolvedValueOnce({
+      ...outputResponse([
+        { type: 'function_call', call_id: 'must_not_run', name: 'sde_sql', arguments: '{"sql":"SELECT 1"}' },
+      ]),
+      status: 'incomplete',
+    });
+
+    expect((await runLoop()).text).toContain('временно недоступен');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 0 });
+  });
+
+  it('enforces the two-call count-family budget across separate program pauses', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    db.exec(`
+      INSERT INTO sde_regions (region_id, name, data_json) VALUES (10000002, 'The Forge', '{}');
+      INSERT INTO sde_constellations (constellation_id, region_id, name, data_json) VALUES (20000020, 10000002, 'Kimotoro', '{}');
+      INSERT INTO sde_systems (system_id, constellation_id, name, data_json) VALUES (30000142, 20000020, 'Jita', '{}');
+    `);
+    const caller = { type: 'program', caller_id: 'prog_budget' };
+    const countCall = (callId: string, objectKind: string) => ({
+      type: 'function_call',
+      call_id: callId,
+      name: 'count_universe_objects',
+      arguments: JSON.stringify({ target_kind: 'region', target_name: 'The Forge', object_kind: objectKind }),
+      caller,
+    });
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([{ type: 'program', call_id: 'prog_budget', code: 'hosted' }, countCall('count_1', 'systems')]))
+      .mockResolvedValueOnce(outputResponse([countCall('count_2', 'constellations')]))
+      .mockResolvedValueOnce(outputResponse([countCall('count_3', 'planets')]))
+      .mockResolvedValueOnce(textResponse('budget complete'));
+
+    expect((await runLoop()).text).toBe('budget complete');
+    const fourthItems = createNativeResponseMock.mock.calls[3][0].items as Array<Record<string, unknown>>;
+    const count3Output = fourthItems.find((item) => item.type === 'function_call_output' && item.call_id === 'count_3');
+    expect(String(count3Output?.output)).toContain('budget exceeded');
+    const count1Output = fourthItems.find((item) => item.type === 'function_call_output' && item.call_id === 'count_1');
+    const count2Output = fourthItems.find((item) => item.type === 'function_call_output' && item.call_id === 'count_2');
+    expect(JSON.parse(String(count1Output?.output))).toMatchObject({ ok: true });
+    expect(JSON.parse(String(count2Output?.output))).toMatchObject({ ok: true });
+    const persisted = JSON.stringify(db.prepare("SELECT content FROM messages WHERE role = 'tool'").all());
+    expect(persisted).not.toContain('The Forge');
+    expect(persisted).not.toContain('"systems"');
+  });
   it('routes analytics locally and never persists rejected private argument values', async () => {
     const secret = 'private-analytics-sentinel';
     const fetchMock = vi.fn();

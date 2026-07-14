@@ -16,6 +16,19 @@ afterEach(() => {
 });
 
 describe('OpenAI runtime configuration', () => {
+  it('parses the programmatic tool calling pilot strictly and defaults it off', async () => {
+    setRequiredEnv();
+    delete process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING;
+    expect((await import('../../src/config.js')).config.openai.programmaticToolCalling).toBe(false);
+
+    vi.resetModules();
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = ' TrUe ';
+    expect((await import('../../src/config.js')).config.openai.programmaticToolCalling).toBe(true);
+
+    vi.resetModules();
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'yes';
+    await expect(import('../../src/config.js')).rejects.toThrow('OPENAI_PROGRAMMATIC_TOOL_CALLING');
+  });
   it('pins requests to the official OpenAI endpoint even when a legacy override is present', async () => {
     setRequiredEnv();
     process.env.OPENAI_BASE_URL = 'https://untrusted.example/v1';

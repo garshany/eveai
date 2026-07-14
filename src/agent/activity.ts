@@ -18,6 +18,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 export type AgentActivityEvent =
   | { type: 'model_turn'; iteration: number }
   | { type: 'tool_start'; name: string; detail?: string }
+  | { type: 'programmatic_tool_batch'; accepted: number; rejected: number }
+  | { type: 'final_assistant_message' }
   | { type: 'reasoning'; text: string };
 
 export interface AgentActivitySink {

@@ -1,5 +1,6 @@
 # Completed Execution Plans
 
+- [programmatic-tool-calling-expansion.md](./programmatic-tool-calling-expansion.md): exact five-tool default-off hosted program boundary with bounded public facades, application-enforced budgets, real source/wire/program verification, and a production-loop negative dispatch gate.
 - [cli-durable-updates.md](./cli-durable-updates.md): durable CLI route/watch notifications, single-process feed ownership, safe cross-platform read-only update checks, and canonical local operator staging.
 - [eve-kill-analytics-wrapper.md](./eve-kill-analytics-wrapper.md): four EVE-KILL MCP analytics methods restored through a strict local public-only wrapper with bounded JSON/SSE transport and a pre-egress privacy boundary.
 - [gpt-5-6-prompt-revalidation.md](./gpt-5-6-prompt-revalidation.md): same-turn encrypted reasoning replay plus leaner GPT-5.6 prompts; the historical hosted-MCP decision is marked superseded.

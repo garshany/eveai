@@ -97,6 +97,19 @@ Rules:
 - Keep the answer short: 1-3 lines, no internal mechanics.
 - Do not invent names, IDs, or numbers. If a static name is missing, use sde_sql to resolve it.`;
 
+const PROGRAMMATIC_TOOL_ORCHESTRATION = `<tool_orchestration>
+Application policy is authoritative: Programmatic Tool Calling may use exactly one eligible tool family in one bounded stage. Never mix tools, retry, loop, discover identifiers, use private ESI, web_search, sde_sql, raw kill tools, or mutate state from a program. Run independent calls concurrently, use only declared input/output fields, produce one compact deterministic reduction, and stop after the expected results or first failure.
+
+Eligible shapes:
+- count_universe_objects: exactly two independent static geography counts.
+- batch_market_prices: the same ordered 1-10 type_ids across 2-4 distinct region_id values.
+- compare_wormhole_types: exactly one facade call containing 2-8 identifiers.
+- scout_systems: 2-4 distinct bounded searches, each with limit <= 10.
+- kill_activity_summary: 2-4 public targets or non-overlapping explicit windows of at most 7 days, each with evidence_limit <= 5.
+
+Use a direct call for a single count, market region, system search, or kill summary. Resolve names to numeric IDs/type IDs directly before starting a program; never resolve them inside program code. Existing application allowlists, caller linkage, schemas, and budgets remain the enforcement boundary.
+</tool_orchestration>`;
+
 export type PromptCapabilities = {
   authenticated: boolean;
   characterId: number | null;
@@ -113,8 +126,13 @@ export function buildDeveloperPrompt(
   liveContext?: string | null,
   mode: PromptMode = 'full',
   responseLanguage = 'Russian',
+  programmaticToolCalling = false,
 ): string {
   let prompt = mode === 'static_aggregate' ? STATIC_AGGREGATE_PROMPT : BASE_PROMPT;
+
+  if (programmaticToolCalling) {
+    prompt += `\n\n${PROGRAMMATIC_TOOL_ORCHESTRATION}`;
+  }
 
   // Keep stable instructions/schema before all dynamic runtime data for caching.
   const schema = mode === 'static_aggregate' ? STATIC_AGGREGATE_SDE_SCHEMA : SDE_SCHEMA;

@@ -1,9 +1,17 @@
 import { config } from '../config.js';
 import { loadEsiCatalog, listEsiNamespaces } from '../eve/esi-catalog.js';
-import { buildEveKillNamespace, isEveKillToolName } from '../eve-kill/tools.js';
+import {
+  buildEveKillNamespace,
+  isEveKillToolName,
+  KILL_ACTIVITY_SUMMARY_TOOL,
+} from '../eve-kill/tools.js';
 import { buildEveKillAnalyticsNamespace, isEveKillAnalyticsToolName } from '../eve-kill/analytics-tools.js';
 import { buildEveScoutNamespace, isEveScoutToolName } from '../eve/eve-scout-tools.js';
 import type { NativeFunctionTool, NativeTool } from './native-responses.js';
+import {
+  getProgrammaticOutputSchema,
+  isProgrammaticToolName,
+} from './programmatic-contracts.js';
 import { SDE_SCHEMA, STATIC_AGGREGATE_SDE_SCHEMA } from './tools/sde-schema.js';
 
 const SDE_SQL_TOOL_NAME = 'sde_sql';
@@ -12,6 +20,30 @@ const WEB_SEARCH_TOOL_NAME = 'web_search';
 export { SDE_SCHEMA, STATIC_AGGREGATE_SDE_SCHEMA };
 
 const UNIVERSE_COUNT_TOOL_NAME = 'count_universe_objects';
+export { PROGRAMMATIC_TOOL_ALLOWLIST } from './programmatic-contracts.js';
+
+function withProgrammaticPilot(tools: NativeTool[]): NativeTool[] {
+  if (!config.openai.programmaticToolCalling) return tools;
+  const decorated = tools.map((tool): NativeTool => {
+    if (tool.type === 'namespace') {
+      return {
+        ...tool,
+        tools: tool.tools.map((nested) => decorateProgrammaticTool(nested)),
+      };
+    }
+    return tool.type === 'function' ? decorateProgrammaticTool(tool) : tool;
+  });
+  return [{ type: 'programmatic_tool_calling' }, ...decorated];
+}
+
+function decorateProgrammaticTool(tool: NativeFunctionTool): NativeFunctionTool {
+  if (!isProgrammaticToolName(tool.name)) return tool;
+  return {
+    ...tool,
+    allowed_callers: ['direct', 'programmatic'],
+    output_schema: getProgrammaticOutputSchema(tool.name),
+  };
+}
 const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   {
     type: 'function',
@@ -197,8 +229,14 @@ const BATCH_MARKET_TOOL: NativeFunctionTool = {
   parameters: {
     type: 'object',
     properties: {
-      region_id: { type: 'integer', description: '10000002=The Forge (Jita), 10000043=Domain (Amarr), 10000032=Sinq Laison (Dodixie)' },
-      type_ids: { type: 'array', items: { type: 'integer' }, description: 'Array of type_ids to look up. Resolve via sde_sql first.' },
+      region_id: { type: 'integer', minimum: 1, description: '10000002=The Forge (Jita), 10000043=Domain (Amarr), 10000032=Sinq Laison (Dodixie)' },
+      type_ids: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 30,
+        items: { type: 'integer', minimum: 1 },
+        description: 'Array of 1-30 unique positive type_ids. Resolve via sde_sql first.',
+      },
     },
     required: ['region_id', 'type_ids'],
     additionalProperties: false,
@@ -379,14 +417,14 @@ export async function buildNativeAgentTools(
   options: { notificationCapability?: 'all' | 'feed' | 'none' } = {},
 ): Promise<NativeTool[]> {
   if (mode === 'static_aggregate') {
-    return ALWAYS_ON_FUNCTION_TOOLS.flatMap((tool) => {
+    return withProgrammaticPilot(ALWAYS_ON_FUNCTION_TOOLS.flatMap((tool) => {
       if (tool.name === UNIVERSE_COUNT_TOOL_NAME) return [tool];
       if (tool.name !== SDE_SQL_TOOL_NAME) return [];
       return [{
         ...tool,
         description: 'Resolve static EVE geography names and IDs from the local SDE with read-only SQL. Use only the geography tables and datasets listed in <sde_schema>; batch lookups when practical.',
       }];
-    });
+    }));
   }
 
   // Only offer web_search when a Tavily key is configured. Without it the tool
@@ -399,12 +437,13 @@ export async function buildNativeAgentTools(
   const notificationCapability = options.notificationCapability ?? 'all';
   const includeFeedNotifications = notificationCapability !== 'none';
   const includeHeartbeat = notificationCapability === 'all';
-  return [
+  return withProgrammaticPilot([
     { type: 'tool_search' },
     ...alwaysOn,
     ...(includeFeedNotifications ? [ROUTE_MONITOR_TOOL] : []),
     ...(includeHeartbeat ? [HEARTBEAT_CONFIG_TOOL] : []),
     BATCH_MARKET_TOOL,
+    KILL_ACTIVITY_SUMMARY_TOOL,
     OSINT_INFER_TOOL,
     ANALYZE_LOCAL_TOOL,
     ANALYZE_SCAN_TOOL,
@@ -414,7 +453,11 @@ export async function buildNativeAgentTools(
     buildEveKillAnalyticsNamespace(),
     buildEveScoutNamespace(),
     ...(await listEsiNamespaces()),
-  ];
+  ]);
+}
+
+export function isProgrammaticToolAllowed(name: string): boolean {
+  return isProgrammaticToolName(name);
 }
 
 export function getAlwaysOnFunctionToolNames(): string[] {

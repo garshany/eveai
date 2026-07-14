@@ -83,6 +83,7 @@ their raw text never enters an exception or bot log.
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-5.6-sol
 OPENAI_RESPONSE_STATE_MODE=stateless
+OPENAI_PROGRAMMATIC_TOOL_CALLING=false
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
@@ -122,3 +123,30 @@ npm run smoke:eve-tool
 The authenticated smoke script sends a minimal streaming `POST /responses` request using env vars and prints only sanitized response metadata.
 
 `npm run smoke:eve-tool` runs the real agent loop on a copied SQLite database and requires the model to call an EVE SDE tool before returning a final answer. Use `EVE_TOOL_SMOKE_MODE=direct` to validate only the DB-backed tool path without a model call.
+
+## Default-off Programmatic Tool Calling expansion
+
+`OPENAI_PROGRAMMATIC_TOOL_CALLING=false` is the supported baseline and rollback switch. The value is parsed strictly as `true` or `false` (case-insensitive). When enabled, EVE adds one hosted `{type:"programmatic_tool_calling"}` descriptor. The selected OpenAI model, project, and organization must be entitled to the feature; an enabled provider rejection is surfaced through the normal sanitized error boundary and is never retried with the feature silently removed.
+
+The exact programmatic allowlist is `count_universe_objects`, `batch_market_prices`, `compare_wormhole_types`, `scout_systems`, and `kill_activity_summary`. All five remain directly callable. Each advertises `allowed_callers:["direct","programmatic"]` and a fixed `output_schema`; nested Scout tools retain that decoration after tool search. EVE validates exact names, caller linkage, inputs, work units, and serialized outputs again before dispatch/egress. Provider schemas and prompt text are interoperability aids, not authorization.
+
+The OpenAI function-input schema sent on the wire intentionally omits `uniqueItems` for market type IDs and wormhole identifiers because the current Responses API rejects that keyword in function parameters. EVE still rejects duplicates strictly in application validation before any CCP ESI or EVE-Scout egress; the constraint is not weakened or silently normalized.
+
+One program can use only one family and one bounded shape: two static counts; the same one-to-ten type IDs over two-to-four regions; one two-to-eight-identifier wormhole facade call; two-to-four distinct system searches with at most ten rows each; or two-to-four explicit public kill-summary calls with windows of at most seven days and at most five evidence IDs. Names and numeric IDs are resolved directly before the program starts. Single market/system/kill lookups stay direct. Programs cannot retry, loop, discover IDs, or mix families.
+
+OpenAI's hosted runtime executes generated programs. EVE never evaluates generated JavaScript and executes only returned client-owned function calls. With `store:false`, every provider output item (including opaque reasoning, `program`, `program_output`, fingerprints, messages, and callers) is retained only in memory for the active turn and replayed in exact provider order, followed by local function outputs in call order. Program code, fingerprints, encrypted reasoning, and replay payloads are not persisted or logged. Mid-turn SQLite compaction is skipped while a program is active because it cannot reconstruct this chain.
+
+The application permits at most four programmatic calls per response batch, user turn, and program ID. Market programs are additionally capped at 40 region/type pairs; kill-summary programs at 400 examined normalized observations. Duplicate regions/searches, mismatched market type sets, overlapping windows for the same kill target, mixed families, malformed calls, and over-budget batches are rejected atomically before that batch dispatches. Every eligible result is schema-validated and serialized as at most 12,000 characters; invalid or oversized data becomes a schema-valid fixed error rather than a sliced preview. The existing 16 model-iteration ceiling remains.
+
+A provider final message is accepted only after every non-rejected program has reached its declared minimum shape (two calls for count/market/systems/kill summary, one bounded wormhole facade call; count is exactly two). Hosted verification requires an explicit final-assistant event and recomputes schema validity from each emitted local output. The negative wire scenario feeds a real provider-returned disallowed call through the production loop and requires a structured rejection with no `tool_start` or dispatch.
+
+All programmatic tools are public reads. Market calls use unauthenticated CCP ESI. Scout results carry third-party provenance and a fixed 86,400-second cache ceiling. Kill summaries carry third-party provenance, a 90-second search-cache ceiling, compact aggregates and bounded evidence IDs only. Programs cannot reach private ESI/capabilities, `sde_sql`, web/search/browser, routes, raw kill arrays/detail, EVE-KILL analytics, writes, UI, notes, fits, watches, monitors, heartbeat, notifications, or any unlisted tool.
+
+Verification is split by boundary. The public-source matrix calls the four live facades through production executors with the feature disabled. The hosted matrix then runs all five eligible program scenarios plus one disallowed-call scenario. Both print sanitized metrics only: scenario status/category, elapsed time, iteration/token counts when available, tool names, accepted/rejected counts, output character counts, final-answer length, and schema status. They never print prompts, arguments, IDs, names, prices/counts, kill evidence, programs/caller IDs, response bodies, answers, or credentials.
+
+```bash
+npm run smoke:eve-tool -- --public-source-matrix
+OPENAI_PROGRAMMATIC_TOOL_CALLING=true npm run smoke:eve-tool -- --programmatic-matrix
+```
+
+The hosted run requires an existing `OPENAI_API_KEY` and feature entitlement for the configured model/project. A missing credential, provider entitlement, or public source is `NOT_RUN`/failure evidence, never a passing substitute. Rollback is still only `OPENAI_PROGRAMMATIC_TOOL_CALLING=false` plus restart: all direct tools remain, and no migration, cache deletion, replay recovery, or provider cleanup is needed.

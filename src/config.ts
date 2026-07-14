@@ -37,6 +37,15 @@ function optionalPositiveInt(name: string, fallback: number): number {
   return parseOptionalPositiveIntEnv(process.env, name, fallback);
 }
 
+function optionalBoolean(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = raw.trim().toLowerCase();
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`${name} must be either true or false`);
+}
+
 function boundedPositiveInt(
   name: string,
   fallback: number,
@@ -83,6 +92,7 @@ export const config = {
     textVerbosity: parseOptionalEnumEnv(process.env, 'OPENAI_TEXT_VERBOSITY', TEXT_VERBOSITIES, 'low'),
     responsesTimeoutMs: optionalPositiveInt('OPENAI_RESPONSES_TIMEOUT_MS', 90_000),
     responseLanguage: optional('OPENAI_RESPONSE_LANGUAGE', 'Russian'),
+    programmaticToolCalling: optionalBoolean('OPENAI_PROGRAMMATIC_TOOL_CALLING', false),
     maxOutputTokens: optionalInt('OPENAI_MAX_OUTPUT_TOKENS', 0),
     compactThreshold: optionalInt('OPENAI_COMPACT_THRESHOLD', 0),
     // Floor the window so a misconfigured 0/negative value can't make

@@ -10,8 +10,11 @@ import { getActivitySink, reportActivity } from './activity.js';
 export type NativeInputItem =
   | NativeInputMessage
   | NativeReasoningItem
+  | NativeProgramItem
+  | NativeProgramOutputItem
   | NativeFunctionCallItem
-  | NativeFunctionCallOutputItem;
+  | NativeFunctionCallOutputItem
+  | NativeResponseOutputItem;
 
 export type NativeInputMessage = {
   type: 'message';
@@ -30,6 +33,24 @@ export type NativeReasoningItem = {
   [key: string]: unknown;
 };
 
+export type NativeProgramItem = {
+  type: 'program';
+  id?: string;
+  call_id?: string;
+  code?: string;
+  fingerprint?: unknown;
+  [key: string]: unknown;
+};
+
+export type NativeProgramOutputItem = {
+  type: 'program_output';
+  id?: string;
+  call_id?: string;
+  result?: unknown;
+  status?: string;
+  [key: string]: unknown;
+};
+
 export type NativeFunctionCallItem = {
   type: 'function_call';
   call_id: string;
@@ -37,6 +58,7 @@ export type NativeFunctionCallItem = {
   arguments: string;
   id?: string;
   status?: string;
+  caller?: NativeFunctionCaller;
   [key: string]: unknown;
 };
 
@@ -44,10 +66,18 @@ export type NativeFunctionCallOutputItem = {
   type: 'function_call_output';
   call_id: string;
   output: string;
+  caller?: NativeFunctionCaller;
+  [key: string]: unknown;
+};
+
+export type NativeFunctionCaller = {
+  type: 'program';
+  caller_id: string;
 };
 
 export type NativeTool =
   | { type: 'tool_search' }
+  | { type: 'programmatic_tool_calling' }
   | NativeNamespaceTool
   | NativeFunctionTool;
 
@@ -65,6 +95,8 @@ export type NativeFunctionTool = {
   parameters: Record<string, unknown>;
   strict?: boolean;
   defer_loading?: boolean;
+  allowed_callers?: Array<'direct' | 'programmatic'>;
+  output_schema?: Record<string, unknown>;
 };
 
 export type NativeResponseOutputItem = {
@@ -90,6 +122,7 @@ export type NativeResponseResult = {
   toolSearchPaths: string[];
   rawEvents: NativeSseEvent[];
   usage: NativeUsage | null;
+  status: string | null;
 };
 
 type NativeSseEvent = {
@@ -102,6 +135,7 @@ type NativeResponseEnvelope = {
   error?: { message?: string } | null;
   output?: NativeResponseOutputItem[];
   output_text?: string;
+  status?: string;
 };
 
 export async function createNativeResponse(input: {
@@ -223,7 +257,10 @@ export async function createNativeResponse(input: {
   // truncated mid-flight — surface it as a (retriable) error instead of a
   // silent empty completion that looks like a deliberate blank answer.
   const sawTerminalEvent = events.some(
-    (event) => event.event === 'response.completed' || event.event === 'response.done',
+    (event) => event.event === 'response.completed'
+      || event.event === 'response.done'
+      || event.event === 'response.incomplete'
+      || event.event === 'response.failed',
   );
   const incompleteStream = !sawTerminalEvent
     && output.length === 0
@@ -281,6 +318,7 @@ export async function createNativeResponse(input: {
       cacheWrite: Number((usage.input_tokens_details as Record<string, unknown> | undefined)?.cache_write_tokens ?? 0),
       reasoning: Number((usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens ?? 0),
     } : null,
+    status: completedPayload?.status ?? inferTerminalStatus(events),
   };
 }
 
@@ -301,12 +339,13 @@ export function toNativeAssistantMessage(text: string): NativeInputMessage {
 }
 
 export function buildFunctionCallOutputs(
-  results: Array<{ callId: string; output: string }>,
+  results: Array<{ callId: string; output: string; caller?: NativeFunctionCaller }>,
 ): NativeFunctionCallOutputItem[] {
   return results.map((entry) => ({
     type: 'function_call_output',
     call_id: entry.callId,
     output: entry.output,
+    ...(entry.caller ? { caller: entry.caller } : {}),
   }));
 }
 
@@ -326,38 +365,41 @@ export function buildFunctionCallInputItems(
 }
 
 /**
- * Rebuild one stateless response round in provider output order. Opaque
- * reasoning items stay in memory for the current turn and local function calls
- * are normalized for Responses input.
+ * Replay one stateless response round in exact provider output order. Every
+ * provider-owned field stays in memory for this turn and is never reconstructed.
  */
 export function buildOrderedContinuationInputItems(
   output: NativeResponseOutputItem[],
-): Array<NativeReasoningItem | NativeFunctionCallItem> {
-  const ordered: Array<NativeReasoningItem | NativeFunctionCallItem> = [];
-  for (const item of output) {
-    if (item.type === 'reasoning') {
-      ordered.push(item as NativeReasoningItem);
-      continue;
-    }
-    if (item.type === 'function_call') {
-      const functionCall = buildFunctionCallInputItems([item])[0];
-      if (functionCall) ordered.push(functionCall);
-    }
-  }
-  return ordered;
+): NativeResponseOutputItem[] {
+  return output.map((item) => ({ ...item }));
 }
 
 export function extractFunctionCalls(
   output: NativeResponseOutputItem[],
-): Array<{ callId: string; name: string; argumentsText: string }> {
+): Array<{ callId: string; name: string; argumentsText: string; caller?: unknown }> {
   return output
     .filter((item) => item.type === 'function_call')
     .map((item) => ({
       callId: String(item.call_id ?? item.id ?? ''),
       name: String(item.name ?? ''),
       argumentsText: String(item.arguments ?? '{}'),
+      ...(item.caller !== undefined ? { caller: item.caller } : {}),
     }))
     .filter((item) => item.callId && item.name);
+}
+
+export function extractFinalAssistantText(output: NativeResponseOutputItem[]): string | null {
+  for (let index = output.length - 1; index >= 0; index -= 1) {
+    const item = output[index]!;
+    if (item.type !== 'message' || item.role !== 'assistant' || !Array.isArray(item.content)) continue;
+    const chunks: string[] = [];
+    for (const part of item.content as Array<Record<string, unknown>>) {
+      if (part.type === 'output_text' && typeof part.text === 'string') chunks.push(part.text);
+      if (part.type === 'refusal' && typeof part.refusal === 'string') chunks.push(part.refusal);
+    }
+    return chunks.join('\n').trim();
+  }
+  return null;
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -580,13 +622,28 @@ function validOutputIndex(value: unknown): number | null {
 function findCompletedPayload(events: NativeSseEvent[]): NativeResponseEnvelope | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (event.event !== 'response.completed' && event.event !== 'response.done') continue;
+    if (
+      event.event !== 'response.completed'
+      && event.event !== 'response.done'
+      && event.event !== 'response.incomplete'
+      && event.event !== 'response.failed'
+    ) continue;
     const data = event.data as { response?: NativeResponseEnvelope } | NativeResponseEnvelope | null;
     if (!data || typeof data !== 'object') continue;
     if ('response' in data && data.response && typeof data.response === 'object') {
       return data.response;
     }
     return data as NativeResponseEnvelope;
+  }
+  return null;
+}
+
+function inferTerminalStatus(events: NativeSseEvent[]): string | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const type = events[index]?.event;
+    if (type === 'response.completed' || type === 'response.done') return 'completed';
+    if (type === 'response.incomplete') return 'incomplete';
+    if (type === 'response.failed') return 'failed';
   }
   return null;
 }

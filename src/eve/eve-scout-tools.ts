@@ -1,11 +1,12 @@
 /**
  * EVE-Scout AI tool definitions — `eve_scout` namespace.
  *
- * 5 deferred tools:
+ * 6 deferred tools:
  *   scout_route          — WH-aware routing (A→B, highsec exits, Jove Obs, signature routes)
  *   scout_signatures     — active Thera/Turnur WH connections
  *   scout_observations   — metaliminal storms & space oddities
  *   scout_wormhole_types — WH type encyclopedia
+ *   compare_wormhole_types — bounded exact WH type comparison facade
  *   scout_systems        — system search with space-class filter
  */
 
@@ -20,6 +21,7 @@ export const EVE_SCOUT_TOOL_NAMES = [
   'scout_signatures',
   'scout_observations',
   'scout_wormhole_types',
+  'compare_wormhole_types',
   'scout_systems',
 ] as const;
 
@@ -32,6 +34,31 @@ export function isEveScoutToolName(name: string): name is EveScoutToolName {
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
+
+export const COMPARE_WORMHOLE_TYPES_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: 'compare_wormhole_types',
+  description:
+    'Compare two to eight exact wormhole identifiers using bounded public EVE-Scout data. '
+    + 'Returns one stable row per identifier, including explicit not-found rows. '
+    + 'Use the broader scout_wormhole_types tool for a single lookup or source/target filtering.',
+  strict: true,
+  defer_loading: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      identifiers: {
+        type: 'array',
+        minItems: 2,
+        maxItems: 8,
+        items: { type: 'string', pattern: '^[A-Za-z][0-9]{3}$' },
+        description: 'Two to eight unique wormhole identifiers, for example ["C140", "A239"].',
+      },
+    },
+    required: ['identifiers'],
+    additionalProperties: false,
+  },
+};
 
 const DEFERRED_EVE_SCOUT_TOOLS: NativeFunctionTool[] = [
   {
@@ -77,6 +104,7 @@ const DEFERRED_EVE_SCOUT_TOOLS: NativeFunctionTool[] = [
       additionalProperties: false,
     },
   },
+  COMPARE_WORMHOLE_TYPES_TOOL,
   {
     type: 'function',
     name: 'scout_signatures',
@@ -160,14 +188,19 @@ const DEFERRED_EVE_SCOUT_TOOLS: NativeFunctionTool[] = [
       properties: {
         query: {
           type: 'string',
+          minLength: 1,
+          maxLength: 64,
           description: 'System name search string (partial match).',
         },
         space: {
           type: ['string', 'null'],
-          description: 'Space type filter: hs, ls, ns, or WH class (c1-c6, c12, c13, etc). Null = all.',
+          enum: ['hs', 'ls', 'ns', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c12', 'c13', null],
+          description: 'Exact system-class filter. Null = any class.',
         },
         limit: {
           type: ['integer', 'null'],
+          minimum: 1,
+          maximum: 25,
           description: 'Max results (1-25, default 10).',
         },
       },

@@ -2,7 +2,12 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import { executeEveKillTool } from '../../src/eve-kill/executor.js';
-import { buildEveKillNamespace, EVE_KILL_TOOL_NAMES } from '../../src/eve-kill/tools.js';
+import {
+  buildEveKillNamespace,
+  EVE_KILL_NAMESPACE_TOOL_NAMES,
+  EVE_KILL_TOOL_NAMES,
+  KILL_ACTIVITY_SUMMARY_TOOL,
+} from '../../src/eve-kill/tools.js';
 import {
   buildEveKillAnalyticsNamespace,
   EVE_KILL_ANALYTICS_TOOL_NAMES,
@@ -45,9 +50,11 @@ describe('local EVE-KILL agent surface', () => {
       'kill_intel',
       'kill_battles',
       'kill_watch',
+      'kill_activity_summary',
     ]);
     const namespace = buildEveKillNamespace();
-    expect(namespace.tools.map((tool) => tool.name)).toEqual(EVE_KILL_TOOL_NAMES);
+    expect(namespace.tools.map((tool) => tool.name)).toEqual(EVE_KILL_NAMESPACE_TOOL_NAMES);
+    expect(namespace.tools.map((tool) => tool.name)).not.toContain('kill_activity_summary');
     const serialized = JSON.stringify(namespace);
     for (const forbidden of ['kill_query', 'kill_prices', 'build_price', 'war_killmails', 'corp_history', 'alliance_history', 'members', 'MongoDB']) {
       expect(serialized).not.toContain(forbidden);
@@ -64,6 +71,25 @@ describe('local EVE-KILL agent surface', () => {
       'kill_battles',
     ]);
     expect(transientNamespace.description).not.toContain('feed watches');
+  });
+
+  it('exports a strict top-level kill summary facade without programmatic decoration', () => {
+    expect(KILL_ACTIVITY_SUMMARY_TOOL).toMatchObject({
+      type: 'function',
+      name: 'kill_activity_summary',
+      strict: true,
+      parameters: {
+        required: ['scope', 'id', 'activity', 'from', 'to', 'evidence_limit'],
+        additionalProperties: false,
+      },
+    });
+    expect(KILL_ACTIVITY_SUMMARY_TOOL).not.toHaveProperty('allowed_callers');
+    expect(KILL_ACTIVITY_SUMMARY_TOOL).not.toHaveProperty('output_schema');
+    expect(KILL_ACTIVITY_SUMMARY_TOOL.parameters.properties).toMatchObject({
+      scope: { enum: ['system', 'character', 'corporation', 'alliance'] },
+      activity: { enum: ['kills', 'losses', 'all'] },
+      evidence_limit: { type: ['integer', 'null'], minimum: 1, maximum: 10 },
+    });
   });
 
   it('updates feed watches without reconnect-specific side effects', async () => {
