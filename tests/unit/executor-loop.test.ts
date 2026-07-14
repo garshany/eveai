@@ -224,6 +224,92 @@ describe('stateless tool loop context accumulation', () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 1 });
   });
 
+  it('does not let a rejected duplicate waive an accepted program minimum shape', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    const caller = { type: 'program', caller_id: 'prog_partial_duplicate' };
+    const countCall = (callId: string) => ({
+      type: 'function_call',
+      call_id: callId,
+      name: 'count_universe_objects',
+      arguments: JSON.stringify({ target_kind: 'region', target_name: 'The Forge', object_kind: 'systems' }),
+      caller,
+    });
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', call_id: 'prog_partial_duplicate', code: 'hosted' },
+        countCall('count_accepted'),
+      ]))
+      .mockResolvedValueOnce(outputResponse([countCall('count_duplicate')]))
+      .mockResolvedValueOnce(textResponse('must not accept partial duplicate program'));
+    const activity: Array<{ type: string; accepted?: number; rejected?: number }> = [];
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+
+    const result = await runWithActivitySink(
+      { emit: (event) => activity.push(event) },
+      () => runLoop(),
+    );
+
+    expect(result.text).toContain('Не удалось завершить безопасную программную выборку');
+    expect(result.text).not.toContain('must not accept partial duplicate program');
+    expect(activity.filter((event) => event.type === 'tool_start')).toHaveLength(1);
+    expect(activity.filter((event) => event.type === 'programmatic_tool_batch')).toEqual([
+      { type: 'programmatic_tool_batch', accepted: 1, rejected: 0 },
+      { type: 'programmatic_tool_batch', accepted: 0, rejected: 1 },
+    ]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 2 });
+    const finalItems = createNativeResponseMock.mock.calls[2][0].items as Array<Record<string, unknown>>;
+    const duplicateOutput = finalItems.find((item) =>
+      item.type === 'function_call_output' && item.call_id === 'count_duplicate');
+    expect(String(duplicateOutput?.output)).toContain('Duplicate programmatic tool call');
+  });
+
+  it('does not let a rejected over-budget batch waive an accepted program minimum shape', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    const caller = { type: 'program', caller_id: 'prog_partial_budget' };
+    const countCall = (callId: string, objectKind: string) => ({
+      type: 'function_call',
+      call_id: callId,
+      name: 'count_universe_objects',
+      arguments: JSON.stringify({ target_kind: 'region', target_name: 'The Forge', object_kind: objectKind }),
+      caller,
+    });
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', call_id: 'prog_partial_budget', code: 'hosted' },
+        countCall('count_accepted', 'systems'),
+      ]))
+      .mockResolvedValueOnce(outputResponse([
+        countCall('count_budget_1', 'constellations'),
+        countCall('count_budget_2', 'planets'),
+        countCall('count_budget_3', 'moons'),
+        countCall('count_budget_4', 'stations'),
+      ]))
+      .mockResolvedValueOnce(textResponse('must not accept partial over-budget program'));
+    const activity: Array<{ type: string; accepted?: number; rejected?: number }> = [];
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+
+    const result = await runWithActivitySink(
+      { emit: (event) => activity.push(event) },
+      () => runLoop(),
+    );
+
+    expect(result.text).toContain('Не удалось завершить безопасную программную выборку');
+    expect(result.text).not.toContain('must not accept partial over-budget program');
+    expect(activity.filter((event) => event.type === 'tool_start')).toHaveLength(1);
+    expect(activity.filter((event) => event.type === 'programmatic_tool_batch')).toEqual([
+      { type: 'programmatic_tool_batch', accepted: 1, rejected: 0 },
+      { type: 'programmatic_tool_batch', accepted: 0, rejected: 4 },
+    ]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 5 });
+    const finalItems = createNativeResponseMock.mock.calls[2][0].items as Array<Record<string, unknown>>;
+    const rejectedOutputs = finalItems.filter((item) =>
+      item.type === 'function_call_output' && String(item.call_id).startsWith('count_budget_'));
+    expect(rejectedOutputs).toHaveLength(4);
+    expect(rejectedOutputs.every((item) => String(item.output).includes('budget exceeded'))).toBe(true);
+  });
+
   it('reserves the whole programmatic batch and rejects more than four calls without dispatch', async () => {
     process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
     vi.resetModules();
@@ -238,7 +324,16 @@ describe('stateless tool loop context accumulation', () => {
       ]))
       .mockResolvedValueOnce(textResponse('budget handled'));
 
-    expect((await runLoop()).text).toBe('budget handled');
+    const activity: Array<{ type: string; accepted?: number; rejected?: number }> = [];
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+    expect((await runWithActivitySink(
+      { emit: (event) => activity.push(event) },
+      () => runLoop(),
+    )).text).toBe('budget handled');
+    expect(activity.filter((event) => event.type === 'tool_start')).toHaveLength(0);
+    expect(activity.filter((event) => event.type === 'programmatic_tool_batch')).toEqual([
+      { type: 'programmatic_tool_batch', accepted: 0, rejected: 5 },
+    ]);
     const second = createNativeResponseMock.mock.calls[1][0].items as Array<Record<string, unknown>>;
     const outputs = second.filter((item) => item.type === 'function_call_output');
     expect(outputs).toHaveLength(5);
@@ -456,18 +551,41 @@ describe('stateless tool loop context accumulation', () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 2 });
   });
 
-  it('does not dispatch tools from a non-completed response envelope', async () => {
-    createNativeResponseMock.mockResolvedValueOnce({
-      ...outputResponse([
-        { type: 'function_call', call_id: 'must_not_run', name: 'sde_sql', arguments: '{"sql":"SELECT 1"}' },
-      ]),
-      status: 'incomplete',
-    });
+  it.each(['failed', 'incomplete', 'cancelled', 'queued'])(
+    'does not dispatch or account for tools from a %s response envelope',
+    async (status) => {
+      process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+      vi.resetModules();
+      createNativeResponseMock.mockResolvedValueOnce({
+        ...outputResponse([
+          { type: 'program', call_id: 'must_not_register', code: 'hosted' },
+          {
+            type: 'function_call',
+            call_id: 'must_not_run',
+            name: 'count_universe_objects',
+            arguments: '{"target_kind":"region","target_name":"The Forge","object_kind":"systems"}',
+            caller: { type: 'program', caller_id: 'must_not_register' },
+          },
+        ]),
+        status,
+      });
+      const activityTypes: string[] = [];
+      const { runWithActivitySink } = await import('../../src/agent/activity.js');
 
-    expect((await runLoop()).text).toContain('временно недоступен');
-    expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
-    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 0 });
-  });
+      const result = await runWithActivitySink(
+        { emit: (event) => activityTypes.push(event.type) },
+        () => runLoop(),
+      );
+
+      expect(result.text).toContain('временно недоступен');
+      expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 0 });
+      expect(activityTypes).not.toContain('tool_start');
+      expect(activityTypes).not.toContain('programmatic_tool_batch');
+      expect(db.prepare('SELECT last_response_id FROM agent_threads WHERE thread_id = ?').get('t1'))
+        .toEqual({ last_response_id: null });
+    },
+  );
 
   it('enforces the two-call count-family budget across separate program pauses', async () => {
     process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
@@ -731,6 +849,72 @@ describe('transient model error retry', () => {
     const result = await runLoop();
     expect(result.text).toBe('ответ');
     expect(createNativeResponseMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['failed', 'incomplete'])(
+    'retries a transient %s envelope without processing its returned tool call',
+    async (status) => {
+      createNativeResponseMock
+        .mockResolvedValueOnce({
+          ...outputResponse([{
+            type: 'function_call',
+            call_id: `must_not_dispatch_${status}`,
+            name: 'sde_sql',
+            arguments: '{"sql":"SELECT 1"}',
+          }]),
+          status,
+          error: { message: 'HTTP 503: Service Unavailable' },
+        })
+        .mockResolvedValueOnce(textResponse('ответ после безопасного ретрая'));
+      const activity: Array<{ type: string; iteration?: number }> = [];
+      const { runWithActivitySink } = await import('../../src/agent/activity.js');
+
+      const result = await runWithActivitySink(
+        { emit: (event) => activity.push(event) },
+        () => runLoop(),
+      );
+
+      expect(result.text).toBe('ответ после безопасного ретрая');
+      expect(createNativeResponseMock).toHaveBeenCalledTimes(2);
+      const firstRequest = createNativeResponseMock.mock.calls[0][0];
+      const retriedRequest = createNativeResponseMock.mock.calls[1][0];
+      expect(retriedRequest.items).toEqual(firstRequest.items);
+      expect(retriedRequest.previousResponseId ?? null).toBe(firstRequest.previousResponseId ?? null);
+      expect(activity.filter((event) => event.type === 'model_turn').map((event) => event.iteration))
+        .toEqual([0, 0]);
+      expect(activity.some((event) => event.type === 'tool_start')).toBe(false);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 0 });
+      expect(JSON.stringify(db.prepare('SELECT content FROM messages ORDER BY id').all()))
+        .not.toContain(`must_not_dispatch_${status}`);
+    },
+  );
+
+  it('sanitizes a non-recoverable payload error before status or output handling', async () => {
+    const providerDetail = 'private-provider-detail-must-not-escape';
+    createNativeResponseMock.mockResolvedValueOnce({
+      ...outputResponse([{
+        type: 'function_call',
+        call_id: 'must_not_dispatch_permanent',
+        name: 'sde_sql',
+        arguments: '{"sql":"SELECT 1"}',
+      }]),
+      status: 'failed',
+      error: { message: `HTTP 400: ${providerDetail}` },
+    });
+    const activityTypes: string[] = [];
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+
+    const result = await runWithActivitySink(
+      { emit: (event) => activityTypes.push(event.type) },
+      () => runLoop(),
+    );
+
+    expect(result.text).toContain('временно недоступен');
+    expect(result.text).not.toContain(providerDetail);
+    expect(activityTypes).not.toContain('tool_start');
+    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 0 });
+    expect(JSON.stringify(db.prepare('SELECT content FROM messages ORDER BY id').all()))
+      .not.toContain(providerDetail);
   });
 
   it('does not retry permanent errors', async () => {

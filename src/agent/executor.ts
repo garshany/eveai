@@ -658,6 +658,43 @@ async function runNativeAgentLoop(
     // model call + history mutation) or any tool execution.
     if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
 
+    if (response.error) {
+      if (
+        shouldUseToolStateRecovery(
+          response.error.message,
+          toolStateRecoveryCount >= MAX_TOOL_STATE_RECOVERIES,
+          previousResponseId,
+          pendingItems,
+        )
+      ) {
+        toolStateRecoveryCount += 1;
+        previousResponseId = null;
+        pendingItems = buildToolStateRecoveryContext(db, threadId);
+        saveLastResponseId(db, threadId, null);
+        console.warn('[executor] tool state lost in response payload, switching to cold recovery context');
+        continue;
+      }
+      if (isTransientModelError(response.error.message) && transientRetries < MAX_TRANSIENT_RETRIES) {
+        transientRetries += 1;
+        const delay = transientRetryDelayMs(transientRetries);
+        console.warn('[executor] transient response error retry=%d/%d delay_ms=%d message_length=%d',
+          transientRetries, MAX_TRANSIENT_RETRIES, delay, response.error.message.length);
+        await sleep(delay);
+        // The error envelope is rejected before any output is processed, so
+        // pendingItems/previousResponseId still describe the same request.
+        // As above, a failed call must not consume the iteration budget.
+        iteration -= 1;
+        continue;
+      }
+      console.error('[executor] model error message_length=%d', response.error.message.length);
+      const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
+      storeAssistantMessage(db, threadId, message);
+      saveLastResponseId(db, threadId, null);
+      console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d ===',
+        totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens, totalReasoningTokens);
+      return { text: message, peakInputTokens };
+    }
+
     if (response.status && response.status !== 'completed') {
       console.error('[executor] non-completed model response status=%s', response.status);
       const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
@@ -748,38 +785,6 @@ async function runNativeAgentLoop(
           // Continue without compaction — truncation='auto' handles overflow
         }
       }
-    }
-
-    if (response.error) {
-      if (
-        shouldUseToolStateRecovery(response.error.message, toolStateRecoveryCount >= MAX_TOOL_STATE_RECOVERIES,previousResponseId, pendingItems)
-      ) {
-        toolStateRecoveryCount += 1;
-        previousResponseId = null;
-        pendingItems = buildToolStateRecoveryContext(db, threadId);
-        saveLastResponseId(db, threadId, null);
-        console.warn('[executor] tool state lost in response payload, switching to cold recovery context');
-        continue;
-      }
-      if (isTransientModelError(response.error.message) && transientRetries < MAX_TRANSIENT_RETRIES) {
-        transientRetries += 1;
-        const delay = transientRetryDelayMs(transientRetries);
-        console.warn('[executor] transient response error retry=%d/%d delay_ms=%d message_length=%d',
-          transientRetries, MAX_TRANSIENT_RETRIES, delay, response.error.message.length);
-        await sleep(delay);
-        // response.error is checked before outputs are built, so pendingItems
-        // still holds this request's input — re-send the same call. As above,
-        // a failed call must not consume the tool-iteration budget.
-        iteration -= 1;
-        continue;
-      }
-      console.error('[executor] model error message_length=%d', response.error.message.length);
-      const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
-      storeAssistantMessage(db, threadId, message);
-      saveLastResponseId(db, threadId, null);
-      console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d ===',
-        totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens, totalReasoningTokens);
-      return { text: message, peakInputTokens };
     }
 
     if (response.toolSearchPaths.length > 0) {
@@ -1071,9 +1076,11 @@ function validateCompletedProgramShapes(
   rejectedProgramIds: ReadonlySet<string>,
 ): string | null {
   for (const programId of knownProgramIds) {
-    if (rejectedProgramIds.has(programId)) continue;
     const state = states.get(programId);
-    if (!state) return 'Program completed without an eligible bounded tool call';
+    if (!state) {
+      if (rejectedProgramIds.has(programId)) continue;
+      return 'Program completed without an eligible bounded tool call';
+    }
     const minimum = state.toolName === 'compare_wormhole_types' ? 1 : 2;
     if (state.calls < minimum) {
       return `${state.toolName} requires at least ${minimum} programmatic calls`;

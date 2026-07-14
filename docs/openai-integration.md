@@ -77,6 +77,14 @@ The streaming fallback follows the official `output_index` ordering and joins
 reduced at the transport boundary to HTTP status plus a fixed recovery category;
 their raw text never enters an exception or bot log.
 
+Recoverable errors carried in a response envelope are classified before the
+generic non-completed-status failure and before any envelope output is processed.
+Transient errors retry the same logical request within the existing bound, and
+tool-state errors retain bounded cold recovery. Output from an error or otherwise
+non-completed envelope is never registered, replayed, budgeted, audited, or
+dispatched as a tool call. Unrecoverable envelopes return only the generic safe
+model-service failure.
+
 ## Relevant Environment
 
 ```env
@@ -138,7 +146,7 @@ OpenAI's hosted runtime executes generated programs. EVE never evaluates generat
 
 The application permits at most four programmatic calls per response batch, user turn, and program ID. Market programs are additionally capped at 40 region/type pairs; kill-summary programs at 400 examined normalized observations. Duplicate regions/searches, mismatched market type sets, overlapping windows for the same kill target, mixed families, malformed calls, and over-budget batches are rejected atomically before that batch dispatches. Every eligible result is schema-validated and serialized as at most 12,000 characters; invalid or oversized data becomes a schema-valid fixed error rather than a sliced preview. The existing 16 model-iteration ceiling remains.
 
-A provider final message is accepted only after every non-rejected program has reached its declared minimum shape (two calls for count/market/systems/kill summary, one bounded wormhole facade call; count is exactly two). Hosted verification requires an explicit final-assistant event and recomputes schema validity from each emitted local output. The negative wire scenario feeds a real provider-returned disallowed call through the production loop and requires a structured rejection with no `tool_start` or dispatch.
+A provider final message is accepted only after every program with accepted calls has reached its declared minimum shape (two calls for count/market/systems/kill summary, one bounded wormhole facade call; count is exactly two), even if a later duplicate, invalid, or over-budget batch for that program is rejected. Only a fully rejected program with zero accepted calls may report its structured rejection without a minimum-shape obligation. Hosted verification requires an explicit final-assistant event and recomputes schema validity from each emitted local output. The negative wire scenario feeds a real provider-returned disallowed call through the production loop and requires a structured rejection with no `tool_start` or dispatch.
 
 All programmatic tools are public reads. Market calls use unauthenticated CCP ESI. Scout results carry third-party provenance and a fixed 86,400-second cache ceiling. Kill summaries carry third-party provenance, a 90-second search-cache ceiling, compact aggregates and bounded evidence IDs only. Programs cannot reach private ESI/capabilities, `sde_sql`, web/search/browser, routes, raw kill arrays/detail, EVE-KILL analytics, writes, UI, notes, fits, watches, monitors, heartbeat, notifications, or any unlisted tool.
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.1] - 2026-07-14
+
+### Security and reliability
+
+- Recoverable failed or incomplete Responses API envelopes now retry before status handling, without processing or dispatching any output from the rejected envelope.
+- A later rejected programmatic batch can no longer waive terminal minimum-shape validation for a program that already has accepted calls; fully rejected zero-accepted programs may still report their structured rejection.
+
 ## [3.3.0] - 2026-07-14
 
 ### Added
