@@ -1,192 +1,231 @@
-# EVE-KILL & Kill Tracking
+# EVE-KILL v1 Integration
 
-## Data Sources
+Status: active
+Verified against code: 2026-07-13
 
-| Source | What | How | Delay |
-|---|---|---|---|
-| **zKillboard R2Z2** | Real-time kill stream (all EVE kills) | HTTP sequential polling | 2-5 min |
-| **zKillboard REST** | Kills by system/entity/ship | GET `/kills/systemID/{id}/` | 1-3 min |
-| **ESI** | Kill details, system stats, character location | Official CCP API | 30-60s |
-| **EVE-KILL REST** | killmail/{id}, battles, stats | eve-kill.com/api/ | varies |
+The app uses the current public EVE-KILL REST API at the fixed base
+`https://api.eve-kill.com/` and its durable `/feed/poll` transport. The
+upstream reference is [eve-kill.com/docs](https://eve-kill.com/docs).
 
-### zKillboard R2Z2 (primary kill stream)
+## Source Ownership
 
-Official zKB kill feed. WebSocket deprecated, RedisQ sunset May 2026.
-Docs: https://github.com/zKillboard/zKillboard/wiki/API-(R2Z2)
+| Source | Owned data |
+| --- | --- |
+| Official CCP ESI | identity and affiliation, character history, wars, private rosters, authenticated recent killmail references, official `(id, hash)` killmail detail, live location, and market data |
+| Installed local SDE SQLite snapshot | universe topology, systems, regions, types, groups, dogma, blueprints, materials, gates, and static labels |
+| EVE-KILL | arbitrary public kill discovery, public aggregates, battle clustering, observed killboard membership, public hash discovery, value/fitting enrichment, and the global public feed |
 
-```
-GET https://r2z2.zkillboard.com/ephemeral/sequence.json → { sequence: 96724333 }
-GET https://r2z2.zkillboard.com/ephemeral/96724334.json → full killmail (ESI + zkb)
-On 200: sleep 100ms, seq++
-On 404: sleep 6s (no new kills)
-Rate: 20 req/s max, User-Agent required
-```
+EVE-KILL observations are third-party and may be incomplete. They never replace
+official ESI for linked-character/private flows or local SDE for static data.
+Observed membership is explicitly non-authoritative and carries its source,
+window, coverage, and truncation limits.
 
-Used by: `kill_watch` subscriptions (real-time Telegram alerts).
-File: `src/eve-kill/zkb-ws.ts` (named for historical reasons, now R2Z2).
+## REST Client
 
-### zKillboard REST
+`src/eve-kill/client.ts` owns all requests. Runtime configuration does not
+expose a base-URL override. The client provides:
 
-```
-GET https://zkillboard.com/api/kills/systemID/{id}/pastSeconds/3600/
-```
+- bounded timeout, retry, exponential backoff, and response-size limits;
+- schema-versioned SQLite cache keys;
+- runtime validation for summary, ESI-shaped, detail, feed, stats, and battle payloads;
+- explicit normalization into source-neutral internal killmail types;
+- local caps, deterministic sort, killmail-ID deduplication, and truncation metadata.
 
-Used by: route planner danger scan, route monitor kill scan.
-Requires User-Agent header.
+Search behavior is deliberately stricter than the upstream:
 
-### EVE-KILL REST
+- each `POST /killmails/search` window is at most seven days;
+- each ID filter is chunked to at most 15 values;
+- no request sends more than three filter categories;
+- `after` cursors must advance and cannot repeat;
+- list endpoints use backward `before` pagination where supported;
+- merged windows/pages are capped locally even if the server returns too much.
 
-`/api/killlist` — does NOT filter by system_id (returns global kills). Broken.
-`/api/killmail/{id}` — works, returns enriched killmail.
-`/api/battles`, `/api/stats?dataType=` — work.
-Most other endpoints (query, characters, prices, search) — 404 on live.
+Coordinates from the third-party ESI-shaped response are not trusted for route
+gate attribution. `route-snapshot.ts` uses official CCP ESI only when an exact
+`(killmail_id, killmail_hash)` pair is available and reads
+`victim.position`. Participant names are batch-resolved through official ESI;
+type and group labels come from the local SDE. EVE-KILL detail supplies value
+and fitting enrichment.
 
-## Architecture
+## Agent Tool Surface
 
-### eve_kill namespace (9 deferred tools)
+The deferred `eve_kill` namespace contains exactly six local tools:
 
-```
-eve_kill namespace
-├── kill_feed      — recent kills by system/entity/ship (zKB REST)
-├── kill_query     — MongoDB-style search (EVE-KILL /api/query, pending deploy)
-├── kill_stats     — stats, rankings, leaderboards (EVE-KILL /api/stats)
-├── kill_battles   — battle reports (EVE-KILL /api/battles)
-├── kill_entity    — entity details, history, members, coalition
-├── kill_lookup    — killmail by ID, search, wars, factions
-├── kill_spatial   — kills near celestial/coordinates
-├── kill_prices    — build cost, market prices
-└── kill_watch     — subscribe to real-time kill alerts
-```
+| Tool | Purpose |
+| --- | --- |
+| `kill_search` | explicit-window public killmail discovery |
+| `kill_activity` | observed system/entity kills, losses, or combined activity; dual-role entity rows are tagged `all` |
+| `kill_detail` | value/detail, observed fitting, or non-authoritative hash discovery |
+| `kill_intel` | character aggregates, public intel, and leaderboards |
+| `kill_battles` | list or inspect EVE-KILL battle clusters |
+| `kill_watch` | manage system, region, victim, and attacker feed alerts |
 
-### Kill Watch System
+The namespace intentionally does not expose competing identity, affiliation,
+history, roster, war, static-data, market, build-cost, arbitrary-query, or
+private-character operations. Official detail is still resolved by
+`src/eve/killmail.ts` through CCP ESI after `(id, hash)` discovery.
+The transient terminal CLI receives the first five tools only: it has no
+background-producer lifecycle, so `kill_watch`, heartbeat configuration, and
+route-monitor tools are omitted and rejected at execution time if stale model
+state attempts to call them. A one-time migration removes legacy CLI-lane
+watches, route monitors, route dedup, and heartbeat configuration.
 
-User subscribes via prompt → `kill_watch` tool → saves to `kill_watches` DB.
-R2Z2 poller processes global kill stream, matches against watches, sends Telegram.
+## Durable Global Feed
 
-```
-User: "Следи за системой Uedama"
-  → kill_watch(action=watch, topic_type=system, topic_id=30002768)
-  → INSERT kill_watches (chat_id, topic='system.30002768', label='Uedama')
+`src/eve-kill/feed-poll.ts` runs one process-wide poller for watches and route
+monitors.
 
-R2Z2 poll loop (every 100ms-6s):
-  → GET /ephemeral/{seq}.json
-  → kill has solar_system_id=30002768?
-  → SELECT chat_id FROM kill_watches WHERE topic='system.30002768'
-  → bot.sendMessage(chatId, "🔴 Kill in Uedama: Bestower (500M ISK)")
-```
+Startup ordering closes the feed/baseline gap:
 
-### Route Intelligence (eve-board)
+1. With no cursor, the poller calls `/feed/poll?after=0`, persists the current
+   `latest` head, and emits no historical notifications.
+2. The `onReady` hook restores route listeners after that head exists and
+   before the first later event is processed.
+3. With an existing cursor, route listeners are restored before the first
+   resumed poll.
+4. Each restored monitor registers its listener before its asynchronous
+   one-hour baseline; incoming feed callbacks wait for that baseline.
 
-```
-src/eve-board/
-├── monitor.ts    — 15s location, 60s hybrid route scan, 60s online check, 2m digest
-├── analytics.ts  — jump spike detection, gate kill attribution, threat digest
-├── threat.ts     — EHP calc, gank fleet detection, threat scoring
-├── route-snapshot.ts — shared selected-route snapshot for one-shot route output
-├── advisor.ts    — deterministic digest formatting, focused LLM route intel, pursuit detection
-├── briefing.ts   — pre-route briefing + post-route report
-└── types.ts      — RouteMonitor, SystemSnapshot, RouteThreatDigest, PursuitSignal
+Events must have strictly increasing sequence IDs. The cursor advances only
+after every active in-process listener and every active-platform matching chat
+delivery either succeeds or returns a definitive recipient rejection. Telegram
+403 and Discord unknown/inaccessible/cannot-DM recipient errors are terminally
+acknowledged; rate limits, transport errors, and server failures remain
+retryable and keep the cursor unchanged.
+Per-chat `(chat_id, killmail_id)` rows prevent already accepted recipients from
+being resent when another recipient fails. Delivery is at-least-once across the
+network-send/database-commit crash boundary: a send can be repeated, but a
+retryable failed send must not be silently skipped. A terminal rejection is
+also written to per-chat dedup, so another consumer can continue and that
+recipient is not retried for the same killmail.
 
-Auto-starts on autopilot. Current route flow:
-  1. `plan_route` builds route variants and returns a compact, selected-route-first route summary instead of a merged danger dump.
-  2. The selected-route top block and appended pre-flight briefing are derived from one shared selected-route threat snapshot, so `киллов/ч`, `zKB срез`, `Сейчас`, `Впереди`, `Анализ`, and `Последние киллы` agree on the same kill set.
-  3. `generateBriefing()` formats that snapshot around `Маршрут`, `Корабль`, `Сейчас`, `Впереди`, `Тактика`, `Действие`; direct briefing generation also uses the same `route-snapshot` scan path.
-  4. `monitor.ts` starts only when autopilot is actually active, then tracks pilot location, scans the full selected route every cycle, and keeps route watches subscribed in R2Z2.
-  5. Live kill scanning uses ESI `system_kills` as a prefilter, then zKB REST for the systems that matter.
-  6. Newly observed killmail IDs are deduplicated per monitor session before they affect `killsSeen`, ganker cache updates, or digest deltas.
-  7. Live monitor enriches recent killmail IDs with EVE-KILL batch lookups so real kill positions reach `analytics.ts`; gate attribution is based on actual coordinates instead of a dead placeholder path.
-  8. Digest delta checks compare unique kill growth, threat changes, pilot movement, pursuit state, and the active ganker signature instead of raw repeated scans.
-  9. Live digest data is built from jump spikes, gate attribution, kill velocity, and the ganker cache.
-  10. Quiet route states stay deterministic; the LLM is used only when the route digest is actionable (for example fresh gate activity, high/critical threats, pursuit, or moving gankers).
-  11. The periodic ESP digest shares the same action-oriented contract as pre-flight: `Сейчас`, `Впереди`, `Действие`, with deterministic quiet-state output and LLM reserved for actionable route situations.
-  12. If the route is still actionable (`overallThreat != LOW`, active gankers, gate activity, jump spikes), the monitor re-sends an ESP heartbeat digest every ~6 minutes even when no new delta event fired, so Telegram does not degrade into raw kill alerts only.
-  13. Live ESP now builds a tactical assessment on top of the route digest: separate `start / transit / destination` risk, route state (`HOT START`, `CAMP LIKELY`, `DEST HOT`, `PURSUIT`, `WINDOW OPEN`), and an explicit window/confidence layer.
-  14. Alternative routes, traffic comparisons, and long kill details stay secondary layers; the primary UX is always the chosen route and the pilot's next action.
-```
+Only consumers whose chat platform has an active sender participate in a run.
+Watches and route-monitor rows for a disabled platform remain durable but are
+suspended, cannot hold the global cursor, and do not receive historical replay
+when that platform is enabled later.
 
-## Config
+The poller uses bounded exponential backoff, never resets a valid cursor, prunes
+old delivery dedup rows daily, and is awaited during graceful shutdown. Changing
+a watch updates SQLite only; it does not reconnect or duplicate the global
+poller.
+
+Watch topics are:
+
+- `system.<id>`
+- `region.<id>` (derived only from local SDE topology; a third-party region
+  field is ignored)
+- `victim.<character|corporation|alliance|faction id>`
+- `attacker.<character|corporation|alliance|faction id>`
+
+## Route Intelligence
+
+`src/eve-board/route-snapshot.ts` builds one bounded one-hour search baseline
+for all route system IDs. The route planner summary and briefing consume that
+same snapshot. While it is built, a temporary feed listener captures matching
+events; on successful autopilot start the snapshot and captured handoff events
+are passed to the route monitor. The monitor therefore does not issue a second
+baseline request. A captured event remains unacknowledged by the awaited
+temporary listener until the permanent monitor listener is registered. A crash
+inside that interval therefore leaves the durable global cursor unchanged and
+replays the event after restart. The handoff buffer is locally capped; its next
+event is rejected rather than acknowledged or dropped.
+
+Kill counts cover the bounded one-hour search result, but ISK value enrichment
+is limited to at most three recent killmails per system. Route output therefore
+labels the ISK figure as a sample and always shows resolved/total killmail
+coverage; it is never presented as the total value of all PvP kills.
+
+For a selected Thera or Turnur shortcut, the one baseline and the permanent
+monitor route include the K-space entry leg, the hub system itself, the K-space
+exit leg, and the destination. Activity inside the WH hub is therefore not
+hidden between the two gate legs.
+
+After startup, the monitor consumes the single global feed. Official ESI remains
+responsible for the pilot's live location, online state, recent death reference,
+official killmail detail, and system jump counts. Local SDE supplies route,
+security, ship, and gate data. If the baseline is unavailable, or the handoff
+cap is reached before that baseline completes, route danger evaluation fails
+closed and the app does not present zero kills as proof of safety or set
+autopilot. A later cap applies feed backpressure rather than dropping activity.
+Resumed events older than the one-hour route window are durably acknowledged
+but never enriched or promoted into alerts, route stats, pursuit, or the ganker
+cache. Feed processing is serialized per monitor. For a current event, the
+per-monitor-run dedup marker, ganker-cache update, and stats form one SQLite
+transaction; baseline-overlap, concurrent, and post-restart replays are
+absorbed without another alert or increment.
+If a monitor restored after restart cannot rebuild this baseline, restoration
+stops explicitly: the listener is detached, the durable monitor row is removed,
+and the user is told to start the route again later. It never remains active
+with an empty one-hour history.
+
+## OSINT And Local Analysis
+
+OSINT uses explicit non-overlapping search windows and derives attacker/victim
+roles locally from normalized killmails. Its coverage object reports the
+requested window, request count, source errors, result cap, and truncation.
+Corp/alliance membership inferred from kill activity is labeled observed and
+non-authoritative.
+
+The local-character analyzer gets character names and affiliations from ESI,
+then batches public character stats through EVE-KILL. Missing stats remain
+`unknown`; they are not converted to a low-risk answer.
+
+## MCP Analytics
+
+The EVE-KILL MCP descriptor is not exposed directly to model turns. Full agent turns can
+contain chat history, linked-character context, fits, and private ESI results;
+with a direct hosted descriptor, the remote call can execute before application
+code can inspect its arguments. Post-response validation therefore cannot be a
+pre-egress privacy boundary.
+
+Ordinary access uses the local `eve_kill` REST namespace. Four additional
+methods are available through the local deferred `eve_kill_analytics` namespace:
+`doctrine_detect`, `meta_pulse`, `killmail_forensics`, and `coalition_graph`.
+The application accepts only allowlisted public numeric CCP IDs, canonical
+timestamp pairs, enums, booleans, and bounded limits, reconstructs a fresh
+argument object, then sends one fixed `tools/call` JSON-RPC request to
+`https://mcp.eve-kill.com/mcp`. Names must be resolved to IDs through the local
+ESI universe-reference namespace first. No chat history, profile, fit, private
+ESI result, credential, user/chat ID, or generic URL can cross this boundary.
+Remote errors are reduced to fixed local categories, and analytics calls share
+the EVE-KILL per-turn budget with an additional four-call analytics cap.
+
+## Configuration
 
 ```env
-# EVE-KILL REST
-EVE_KILL_BASE_URL=https://eve-kill.com/api/
 EVE_KILL_TIMEOUT_MS=8000
-EVE_KILL_CACHE_TTL_SECONDS=300
-
-# zKillboard (REST + R2Z2)
-ZKILL_BASE_URL=https://zkillboard.com/api/
-ZKILL_TIMEOUT_MS=8000
-ZKILL_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_USER_AGENT=EVEAI/3.0 (+https://github.com/example/eveai; contact=operator@example.com)
+EVE_KILL_RETRY_MAX_ATTEMPTS=3
+EVE_KILL_BACKOFF_MAX_MS=10000
 ```
 
-## DB Tables
+Cache lifetimes are fixed per endpoint in the client contract; there is no
+global TTL override that would misleadingly change all response classes alike.
+Timeout and backoff controls must be positive and are hard-capped at 60 seconds;
+retry attempts are hard-capped at five.
+
+## Persistence
 
 | Table | Purpose |
-|---|---|
-| `kill_watches` | Per-user topic subscriptions (system/character/region) |
-| `kill_watch_state` | Last seen killmail_id per topic |
-| `route_monitors` | Active route monitor state |
-| `route_ganker_cache` | Known active gankers from kill scans |
-
-## Testing Prompts
-
-### Kill Watch
-- `Следи за системой Uedama` → subscribe system kills
-- `Следи за системой Jita` → subscribe
-- `Какие у меня подписки?` → list watches
-- `Убери подписку на Jita` → unsubscribe
-- `Убери все подписки` → clear all
-
-### Kill Feed
-- `Какие киллы сейчас в Uedama?`
-- `Покажи последние потери Goonswarm`
-- `На каких фитах теряют Ishtar?`
-
-### Route Intelligence
-- `Построй маршрут до Jita и включи автопилот` → route + briefing + monitor
-- `Статус мониторинга маршрута` → monitor status
-- `Останови мониторинг` → stop monitor
-
-Pre-flight briefing for `plan_route` should stay operational:
-- selected-route summary should show a compact `zKB срез` for the chosen route, or explicitly say that fresh killmails were not found
-- selected-route summary and appended briefing must come from one shared snapshot, not two independent rescans
-- top block: `Сейчас`, `Впереди`, `Действие`
-- support block: `Активность`, short `Анализ`, and several `Последние киллы` from the selected route
-- only killmails whose actual `killmail_time` is still inside the briefing window should influence this snapshot; stale zKB rows must be dropped
-- destination-local activity should be treated as arrival intel, not as the nearest transit threat ahead
-- live monitor keeps ESP/digest updates separate from the one-time pre-flight snapshot
-- live gate-camp output must depend on real killmail coordinates reaching `attributeKillsToGates()`, not on LLM wording alone
-
-### Other kill tools
-- `Найди киллы дороже 10 миллиардов` → kill_query
-- `Покажи серверные лидерборды` → kill_stats
-- `Какие крупные битвы были?` → kill_battles
-- `Покажи детали килла 134392363` → kill_lookup
-- `Сколько стоит построить Dominix?` → kill_prices
+| --- | --- |
+| `eve_kill_feed_state` | global durable sequence cursor and dedup-prune timestamp |
+| `eve_kill_notification_dedup` | accepted per-chat killmail deliveries |
+| `kill_watches` | durable public feed topics |
+| `route_monitors` | active route-monitor state |
+| `route_monitor_kill_dedup` | per-monitor-run feed idempotency across concurrency and restart |
+| `route_ganker_cache` | recent public attacker observations |
 
 ## Files
 
-### src/eve-kill/
-
 | File | Purpose |
-|---|---|
-| `zkb-ws.ts` | R2Z2 kill stream poller (primary real-time source) |
-| `watch.ts` | Kill watch CRUD (DB operations) |
-| `client.ts` | EVE-KILL HTTP client + cache |
-| `tools.ts` | 9 tool definitions in eve_kill namespace |
-| `executor.ts` | Tool call router |
-| `feed.ts` | kill_feed handler (zKB REST) |
-| `kill-query.ts` | kill_query handler |
-| `intel.ts` | kill_stats/battles/entity/lookup/spatial/prices |
-| `query.ts` | MongoDB filter builder |
-| `types.ts` | TypeScript types |
-### src/eve-board/
-
-| File | Purpose |
-|---|---|
-| `monitor.ts` | Route monitor: full-route hybrid scan, kill dedupe, jumps, ganker cache, R2Z2 auto-watch |
-| `analytics.ts` | Jump spike detection, gate kill attribution, kill velocity, threat digest |
-| `threat.ts` | Threat assessment (EHP, gank detection, scoring) |
-| `route-snapshot.ts` | Shared selected-route scan used by one-shot route summary and briefing |
-| `advisor.ts` | Deterministic digest formatter, focused LLM intel, pursuit detection, stop/wait/go recommendations |
-| `briefing.ts` | Pre-route briefing with route analysis and recent kills + post-route report |
-| `types.ts` | Route intelligence types (SystemSnapshot, RouteThreatDigest, PursuitSignal) |
+| --- | --- |
+| `src/eve-kill/client.ts` | defensive REST contract and pagination |
+| `src/eve-kill/normalize.ts` | runtime validation and normalization |
+| `src/eve-kill/feed-poll.ts` | global durable feed and watch matching |
+| `src/eve-kill/watch.ts` | watch CRUD |
+| `src/eve-kill/tools.ts` | six-tool namespace schema |
+| `src/eve-kill/executor.ts` | validated tool execution and provenance projection |
+| `src/eve-kill/analytics-tools.ts` | four strict deferred local analytics schemas |
+| `src/eve-kill/mcp-analytics.ts` | validated fixed-endpoint MCP JSON-RPC transport |
+| `src/eve-board/route-snapshot.ts` | shared route baseline and official position/name enrichment |
+| `src/eve-board/monitor.ts` | feed-driven route monitoring |

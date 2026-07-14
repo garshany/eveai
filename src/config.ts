@@ -37,6 +37,15 @@ function optionalPositiveInt(name: string, fallback: number): number {
   return parseOptionalPositiveIntEnv(process.env, name, fallback);
 }
 
+function boundedPositiveInt(
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  return Math.min(maximum, Math.max(minimum, optionalPositiveInt(name, fallback)));
+}
+
 function parseResponseStateMode(): ResponseStateMode {
   const value = parseOptionalEnumEnv(process.env, 'OPENAI_RESPONSE_STATE_MODE', RESPONSE_STATE_MODES, 'stateless');
   if (value === 'server') {
@@ -121,23 +130,11 @@ export const config = {
   tavily: {
     apiKey: optional('TAVILY_API_KEY', ''),
   },
-  zkill: {
-    baseUrl: optional('ZKILL_BASE_URL', 'https://zkillboard.com/api/'),
-    timeoutMs: optionalInt('ZKILL_TIMEOUT_MS', 8000),
-    cacheTtlSeconds: optionalInt('ZKILL_CACHE_TTL_SECONDS', 300),
-    maxPastSeconds: optionalInt('ZKILL_MAX_PAST_SECONDS', 604800),
-    userAgent: optional('ZKILL_USER_AGENT', 'EVEAI/3.0 (+https://github.com/example/eveai; contact=operator@example.com)'),
-    retryMaxAttempts: optionalInt('ZKILL_RETRY_MAX_ATTEMPTS', 3),
-    backoffMaxMs: optionalInt('ZKILL_BACKOFF_MAX_MS', 10000),
-  },
   eveKill: {
-    baseUrl: optional('EVE_KILL_BASE_URL', 'https://eve-kill.com/api/'),
-    timeoutMs: optionalInt('EVE_KILL_TIMEOUT_MS', 8000),
-    cacheTtlSeconds: optionalInt('EVE_KILL_CACHE_TTL_SECONDS', 300),
-    maxQueryLimit: optionalInt('EVE_KILL_MAX_QUERY_LIMIT', 100),
+    timeoutMs: boundedPositiveInt('EVE_KILL_TIMEOUT_MS', 8000, 250, 60_000),
     userAgent: optional('EVE_KILL_USER_AGENT', 'EVEAI/3.0 (+https://github.com/example/eveai; contact=operator@example.com)'),
-    retryMaxAttempts: optionalInt('EVE_KILL_RETRY_MAX_ATTEMPTS', 3),
-    backoffMaxMs: optionalInt('EVE_KILL_BACKOFF_MAX_MS', 10000),
+    retryMaxAttempts: boundedPositiveInt('EVE_KILL_RETRY_MAX_ATTEMPTS', 3, 1, 5),
+    backoffMaxMs: boundedPositiveInt('EVE_KILL_BACKOFF_MAX_MS', 10000, 100, 60_000),
   },
   eveScout: {
     baseUrl: optional('EVE_SCOUT_BASE_URL', 'https://api.eve-scout.com/v2/public/'),

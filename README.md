@@ -26,7 +26,7 @@ For a public SSO callback, use HTTPS, set the callback URL exactly in the EVE De
 - Local SDE SQLite lookups for static game data such as systems, items, dogma, blueprints, and routes.
 - Live ESI access for character, corporation, market, location, mail, skills, industry, assets, and related data when scopes are granted.
 - Route planning with live danger analysis, killmail context, gate-camp signals, Thera/Turnur shortcut support, and monitor mode.
-- D-scan, fleet, local, OSINT, EVE-KILL, EVE-Scout, zKillboard, and intel notes.
+- D-scan, fleet, local, OSINT, current EVE-KILL REST/feed intelligence, EVE-Scout, and intel notes.
 - Heartbeat notifications (mail, skills, wallet, industry, kills, and more) delivered to the chat where you talk to the bot.
 
 ## Architecture
@@ -39,7 +39,7 @@ Discord DM ───────────────> discord.js gateway bot
                                         OpenAI Responses API (/v1/responses)
                                                              │
                                                              v
-                                          ESI / SDE / killboard tools ──> SQLite
+                                ESI / local SDE / EVE-KILL REST+feed ──> SQLite
 
 Browser ──> Fastify ──> EVE SSO login redirect + callback + /health ──> same SQLite state
 ```
@@ -50,7 +50,7 @@ Hard constraints:
 - SQLite only.
 - Telegram long polling only; no webhooks. Discord standard gateway connection.
 - Fastify is limited to the EVE SSO login redirect/callback and the health endpoint. There is no web frontend.
-- Static game data comes from local SDE SQLite; live data comes from ESI.
+- Static game data comes from the installed local SDE SQLite snapshot; its build/load metadata describes that snapshot and is not a claim of current freshness. Live authoritative character/market data comes from ESI; public kill discovery comes from EVE-KILL.
 - Private ESI access is isolated per user/chat and gated by `get_eve_capabilities`.
 - The model must not see tokens, refresh flow, pagination internals, retry logic, or secrets.
 
@@ -104,6 +104,7 @@ EVE_CALLBACK_URL=http://localhost:3000/auth/eve/callback
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
 ESI_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
 ```
 
 Generate `AUTH_SECRET_KEY` with:
@@ -177,6 +178,9 @@ Public tools (SDE lookups, market, route planning with danger analysis,
 killboards, OSINT) work without a linked character. Run `/login` to link an EVE
 character via SSO and unlock private ESI (skills, assets, location, mail, …).
 The full bots still need a Telegram or Discord token; the CLI does not.
+Durable background notifications (`kill_watch`, heartbeat configuration, and
+route monitoring) are intentionally unavailable in the transient CLI lane;
+configure them from a running Telegram or Discord bot instead.
 
 While the agent works, the CLI shows a **live activity feed** — a brief
 "thinking" note and one line per tool/skill as it runs (e.g. `🗄 SDE query`,

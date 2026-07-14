@@ -35,7 +35,7 @@ export function toolLabel(name: string): string {
     count_universe_objects: '🔢 universe count',
   };
   if (KNOWN[name]) return KNOWN[name];
-  if (name === 'kill_feed' || name.startsWith('eve_kill')) return '☠  killboard';
+  if (name.startsWith('kill_') || name.startsWith('eve_kill')) return '☠  killboard';
   if (name.startsWith('eve_scout') || name.startsWith('scout_')) return '🪐 EVE-Scout';
   if (name.startsWith('get_') || name.startsWith('post_') || name.startsWith('eve_')) return `🛰  ESI · ${name}`;
   return `⚙  ${name}`;

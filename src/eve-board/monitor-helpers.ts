@@ -1,14 +1,15 @@
-import type { EveKillKillmail } from '../eve-kill/types.js';
+import type { NormalizedKillmail } from '../eve-kill/types.js';
 import type { RouteThreatDigest } from './types.js';
 
 export type KillPosition = { x: number; y: number; z: number };
 
-export function extractKillPosition(killmail: EveKillKillmail): KillPosition | null {
-  const raw = killmail as Record<string, unknown>;
-  const nested = asRec(raw.position);
-  const x = numOrNull(raw.x) ?? numOrNull(nested.x);
-  const y = numOrNull(raw.y) ?? numOrNull(nested.y);
-  const z = numOrNull(raw.z) ?? numOrNull(nested.z);
+export function extractKillPosition(
+  killmail: Pick<NormalizedKillmail, 'position'>,
+): KillPosition | null {
+  const nested = killmail.position;
+  const x = numOrNull(nested?.x);
+  const y = numOrNull(nested?.y);
+  const z = numOrNull(nested?.z);
   if (x === null || y === null || z === null) return null;
   return { x, y, z };
 }
@@ -49,10 +50,6 @@ export function shouldSendDigestHeartbeat(
     || system.gankerCount > 0
     || system.jumpSpike !== null,
   );
-}
-
-function asRec(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function numOrNull(value: unknown): number | null {

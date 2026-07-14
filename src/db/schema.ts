@@ -40,6 +40,17 @@ CREATE TABLE IF NOT EXISTS discord_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_discord_sessions_user ON discord_sessions(user_id);
 
+-- The terminal CLI is a local platform lane. Zero is outside Telegram's
+-- positive private-chat ids and Discord's negative allocated chat keys, while
+-- this row provides an explicit durable owner instead of impersonating a
+-- Telegram account.
+CREATE TABLE IF NOT EXISTS cli_accounts (
+  identity_key TEXT PRIMARY KEY CHECK (identity_key = 'local'),
+  user_id      INTEGER NOT NULL UNIQUE REFERENCES users(user_id),
+  chat_id      INTEGER NOT NULL UNIQUE CHECK (chat_id = 0),
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS auth_requests (
   state        TEXT PRIMARY KEY,
   type         TEXT NOT NULL CHECK (type IN ('eve_sso', 'tg_handoff')),
@@ -344,5 +355,78 @@ CREATE TABLE IF NOT EXISTS intel_notes (
   tag          TEXT NOT NULL DEFAULT 'general',
   text         TEXT NOT NULL,
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS eve_kill_feed_state (
+  feed_key         TEXT PRIMARY KEY CHECK (feed_key = 'global'),
+  last_sequence_id INTEGER NOT NULL CHECK (last_sequence_id >= 0),
+  dedup_pruned_at  TEXT,
+  initialized_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS kill_watches (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id    INTEGER NOT NULL,
+  topic      TEXT NOT NULL,
+  label      TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (chat_id, topic)
+);
+CREATE INDEX IF NOT EXISTS idx_kill_watches_chat ON kill_watches(chat_id);
+
+CREATE TABLE IF NOT EXISTS eve_kill_notification_dedup (
+  chat_id       INTEGER NOT NULL,
+  killmail_id   INTEGER NOT NULL,
+  sequence_id   INTEGER NOT NULL,
+  delivered_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (chat_id, killmail_id)
+);
+CREATE INDEX IF NOT EXISTS idx_eve_kill_notification_dedup_sequence
+  ON eve_kill_notification_dedup(sequence_id);
+CREATE INDEX IF NOT EXISTS idx_eve_kill_notification_dedup_delivered
+  ON eve_kill_notification_dedup(delivered_at);
+
+CREATE TABLE IF NOT EXISTS route_monitors (
+  chat_id             INTEGER PRIMARY KEY,
+  character_id        INTEGER NOT NULL,
+  origin_id           INTEGER NOT NULL,
+  destination_id      INTEGER NOT NULL,
+  route_systems       TEXT NOT NULL DEFAULT '[]',
+  current_system_id   INTEGER,
+  ship_type_id        INTEGER,
+  ship_name           TEXT DEFAULT '',
+  ship_ehp             REAL DEFAULT 0,
+  started_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  last_location_check TEXT,
+  last_online_check   TEXT,
+  stats_json          TEXT NOT NULL DEFAULT '{}',
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS route_ganker_cache (
+  character_id   INTEGER NOT NULL,
+  system_id      INTEGER NOT NULL,
+  character_name TEXT DEFAULT '',
+  kill_count     INTEGER DEFAULT 1,
+  last_seen      TEXT NOT NULL DEFAULT (datetime('now')),
+  ship_type_id   INTEGER,
+  PRIMARY KEY (character_id, system_id)
+);
+
+CREATE TABLE IF NOT EXISTS route_monitor_kill_dedup (
+  chat_id            INTEGER NOT NULL,
+  monitor_started_at TEXT NOT NULL,
+  killmail_id        INTEGER NOT NULL,
+  sequence_id        INTEGER NOT NULL,
+  processed_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (chat_id, monitor_started_at, killmail_id)
+);
+CREATE INDEX IF NOT EXISTS idx_route_monitor_kill_dedup_processed
+  ON route_monitor_kill_dedup(processed_at);
+
+CREATE TABLE IF NOT EXISTS eve_kill_migrations (
+  migration_key TEXT PRIMARY KEY,
+  applied_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `;

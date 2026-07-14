@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { config } from '../config.js';
 import { initDb, type Db } from '../db/sqlite.js';
 import { runMigrations } from '../db/migrations.js';
-import { getOrCreateUser, type UserContext } from '../auth/user-resolver.js';
+import type { UserContext } from '../auth/user-resolver.js';
 import {
   clearChatConversation,
   createEveLoginLink,
@@ -25,15 +25,38 @@ import { runWithActivitySink } from '../agent/activity.js';
 import { sanitizeOutput } from '../agent/finalizer.js';
 import { createActivityRenderer as buildActivityRenderer, type ActivityRenderer } from './activity-renderer.js';
 import { buildEveSsoSetupGuide, isEveSsoConfigured } from '../eve/eve-login.js';
-import { registerTelegramOutbound } from '../messaging/outbound.js';
 import { htmlToDiscordMarkdown } from '../discord/format.js';
 import { colorize } from '../observability/logger.js';
 import { stripTerminalControls } from './term-sanitize.js';
 import { createInputQueue } from './input-queue.js';
 
-// Sentinel identity for the local CLI user. Real Telegram chat ids are large
-// positive numbers and Discord lanes are negative, so 1 can't collide.
-const CLI_CHAT_ID = 1;
+// Explicit local-platform lane: Telegram private chats are positive and
+// allocated Discord DM lanes are negative. Ownership is persisted separately
+// in cli_accounts, so the CLI never creates a fake Telegram identity.
+const CLI_CHAT_ID = 0;
+
+function getOrCreateCliUser(db: Db): number {
+  const existing = db.prepare(
+    "SELECT user_id FROM cli_accounts WHERE identity_key = 'local' AND chat_id = ?",
+  ).get(CLI_CHAT_ID) as { user_id: number } | undefined;
+  if (existing) return existing.user_id;
+
+  return db.transaction((): number => {
+    const raced = db.prepare(
+      "SELECT user_id FROM cli_accounts WHERE identity_key = 'local' AND chat_id = ?",
+    ).get(CLI_CHAT_ID) as { user_id: number } | undefined;
+    if (raced) return raced.user_id;
+
+    const result = db.prepare(
+      "INSERT INTO users (display_name, created_at, updated_at) VALUES ('CLI', datetime('now'), datetime('now'))",
+    ).run();
+    const userId = Number(result.lastInsertRowid);
+    db.prepare(
+      "INSERT INTO cli_accounts (identity_key, user_id, chat_id) VALUES ('local', ?, ?)",
+    ).run(userId, CLI_CHAT_ID);
+    return userId;
+  })();
+}
 
 /** CLI's own output — bypasses the console.log silencing installed below. */
 function say(line = ''): void {
@@ -118,17 +141,15 @@ async function main(): Promise<void> {
     say(colorize('yellow', `SDE ${missing} data is empty — run \`npm run setup\` for full lookups (prices, routes).`));
   }
 
-  // Route any producer notifications (kill/route/heartbeat alerts) for this
-  // lane to the terminal. CLI uses a positive chat id, so the "telegram" slot.
-  registerTelegramOutbound(async (chatId, text) => {
-    if (chatId === CLI_CHAT_ID) {
-      process.stdout.write('\n' + colorize('magenta', '🔔 ') + renderForTerminal(text) + '\n');
-    }
-  });
-
-  const userId = getOrCreateUser(db, CLI_CHAT_ID, 'cli', 'CLI');
+  const userId = getOrCreateCliUser(db);
   ensureChatSessionRow(db, CLI_CHAT_ID, 'cli');
-  const ctx: UserContext = { userId, chatId: CLI_CHAT_ID };
+  const ctx: UserContext = {
+    userId,
+    chatId: CLI_CHAT_ID,
+    // The CLI process has no background-producer lifecycle. Persistent watch,
+    // heartbeat, and route-monitor tools are hidden and fail closed.
+    durableNotifications: false,
+  };
 
   banner();
   const linked = getLinkedCharacter(db, ctx);

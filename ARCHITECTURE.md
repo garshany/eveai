@@ -10,10 +10,13 @@ Discord DM -> discord.js gateway bot ┘            │
                              native /v1/responses (official OpenAI API)
                                                   │
                                                   v
-                     hosted tool_search + deferred ESI/SDE tools
+             tool_search + deferred local ESI/SDE/EVE-KILL tools
                                                   │
                                                   v
-                              SQLite + local SDE + EVE SSO
+                    SQLite + local SDE + EVE SSO + EVE-KILL REST/feed
+                                                  │
+                                                  v
+          local validated analytics wrapper -> fixed EVE-KILL MCP endpoint
 
 Browser -> Fastify -> EVE SSO login redirect/callback + health -> same SQLite state
 ```
@@ -56,6 +59,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/agent/planner.ts`, `replanner.ts`, and `compact.ts` handle plan state and history reduction.
 - `src/agent/prompts.ts` is the model-policy boundary.
 - Hosted deferred ESI surfaces are grouped into concise namespaces by use case and access boundary so `tool_search` can stay the primary discovery path without mixing unrelated public and private tools.
+- Full mode adds a local deferred `eve_kill_analytics` namespace with four application-owned function tools. The app validates public numeric IDs, dates, enums, and limits before it sends a fixed JSON-RPC call to EVE-KILL MCP. Aggregate-only mode adds none; MCP output is untrusted third-party data and rejected arguments are audited by field name only.
 
 ### Web Boundary
 
@@ -69,7 +73,9 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/eve/sso.ts` and `src/eve/sso-auth.ts` own token refresh and JWT verification.
 - `src/eve/capabilities.ts` computes scope-aware access for private ESI.
 - `src/eve/sde.ts`, `sde-loader.ts`, and `sde-downloader.ts` own static data ingestion and lookup.
-- `src/eve/route-planner.ts`, `zkill.ts`, and `killmail.ts` provide higher-level EVE features.
+- `src/eve/route-planner.ts` and `killmail.ts` provide higher-level route and official killmail features.
+- `src/eve-kill/client.ts` owns the fixed current EVE-KILL REST boundary; `mcp-analytics.ts` owns the fixed public analytics JSON-RPC boundary; `feed-poll.ts` owns one durable global feed cursor.
+- `src/eve-board/route-snapshot.ts` builds the shared route kill baseline; `monitor.ts` consumes the global feed after that baseline.
 - `src/eve-osint/inference.ts` builds residence/staging hypotheses from kill activity, SDE geography, and an optional compact LLM pattern pass.
 
 ### Persistence Boundary
@@ -102,6 +108,9 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `eve_accounts` stores encrypted token material and granted scopes.
 - `eve_character_links` binds characters to user/chat ownership.
 - `esi_cache` stores GET cache entries with revalidation metadata.
+- `eve_kill_feed_state` stores the one global EVE-KILL sequence cursor.
+- `eve_kill_notification_dedup` stores accepted per-chat killmail deliveries for at-least-once retry handling.
+- `kill_watches`, `route_monitors`, `route_monitor_kill_dedup`, and `route_ganker_cache` store public feed subscriptions, restart-safe per-monitor event idempotency, and route-monitor state.
 
 ### Static Game Data
 
@@ -132,8 +141,16 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 ### Outbound Notification Flow
 
 1. Producers (heartbeat worker, route monitor, kill watch) address a chat id.
-2. `sendOutbound` routes by sign: positive -> Telegram `sendMessage`, negative -> Discord DM channel resolved via `discord_sessions`.
-3. Failures are logged and never crash the producer.
+2. `deliverOutbound` routes by sign: positive -> Telegram `sendMessage`, negative -> Discord DM channel resolved via `discord_sessions`.
+3. Durable producers await delivery before advancing cursors or heartbeat state. Failures propagate to their retry boundary; `sendOutbound` remains only the explicitly best-effort wrapper.
+
+### EVE-KILL Feed And Route Flow
+
+1. On a new database, the global poller persists the current `/feed/poll` head without replaying history.
+2. Its readiness hook restores route listeners before the first later event; an existing cursor restores listeners before the first resumed poll.
+3. A watch event advances the feed cursor only after all active listeners and unmatched-dedup sends for active chat platforms complete; disabled-platform consumers remain stored but suspended.
+4. Route planning builds one one-hour EVE-KILL baseline. A temporary listener captures events during the scan and hands them, plus that exact baseline, to the monitor after autopilot succeeds.
+5. The monitor serializes feed callbacks and atomically records a per-monitor-run killmail marker with ganker/stats updates, so concurrent and post-restart replay is idempotent. ESI owns live/private state and official `(id, hash)` details; SDE owns static names/topology; EVE-KILL owns public discovery and value/fitting enrichment.
 
 ## Package Map
 
@@ -143,6 +160,8 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/db/`: schema and migrations
 - `src/discord/`: Discord bot, sessions, formatting
 - `src/eve/`: EVE integrations and domain logic
+- `src/eve-kill/`: current public EVE-KILL REST, feed, tools, and watches
+- `src/eve-board/`: route threat snapshot, deterministic analysis, briefing, and monitor
 - `src/messaging/`: outbound platform-routing dispatcher
 - `src/telegram/`: Telegram bot and command handlers
 - `src/web/`: Fastify SSO login redirect/callback + health

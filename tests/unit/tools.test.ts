@@ -13,7 +13,7 @@ describe('agent tools', () => {
     // so this "no web_search" assertion is hermetic on a dev/CI box that has a key.
     delete process.env.TAVILY_API_KEY;
     vi.resetModules();
-    const { buildNativeAgentTools } = await import('../../src/agent/tools.js');
+    const { buildNativeAgentTools, getToolPolicy } = await import('../../src/agent/tools.js');
 
     const tools = await buildNativeAgentTools();
     const functionNames = tools
@@ -21,6 +21,10 @@ describe('agent tools', () => {
       .map((tool) => tool.name);
     const namespaces = tools.filter((tool): tool is Extract<(typeof tools)[number], { type: 'namespace' }> => tool.type === 'namespace');
     const namespaceNames = namespaces.map((tool) => tool.name);
+    // Full turns include chat history, profile and private ESI context. A direct
+    // hosted MCP descriptor would let the provider send model-generated
+    // arguments to a third party before application code could inspect them.
+    expect(tools.some((tool) => tool.type === 'mcp')).toBe(false);
 
     // web_search is gated on TAVILY_API_KEY, which is unset in this test env, so
     // it must be absent — offering a tool that always errors wastes agent turns.
@@ -40,6 +44,7 @@ describe('agent tools', () => {
     expect(functionNames).not.toContain('get_characters_character_id_assets');
     expect(functionNames).not.toContain('get_universe_systems_system_id');
     expect(namespaceNames).toContain('eve_kill');
+    expect(namespaceNames).toContain('eve_kill_analytics');
     expect(namespaceNames).toContain('eve_scout');
     expect(namespaceNames).toContain('eve_character_assets');
     expect(namespaceNames).toContain('eve_public_market_orders');
@@ -49,12 +54,44 @@ describe('agent tools', () => {
     expect(namespaceNames).toContain('eve_character_fittings');
     expect(namespaceNames).not.toContain('eve_character_fittings_bookmarks');
     expect(namespaces.every((tool) => tool.tools.length <= 9)).toBe(true);
-    expect(
-      namespaces.some((tool) =>
-        tool.name === 'eve_kill'
-        && tool.tools.some((entry) => entry.name === 'kill_feed'),
-      ),
-    ).toBe(true);
+    const eveKillNamespace = namespaces.find((tool) => tool.name === 'eve_kill');
+    expect(eveKillNamespace).toBeDefined();
+    expect(eveKillNamespace?.tools.map((entry) => entry.name)).toEqual([
+      'kill_search',
+      'kill_activity',
+      'kill_detail',
+      'kill_intel',
+      'kill_battles',
+      'kill_watch',
+    ]);
+    expect(eveKillNamespace?.tools.some((entry) => entry.name === 'kill_feed')).toBe(false);
+    expect(eveKillNamespace?.description).toContain('Third-party public kill discovery');
+    expect(eveKillNamespace?.description).toContain('Use official ESI');
+    expect(eveKillNamespace?.description).toContain('use local SDE');
+    expect(await getToolPolicy('kill_watch')).toBe('write');
+    expect(await getToolPolicy('kill_search')).toBe('read');
+    expect(await getToolPolicy('doctrine_detect')).toBe('read');
+    const analyticsNamespace = namespaces.find((tool) => tool.name === 'eve_kill_analytics');
+    expect(analyticsNamespace?.tools.map((entry) => entry.name)).toEqual([
+      'doctrine_detect',
+      'meta_pulse',
+      'killmail_forensics',
+      'coalition_graph',
+    ]);
+
+    const transientTools = await buildNativeAgentTools('full', {
+      includeDurableNotifications: false,
+    });
+    const transientFunctions = transientTools
+      .filter((tool): tool is Extract<(typeof transientTools)[number], { type: 'function' }> => tool.type === 'function')
+      .map((tool) => tool.name);
+    const transientEveKill = transientTools.find(
+      (tool): tool is Extract<(typeof transientTools)[number], { type: 'namespace' }> =>
+        tool.type === 'namespace' && tool.name === 'eve_kill',
+    );
+    expect(transientFunctions).not.toContain('route_monitor');
+    expect(transientFunctions).not.toContain('heartbeat_config');
+    expect(transientEveKill?.tools.map((tool) => tool.name)).not.toContain('kill_watch');
 
     const eveScoutNamespace = namespaces.find((tool) => tool.name === 'eve_scout');
     expect(eveScoutNamespace).toBeDefined();
@@ -161,6 +198,10 @@ describe('agent tools', () => {
     expect(functionNames).not.toContain('count_moons');
     expect(functionNames).toContain('count_universe_objects');
     expect(functionNames).toContain('sde_sql');
+    const aggregateSql = tools.find((tool) => tool.type === 'function' && tool.name === 'sde_sql');
+    expect(aggregateSql?.description).toContain('geography names and IDs');
+    expect(aggregateSql?.description).not.toContain('dogma');
+    expect(aggregateSql?.description).not.toContain('blueprint');
     expect(functionNames).not.toContain('web_search');
     expect(functionNames).not.toContain('update_plan');
     expect(functionNames).not.toContain('get_eve_capabilities');
@@ -169,5 +210,6 @@ describe('agent tools', () => {
     expect(functionNames).not.toContain('osint_infer_home');
     expect(tools.some((tool) => tool.type === 'tool_search')).toBe(false);
     expect(tools.some((tool) => tool.type === 'namespace')).toBe(false);
+    expect(tools.some((tool) => tool.type === 'mcp')).toBe(false);
   });
 });

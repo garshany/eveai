@@ -3,9 +3,16 @@ import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 const callEsiOperationMock = vi.fn();
+const { buildRouteThreatSnapshotMock } = vi.hoisted(() => ({
+  buildRouteThreatSnapshotMock: vi.fn(),
+}));
 
 vi.mock('../../src/eve/esi-client.js', () => ({
   callEsiOperation: callEsiOperationMock,
+}));
+
+vi.mock('../../src/eve-board/route-snapshot.js', () => ({
+  buildRouteThreatSnapshot: buildRouteThreatSnapshotMock,
 }));
 
 let db: Database.Database;
@@ -39,18 +46,40 @@ beforeEach(() => {
     );
   }
 
-  vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
-    if (url.includes('systemID/30000011')) {
-      return {
-        ok: true,
-        json: async () => [{
-          killmail_id: 555001,
-          zkb: { hash: 'hash-555001', totalValue: 25000000, npc: false, solo: false },
-        }],
-      };
-    }
-    return { ok: true, json: async () => [] };
-  }));
+  const killmailTime = new Date().toISOString();
+  buildRouteThreatSnapshotMock.mockResolvedValue({
+    routeSystems: Array.from({ length: 11 }, (_, index) => 30000001 + index),
+    systems: [{
+      systemId: 30000011,
+      routeIndex: 10,
+      name: 'Route 11',
+      sec: 0.9,
+      pvpKills: 1,
+      npcKills: 0,
+      totalValueM: 25,
+      valueResolvedKills: 1,
+      recentKills: [{
+        killmail_id: 555001,
+        killmail_time: killmailTime,
+        total_value: 25_000_000,
+        attacker_count: 1,
+        is_npc: false,
+        is_solo: true,
+        victim_character_id: 9001,
+        final_blow_character_id: 9002,
+        eve_kill_url: 'https://eve-kill.com/kill/555001',
+        time_msk: killmailTime,
+      }],
+      gateKills: [],
+    }],
+    jumpMap: new Map(),
+    totalKills: 1,
+    totalValueM: 25,
+    truncated: false,
+    requestCount: 1,
+    error: null,
+    scannedAt: killmailTime,
+  });
 
   callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string) => {
     if (operation === 'get_killmails_killmail_id_killmail_hash') {

@@ -5,7 +5,7 @@ import { prunePlans } from '../agent/planner.js';
 import { getAccessToken } from '../eve/sso.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
 import { getUserOutboundChatId } from '../auth/user-resolver.js';
-import { sendOutbound } from '../messaging/outbound.js';
+import { deliverOutbound } from '../messaging/outbound.js';
 import { runModelText } from '../agent/model.js';
 import {
   parseChecks,
@@ -79,7 +79,7 @@ async function runHeartbeatTick(db: Db): Promise<void> {
   }
 }
 
-async function processUserHeartbeat(
+export async function processUserHeartbeat(
   db: Db,
   row: HeartbeatConfigRow,
   nowUtc: string,
@@ -121,14 +121,8 @@ async function processUserHeartbeat(
     }
   }
 
-  // Save state and last_run_at
-  console.log('[heartbeat] saving state: %s', JSON.stringify(Object.keys(state)));
-  saveState(db, row.user_id, row.character_id, state);
-  db.prepare(
-    "UPDATE heartbeat_config SET last_run_at = ? WHERE user_id = ? AND character_id = ?",
-  ).run(nowUtc, row.user_id, row.character_id);
-
   if (findings.length === 0) {
+    persistHeartbeatState(db, row, state, nowUtc);
     console.log('[heartbeat] user=%d char=%d: nothing new', row.user_id, row.character_id);
     return;
   }
@@ -136,8 +130,26 @@ async function processUserHeartbeat(
   const characterName = getCharacterName(db, row.character_id);
   const summary = await summarizeFindings(characterName, findings);
 
-  sendOutbound(chatId, summary);
+  // Commit cursors only after the outbound gateway accepts the notification.
+  // A failed send therefore retries the same official ESI findings next tick.
+  await deliverOutbound(chatId, summary);
+  persistHeartbeatState(db, row, state, nowUtc);
   console.log('[heartbeat] user=%d char=%d: sent %d findings', row.user_id, row.character_id, findings.length);
+}
+
+function persistHeartbeatState(
+  db: Db,
+  row: Pick<HeartbeatConfigRow, 'user_id' | 'character_id'>,
+  state: HeartbeatState,
+  nowUtc: string,
+): void {
+  console.log('[heartbeat] saving state: %s', JSON.stringify(Object.keys(state)));
+  db.transaction(() => {
+    saveState(db, row.user_id, row.character_id, state);
+    db.prepare(
+      'UPDATE heartbeat_config SET last_run_at = ? WHERE user_id = ? AND character_id = ?',
+    ).run(nowUtc, row.user_id, row.character_id);
+  })();
 }
 
 function getCharacterName(db: Db, characterId: number): string {
@@ -376,58 +388,57 @@ async function checkContracts(
 
 // ── KILLMAILS ──
 
-async function checkKillmails(
+export async function checkKillmails(
   db: Db, ctx: UserContext, characterId: number, state: HeartbeatState,
 ): Promise<string | null> {
-  const details: string[] = [];
-  const seenIds = new Set<number>();
-
-  // Check ESI for killmails
+  // Check official ESI for killmail references.
   const result = await callEsiOperation<Array<{ killmail_id: number; killmail_hash: string }>>(
     db, 'get_characters_character_id_killmails_recent', { character_id: characterId }, ctx,
   );
 
   // First run: seed silently instead of reporting historical killmails.
   if (state.last_killmail_id === undefined) {
-    if (result.ok && Array.isArray(result.data) && result.data.length > 0) {
-      state.last_killmail_id = Math.max(...result.data.map((k) => k.killmail_id));
-    } else {
-      state.last_killmail_id = 0;
-    }
+    if (!result.ok || !Array.isArray(result.data)) return null;
+    state.last_killmail_id = result.data.length > 0
+      ? Math.max(...result.data.map((killmail) => killmail.killmail_id))
+      : 0;
     return null;
   }
 
+  if (!result.ok || !Array.isArray(result.data)) return null;
   const lastId = state.last_killmail_id;
-  if (result.ok && Array.isArray(result.data)) {
-    const newEsiKills = result.data.filter((k) => k.killmail_id > lastId && !seenIds.has(k.killmail_id));
+  const unique = new Map<number, { killmail_id: number; killmail_hash: string }>();
+  for (const killmail of result.data) {
+    if (killmail.killmail_id > lastId) unique.set(killmail.killmail_id, killmail);
+  }
+  const newEsiKills = [...unique.values()].sort((left, right) => right.killmail_id - left.killmail_id);
+  if (newEsiKills.length === 0) return null;
 
-    for (const km of newEsiKills) {
-      seenIds.add(km.killmail_id);
-      if (details.length < 3) {
-        const detail = await callEsiOperation<{
-          victim: { character_id?: number; ship_type_id: number };
-          solar_system_id: number;
-          killmail_time: string;
-        }>(
-          db, 'get_killmails_killmail_id_killmail_hash',
-          { killmail_id: km.killmail_id, killmail_hash: km.killmail_hash }, ctx,
-        );
-        if (!detail.ok) continue;
-        const isLoss = detail.data.victim?.character_id === characterId;
-        const ship = sdeName(db, detail.data.victim.ship_type_id);
-        const system = db.prepare('SELECT name FROM sde_systems WHERE system_id = ?')
-          .get(detail.data.solar_system_id) as { name: string } | undefined;
-        details.push(`${isLoss ? 'Потерян' : 'Уничтожен'} ${ship} в ${system?.name ?? '?'}`);
-      }
+  const details: string[] = [];
+  for (const killmail of newEsiKills) {
+    const detail = await callEsiOperation<{
+      victim: { character_id?: number; ship_type_id: number };
+      solar_system_id: number;
+      killmail_time: string;
+    }>(
+      db,
+      'get_killmails_killmail_id_killmail_hash',
+      { killmail_id: killmail.killmail_id, killmail_hash: killmail.killmail_hash },
+      ctx,
+    );
+    // Do not advance over an official detail that could not be resolved.
+    if (!detail.ok) return null;
+    const isLoss = detail.data.victim?.character_id === characterId;
+    const ship = sdeName(db, detail.data.victim.ship_type_id);
+    const system = db.prepare('SELECT name FROM sde_systems WHERE system_id = ?')
+      .get(detail.data.solar_system_id) as { name: string } | undefined;
+    if (details.length < 3) {
+      details.push(`${isLoss ? 'Потерян' : 'Уничтожен'} ${ship} в ${system?.name ?? '?'}`);
     }
   }
 
-  if (seenIds.size === 0) return null;
-
-  // Update state with highest seen killmail_id
-  state.last_killmail_id = Math.max(...seenIds);
-
-  const total = seenIds.size;
+  state.last_killmail_id = Math.max(...newEsiKills.map((killmail) => killmail.killmail_id));
+  const total = newEsiKills.length;
   const extra = total > 3 ? `\n...и ещё ${total - 3}` : '';
   return `[KILLMAILS] ${total} новых:\n${details.join('\n')}${extra}`;
 }

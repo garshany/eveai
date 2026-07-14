@@ -5,7 +5,7 @@ describe('pickTelegramParseMode', () => {
   it('returns HTML for supported telegram html markup', () => {
     expect(pickTelegramParseMode('<b>Bold</b>')).toBe('HTML');
     expect(pickTelegramParseMode('<code>block</code>')).toBe('HTML');
-    expect(pickTelegramParseMode('<a href="https://zkillboard.com/kill/1/">zkb</a>')).toBe('HTML');
+    expect(pickTelegramParseMode('<a href="https://eve-kill.com/kill/1">EVE-KILL</a>')).toBe('HTML');
     expect(pickTelegramParseMode('<i>italics</i>')).toBe('HTML');
   });
 

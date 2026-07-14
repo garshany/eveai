@@ -1,14 +1,12 @@
 import type { Db } from '../db/sqlite.js';
-import { config } from '../config.js';
 import { callEsiOperation } from '../eve/esi-client.js';
-import { getEntityDetail, getEntityMembers } from '../eve-kill/client.js';
+import { fetchEntityActivityHistory } from './activity.js';
 import { analyzeOsintGraphPatterns } from './llm.js';
 import { analyzeMovement, detectDeployments, detectReturnHubs } from './movement.js';
 import { analyzeShipProfile, analyzeFleetProfile } from './ships.js';
 import { detectAlts, analyzeVulnerability } from './social.js';
 import { analyzeTemporalProfile, reconstructSessions } from './temporal.js';
-import { fetchEntityActivityFeed, type OsintKillmail } from './zkill.js';
-import type { OsintInferenceArgs, OsintScope } from './types.js';
+import type { OsintInferenceArgs, OsintKillmail, OsintScope } from './types.js';
 
 export type { OsintInferenceArgs, OsintScope } from './types.js';
 
@@ -25,8 +23,8 @@ type SystemMetrics = {
   soloEncounters: number;
   uniqueDays: Set<string>;
   memberIds: Set<number>;
-  timezones: Map<string, number>;
-  locations: Map<string, number>;
+  activityWindows: Map<string, number>;
+  securityBands: Map<string, number>;
   recentWeight: number;
   baseScore: number;
   adjacencySupport: number;
@@ -105,16 +103,22 @@ type CollectedEvidence = {
   graphNodes: GraphNode[];
   graphEdges: GraphEdge[];
   adjacency: Map<number, Set<number>>;
-  timezones: Map<string, number>;
-  locations: Map<string, number>;
+  activityWindows: Map<string, number>;
+  securityBands: Map<string, number>;
   npcSystems: Map<number, NpcSystemMetrics>;
   soloLossSystems: Map<number, SoloLossMetrics>;
   filtered: {
     npc: number;
-    awox: number;
+    npcUnknown: number;
     incomplete: number;
   };
   sourceWindowDays: number;
+  coverage: {
+    truncated: boolean;
+    requestCount: number;
+    windows: Array<{ from: string; to: string }>;
+    sourceError: string | null;
+  };
 };
 
 type HypothesisKind = 'home_system' | 'staging_system' | 'hunting_area';
@@ -133,7 +137,7 @@ export async function executeOsintInferHome(
     return { ok: false, error: 'scope must be character, corporation, or alliance; id must be a positive integer.' };
   }
 
-  const entityName = await resolveEntityName(db, args.scope, args.id);
+  const entityName = await resolveEntityName(db, args.id);
   const evidence = await collectEvidence(db, args);
   if (evidence.kills.length === 0 || evidence.systems.size === 0) {
     return {
@@ -145,14 +149,13 @@ export async function executeOsintInferHome(
       source_window_days: evidence.sourceWindowDays,
       hypotheses: [],
       activity_cluster: null,
-      member_analysis: {
-        total_members_observed: evidence.members.size,
-        members_analyzed: 0,
-        core_members: [],
-      },
+      member_analysis: buildMemberAnalysis(evidence, []),
       graph_digest: args.includeGraph ? emptyGraphDigest(args) : null,
       llm_pattern_analysis: null,
-      uncertainty: ['Недостаточно свежих killboard-данных для inference в заданном окне.'],
+      uncertainty: [
+        'Недостаточно свежих killboard-данных для inference в заданном окне.',
+        ...mergeUncertainty(args, evidence, [], null),
+      ],
     };
   }
 
@@ -302,17 +305,11 @@ export async function executeOsintInferHome(
           unique_days: n.uniqueDays.size,
         })),
     },
-    member_analysis: {
-      total_members_observed: evidence.members.size,
-      members_analyzed: memberSummary.length,
-      core_members: memberSummary,
-    },
+    member_analysis: buildMemberAnalysis(evidence, memberSummary),
     llm_pattern_analysis: llmPatternAnalysis,
     uncertainty: mergeUncertainty(args, evidence, hypotheses, llmPatternAnalysis),
   };
 }
-
-export const executeOsintInference = executeOsintInferHome;
 
 function normalizeArgs(raw: Record<string, unknown>): OsintInferenceArgs | null {
   const scope = raw.scope;
@@ -339,27 +336,30 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
   const members = new Map<number, MemberStats>();
   const graphNodes = new Map<string, GraphNode>();
   const graphEdges = new Map<string, GraphEdge>();
-  const timezones = new Map<string, number>();
-  const locations = new Map<string, number>();
+  const activityWindows = new Map<string, number>();
+  const securityBands = new Map<string, number>();
   const npcSystems = new Map<number, NpcSystemMetrics>();
   const soloLossSystems = new Map<number, SoloLossMetrics>();
-  const filtered = { npc: 0, awox: 0, incomplete: 0 };
+  const filtered = { npc: 0, npcUnknown: 0, incomplete: 0 };
+  const to = new Date().toISOString();
+  const from = new Date(cutoffMs).toISOString();
+  const activity = await fetchEntityActivityHistory(db, {
+    scope: args.scope,
+    id: args.id,
+    from,
+    to,
+  });
+  const coverage = activity.ok
+    ? {
+      truncated: activity.data.truncated,
+      requestCount: activity.data.requestCount,
+      windows: activity.data.windows,
+      sourceError: null,
+    }
+    : { truncated: false, requestCount: 0, windows: [], sourceError: activity.error };
+  const acceptedKills: OsintKillmail[] = [];
 
-  const pastSeconds = Math.max(86_400, args.windowDays * 86_400);
-  const sourceWindowDays = pastSeconds <= config.zkill.maxPastSeconds
-    ? Math.max(1, Math.floor(pastSeconds / 86_400))
-    : args.windowDays;
-  const [killsFeed, lossesFeed] = await Promise.all([
-    fetchEntityActivityFeed(db, { scope: args.scope, id: args.id, activity: 'kills', pastSeconds }),
-    fetchEntityActivityFeed(db, { scope: args.scope, id: args.id, activity: 'losses', pastSeconds }),
-  ]);
-
-  const deduped = new Map<number, OsintKillmail>();
-  for (const kill of [...killsFeed, ...lossesFeed]) {
-    if (!deduped.has(kill.killmail_id)) deduped.set(kill.killmail_id, kill);
-  }
-
-  for (const kill of deduped.values()) {
+  for (const kill of activity.ok ? activity.data.kills : []) {
     // A present-but-unparseable timestamp must be treated as missing — otherwise
     // NaN slips past the cutoff filter and poisons every downstream score.
     const timeMs = kill.killmail_time ? new Date(kill.killmail_time).getTime() : NaN;
@@ -379,11 +379,8 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
       npcSystems.set(systemId, npc);
       continue;
     }
-    if (kill.is_awox) {
-      filtered.awox += 1;
-      continue;
-    }
-    if (kill.activity === 'losses' && kill.attacker_count >= 1 && kill.attacker_count <= 3) {
+    if (kill.is_npc === undefined) filtered.npcUnknown += 1;
+    if (kill.roles.victim && kill.attacker_count >= 1 && kill.attacker_count <= 3) {
       const dayKey = kill.killmail_time.slice(0, 10);
       const solo = soloLossSystems.get(systemId) ?? { systemId, count: 0, uniqueDays: new Set<string>(), totalValue: 0 };
       solo.count += 1;
@@ -396,7 +393,6 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
     const security = resolveSystemSecurity(db, systemId);
     const { regionId, regionName } = resolveSystemRegion(db, systemId);
     const dayKey = kill.killmail_time.slice(0, 10);
-    const role = kill.activity === 'losses' ? 'loss' : 'kill';
     const valueWeight = computeValueWeight(kill.total_value);
     const weightedRecency = recencyWeight(kill.killmail_time) * valueWeight;
 
@@ -413,8 +409,8 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
       soloEncounters: 0,
       uniqueDays: new Set<string>(),
       memberIds: new Set<number>(),
-      timezones: new Map<string, number>(),
-      locations: new Map<string, number>(),
+      activityWindows: new Map<string, number>(),
+      securityBands: new Map<string, number>(),
       recentWeight: 0,
       baseScore: 0,
       adjacencySupport: 0,
@@ -426,16 +422,18 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
     metrics.totalValue += kill.total_value ?? 0;
     metrics.uniqueDays.add(dayKey);
     if (kill.is_solo) metrics.soloEncounters += 1;
-    if (role === 'loss') metrics.losses += 1;
-    else metrics.kills += 1;
+    if (kill.roles.attacker) metrics.kills += 1;
+    if (kill.roles.victim) metrics.losses += 1;
     metrics.recentWeight += weightedRecency;
-    bumpCounter(metrics.timezones, kill.tz_label);
-    bumpCounter(metrics.locations, kill.location_label);
+    const activityWindow = activityWindowUtc(kill.killmail_time);
+    const securityBand = classifySecurityBand(security);
+    bumpCounter(metrics.activityWindows, activityWindow);
+    bumpCounter(metrics.securityBands, securityBand);
     systems.set(systemId, metrics);
 
-    addRegionEvidence(regions, regionId, regionName, systemId, dayKey, role, weightedRecency);
-    bumpCounter(timezones, kill.tz_label);
-    bumpCounter(locations, kill.location_label);
+    addRegionEvidence(regions, regionId, regionName, systemId, dayKey, kill.roles, weightedRecency);
+    bumpCounter(activityWindows, activityWindow);
+    bumpCounter(securityBands, securityBand);
 
     collectMemberFromKill(args, kill, metrics, members, graphNodes, graphEdges);
     graphNodes.set(`system:${systemId}`, {
@@ -444,6 +442,7 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
       label: systemName,
       weight: 1,
     });
+    acceptedKills.push(kill);
   }
 
   graphNodes.set(`entity:${args.scope}:${args.id}`, {
@@ -454,46 +453,32 @@ async function collectEvidence(db: Db, args: OsintInferenceArgs): Promise<Collec
   });
 
   const adjacency = loadAdjacency(db, [...systems.keys()]);
-  if (args.includeMemberAnalysis && (args.scope === 'corporation' || args.scope === 'alliance')) {
-    await enrichMembersFromEntityEndpoint(db, args, members);
-  }
-
   return {
-    kills: [...deduped.values()].filter((kill) => !kill.is_npc && !kill.is_awox && typeof kill.solar_system_id === 'number' && !!kill.killmail_time),
+    kills: acceptedKills,
     systems,
     regions,
     members,
     graphNodes: [...graphNodes.values()],
     graphEdges: [...graphEdges.values()],
     adjacency,
-    timezones,
-    locations,
+    activityWindows,
+    securityBands,
     npcSystems,
     soloLossSystems,
     filtered,
-    sourceWindowDays,
+    sourceWindowDays: args.windowDays,
+    coverage,
   };
 }
 
-async function resolveEntityName(db: Db, scope: OsintScope, id: number): Promise<string | null> {
-  const endpointScope = scope === 'character'
-    ? 'characters'
-    : scope === 'corporation'
-      ? 'corporations'
-      : 'alliances';
-  const result = await getEntityDetail(db, endpointScope, id);
-  if (result.ok && result.data && typeof result.data === 'object') {
-    const name = (result.data as Record<string, unknown>).name;
-    if (typeof name === 'string' && name.trim().length > 0) return name;
-  }
-
-  const fallback = await callEsiOperation<Array<{ id: number; name: string }>>(
+async function resolveEntityName(db: Db, id: number): Promise<string | null> {
+  const result = await callEsiOperation<Array<{ id: number; name: string }>>(
     db,
     'post_universe_names',
     { ids: JSON.stringify([id]) },
   );
-  if (!fallback.ok || !Array.isArray(fallback.data)) return null;
-  return fallback.data.find((entry) => entry.id === id)?.name ?? null;
+  if (!result.ok || !Array.isArray(result.data)) return null;
+  return result.data.find((entry) => entry.id === id)?.name ?? null;
 }
 
 function resolveSystemRegion(db: Db, systemId: number): { regionId: number | null; regionName: string | null } {
@@ -526,7 +511,7 @@ function addRegionEvidence(
   regionName: string | null,
   systemId: number,
   dayKey: string,
-  role: 'kill' | 'loss',
+  roles: OsintKillmail['roles'],
   weightedRecency: number,
 ): void {
   if (regionId === null || !regionName) return;
@@ -545,8 +530,8 @@ function addRegionEvidence(
   region.encounters += 1;
   region.uniqueDays.add(dayKey);
   region.systemIds.add(systemId);
-  if (role === 'kill') region.kills += 1;
-  else region.losses += 1;
+  if (roles.attacker) region.kills += 1;
+  if (roles.victim) region.losses += 1;
   region.recentWeight += weightedRecency;
   regions.set(regionId, region);
 }
@@ -602,9 +587,9 @@ function extractParticipants(
   id: number,
   kill: OsintKillmail,
 ): Array<{ characterId: number; name: string; role: 'kill' | 'loss' }> {
-  const participants = new Map<number, { characterId: number; name: string; role: 'kill' | 'loss' }>();
-  if (typeof kill.victim_character_id === 'number' && matchesScope(scope, id, 'victim', kill)) {
-    participants.set(kill.victim_character_id, {
+  const participants = new Map<string, { characterId: number; name: string; role: 'kill' | 'loss' }>();
+  if (typeof kill.victim_character_id === 'number' && matchesVictimScope(scope, id, kill)) {
+    participants.set(`${kill.victim_character_id}:loss`, {
       characterId: kill.victim_character_id,
       name: `character:${kill.victim_character_id}`,
       role: 'loss',
@@ -613,7 +598,7 @@ function extractParticipants(
   for (const attacker of kill.attackers) {
     if (typeof attacker.character_id !== 'number') continue;
     if (!matchesAttackerScope(scope, id, attacker)) continue;
-    participants.set(attacker.character_id, {
+    participants.set(`${attacker.character_id}:kill`, {
       characterId: attacker.character_id,
       name: `character:${attacker.character_id}`,
       role: 'kill',
@@ -622,19 +607,14 @@ function extractParticipants(
   return [...participants.values()];
 }
 
-function matchesScope(
+function matchesVictimScope(
   scope: OsintScope,
   id: number,
-  role: 'victim' | 'final_blow',
   kill: OsintKillmail,
 ): boolean {
-  if (scope === 'character') {
-    return role === 'victim' ? kill.victim_character_id === id : kill.final_blow_character_id === id;
-  }
-  if (scope === 'corporation') {
-    return role === 'victim' ? kill.victim_corporation_id === id : kill.final_blow_corporation_id === id;
-  }
-  return role === 'victim' ? kill.victim_alliance_id === id : kill.final_blow_alliance_id === id;
+  if (scope === 'character') return kill.victim_character_id === id;
+  if (scope === 'corporation') return kill.victim_corporation_id === id;
+  return kill.victim_alliance_id === id;
 }
 
 function matchesAttackerScope(
@@ -676,41 +656,6 @@ function loadAdjacency(db: Db, systemIds: number[]): Map<number, Set<number>> {
   }
 
   return adjacency;
-}
-
-async function enrichMembersFromEntityEndpoint(
-  db: Db,
-  args: OsintInferenceArgs,
-  members: Map<number, MemberStats>,
-): Promise<void> {
-  const result = await getEntityMembers(
-    db,
-    args.scope === 'corporation' ? 'corporations' : 'alliances',
-    args.id,
-    1,
-    100,
-  );
-  if (!result.ok || !Array.isArray(result.data)) return;
-
-  for (const entry of result.data) {
-    if (!entry || typeof entry !== 'object') continue;
-    const record = entry as Record<string, unknown>;
-    const idValue = record.character_id ?? record.id ?? record.member_id;
-    if (typeof idValue !== 'number') continue;
-    const current = members.get(idValue) ?? {
-      characterId: idValue,
-      name: typeof record.character_name === 'string'
-        ? record.character_name
-        : typeof record.name === 'string'
-          ? record.name
-          : `character:${idValue}`,
-      systems: new Set<string>(),
-      kills: 0,
-      losses: 0,
-      appearances: 0,
-    };
-    members.set(idValue, current);
-  }
 }
 
 function scoreSystems(
@@ -820,9 +765,9 @@ function buildReasons(metrics: SystemMetrics): string[] {
   if (metrics.totalValue > 0) {
     reasons.push(`${(metrics.totalValue / 1_000_000_000).toFixed(2)}B ISK of filtered activity`);
   }
-  const dominantTimezone = dominantLabel(metrics.timezones);
-  if (dominantTimezone) {
-    reasons.push(`dominant timezone signal: ${dominantTimezone}`);
+  const dominantActivityWindow = dominantLabel(metrics.activityWindows);
+  if (dominantActivityWindow) {
+    reasons.push(`dominant public activity window: ${dominantActivityWindow}`);
   }
   if (metrics.hubPenalty > 0) {
     reasons.push('trade-hub/chokepoint penalty applied');
@@ -885,6 +830,36 @@ async function buildMemberSummary(db: Db, members: Map<number, MemberStats>): Pr
   }));
 }
 
+function buildMemberAnalysis(
+  evidence: CollectedEvidence,
+  memberSummary: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  return {
+    authoritative: false,
+    source: 'eve-kill',
+    basis: 'observed_killboard_activity',
+    window_days: evidence.sourceWindowDays,
+    total_members_observed: evidence.members.size,
+    members_analyzed: memberSummary.length,
+    core_members: memberSummary,
+    coverage: {
+      truncated: evidence.coverage.truncated,
+      request_count: evidence.coverage.requestCount,
+      windows: evidence.coverage.windows,
+      source_error: evidence.coverage.sourceError,
+      limitations: [
+        'Observed public killboard participants only; this is not an official corporation or alliance roster.',
+        ...(evidence.coverage.truncated
+          ? ['EVE-KILL result or request cap was reached; additional observed participants may be missing.']
+          : []),
+        ...(evidence.coverage.sourceError
+          ? [`EVE-KILL activity search failed: ${evidence.coverage.sourceError}`]
+          : []),
+      ],
+    },
+  };
+}
+
 async function resolveCharacterNames(db: Db, ids: number[]): Promise<Map<number, string>> {
   const result = new Map<number, string>();
   if (ids.length === 0) return result;
@@ -934,8 +909,8 @@ function buildGraphDigest(
       member_overlap: metrics.memberIds.size,
       hub_penalty: metrics.hubPenalty,
       adjacency_support: metrics.adjacencySupport,
-      dominant_timezone: dominantLabel(metrics.timezones),
-      location_profile: dominantLabel(metrics.locations),
+      dominant_activity_window_utc: dominantLabel(metrics.activityWindows),
+      security_band: dominantLabel(metrics.securityBands),
     }));
 
   return {
@@ -951,10 +926,10 @@ function buildGraphDigest(
       roaming_bias: computeRoamingBias(topSystems),
       hub_bias: Number(topSystems.reduce((sum, item) => sum + Number(item.hub_penalty ?? 0), 0).toFixed(2)),
       member_concentration: computeMemberConcentration(topSystems),
-      timezone_dispersion: computeCounterDispersion(evidence.timezones),
+      activity_window_dispersion: computeCounterDispersion(evidence.activityWindows),
       single_day_spike_bias: computeSingleDaySpikeBias(evidence.systems),
-      nullsec_bias: computeLocationBias(evidence.locations, 'nullsec'),
-      lowsec_bias: computeLocationBias(evidence.locations, 'lowsec'),
+      nonpositive_security_bias: computeLocationBias(evidence.securityBands, 'nonpositive_security'),
+      lowsec_bias: computeLocationBias(evidence.securityBands, 'lowsec'),
       graph_node_count: Math.min(MAX_GRAPH_SYSTEMS + MAX_GRAPH_MEMBERS, evidence.graphNodes.length),
       graph_edge_count: Math.min(20, evidence.graphEdges.length),
     },
@@ -995,8 +970,11 @@ function mergeUncertainty(
   const items = [
     'Killboard activity is only a proxy for residence and staging.',
   ];
-  if (evidence.sourceWindowDays < args.windowDays) {
-    items.push(`zKill scoped feed is capped to ${evidence.sourceWindowDays} day(s) by upstream API limits.`);
+  if (evidence.coverage.sourceError) {
+    items.push(`EVE-KILL activity search failed: ${evidence.coverage.sourceError}`);
+  }
+  if (evidence.coverage.truncated) {
+    items.push('EVE-KILL activity search was truncated at the configured result/request cap.');
   }
   if (hypotheses.length > 1) {
     items.push('Top systems are close in score, so the theater may be split or roaming.');
@@ -1007,11 +985,14 @@ function mergeUncertainty(
   if ([...evidence.systems.values()].some((entry) => entry.uniqueDays.size <= 1)) {
     items.push('Single-day spikes are down-weighted, but some top systems may still reflect transient operations.');
   }
-  if (evidence.filtered.npc > 0 || evidence.filtered.awox > 0) {
-    items.push('NPC and awox rows were excluded from scoring to reduce noise.');
+  if (evidence.filtered.npc > 0) {
+    items.push('Rows explicitly classified as NPC activity were excluded from PvP scoring.');
+  }
+  if (evidence.filtered.npcUnknown > 0) {
+    items.push('Some rows did not expose an NPC classification and were retained as unknown.');
   }
   if (evidence.filtered.incomplete > 0) {
-    items.push('Some killmails were skipped because zKill/ESI enrichment did not expose enough location data.');
+    items.push('Some EVE-KILL search rows were skipped because they lacked a valid time or solar-system id.');
   }
   if (!llmPatternAnalysis) {
     items.push('LLM graph pattern analysis unavailable or skipped; result is deterministic-only.');
@@ -1119,9 +1100,9 @@ function emptyGraphDigest(args: OsintInferenceArgs): GraphDigest {
       roaming_bias: 0,
       hub_bias: 0,
       member_concentration: 0,
-      timezone_dispersion: 0,
+      activity_window_dispersion: 0,
       single_day_spike_bias: 0,
-      nullsec_bias: 0,
+      nonpositive_security_bias: 0,
       lowsec_bias: 0,
       graph_node_count: 0,
       graph_edge_count: 0,
@@ -1178,4 +1159,18 @@ function computeLocationBias(counter: Map<string, number>, label: string): numbe
   const total = [...counter.values()].reduce((sum, value) => sum + value, 0);
   if (total === 0) return 0;
   return Number(((counter.get(label) ?? 0) / total).toFixed(2));
+}
+
+function activityWindowUtc(time: string): string {
+  const hour = new Date(time).getUTCHours();
+  if (hour < 8) return '00:00-07:59 UTC';
+  if (hour < 16) return '08:00-15:59 UTC';
+  return '16:00-23:59 UTC';
+}
+
+function classifySecurityBand(security: number | null): string | null {
+  if (security === null) return null;
+  if (security >= 0.45) return 'highsec';
+  if (security > 0) return 'lowsec';
+  return 'nonpositive_security';
 }

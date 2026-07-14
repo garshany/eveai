@@ -6,10 +6,11 @@ const MAX_WEB_SEARCHES_PER_TURN = 2;
 export type WebSearchState = {
   normalizedQueries: string[];
   eveKillCallCount: number;
+  eveKillAnalyticsCallCount: number;
 };
 
 export function createWebSearchState(): WebSearchState {
-  return { normalizedQueries: [], eveKillCallCount: 0 };
+  return { normalizedQueries: [], eveKillCallCount: 0, eveKillAnalyticsCallCount: 0 };
 }
 
 export function registerWebSearch(

@@ -1,230 +1,177 @@
 /**
- * EVE-KILL (Thessia) API types.
- * Base URL: https://eve-kill.com/api/
- * Docs: https://github.com/EVE-KILL/Thessia/tree/main/docs/
+ * Types for the public EVE-KILL v1 API at https://api.eve-kill.com.
+ *
+ * API payloads are deliberately kept separate from NormalizedKillmail. Callers
+ * should never depend on whether a value came from a flat list row, an enriched
+ * detail response, or an ESI-compatible search/feed payload.
  */
 
-// ---------------------------------------------------------------------------
-// Killmail
-// ---------------------------------------------------------------------------
+export type ApiResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string; status?: number };
 
-/** Killmail as returned by /api/killmail/{id} or query results. */
-export type EveKillKillmail = {
-  killmail_id: number;
-  kill_time?: string;
-  system_id?: number;
-  system_name?: string;
-  system_security?: number;
-  region_id?: number;
-  region_name?: string;
-  total_value?: number;
-  fitted_value?: number;
-  dropped_value?: number;
-  destroyed_value?: number;
-  point_value?: number;
-  is_npc?: boolean;
-  is_solo?: boolean;
-  is_awox?: boolean;
-  labels?: string[];
-  victim?: EveKillEntity;
-  attackers?: EveKillEntity[];
-  items?: EveKillItem[];
-  [key: string]: unknown;
+export type Pagination = {
+  hasMore: boolean;
+  cursor: number | null;
 };
 
-export type EveKillEntity = {
-  character_id?: number;
-  character_name?: string;
-  corporation_id?: number;
-  corporation_name?: string;
-  alliance_id?: number;
-  alliance_name?: string;
-  faction_id?: number;
-  faction_name?: string;
-  ship_type_id?: number;
-  ship_name?: string;
-  ship_group_name?: string;
-  weapon_type_id?: number;
-  weapon_name?: string;
-  damage_done?: number;
-  final_blow?: boolean;
-  [key: string]: unknown;
+export type KillmailActivity = 'kills' | 'losses' | 'all';
+export type EntityScope = 'character' | 'corporation' | 'alliance';
+export type EntityApiScope = 'characters' | 'corporations' | 'alliances';
+
+export type Position3d = { x: number; y: number; z: number };
+
+export type KillmailEntity = {
+  characterId?: number;
+  corporationId?: number;
+  allianceId?: number;
+  factionId?: number;
+  characterName?: string;
+  corporationName?: string;
+  allianceName?: string;
+  factionName?: string;
+  shipTypeId?: number;
+  shipName?: string;
+  shipGroupName?: string;
+  weaponTypeId?: number;
+  weaponName?: string;
+  damageDone?: number;
+  damageTaken?: number;
+  finalBlow?: boolean;
 };
 
-export type EveKillItem = {
-  type_id?: number;
-  type_name?: string;
+export type KillmailItem = {
+  typeId: number;
+  typeName?: string;
   flag?: number;
-  quantity_dropped?: number;
-  quantity_destroyed?: number;
-  [key: string]: unknown;
+  flagName?: string;
+  quantityDropped: number;
+  quantityDestroyed: number;
+  singleton?: number;
+  price?: number;
+  totalValue?: number;
 };
 
-// ---------------------------------------------------------------------------
-// Query API (POST /api/query)
-// ---------------------------------------------------------------------------
-
-/** MongoDB-style filter operators. */
-export type QueryFilter = Record<string, unknown>;
-
-export type QueryOptions = {
-  limit?: number;
-  skip?: number;
-  sort?: Record<string, 1 | -1>;
-  projection?: Record<string, 0 | 1>;
+export type NormalizedKillmail = {
+  killmailId: number;
+  killmailHash?: string;
+  killmailTime?: string;
+  solarSystemId?: number;
+  solarSystemName?: string;
+  solarSystemSecurity?: number;
+  constellationId?: number;
+  regionId?: number;
+  regionName?: string;
+  totalValue?: number;
+  fittedValue?: number;
+  droppedValue?: number;
+  destroyedValue?: number;
+  points?: number;
+  attackerCount: number;
+  isNpc?: boolean;
+  isSolo?: boolean;
+  victim: KillmailEntity;
+  attackers: KillmailEntity[];
+  items: KillmailItem[];
+  position?: Position3d;
+  siblings: NormalizedKillmail[];
+  /** `all` means the scoped entity appeared on both sides of this killmail. */
+  activity?: KillmailActivity;
+  sourceShape: 'summary' | 'esi' | 'detail' | 'feed';
 };
 
-export type QueryRequest = {
-  filter: QueryFilter;
-  options?: QueryOptions;
+export type KillmailPage = {
+  kills: NormalizedKillmail[];
+  pagination: Pagination;
 };
 
-export type QueryResponse = EveKillKillmail[];
+export type KillmailCollection = {
+  kills: NormalizedKillmail[];
+  truncated: boolean;
+  requestCount: number;
+};
 
-// ---------------------------------------------------------------------------
-// Stats / Top / Battles
-// ---------------------------------------------------------------------------
+export const SEARCH_FILTER_KEYS = [
+  'system_ids',
+  'constellation_ids',
+  'region_ids',
+  'character_ids',
+  'corporation_ids',
+  'alliance_ids',
+] as const;
+
+export type SearchFilterKey = typeof SEARCH_FILTER_KEYS[number];
+
+export type KillmailSearchRequest = {
+  from: string;
+  to: string;
+  system_ids?: number[];
+  constellation_ids?: number[];
+  region_ids?: number[];
+  character_ids?: number[];
+  corporation_ids?: number[];
+  alliance_ids?: number[];
+};
+
+export type KillmailSearchResult = KillmailCollection & {
+  windows: Array<{ from: string; to: string }>;
+};
+
+export type FeedEvent = {
+  sequenceId: number;
+  killmail: NormalizedKillmail;
+};
+
+export type FeedPage = {
+  events: FeedEvent[];
+  latest: number;
+  hasMore: boolean;
+  next: string | null;
+  last: string | null;
+};
+
+export type FeedWatchMatch = {
+  watchId: number;
+  chatId: number;
+  topic: string;
+  label: string;
+};
+
+export type CharacterTopShip = {
+  shipTypeId: number;
+  shipName?: string;
+  kills: number;
+  losses: number;
+};
 
 export type EntityStats = {
-  kills?: number;
-  losses?: number;
-  isk_destroyed?: number;
-  isk_lost?: number;
-  solo_kills?: number;
-  [key: string]: unknown;
-};
-
-export type TopEntry = {
-  id?: number;
-  name?: string;
-  count?: number;
-  [key: string]: unknown;
-};
-
-export type BattleSummary = {
-  id?: number | string;
-  system_id?: number;
-  system_name?: string;
-  start_time?: string;
-  end_time?: string;
-  kills?: number;
-  total_value?: number;
-  [key: string]: unknown;
-};
-
-export type SearchResult = {
-  hits?: Array<{
-    id?: number;
-    name?: string;
-    type?: string;
-    [key: string]: unknown;
-  }>;
-  entityCounts?: Record<string, number>;
-  entityOrder?: string[];
-  isExactMatch?: boolean;
-  [key: string]: unknown;
-};
-
-export type BuildPrice = {
-  type_id?: number;
-  build_price?: number;
-  materials?: Array<{
-    type_id?: number;
-    type_name?: string;
-    quantity?: number;
-    price?: number;
-    [key: string]: unknown;
-  }>;
-  [key: string]: unknown;
-};
-
-// ---------------------------------------------------------------------------
-// Compact killmail for agent output (token-efficient)
-// ---------------------------------------------------------------------------
-
-export type CompactKill = {
-  killmail_id: number;
-  time: string | null;
-  system: string | null;
-  system_sec: number | null;
-  region: string | null;
-  victim_name: string | null;
-  victim_corp: string | null;
-  victim_alliance: string | null;
-  victim_ship: string | null;
-  attacker_name: string | null;
-  attacker_corp: string | null;
-  attacker_ship: string | null;
-  attacker_weapon: string | null;
-  attackers_count: number;
-  value_m: number;
-  solo: boolean;
-  npc: boolean;
-  url: string;
-};
-
-// ---------------------------------------------------------------------------
-// Tool parameter types
-// ---------------------------------------------------------------------------
-
-export type KillFeedScope = 'system' | 'character' | 'corporation' | 'alliance' | 'ship_type';
-export type ActivityFilter = 'kills' | 'losses' | 'all';
-
-export type KillFeedArgs = {
-  scope: KillFeedScope;
   id: number;
-  activity?: ActivityFilter;
-  past_seconds?: number;
-  limit?: number;
-  detail_limit?: number;
-  fields?: string[] | null;
+  name?: string;
+  period?: string;
+  kills: number;
+  losses: number;
+  soloKills: number;
+  npcLosses: number;
+  iskDestroyed: number;
+  iskLost: number;
+  efficiency?: number;
+  iskEfficiency?: number;
+  topShips: CharacterTopShip[];
 };
 
-export type KillQueryArgs = {
-  filter: QueryFilter;
-  sort?: Record<string, 1 | -1> | null;
-  limit?: number;
-  fields?: string[] | null;
+export type BatchEntityStats = {
+  period: string;
+  results: EntityStats[];
+  requestedIds: number[];
+  resolvedIds: number[];
+  missingIds: number[];
+  truncated: boolean;
+  requestCount: number;
 };
-
-export type KillIntelAction =
-  | 'stats' | 'shortstats' | 'top' | 'battles' | 'battle_detail'
-  | 'coalition' | 'corp_history' | 'alliance_history' | 'members'
-  | 'search' | 'build_price' | 'type_prices' | 'global_stats'
-  | 'near_celestial' | 'near_coordinates'
-  | 'killmail' | 'killmail_batch' | 'killmail_sibling'
-  | 'entity_detail' | 'alliance_corps'
-  | 'war' | 'war_killmails' | 'faction';
-
-export type KillIntelScope = 'character' | 'corporation' | 'alliance';
-
-export type KillIntelArgs = {
-  action: KillIntelAction;
-  scope?: KillIntelScope | null;
-  id?: number | null;
-  top_type?: 'ships' | 'systems' | 'regions' | null;
-  days?: number;
-  limit?: number;
-  search_term?: string | null;
-  type_id?: number | null;
-  celestial_id?: number | null;
-  distance_meters?: number | null;
-  battle_id?: number | string | null;
-  x?: number | null;
-  y?: number | null;
-  z?: number | null;
-  ids?: number[] | null;
-};
-
-// ---------------------------------------------------------------------------
-// Client config
-// ---------------------------------------------------------------------------
 
 export type EveKillConfig = {
   baseUrl: string;
   timeoutMs: number;
-  cacheTtlSeconds: number;
-  maxQueryLimit: number;
   userAgent: string;
   retryMaxAttempts: number;
   backoffMaxMs: number;

@@ -18,7 +18,6 @@ vi.mock('../../src/config.js', () => ({
     userProfile: { path: './data/USER.md', refreshSeconds: 300 },
     market: { defaultRegionId: 10000002, defaultRegionName: 'The Forge' },
     compact: { maxInputChars: 20000 },
-    zkill: { baseUrl: '', timeoutMs: 5000, cacheTtlSeconds: 300, maxPastSeconds: 604800, userAgent: 'test' },
   },
 }));
 

@@ -25,6 +25,49 @@ describe('OpenAI runtime configuration', () => {
     expect(config.openai.baseUrl).toBe('https://api.openai.com/v1');
   });
 
+  it('does not expose an EVE-KILL base override and keeps the client pinned to the current API', async () => {
+    setRequiredEnv();
+    process.env.EVE_KILL_BASE_URL = 'https://untrusted.invalid/';
+
+    const { config } = await import('../../src/config.js');
+    const { EVE_KILL_API_BASE_URL, getEveKillConfig } = await import('../../src/eve-kill/client.js');
+
+    expect(config.eveKill).not.toHaveProperty('baseUrl');
+    expect(config.eveKill).not.toHaveProperty('cacheTtlSeconds');
+    expect(EVE_KILL_API_BASE_URL).toBe('https://api.eve-kill.com/');
+    expect(getEveKillConfig().baseUrl).toBe(EVE_KILL_API_BASE_URL);
+    expect('zkill' in config).toBe(false);
+  });
+
+  it('hard-bounds positive EVE-KILL timeout, retry, and backoff controls', async () => {
+    setRequiredEnv();
+    process.env.EVE_KILL_TIMEOUT_MS = '999999999';
+    process.env.EVE_KILL_RETRY_MAX_ATTEMPTS = '999999999';
+    process.env.EVE_KILL_BACKOFF_MAX_MS = '999999999';
+
+    const { config } = await import('../../src/config.js');
+
+    expect(config.eveKill).toMatchObject({
+      timeoutMs: 60_000,
+      retryMaxAttempts: 5,
+      backoffMaxMs: 60_000,
+    });
+  });
+
+  it('rejects non-positive EVE-KILL retry controls at startup', async () => {
+    for (const name of [
+      'EVE_KILL_TIMEOUT_MS',
+      'EVE_KILL_RETRY_MAX_ATTEMPTS',
+      'EVE_KILL_BACKOFF_MAX_MS',
+    ]) {
+      setRequiredEnv();
+      process.env[name] = '0';
+      await expect(import('../../src/config.js')).rejects.toThrow(name);
+      delete process.env[name];
+      vi.resetModules();
+    }
+  });
+
   it('rejects unsupported server-side Responses state', async () => {
     setRequiredEnv();
     process.env.OPENAI_RESPONSE_STATE_MODE = 'server';

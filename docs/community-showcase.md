@@ -45,7 +45,7 @@ EVE AI Agent is a self-hosted chat-first assistant for EVE Online. Run it with T
 - EVE SSO character linking with encrypted local token storage and scope-aware access to private ESI data.
 - Local SDE lookup for systems, items, dogma, blueprints, and routes; live ESI for authorized character, corporation, market, assets, skills, industry, mail, and location data.
 - Route planning with danger analysis, killmail context, gate-camp signals, and Thera or Turnur shortcuts.
-- D-scan, local and fleet analysis, zKillboard and EVE-KILL intelligence, EVE-Scout data, and opt-in chat notifications.
+- D-scan, local and fleet analysis, current EVE-KILL public intelligence/feed alerts, EVE-Scout data, and opt-in chat notifications.
 
 ## Self-hosting
 

@@ -131,13 +131,13 @@ describe('parseSse + streamed outputs', () => {
 
     const raw = [
       'event: response.output_item.added',
-      'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"plan_route","arguments":""}}',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"plan_route","arguments":""}}',
       '',
       'event: response.function_call_arguments.delta',
       'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"origin\\":\\"Jita\\""}',
       '',
       'event: response.function_call_arguments.done',
-      'data: {"type":"response.function_call_arguments.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"plan_route","arguments":"{\\"origin\\":\\"Jita\\",\\"destination\\":\\"Amarr\\"}"}}',
+      'data: {"type":"response.function_call_arguments.done","item_id":"fc_1","name":"plan_route","output_index":0,"arguments":"{\\"origin\\":\\"Jita\\",\\"destination\\":\\"Amarr\\"}","sequence_number":3}',
       '',
       'event: response.completed',
       'data: {"response":{"id":"resp_fc","output":[]}}',
@@ -158,6 +158,28 @@ describe('parseSse + streamed outputs', () => {
 });
 
 describe('createNativeResponse request body', () => {
+  it('never exposes a non-2xx provider body through the thrown error or logs', async () => {
+    const sentinel = 'provider-private-payload-must-not-escape';
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      error: { message: `remote failure arguments=${sentinel}` },
+    }), { status: 400 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    let thrown: unknown;
+    try {
+      await createNativeResponse({ instructions: 'test', items: [toNativeMessage('pulse')], tools: [] });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe('Responses API HTTP 400');
+    expect((thrown as Error).message).not.toContain(sentinel);
+    expect(JSON.stringify(logSpy.mock.calls)).not.toContain(sentinel);
+    logSpy.mockRestore();
+  });
+
   it('forwards previous_response_id and context_management to the proxy', async () => {
     process.env.ALLOWED_TELEGRAM_USER_ID = '1';
     process.env.TELEGRAM_BOT_TOKEN = 'test';
@@ -229,6 +251,34 @@ describe('createNativeResponse request body', () => {
     expect(body?.text).toEqual({ verbosity: 'low' });
     expect(body?.store).toBe(false);
     expect(body?.stream).toBe(true);
+  });
+
+  it('requests encrypted reasoning only when same-turn stateless replay is enabled', async () => {
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"resp_reasoning","output_text":"ok","output":[]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+      preserveReasoning: true,
+    });
+    expect(body?.include).toEqual(['reasoning.encrypted_content']);
+
+    await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+    });
+    expect(body?.include).toEqual([]);
   });
 
   it('forwards every GPT-5.6 family model and supported fixed reasoning effort', async () => {
@@ -413,6 +463,31 @@ describe('createNativeResponse request body', () => {
     ]);
   });
 
+  it('replays opaque reasoning and calls in provider order for stateless continuation', async () => {
+    const { buildOrderedContinuationInputItems } = await import('../../src/agent/native-responses.js');
+    const reasoning = {
+      type: 'reasoning',
+      id: 'rs_1',
+      encrypted_content: 'opaque-ciphertext',
+      summary: [],
+    };
+    const call = {
+      type: 'function_call',
+      id: 'fc_1',
+      call_id: 'call_1',
+      name: 'echo_city',
+      arguments: '{"name":"Jita"}',
+      status: 'completed',
+      phase: 'final',
+    };
+
+    expect(buildOrderedContinuationInputItems([
+      reasoning,
+      call,
+      { type: 'message', content: [{ type: 'output_text', text: 'ignored' }] },
+    ])).toEqual([reasoning, call]);
+  });
+
   it('uses done items when response.completed.output is empty', async () => {
     process.env.ALLOWED_TELEGRAM_USER_ID = '1';
     process.env.TELEGRAM_BOT_TOKEN = 'test';
@@ -478,5 +553,21 @@ describe('createNativeResponse request body', () => {
     expect(result.error).not.toBeNull();
     expect(result.error?.message).toContain('Incomplete response stream');
     expect(result.outputText).toBe('');
+  });
+
+  it('does not write raw streamed error payloads to logs', async () => {
+    const sentinel = 'remote-error-must-not-be-logged';
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.failed',
+      `data: {"error":{"message":"${sentinel}"}}`,
+      '',
+    ].join('\n'), { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const result = await createNativeResponse({ instructions: 'test', items: [toNativeMessage('pulse')], tools: [] });
+    expect(result.error?.message).toBe(sentinel);
+    expect(JSON.stringify(logSpy.mock.calls)).not.toContain(sentinel);
+    logSpy.mockRestore();
   });
 });

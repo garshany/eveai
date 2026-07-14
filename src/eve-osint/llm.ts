@@ -15,7 +15,7 @@ Your job: synthesize all data into an actionable intelligence report. Do not inv
 - **deployments**: region changes over time, current region, stability
 - **vulnerability**: loss patterns, peak loss hours/systems, best ambush window, vulnerability score
 - **alt_detection**: suspected alt pairs (corp/alliance only)
-- **graph_signals**: split_theater, roaming_bias, hub_bias, member_concentration, timezone_dispersion
+- **graph_signals**: split_theater, roaming_bias, hub_bias, member_concentration, activity_window_dispersion, security-band bias
 
 ## EVE Online context
 

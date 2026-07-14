@@ -4,9 +4,10 @@ import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 // Mock ONLY the network call; keep the real item builders/helpers so the loop
 // under test assembles input exactly as production does.
-const { createNativeResponseMock, runPreTurnCompactMock } = vi.hoisted(() => ({
+const { createNativeResponseMock, runPreTurnCompactMock, runMidTurnCompactMock } = vi.hoisted(() => ({
   createNativeResponseMock: vi.fn(),
   runPreTurnCompactMock: vi.fn(),
+  runMidTurnCompactMock: vi.fn(),
 }));
 vi.mock('../../src/agent/native-responses.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/agent/native-responses.js')>();
@@ -14,7 +15,11 @@ vi.mock('../../src/agent/native-responses.js', async (importOriginal) => {
 });
 vi.mock('../../src/agent/compact.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/agent/compact.js')>();
-  return { ...actual, runPreTurnCompact: runPreTurnCompactMock };
+  return {
+    ...actual,
+    runPreTurnCompact: runPreTurnCompactMock,
+    runMidTurnCompact: runMidTurnCompactMock,
+  };
 });
 
 const GOAL = 'сравни цены Rifter и Punisher в Jita для соло-PvP';
@@ -53,6 +58,18 @@ function textResponse(text: string): MockResponse {
   };
 }
 
+function outputResponse(output: Array<Record<string, unknown>>, id = 'resp_output'): MockResponse {
+  return {
+    id,
+    output,
+    outputText: '',
+    error: null,
+    toolSearchPaths: [],
+    rawEvents: [],
+    usage: { input: 1000, output: 50, cached: 0, reasoning: 0 },
+  };
+}
+
 /** Flatten a request's input items into a searchable string per item. */
 function itemTexts(items: Array<Record<string, unknown>>): string[] {
   return items.map((item) => JSON.stringify(item));
@@ -75,6 +92,8 @@ beforeEach(() => {
   vi.resetModules();
   createNativeResponseMock.mockReset();
   runPreTurnCompactMock.mockReset();
+  runMidTurnCompactMock.mockReset();
+  runMidTurnCompactMock.mockResolvedValue(undefined);
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);
@@ -102,6 +121,70 @@ async function runLoop(): Promise<{ text: string }> {
 }
 
 describe('stateless tool loop context accumulation', () => {
+  it('routes analytics locally and never persists rejected private argument values', async () => {
+    const secret = 'private-analytics-sentinel';
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([{
+        type: 'function_call',
+        call_id: 'analytics_1',
+        name: 'killmail_forensics',
+        arguments: JSON.stringify({ killmail_id: 123, private_token: secret }),
+      }]))
+      .mockResolvedValueOnce(textResponse('безопасный ответ'));
+
+    try {
+      const result = await runLoop();
+      expect(result.text).toBe('безопасный ответ');
+      expect(fetchMock).not.toHaveBeenCalled();
+      const toolMessages = db.prepare(
+        "SELECT content FROM messages WHERE thread_id = ? AND role = 'tool' ORDER BY id",
+      ).all('t1') as Array<{ content: string }>;
+      expect(toolMessages).toHaveLength(1);
+      expect(toolMessages[0]?.content).not.toContain(secret);
+      expect(JSON.parse(toolMessages[0]!.content)).toMatchObject({
+        tool: 'killmail_forensics',
+        args: { fields: ['killmail_id', 'private_token'] },
+        result: { ok: false, error: 'Invalid EVE-KILL analytics arguments' },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('caps local EVE-KILL analytics at four calls per turn', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { content: [{ type: 'text', text: '{"finding":"ok"}' }] },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { __test__, createWebSearchState } = await import('../../src/agent/executor.js');
+      const state = createWebSearchState();
+      const results: unknown[] = [];
+      for (let index = 0; index < 5; index += 1) {
+        results.push(await __test__.executeToolCall(
+          db as never,
+          'request-1',
+          GOAL,
+          { userId: 1, chatId: 1 },
+          'killmail_forensics',
+          { killmail_id: 100 + index },
+          state,
+        ));
+      }
+
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(results.slice(0, 4).every((result) => (result as { ok?: boolean }).ok === true)).toBe(true);
+      expect(results[4]).toMatchObject({ ok: false, blocked: true });
+      expect(state).toMatchObject({ eveKillCallCount: 5, eveKillAnalyticsCallCount: 5 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('keeps the user goal and earlier tool rounds in every request', async () => {
     createNativeResponseMock
       .mockResolvedValueOnce(toolCallResponse('call_1', 'SELECT type_id FROM sde_types LIMIT 1'))
@@ -148,6 +231,32 @@ describe('stateless tool loop context accumulation', () => {
     expect(callItems).toHaveLength(1);
     expect(outputItems).toHaveLength(1);
   });
+
+  it('replays encrypted reasoning before its call/output and never persists it', async () => {
+    const reasoning = {
+      type: 'reasoning',
+      id: 'rs_1',
+      encrypted_content: 'opaque-reasoning-must-stay-in-memory',
+      summary: [],
+    };
+    const call = toolCallResponse('call_reasoning', 'SELECT 1').output[0];
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([reasoning, call], 'resp_reasoning'))
+      .mockResolvedValueOnce(textResponse('готово'));
+
+    const result = await runLoop();
+    expect(result.text).toBe('готово');
+    const second = createNativeResponseMock.mock.calls[1][0].items as Array<Record<string, unknown>>;
+    const reasoningIndex = second.findIndex((item) => item.id === 'rs_1');
+    const callIndex = second.findIndex((item) => item.type === 'function_call' && item.call_id === 'call_reasoning');
+    const outputIndex = second.findIndex((item) => item.type === 'function_call_output' && item.call_id === 'call_reasoning');
+    expect(reasoningIndex).toBeGreaterThanOrEqual(0);
+    expect(reasoningIndex).toBeLessThan(callIndex);
+    expect(callIndex).toBeLessThan(outputIndex);
+
+    const persisted = db.prepare('SELECT content FROM messages ORDER BY id').all() as Array<{ content: string }>;
+    expect(JSON.stringify(persisted)).not.toContain('opaque-reasoning-must-stay-in-memory');
+  });
 });
 
 describe('top-level GPT-5.6 reasoning selection', () => {
@@ -168,6 +277,7 @@ describe('top-level GPT-5.6 reasoning selection', () => {
     const request = createNativeResponseMock.mock.calls[0][0];
     expect(request.reasoningEffort).toBe('max');
     expect(request.reasoningMode).toBe('pro');
+    expect(request.preserveReasoning).toBe(true);
     expect(request.safetyIdentifier).toMatch(/^[a-f0-9]{64}$/);
     expect(request.safetyIdentifier).not.toBe('1');
     expect(request.promptCacheKey).toBe(request.safetyIdentifier);
@@ -303,6 +413,77 @@ describe('cooperative turn abort (CLI Ctrl-C)', () => {
     createNativeResponseMock.mockResolvedValueOnce(textResponse('ок'));
     const result = await runLoop();
     expect(result.text).toBe('ок');
+  });
+
+  it('does not run kill_watch after cancellation during an earlier read in the same batch', async () => {
+    const readCall = toolCallResponse('call_read', 'SELECT type_id FROM sde_types LIMIT 1').output[0];
+    const watchCall = {
+      type: 'function_call',
+      call_id: 'call_watch',
+      name: 'kill_watch',
+      arguments: JSON.stringify({
+        action: 'watch',
+        topic_type: 'system',
+        topic_id: 30000142,
+        label: 'must-not-be-created',
+      }),
+    };
+    createNativeResponseMock.mockResolvedValueOnce(outputResponse([readCall, watchCall]));
+    let aborted = false;
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+
+    await expect(runWithActivitySink(
+      {
+        emit: (event) => {
+          if (event.type === 'tool_start' && event.name === 'sde_sql') aborted = true;
+        },
+        aborted: () => aborted,
+      },
+      () => __test__.runNativeAgentLoop(
+        db as never,
+        't1',
+        { userId: 1, chatId: 1 },
+        GOAL,
+        'developer prompt',
+        () => 'developer prompt',
+      ),
+    )).rejects.toThrow('Turn aborted by user');
+
+    const watches = db.prepare('SELECT COUNT(*) AS n FROM kill_watches').get() as { n: number };
+    expect(watches.n).toBe(0);
+  });
+
+  it('fails closed if a stale response asks a transient CLI lane to create a durable watch', async () => {
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([{
+        type: 'function_call',
+        call_id: 'call_watch',
+        name: 'kill_watch',
+        arguments: JSON.stringify({
+          action: 'watch',
+          topic_type: 'system',
+          topic_id: 30000142,
+          label: 'must-not-persist',
+        }),
+      }]))
+      .mockResolvedValueOnce(textResponse('уведомления недоступны'));
+    const { __test__ } = await import('../../src/agent/executor.js');
+
+    const result = await __test__.runNativeAgentLoop(
+      db as never,
+      't1',
+      { userId: 1, chatId: 1, durableNotifications: false },
+      GOAL,
+      'developer prompt',
+      () => 'developer prompt',
+    );
+
+    expect(result.text).toBe('уведомления недоступны');
+    const watches = db.prepare('SELECT COUNT(*) AS n FROM kill_watches').get() as { n: number };
+    expect(watches.n).toBe(0);
+    const second = JSON.stringify(createNativeResponseMock.mock.calls[1]?.[0].items);
+    expect(second).toContain('Durable background notifications are unavailable');
   });
 });
 

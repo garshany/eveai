@@ -1,17 +1,18 @@
 import type { Db } from '../db/sqlite.js';
-import { config } from '../config.js';
 import { callEsiOperation } from '../eve/esi-client.js';
-import type { KilllistItem } from '../eve-kill/client.js';
+import {
+  eveKillKillmailUrl,
+  getKillmailDetail,
+  searchKillmails,
+} from '../eve-kill/client.js';
+import type { NormalizedKillmail } from '../eve-kill/types.js';
 import { attributeKillsToGates } from './analytics.js';
-import type { GateKill } from './types.js';
+import type { GateKill, ThreatKillmail } from './types.js';
 
 const SNAPSHOT_SCAN_WINDOW_MINUTES = 60;
 const MAX_ENRICH_PER_SYSTEM = 3;
-
-type ZkbItem = {
-  killmail_id: number;
-  zkb?: { hash?: string; totalValue?: number; npc?: boolean; solo?: boolean };
-};
+const MAX_SEARCH_RESULTS = 2_500;
+const ENRICH_CONCURRENCY = 8;
 
 type EsiKillmailVictim = {
   ship_type_id?: number;
@@ -33,11 +34,10 @@ type EsiKillmail = {
   attackers?: EsiKillmailAttacker[];
 };
 
-export type SnapshotKill = KilllistItem & {
-  position?: { x: number; y: number; z: number };
+export type SnapshotKill = ThreatKillmail & {
   final_blow_ship_name?: string;
-  zkb_url: string;
-  zkb_time_msk: string | null;
+  eve_kill_url: string;
+  time_msk: string | null;
 };
 
 export type RouteSnapshotSystem = {
@@ -47,7 +47,9 @@ export type RouteSnapshotSystem = {
   sec: number;
   pvpKills: number;
   npcKills: number;
+  /** Value is based on the bounded detail sample, never presented as full coverage. */
   totalValueM: number;
+  valueResolvedKills: number;
   recentKills: SnapshotKill[];
   gateKills: GateKill[];
 };
@@ -57,196 +59,239 @@ export type RouteThreatSnapshot = {
   systems: RouteSnapshotSystem[];
   jumpMap: Map<number, number>;
   totalKills: number;
+  /** Sum from the bounded enriched detail sample. */
   totalValueM: number;
+  truncated: boolean;
+  requestCount: number;
+  error: string | null;
   scannedAt: string;
 };
 
+/**
+ * Build one source-neutral one-hour baseline for the supplied route systems.
+ * The EVE-KILL search client owns 15-ID chunking and cursor pagination. ESI is
+ * used only when an `(id, hash)` pair is available, and only its victim
+ * position is trusted for gate attribution.
+ */
 export async function buildRouteThreatSnapshot(
   db: Db,
   routeSystems: number[],
 ): Promise<RouteThreatSnapshot> {
-  const candidates = routeSystems
-    .map((systemId, routeIndex) => ({
-      id: systemId,
-      routeIndex,
-      name: resolveSystemName(db, systemId),
-      sec: resolveSystemSec(db, systemId),
-    }));
+  const scannedAt = new Date().toISOString();
+  const uniqueSystems = [...new Set(routeSystems.filter(validId))];
+  const jumpMapPromise = fetchSystemJumps(db, uniqueSystems);
+  if (uniqueSystems.length === 0) {
+    return emptySnapshot(routeSystems, await jumpMapPromise, scannedAt, null);
+  }
+
+  const from = new Date(Date.parse(scannedAt) - SNAPSHOT_SCAN_WINDOW_MINUTES * 60_000).toISOString();
+  const result = await searchKillmails(
+    db,
+    { from, to: scannedAt, system_ids: uniqueSystems },
+    { limit: MAX_SEARCH_RESULTS },
+  );
+  const jumpMap = await jumpMapPromise;
+  if (!result.ok) {
+    return emptySnapshot(routeSystems, jumpMap, scannedAt, result.error);
+  }
+
+  const wanted = new Set(uniqueSystems);
+  const pvpKills = result.data.kills.filter((kill) =>
+    kill.solarSystemId !== undefined
+    && wanted.has(kill.solarSystemId)
+    && kill.isNpc !== true
+    && isKillWithinWindow(kill.killmailTime, from, scannedAt),
+  );
+  const bySystem = groupKillsBySystem(pvpKills);
+  const candidates = [...bySystem.values()].flatMap((kills) => kills.slice(0, MAX_ENRICH_PER_SYSTEM));
+  const enriched = await mapWithConcurrency(
+    candidates,
+    ENRICH_CONCURRENCY,
+    (kill) => enrichRouteKillmail(db, kill, { resolveNames: false }),
+  );
+  const officialNames = await resolveOfficialNames(
+    db,
+    enriched.flatMap((kill) => [kill.victim_character_id, kill.final_blow_character_id]),
+  );
+  for (const kill of enriched) {
+    if (kill.victim_character_id) {
+      kill.victim_character_name = officialNames.get(kill.victim_character_id);
+    }
+    if (kill.final_blow_character_id) {
+      kill.final_blow_character_name = officialNames.get(kill.final_blow_character_id);
+    }
+  }
+  const enrichedBySystem = new Map<number, SnapshotKill[]>();
+  for (const kill of enriched) {
+    const systemId = pvpKills.find((candidate) => candidate.killmailId === kill.killmail_id)?.solarSystemId;
+    if (!systemId) continue;
+    const current = enrichedBySystem.get(systemId) ?? [];
+    current.push(kill);
+    enrichedBySystem.set(systemId, current);
+  }
 
   const systems: RouteSnapshotSystem[] = [];
-
-  for (const system of candidates) {
-    const feed = await fetchZkbForSnapshot(system.id);
-    const pvpKills = feed.filter((kill) => !kill.zkb?.npc);
-    if (pvpKills.length === 0) continue;
-
-    const enrichedKills = await enrichSnapshotKills(db, pvpKills);
-    const freshKills = enrichedKills
-      .filter((kill) => isKillWithinWindow(kill.killmail_time))
+  for (const systemId of uniqueSystems) {
+    const kills = bySystem.get(systemId) ?? [];
+    if (kills.length === 0) continue;
+    const recentKills = (enrichedBySystem.get(systemId) ?? [])
       .sort((left, right) => (right.killmail_time ?? '').localeCompare(left.killmail_time ?? ''));
-    if (freshKills.length === 0) continue;
-
-    const totalValueM = freshKills.reduce(
+    const routeIndex = routeSystems.indexOf(systemId);
+    const totalValueM = recentKills.reduce(
       (sum, kill) => sum + Math.round((kill.total_value ?? 0) / 1_000_000),
       0,
     );
-    const gateKills = attributeKillsToGates(
-      db,
-      system.id,
-      freshKills.map((kill) => ({
-        killmail_id: kill.killmail_id,
-        killmail_time: kill.killmail_time,
-        position: kill.position,
-      })),
-    );
-
+    const gateKills = attributeKillsToGates(db, systemId, recentKills);
     systems.push({
-      systemId: system.id,
-      routeIndex: system.routeIndex,
-      name: system.name,
-      sec: system.sec,
-      pvpKills: freshKills.length,
+      systemId,
+      routeIndex,
+      name: resolveSystemName(db, systemId),
+      sec: resolveSystemSec(db, systemId),
+      pvpKills: kills.length,
       npcKills: 0,
       totalValueM,
-      recentKills: freshKills,
+      valueResolvedKills: recentKills.filter((kill) => kill.total_value !== undefined).length,
+      recentKills,
       gateKills,
     });
   }
-
   systems.sort((left, right) => left.routeIndex - right.routeIndex);
-
-  const jumpMap = await fetchSystemJumps(db, routeSystems);
-  const totalKills = systems.reduce((sum, system) => sum + system.pvpKills, 0);
-  const totalValueM = systems.reduce((sum, system) => sum + system.totalValueM, 0);
 
   return {
     routeSystems: [...routeSystems],
     systems,
     jumpMap,
-    totalKills,
-    totalValueM,
-    scannedAt: new Date().toISOString(),
+    totalKills: pvpKills.length,
+    totalValueM: systems.reduce((sum, system) => sum + system.totalValueM, 0),
+    truncated: result.data.truncated,
+    requestCount: result.data.requestCount,
+    error: null,
+    scannedAt,
   };
 }
 
-async function fetchZkbForSnapshot(systemId: number): Promise<ZkbItem[]> {
-  const url = `${config.zkill.baseUrl}kills/systemID/${systemId}/pastSeconds/3600/`;
-  try {
-    const res = await fetch(url, {
-      headers: { Accept: 'application/json', 'Accept-Encoding': 'gzip', 'User-Agent': config.zkill.userAgent },
-      signal: AbortSignal.timeout(config.zkill.timeoutMs),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    if (!Array.isArray(data)) return [];
-    return data.filter((item: unknown): item is ZkbItem =>
-      !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).killmail_id === 'number',
+export async function enrichRouteKillmail(
+  db: Db,
+  base: NormalizedKillmail,
+  options: { resolveNames?: boolean } = {},
+): Promise<SnapshotKill> {
+  const detailPromise = getKillmailDetail(db, base.killmailId);
+  const officialPromise = base.killmailHash
+    ? callEsiOperation<EsiKillmail>(
+      db,
+      'get_killmails_killmail_id_killmail_hash',
+      { killmail_id: base.killmailId, killmail_hash: base.killmailHash },
+    ).catch(() => null)
+    : Promise.resolve(null);
+  const [detailResult, officialResult] = await Promise.all([detailPromise, officialPromise]);
+  const detail = detailResult.ok ? detailResult.data : undefined;
+  const official = officialResult?.ok ? officialResult.data : undefined;
+  const officialVictim = official?.victim;
+  const officialAttackers = official?.attackers ?? [];
+  const officialFinalBlow = officialAttackers.find((attacker) => attacker.final_blow === true)
+    ?? officialAttackers[0];
+  const baseFinalBlow = base.attackers.find((attacker) => attacker.finalBlow === true)
+    ?? base.attackers[0];
+  const detailFinalBlow = detail?.attackers.find((attacker) => attacker.finalBlow === true)
+    ?? detail?.attackers[0];
+  const victimShipTypeId = officialVictim?.ship_type_id
+    ?? base.victim.shipTypeId
+    ?? detail?.victim.shipTypeId;
+  const finalBlowShipTypeId = officialFinalBlow?.ship_type_id
+    ?? baseFinalBlow?.shipTypeId
+    ?? detailFinalBlow?.shipTypeId;
+  const victimType = resolveTypeGroup(db, victimShipTypeId);
+
+  const enriched: SnapshotKill = {
+    killmail_id: base.killmailId,
+    killmail_time: official?.killmail_time ?? base.killmailTime ?? detail?.killmailTime,
+    total_value: detail?.totalValue,
+    attacker_count: officialAttackers.length || base.attackerCount || detail?.attackerCount || 0,
+    is_npc: base.isNpc ?? detail?.isNpc,
+    is_solo: base.isSolo ?? detail?.isSolo,
+    ship_type_id: victimShipTypeId,
+    ship_name: victimType?.typeName,
+    ship_group_name: victimType?.groupName,
+    victim_character_id: officialVictim?.character_id ?? base.victim.characterId ?? detail?.victim.characterId,
+    final_blow_character_id: officialFinalBlow?.character_id
+      ?? baseFinalBlow?.characterId
+      ?? detailFinalBlow?.characterId,
+    final_blow_ship_name: resolveTypeGroup(db, finalBlowShipTypeId)?.typeName,
+    position: normalizePosition(officialVictim?.position),
+    eve_kill_url: eveKillKillmailUrl(base.killmailId),
+    time_msk: toMSK(official?.killmail_time ?? base.killmailTime ?? detail?.killmailTime),
+  };
+  if (options.resolveNames !== false) {
+    const names = await resolveOfficialNames(
+      db,
+      [enriched.victim_character_id, enriched.final_blow_character_id],
     );
-  } catch {
-    return [];
+    if (enriched.victim_character_id) {
+      enriched.victim_character_name = names.get(enriched.victim_character_id);
+    }
+    if (enriched.final_blow_character_id) {
+      enriched.final_blow_character_name = names.get(enriched.final_blow_character_id);
+    }
   }
+  return enriched;
 }
 
-async function enrichSnapshotKills(
+async function resolveOfficialNames(
   db: Db,
-  items: ZkbItem[],
-): Promise<SnapshotKill[]> {
-  const pending: Array<{
-    item: ZkbItem;
-    km: EsiKillmail;
-    victim: EsiKillmailVictim;
-    attackers: EsiKillmailAttacker[];
-    finalBlow: EsiKillmailAttacker | undefined;
-  }> = [];
-  const fallback: SnapshotKill[] = [];
-  const idsToResolve = new Set<number>();
-
-  for (const item of items.slice(0, MAX_ENRICH_PER_SYSTEM)) {
-    const hash = item.zkb?.hash;
-    if (!hash) {
-      fallback.push(zkbFallback(item));
-      continue;
-    }
-
+  rawIds: Array<number | undefined>,
+): Promise<Map<number, string>> {
+  const ids = [...new Set(rawIds.filter((id): id is number => id !== undefined && validId(id)))];
+  const names = new Map<number, string>();
+  for (let index = 0; index < ids.length; index += 1_000) {
     try {
-      const result = await callEsiOperation<EsiKillmail>(
+      const result = await callEsiOperation<Array<{ id: number; name: string }>>(
         db,
-        'get_killmails_killmail_id_killmail_hash',
-        { killmail_id: item.killmail_id, killmail_hash: hash },
+        'post_universe_names',
+        { ids: JSON.stringify(ids.slice(index, index + 1_000)) },
       );
-      if (!result.ok || !result.data) {
-        fallback.push(zkbFallback(item));
-        continue;
-      }
-
-      const victim = result.data.victim ?? {};
-      const attackers = result.data.attackers ?? [];
-      const finalBlow = attackers.find((attacker) => attacker.final_blow === true) ?? attackers[0];
-      pending.push({ item, km: result.data, victim, attackers, finalBlow });
-
-      for (const id of [
-        victim.character_id,
-        victim.corporation_id,
-        finalBlow?.character_id,
-        finalBlow?.corporation_id,
-      ]) {
-        if (typeof id === 'number' && id > 0) idsToResolve.add(id);
+      if (!result.ok) continue;
+      for (const entry of result.data) {
+        if (validId(entry.id) && typeof entry.name === 'string' && entry.name.length > 0) {
+          names.set(entry.id, entry.name);
+        }
       }
     } catch {
-      fallback.push(zkbFallback(item));
+      // Identity labels are optional overlays; never substitute third-party names.
     }
   }
-
-  const nameMap = await resolveNamesBatch(db, idsToResolve);
-  const kills = [...fallback];
-
-  for (const entry of pending) {
-    const victimShipId = normalizeOptionalInt(entry.victim.ship_type_id);
-    const finalBlowShipId = normalizeOptionalInt(entry.finalBlow?.ship_type_id);
-
-    kills.push({
-      killmail_id: entry.item.killmail_id,
-      killmail_time: typeof entry.km.killmail_time === 'string' ? entry.km.killmail_time : undefined,
-      total_value: entry.item.zkb?.totalValue ?? 0,
-      attacker_count: entry.attackers.length,
-      is_npc: entry.item.zkb?.npc ?? false,
-      is_solo: entry.item.zkb?.solo ?? false,
-      ship_type_id: victimShipId ?? undefined,
-      ship_name: resolveTypeName(db, victimShipId),
-      victim_character_id: entry.victim.character_id,
-      victim_character_name: resolveEntityName(nameMap, entry.victim.character_id, entry.victim.corporation_id),
-      final_blow_character_id: entry.finalBlow?.character_id,
-      final_blow_character_name: resolveEntityName(nameMap, entry.finalBlow?.character_id, entry.finalBlow?.corporation_id),
-      final_blow_ship_name: resolveTypeName(db, finalBlowShipId),
-      position: normalizePosition(entry.victim.position),
-      zkb_url: `https://zkillboard.com/kill/${entry.item.killmail_id}/`,
-      zkb_time_msk: entry.km.killmail_time ? toMSK(entry.km.killmail_time) : null,
-    });
-  }
-
-  return kills;
+  return names;
 }
 
-async function resolveNamesBatch(db: Db, ids: Set<number>): Promise<Map<number, string>> {
-  const map = new Map<number, string>();
-  if (ids.size === 0) return map;
-
-  try {
-    const result = await callEsiOperation<Array<{ id: number; name: string }>>(
-      db,
-      'post_universe_names',
-      { ids: JSON.stringify([...ids].slice(0, 100)) },
-    );
-    if (result.ok && Array.isArray(result.data)) {
-      for (const entry of result.data) {
-        if (entry.id && entry.name) map.set(entry.id, entry.name);
-      }
-    }
-  } catch {
-    // Non-critical: details degrade gracefully without resolved names.
+function groupKillsBySystem(kills: NormalizedKillmail[]): Map<number, NormalizedKillmail[]> {
+  const grouped = new Map<number, NormalizedKillmail[]>();
+  for (const kill of kills) {
+    if (!kill.solarSystemId) continue;
+    const current = grouped.get(kill.solarSystemId) ?? [];
+    current.push(kill);
+    grouped.set(kill.solarSystemId, current);
   }
+  for (const current of grouped.values()) {
+    current.sort((left, right) => (right.killmailTime ?? '').localeCompare(left.killmailTime ?? ''));
+  }
+  return grouped;
+}
 
-  return map;
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const result = new Array<R>(values.length);
+  let index = 0;
+  const worker = async (): Promise<void> => {
+    while (index < values.length) {
+      const current = index;
+      index += 1;
+      result[current] = await mapper(values[current]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()));
+  return result;
 }
 
 type SystemJumpEntry = { system_id: number; ship_jumps: number };
@@ -254,24 +299,16 @@ type SystemJumpEntry = { system_id: number; ship_jumps: number };
 async function fetchSystemJumps(db: Db, systemIds: number[]): Promise<Map<number, number>> {
   const map = new Map<number, number>();
   const wanted = new Set(systemIds);
-
   try {
-    const result = await callEsiOperation<SystemJumpEntry[]>(
-      db,
-      'get_universe_system_jumps',
-      {},
-    );
+    const result = await callEsiOperation<SystemJumpEntry[]>(db, 'get_universe_system_jumps', {});
     if (result.ok && Array.isArray(result.data)) {
       for (const entry of result.data) {
-        if (wanted.has(entry.system_id) && entry.ship_jumps) {
-          map.set(entry.system_id, entry.ship_jumps);
-        }
+        if (wanted.has(entry.system_id) && entry.ship_jumps) map.set(entry.system_id, entry.ship_jumps);
       }
     }
   } catch {
-    // Non-critical.
+    // Traffic is a non-critical overlay on the kill baseline.
   }
-
   return map;
 }
 
@@ -289,79 +326,78 @@ function resolveSystemSec(db: Db, systemId: number): number {
   return Math.round(row.sec * 10) / 10;
 }
 
-const typeNameCache = new Map<number, string | null>();
+const typeGroupCaches = new WeakMap<Db, Map<number, { typeName: string; groupName: string } | null>>();
 
-function resolveTypeName(db: Db, typeId: number | null): string | undefined {
-  if (typeId === null) return undefined;
-  if (typeNameCache.has(typeId)) return typeNameCache.get(typeId) ?? undefined;
-
-  const row = db.prepare('SELECT name FROM sde_types WHERE type_id = ?').get(typeId) as { name: string } | undefined;
-  const name = row?.name ?? null;
-  typeNameCache.set(typeId, name);
-  return name ?? undefined;
-}
-
-function resolveEntityName(
-  nameMap: Map<number, string>,
-  primaryId: number | undefined,
-  fallbackId: number | undefined,
-): string | undefined {
-  if (typeof primaryId === 'number' && primaryId > 0 && nameMap.has(primaryId)) return nameMap.get(primaryId);
-  if (typeof fallbackId === 'number' && fallbackId > 0 && nameMap.has(fallbackId)) return nameMap.get(fallbackId);
-  return undefined;
-}
-
-function zkbFallback(item: ZkbItem): SnapshotKill {
-  return {
-    killmail_id: item.killmail_id,
-    total_value: item.zkb?.totalValue ?? 0,
-    attacker_count: 1,
-    is_npc: item.zkb?.npc ?? false,
-    is_solo: item.zkb?.solo ?? false,
-    zkb_url: `https://zkillboard.com/kill/${item.killmail_id}/`,
-    zkb_time_msk: null,
-  };
+function resolveTypeGroup(
+  db: Db,
+  typeId: number | undefined,
+): { typeName: string; groupName: string } | undefined {
+  if (!typeId) return undefined;
+  let cache = typeGroupCaches.get(db);
+  if (!cache) {
+    cache = new Map();
+    typeGroupCaches.set(db, cache);
+  }
+  if (cache.has(typeId)) return cache.get(typeId) ?? undefined;
+  const row = db.prepare(`
+    SELECT t.name AS type_name, g.name AS group_name
+    FROM sde_types AS t
+    LEFT JOIN sde_groups AS g ON g.group_id = t.group_id
+    WHERE t.type_id = ?
+  `).get(typeId) as { type_name: string; group_name: string | null } | undefined;
+  const value = row ? { typeName: row.type_name, groupName: row.group_name ?? '' } : null;
+  cache.set(typeId, value);
+  return value ?? undefined;
 }
 
 function normalizePosition(
   raw: EsiKillmailVictim['position'],
 ): { x: number; y: number; z: number } | undefined {
   if (!raw) return undefined;
-  const x = normalizeOptionalNumber(raw.x);
-  const y = normalizeOptionalNumber(raw.y);
-  const z = normalizeOptionalNumber(raw.z);
-  if (x === null || y === null || z === null) return undefined;
-  return { x, y, z };
+  const x = finiteNumber(raw.x);
+  const y = finiteNumber(raw.y);
+  const z = finiteNumber(raw.z);
+  return x === undefined || y === undefined || z === undefined ? undefined : { x, y, z };
 }
 
-function normalizeOptionalInt(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null;
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function normalizeOptionalNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+function validId(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
 }
 
-function toMSK(value: string): string {
-  try {
-    const date = new Date(value);
-    return date.toLocaleTimeString('ru-RU', {
-      timeZone: 'Europe/Moscow',
-      hour: '2-digit',
-      minute: '2-digit',
-    }) + ' MSK';
-  } catch {
-    return value;
-  }
+function isKillWithinWindow(value: string | undefined, from: string, to: string): boolean {
+  if (!value) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time >= Date.parse(from) && time <= Date.parse(to);
 }
 
-function isKillWithinWindow(value: string | undefined): boolean {
-  const minutes = value ? minutesSinceIso(value) : null;
-  return minutes === null || minutes <= SNAPSHOT_SCAN_WINDOW_MINUTES;
+function toMSK(value: string | undefined): string | null {
+  if (!value || !Number.isFinite(Date.parse(value))) return null;
+  return new Date(value).toLocaleTimeString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    hour: '2-digit',
+    minute: '2-digit',
+  }) + ' MSK';
 }
 
-function minutesSinceIso(value: string): number | null {
-  const ts = new Date(value).getTime();
-  if (!Number.isFinite(ts)) return null;
-  return Math.max(0, Math.round((Date.now() - ts) / 60_000));
+function emptySnapshot(
+  routeSystems: number[],
+  jumpMap: Map<number, number>,
+  scannedAt: string,
+  error: string | null,
+): RouteThreatSnapshot {
+  return {
+    routeSystems: [...routeSystems],
+    systems: [],
+    jumpMap,
+    totalKills: 0,
+    totalValueM: 0,
+    truncated: false,
+    requestCount: 0,
+    error,
+    scannedAt,
+  };
 }

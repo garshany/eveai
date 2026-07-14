@@ -123,6 +123,7 @@ function buildKillmail(): Record<string, unknown> {
       alliance_id: 99000002,
       ship_type_id: 44996,
       damage_taken: 5000,
+      position: { x: 10.5, y: -20.25, z: 30.75 },
       items: [
         { item_type_id: 6001, flag: 27, quantity_destroyed: 1 },
         { item_type_id: 6002, flag: 11, quantity_dropped: 200 },
@@ -152,6 +153,11 @@ describe('killmail enrichment', () => {
     expect((enriched.location as { name: string }).name).toBe('Jita');
     expect(((enriched.location as { region: { name: string } }).region).name).toBe('The Forge');
     expect(((enriched.victim as { character_name: string }).character_name)).toBe('Victim One');
+    expect(((enriched.victim as { position: { x: number; y: number; z: number } }).position)).toEqual({
+      x: 10.5,
+      y: -20.25,
+      z: 30.75,
+    });
     expect((((enriched.attackers as Array<Record<string, unknown>>)[0]).character_name)).toBe('Killer One');
     expect((((enriched.attackers as Array<Record<string, unknown>>)[0]).ship as { name: string }).name).toBe('Purifier');
     expect((((enriched.victim as { fit: { high_slots: unknown[] } }).fit).high_slots)).toHaveLength(1);

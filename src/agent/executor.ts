@@ -12,6 +12,7 @@ import {
   isSdeSqlTool,
   isUniverseCountTool,
   isEveKillToolName,
+  isEveKillAnalyticsToolName,
   isBatchMarketTool,
   isHeartbeatConfigTool,
   isOsintInferTool,
@@ -27,8 +28,8 @@ import { updatePlan } from './planner.js';
 import { BULK_FILTER_OPERATIONS } from '../eve/esi-catalog.js';
 import { getActiveMonitor, stopRouteMonitor } from '../eve-board/monitor.js';
 import {
-  buildFunctionCallInputItems,
   buildFunctionCallOutputs,
+  buildOrderedContinuationInputItems,
   createNativeResponse,
   extractFunctionCalls,
   toNativeMessage,
@@ -45,6 +46,8 @@ import { executeEveKillTool } from '../eve-kill/executor.js';
 import { executeEveScoutTool } from '../eve/eve-scout-executor.js';
 import type { EveScoutToolName } from '../eve/eve-scout-tools.js';
 import type { EveKillToolName } from '../eve-kill/tools.js';
+import { executeEveKillAnalyticsTool } from '../eve-kill/mcp-analytics.js';
+import type { EveKillAnalyticsToolName } from '../eve-kill/analytics-tools.js';
 import { executeHeartbeatConfig } from '../scheduled/heartbeat-config.js';
 import type { HeartbeatConfigArgs } from '../scheduled/heartbeat-config.js';
 import { getLinkedCharacter } from '../eve/sso.js';
@@ -70,13 +73,15 @@ import { buildSafetyIdentifier } from './safety-identifier.js';
 
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_EVE_KILL_CALLS_PER_TURN = 30;
+const MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN = 4;
 const MAX_CONSECUTIVE_SAME_TOOL = 3;
 const MAX_CONTEXT_MESSAGES = 10;
 const MAX_CONTEXT_CHARS = 15000;
 const PREVIOUS_RESPONSE_MAX_AGE_MS = 55 * 60 * 1000;
 const RECOVERY_TOOL_SUMMARY_LIMIT = 6;
 const RECOVERY_TOOL_RESULT_CHARS = 280;
-const TOOL_STATE_MISMATCH_FRAGMENT = 'No tool call found for function call output with call_id';
+const TOOL_STATE_MISMATCH_FRAGMENT = 'tool_state_mismatch';
+const LEGACY_TOOL_STATE_MISMATCH_FRAGMENT = 'No tool call found for function call output with call_id';
 
 export { ESI_FIELD_WHITELIST, filterEsiFields, validateEsiFields } from './esi-field-filter.js';
 
@@ -478,6 +483,7 @@ async function runNativeAgentLoop(
   const requestId = createRequestId();
   const tools = await buildNativeAgentTools(
     isSimpleStaticAggregateCountGoal(goal) ? 'static_aggregate' : 'full',
+    { includeDurableNotifications: ctx.durableNotifications !== false },
   );
   const webSearchState = createWebSearchState();
   const reasoningEffort = resolveReasoningEffort(goal, config.openai.reasoningEffort);
@@ -556,6 +562,9 @@ async function runNativeAgentLoop(
         contextManagement,
         reasoningEffort,
         reasoningMode: config.openai.reasoningMode,
+        // With store:false, preserve opaque GPT-5.6 reasoning only inside this
+        // active tool loop. It is replayed in memory and never stored in SQLite.
+        preserveReasoning: !useServerResponseState,
         safetyIdentifier,
         // Only this top-level loop streams to the CLI activity feed; internal
         // model calls (compaction/OSINT/advisor) must not leak into the answer.
@@ -570,14 +579,14 @@ async function runNativeAgentLoop(
         previousResponseId = null;
         pendingItems = buildToolStateRecoveryContext(db, threadId);
         saveLastResponseId(db, threadId, null);
-        console.warn('[executor] tool state lost, switching to cold recovery context: %s', message);
+        console.warn('[executor] tool state lost, switching to cold recovery context');
         continue;
       }
       if (isTransientModelError(message) && transientRetries < MAX_TRANSIENT_RETRIES) {
         transientRetries += 1;
         const delay = transientRetryDelayMs(transientRetries);
-        console.warn('[executor] transient model error (retry %d/%d in %dms): %s',
-          transientRetries, MAX_TRANSIENT_RETRIES, delay, message);
+        console.warn('[executor] transient model error retry=%d/%d delay_ms=%d message_length=%d',
+          transientRetries, MAX_TRANSIENT_RETRIES, delay, message.length);
         await sleep(delay);
         // pendingItems/previousResponseId are untouched — re-send the same call.
         // No model response was processed, so the retry must not consume the
@@ -677,14 +686,14 @@ async function runNativeAgentLoop(
         previousResponseId = null;
         pendingItems = buildToolStateRecoveryContext(db, threadId);
         saveLastResponseId(db, threadId, null);
-        console.warn('[executor] tool state lost in response payload, switching to cold recovery context: %s', response.error.message);
+        console.warn('[executor] tool state lost in response payload, switching to cold recovery context');
         continue;
       }
       if (isTransientModelError(response.error.message) && transientRetries < MAX_TRANSIENT_RETRIES) {
         transientRetries += 1;
         const delay = transientRetryDelayMs(transientRetries);
-        console.warn('[executor] transient error in response payload (retry %d/%d in %dms): %s',
-          transientRetries, MAX_TRANSIENT_RETRIES, delay, response.error.message);
+        console.warn('[executor] transient response error retry=%d/%d delay_ms=%d message_length=%d',
+          transientRetries, MAX_TRANSIENT_RETRIES, delay, response.error.message.length);
         await sleep(delay);
         // response.error is checked before outputs are built, so pendingItems
         // still holds this request's input — re-send the same call. As above,
@@ -692,7 +701,7 @@ async function runNativeAgentLoop(
         iteration -= 1;
         continue;
       }
-      console.error('[executor] model error:', response.error.message);
+      console.error('[executor] model error message_length=%d', response.error.message.length);
       const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
       storeAssistantMessage(db, threadId, message);
       saveLastResponseId(db, threadId, null);
@@ -770,19 +779,21 @@ async function runNativeAgentLoop(
       const toolCall = toolCalls[index];
       const args = argsList[index] ?? {};
       const result = results[index];
+      const isAnalytics = isEveKillAnalyticsToolName(toolCall.name);
+      const auditArgs = isAnalytics ? { fields: Object.keys(args).sort() } : args;
       db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(
         threadId,
         'tool',
         JSON.stringify({
           tool: toolCall.name,
-          args,
+          args: auditArgs,
           result: compactToolResult(result),
         }),
       );
       const rawOutput = JSON.stringify(result);
       const truncatedOutput = truncateToolOutput(rawOutput);
       console.log('[tool] %s args=%s raw=%d chars sent=%d chars',
-        toolCall.name, JSON.stringify(args).slice(0, 120), rawOutput.length, truncatedOutput.length);
+        toolCall.name, JSON.stringify(auditArgs).slice(0, 120), rawOutput.length, truncatedOutput.length);
       outputs.push({
         callId: toolCall.callId,
         output: truncatedOutput,
@@ -839,7 +850,7 @@ async function runNativeAgentLoop(
       // truncation:'auto', and mid-turn compaction.
       pendingItems = [
         ...pendingItems,
-        ...buildFunctionCallInputItems(response.output),
+        ...buildOrderedContinuationInputItems(response.output),
         ...buildFunctionCallOutputs(outputs),
       ];
     }
@@ -898,7 +909,22 @@ async function executeToolCall(
   // Live activity: surface which tool ("skill") is running to any attached sink
   // (the interactive CLI). No-op for the bots. Single point so it covers both
   // the parallel and sequential dispatch paths.
-  reportActivity({ type: 'tool_start', name, detail: summarizeToolArgs(name, args) });
+  reportActivity({
+    type: 'tool_start',
+    name,
+    detail: isEveKillAnalyticsToolName(name) ? 'public analytics request' : summarizeToolArgs(name, args),
+  });
+
+  if (
+    ctx.durableNotifications === false
+    && (name === 'kill_watch' || isHeartbeatConfigTool(name) || isRouteMonitorTool(name))
+  ) {
+    return {
+      ok: false,
+      blocked: true,
+      error: 'Durable background notifications are unavailable in this transient chat lane. Use Telegram or Discord.',
+    };
+  }
 
   if (name === 'web_search') {
     const query = String(args.query ?? '');
@@ -1013,8 +1039,9 @@ async function executeToolCall(
       routeResult.origin?.name ?? '?', routeResult.destination?.name ?? '?',
       routeResult.routes.length, routeResult.autopilot_set, routeResult.error ?? 'none');
     for (const r of routeResult.routes) {
-      console.log('[plan_route]   %s: %d jumps, kills_1h=%d, danger_systems=%d, safe=%d, value=%dM',
-        r.flag, r.jumps, r.total_kills_1h, r.danger_systems.length, r.safe_count, r.total_value_m);
+      console.log('[plan_route]   %s: %d jumps, kills_1h=%d, danger_systems=%d, safe=%d, sampled_value=%dM coverage=%d/%d',
+        r.flag, r.jumps, r.total_kills_1h, r.danger_systems.length, r.safe_count,
+        r.total_value_m, r.value_resolved_kills, r.total_kills_1h);
     }
     if (!routeResult.ok) {
       return { ok: false, error: routeResult.error };
@@ -1032,7 +1059,11 @@ async function executeToolCall(
         min_sec: route.min_sec,
         safe_count: route.safe_count,
         total_kills_1h: route.total_kills_1h,
-        total_value_m: route.total_value_m,
+        sampled_value_m: route.total_value_m,
+        value_sample_coverage: {
+          resolved_kills: route.value_resolved_kills,
+          total_kills: route.total_kills_1h,
+        },
         systems: route.systems,
         danger_systems: route.danger_systems.map((danger) => ({
           name: danger.name,
@@ -1040,17 +1071,39 @@ async function executeToolCall(
           kills_1h: danger.kills_1h,
           pvp: danger.pvp,
           npc: danger.npc,
-          total_value_m: danger.total_value_m,
+          sampled_value_m: danger.total_value_m,
+          value_sample_coverage: {
+            resolved_kills: danger.value_resolved_kills,
+            total_kills: danger.kills_1h,
+          },
         })),
       })),
     };
   }
 
-  if (isEveKillToolName(name)) {
+  if (isEveKillToolName(name) || isEveKillAnalyticsToolName(name)) {
     webSearchState.eveKillCallCount += 1;
     if (webSearchState.eveKillCallCount > MAX_EVE_KILL_CALLS_PER_TURN) {
       console.log('[eve-kill] blocked: limit %d reached (call #%d)', MAX_EVE_KILL_CALLS_PER_TURN, webSearchState.eveKillCallCount);
       return { ok: false, error: `Лимит eve-kill (${MAX_EVE_KILL_CALLS_PER_TURN}) на один ответ исчерпан. Анализируй уже собранные данные.`, blocked: true };
+    }
+    if (isEveKillAnalyticsToolName(name)) {
+      webSearchState.eveKillAnalyticsCallCount += 1;
+      if (webSearchState.eveKillAnalyticsCallCount > MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN) {
+        console.log(
+          '[eve-kill-analytics] blocked: limit %d reached (call #%d)',
+          MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN,
+          webSearchState.eveKillAnalyticsCallCount,
+        );
+        return {
+          ok: false,
+          error: `Лимит аналитики EVE-KILL (${MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN}) на один ответ исчерпан. Анализируй уже собранные данные.`,
+          blocked: true,
+        };
+      }
+      const result = await executeEveKillAnalyticsTool(name as EveKillAnalyticsToolName, args);
+      console.log('[eve-kill-analytics] %s completed (call #%d)', name, webSearchState.eveKillAnalyticsCallCount);
+      return result;
     }
     const result = await executeEveKillTool(db, name as EveKillToolName, args, ctx.chatId ?? ctx.userId);
     console.log('[eve-kill] %s completed (call #%d)', name, webSearchState.eveKillCallCount);
@@ -1263,12 +1316,16 @@ function shouldRecoverFromToolStateMismatch(
   pendingItems: NativeInputItem[],
 ): boolean {
   if (!previousResponseId) return false;
-  if (!message.includes(TOOL_STATE_MISMATCH_FRAGMENT)) return false;
+  if (
+    !message.includes(TOOL_STATE_MISMATCH_FRAGMENT)
+    && !message.includes(LEGACY_TOOL_STATE_MISMATCH_FRAGMENT)
+  ) return false;
   return pendingItems.some((item) => item.type === 'function_call_output');
 }
 
 /** Errors that indicate a broken continuation chain — recoverable via cold restart. */
 const WS_RETRIABLE_PATTERNS = [
+  'response_state_missing',             // sanitized missing/expired previous response
   'not found',                          // "Previous response with id ... not found"
   'ws_transport_error',                 // provider transport failure
   'ws closed',                          // server closed WebSocket

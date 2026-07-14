@@ -1,6 +1,6 @@
 # Database Schema
 
-Generated from `src/db/schema.ts` on 2026-07-13. Runtime migrations in
+Generated from `src/db/schema.ts` on 2026-07-14. Runtime migrations in
 `src/db/migrations.ts` may add operational tables to an existing database.
 
 ## Identity, chat lanes, and SSO
@@ -9,6 +9,7 @@ Generated from `src/db/schema.ts` on 2026-07-13. Runtime migrations in
 - `telegram_accounts`
 - `discord_accounts`
 - `discord_sessions`
+- `cli_accounts`: explicit singleton owner for the collision-free local CLI lane (`chat_id = 0`)
 - `auth_requests`
 - `telegram_sessions`
 
@@ -25,6 +26,16 @@ Generated from `src/db/schema.ts` on 2026-07-13. Runtime migrations in
 
 - `heartbeat_config`
 - `intel_notes`
+
+## EVE-KILL feed and route operations
+
+- `eve_kill_feed_state`: one global durable sequence cursor plus dedup-prune timestamp
+- `eve_kill_notification_dedup`: accepted `(chat_id, killmail_id)` deliveries
+- `eve_kill_migrations`: one-time integration cleanup markers
+- `kill_watches`: system, region, victim, and attacker subscriptions
+- `route_monitors`: restart-restorable route monitor state
+- `route_monitor_kill_dedup`: `(chat_id, monitor_started_at, killmail_id)` feed idempotency for one monitor run across concurrent callbacks and process restart
+- `route_ganker_cache`: recent public attacker observations
 
 ## EVE and Cache
 

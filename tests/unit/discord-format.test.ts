@@ -15,8 +15,8 @@ describe('htmlToDiscordMarkdown', () => {
   });
 
   it('converts links to label (url) form', () => {
-    expect(htmlToDiscordMarkdown('<a href="https://zkillboard.com/kill/1/">килл</a>'))
-      .toBe('килл (https://zkillboard.com/kill/1/)');
+    expect(htmlToDiscordMarkdown('<a href="https://eve-kill.com/kill/1">килл</a>'))
+      .toBe('килл (https://eve-kill.com/kill/1)');
     expect(htmlToDiscordMarkdown('<a href="https://example.com">https://example.com</a>'))
       .toBe('https://example.com');
   });

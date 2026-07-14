@@ -1,5 +1,5 @@
 import type { Db } from '../db/sqlite.js';
-import type { OsintKillmail } from './zkill.js';
+import type { OsintKillmail } from './types.js';
 
 export type ShipEntry = {
   ship_type_id: number;
@@ -89,7 +89,7 @@ export function analyzeShipProfile(
   const key = SCOPE_KEY[scope];
 
   for (const km of kills) {
-    if (km.activity === 'kills') {
+    if (km.roles.attacker) {
       for (const atk of km.attackers) {
         if (atk[key] === entityId && atk.ship_type_id) {
           const entry = freq.get(atk.ship_type_id) ?? { flown: 0, kills_in: 0, losses_in: 0 };
@@ -98,7 +98,8 @@ export function analyzeShipProfile(
           freq.set(atk.ship_type_id, entry);
         }
       }
-    } else if (km.activity === 'losses' && km.ship_type_id) {
+    }
+    if (km.roles.victim && km.ship_type_id) {
       const entry = freq.get(km.ship_type_id) ?? { flown: 0, kills_in: 0, losses_in: 0 };
       entry.flown++;
       entry.losses_in++;
@@ -159,7 +160,7 @@ export function analyzeFleetProfile(
   kills: OsintKillmail[],
   entityId?: number,
 ): FleetProfile {
-  const killKms = kills.filter((km) => km.activity === 'kills');
+  const killKms = kills.filter((km) => km.roles.attacker);
   const totalKills = killKms.length;
 
   if (totalKills === 0) {

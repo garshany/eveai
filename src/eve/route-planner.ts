@@ -2,13 +2,15 @@ import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from './esi-client.js';
 import { getEveCapabilities } from './capabilities.js';
 import { getLinkedCharacter } from './sso.js';
-import { config } from '../config.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { startRouteMonitor } from '../eve-board/monitor.js';
 import { isTurnAborted } from '../agent/activity.js';
 import { generateBriefingFromSnapshot } from '../eve-board/briefing.js';
-import { attributeKillsToGates } from '../eve-board/analytics.js';
-import type { GateKill } from '../eve-board/types.js';
+import { buildRouteThreatSnapshot } from '../eve-board/route-snapshot.js';
+import type { RouteThreatSnapshot } from '../eve-board/route-snapshot.js';
+import { subscribeEveKillFeed } from '../eve-kill/feed-poll.js';
+import type { FeedEvent } from '../eve-kill/types.js';
+import type { GateKill, ThreatKillmail } from '../eve-board/types.js';
 import { findBestTheraShortcut, type TheraShortcut } from './thera-scout.js';
 import { escapeHtml, escapeHtmlAttribute } from './route-formatting.js';
 
@@ -19,9 +21,11 @@ type RouteFlag = EsiRouteFlag | 'thera_shortcut';
 // Route monitor sender — set once from app.ts at boot time
 // ---------------------------------------------------------------------------
 
-let routeMonitorSender: ((chatId: number, text: string) => void) | null = null;
+let routeMonitorSender: ((chatId: number, text: string) => Promise<void>) | null = null;
 
-export function setRouteMonitorSender(sender: (chatId: number, text: string) => void): void {
+export function setRouteMonitorSender(
+  sender: (chatId: number, text: string) => Promise<void>,
+): void {
   routeMonitorSender = sender;
 }
 
@@ -44,6 +48,7 @@ type RecentKill = {
   attacker_ship: string | null;
   value_m: number | null;
   url: string;
+  threat: ThreatKillmail;
 };
 
 type DangerSystem = {
@@ -54,8 +59,18 @@ type DangerSystem = {
   pvp: number;
   npc: number;
   total_value_m: number;
+  /** Number of kills represented by total_value_m's bounded detail sample. */
+  value_resolved_kills: number;
   kills: RecentKill[];
   gate_camps: GateKill[];
+};
+
+type DangerScanResult = {
+  systems: Map<number, DangerSystem>;
+  truncated: boolean;
+  requestCount: number;
+  error: string | null;
+  snapshot: RouteThreatSnapshot | null;
 };
 
 type RouteVariant = {
@@ -66,6 +81,8 @@ type RouteVariant = {
   safe_count: number;
   total_kills_1h: number;
   total_value_m: number;
+  /** Coverage of total_value_m against total_kills_1h. */
+  value_resolved_kills: number;
   danger_systems: DangerSystem[];
   systems: string[];
 };
@@ -128,17 +145,138 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     flags.map((flag) => fetchRoute(db, originInfo.id, destInfo.id, flag, args.avoid ?? [], ctx)),
   );
 
+  let theraShortcut: TheraShortcut | null = null;
+  let shortcutMonitorSystemIds: number[] | null = null;
+  const shortestJumpCount = routeResults
+    .filter((route): route is number[] => route !== null && route.length > 0)
+    .reduce((best, route) => Math.min(best, route.length - 1), Number.POSITIVE_INFINITY);
+  if (Number.isFinite(shortestJumpCount) && shortestJumpCount >= 8) {
+    try {
+      theraShortcut = await findBestTheraShortcut(
+        db,
+        originInfo.id,
+        destInfo.id,
+        shortestJumpCount,
+        originInfo.name,
+        destInfo.name,
+      );
+    } catch (err) {
+      console.log('[plan_route] Thera shortcut check failed: %s', err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (args.prefer === 'thera_shortcut' && theraShortcut) {
+    const shortcut = theraShortcut;
+    const [entryLeg, exitLeg] = await Promise.all([
+      fetchRoute(db, originInfo.id, shortcut.entry_system_id, 'shortest', [], ctx),
+      fetchRoute(db, shortcut.exit_system_id, destInfo.id, 'shortest', [], ctx),
+    ]);
+    const entryLegValid = entryLeg?.[0] === originInfo.id
+      && entryLeg[entryLeg.length - 1] === shortcut.entry_system_id;
+    const exitLegValid = exitLeg?.[0] === shortcut.exit_system_id
+      && exitLeg[exitLeg.length - 1] === destInfo.id;
+    if (entryLegValid && exitLegValid) {
+      shortcutMonitorSystemIds = normalizeRouteSystems([
+        ...entryLeg,
+        shortcut.hub_system_id,
+        ...exitLeg,
+      ]);
+    } else {
+      console.warn('[plan_route] Thera shortcut legs unavailable; falling back to shortest route');
+      theraShortcut = null;
+    }
+  }
+  // Once shortcut discovery has completed, normalize the requested mode to
+  // the route we will actually fly. Every downstream consumer (autopilot,
+  // summary, briefing, and monitor) must use the same effective selection.
+  const effectivePrefer: RouteFlag | undefined = args.prefer === 'thera_shortcut' && !theraShortcut
+    ? 'shortest'
+    : args.prefer;
+  if (!routeResults.some((route) => route && route.length > 0)) {
+    return {
+      ok: false,
+      origin: originInfo,
+      destination: destInfo,
+      routes: [],
+      autopilot_set: false,
+      autopilot_mode: 'none',
+      error: 'No ESI route is available between the requested systems.',
+      formatted_summary: 'Маршруты не найдены. Автопилот и мониторинг не запущены.',
+    };
+  }
+
   // 3. Collect all unique system IDs across all routes
   const allSystemIds = new Set<number>();
   for (const route of routeResults) {
     if (route) for (const id of route) allSystemIds.add(id);
   }
+  for (const id of shortcutMonitorSystemIds ?? []) allSystemIds.add(id);
 
   // 4. Resolve system info from SDE
   const systemInfoMap = resolveSystemBatch(db, allSystemIds);
 
-  // 5. Danger scan: EVE-KILL last hour for ALL unique systems
-  const dangerMap = await scanSystemDanger(db, allSystemIds, systemInfoMap, ctx);
+  // Capture route events while the single shared baseline is being built. The
+  // monitor subscribes before this temporary capture is released, closing the
+  // snapshot-to-live handoff without issuing a second baseline request.
+  const capturedFeedEvents: FeedEvent[] = [];
+  let captureOverflow = false;
+  let releaseCaptureBarrier = (): void => {};
+  let rejectCaptureBarrier = (_error: Error): void => {};
+  let captureBarrierFailure: Error | null = null;
+  const captureBarrier = new Promise<void>((resolve, reject) => {
+    releaseCaptureBarrier = resolve;
+    rejectCaptureBarrier = reject;
+  });
+  const unsubscribeFeedCapture = routeMonitorSender && args.set_autopilot !== false && ctx.chatId !== undefined
+    ? subscribeEveKillFeed(async (event) => {
+      if (!event.killmail.solarSystemId || !allSystemIds.has(event.killmail.solarSystemId)) return;
+      if (capturedFeedEvents.length >= 2_500) {
+        captureOverflow = true;
+        // This listener is awaited by the durable global poller. Rejecting the
+        // event keeps its sequence uncommitted, so it is retried after this
+        // temporary listener is replaced by the permanent route monitor. The
+        // local cap therefore applies backpressure instead of dropping the
+        // snapshot-to-live handoff event.
+        throw new Error('route live handoff buffer reached its local cap');
+      }
+      capturedFeedEvents.push(event);
+      // Do not acknowledge this awaited feed listener while the event exists
+      // only in RAM. Once the permanent monitor listener is registered (or the
+      // route attempt has failed), finally releases the barrier. A process crash
+      // before that point leaves the durable global cursor unchanged, so the
+      // event is replayed after restart instead of disappearing in the handoff.
+      await captureBarrier;
+    })
+    : () => {};
+  const releaseFeedCapture = (): void => {
+    unsubscribeFeedCapture();
+    if (captureBarrierFailure && capturedFeedEvents.length > 0) {
+      rejectCaptureBarrier(captureBarrierFailure);
+    } else {
+      releaseCaptureBarrier();
+    }
+  };
+
+  try {
+    // 5. Danger scan: EVE-KILL last hour for ALL unique systems
+    const dangerScan = await scanSystemDanger(db, allSystemIds, systemInfoMap);
+    if (dangerScan.error || captureOverflow) {
+      const reason = captureOverflow ? 'live handoff buffer exceeded its local cap' : dangerScan.error!;
+      return {
+        ok: false,
+        origin: originInfo,
+        destination: destInfo,
+        routes: [],
+        autopilot_set: false,
+        autopilot_mode: 'none',
+        error: `EVE-KILL route baseline unavailable: ${reason}`,
+        formatted_summary: [
+          `<b>${escapeHtml(originInfo.name)} → ${escapeHtml(destInfo.name)}</b>`,
+          '⚪ Данные об активности EVE-KILL временно недоступны.',
+          'Маршрут и автопилот не выставлены: отсутствие killmail-данных нельзя считать подтверждением безопасности.',
+        ].join('\n'),
+      };
+    }
+    const dangerMap = dangerScan.systems;
 
   // 6. Build route variants with danger data
   const routes: RouteVariant[] = [];
@@ -152,13 +290,16 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
       routes.push(variant);
     }
   }
+  const theraRiskRoute = shortcutMonitorSystemIds && shortcutMonitorSystemIds.length > 0
+    ? buildRouteVariant('shortest', shortcutMonitorSystemIds, systemInfoMap, dangerMap)
+    : null;
 
   // 6. Set autopilot for the preferred route (skip for thera_shortcut — handled below)
   let autopilotSet = false;
   let autopilotMode: AutopilotMode = 'none';
-  if (args.set_autopilot !== false && args.prefer !== 'thera_shortcut' && routes.length > 0) {
-    const preferred = args.prefer
-      ? routes.find((r) => r.flag === args.prefer) ?? routes[0]
+  if (args.set_autopilot !== false && effectivePrefer !== 'thera_shortcut' && routes.length > 0) {
+    const preferred = effectivePrefer
+      ? routes.find((r) => r.flag === effectivePrefer) ?? routes[0]
       : routes.find((r) => r.flag === 'secure') ?? routes[0];
 
     // Find the system IDs for the preferred route
@@ -171,39 +312,22 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     }
   }
 
-  // 7. Check for Thera wormhole shortcut
-  let theraShortcut: TheraShortcut | null = null;
-  const shortestRoute = routes.reduce((best, r) => r.jumps < best.jumps ? r : best, routes[0]);
-  if (shortestRoute && shortestRoute.jumps >= 8) {
-    try {
-      theraShortcut = await findBestTheraShortcut(db, originInfo.id, destInfo.id, shortestRoute.jumps, originInfo.name, destInfo.name);
-    } catch (err) {
-      console.log('[plan_route] Thera shortcut check failed: %s', err instanceof Error ? err.message : String(err));
-    }
-  }
-
   // 7b. If prefer=thera_shortcut, set autopilot waypoints for the WH route
-  if (args.prefer === 'thera_shortcut' && args.set_autopilot !== false && theraShortcut) {
+  if (effectivePrefer === 'thera_shortcut' && args.set_autopilot !== false && theraShortcut) {
     const shortcutAutopilot = await setShortcutAutopilot(
       db, originInfo.id, theraShortcut.entry_system_id, theraShortcut.exit_system_id, destInfo.id, ctx,
     );
     autopilotSet = shortcutAutopilot.ok;
     autopilotMode = shortcutAutopilot.mode;
-  } else if (args.prefer === 'thera_shortcut' && !theraShortcut) {
-    // Fallback: no shortcut available, set shortest route instead
-    const fallbackRoute = routeResults[flags.indexOf('shortest')] ?? routeResults[0];
-    if (fallbackRoute && fallbackRoute.length > 0 && args.set_autopilot !== false) {
-      const autopilot = await setAutopilotRoute(db, fallbackRoute, destInfo.id, ctx);
-      autopilotSet = autopilot.ok;
-      autopilotMode = autopilot.mode;
-    }
   }
 
   let formattedSummary = formatRouteSummary(
     originInfo, destInfo, routes, autopilotMode,
-    args.prefer === 'thera_shortcut' ? 'shortest' : args.prefer,
+    effectivePrefer === 'thera_shortcut' ? 'shortest' : effectivePrefer,
     theraShortcut,
-    args.prefer === 'thera_shortcut',
+    effectivePrefer === 'thera_shortcut',
+    dangerScan,
+    effectivePrefer === 'thera_shortcut' ? theraRiskRoute : null,
   );
 
   if (theraShortcut && args.prefer !== 'thera_shortcut') {
@@ -217,17 +341,12 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
   // Get the preferred route's system IDs for monitoring
   let monitorSystemIds: number[];
   let preferredRoute: RouteVariant;
-  if (args.prefer === 'thera_shortcut' && theraShortcut) {
-    // For WH shortcut: build monitor path from entry + exit legs
+  if (effectivePrefer === 'thera_shortcut' && theraShortcut) {
     preferredRoute = routes.find((r) => r.flag === 'shortest') ?? routes[0];
-    const [entryLeg, exitLeg] = await Promise.all([
-      fetchRoute(db, originInfo.id, theraShortcut.entry_system_id, 'shortest', [], ctx),
-      fetchRoute(db, theraShortcut.exit_system_id, destInfo.id, 'shortest', [], ctx),
-    ]);
-    monitorSystemIds = [...(entryLeg ?? []), ...(exitLeg ?? [])];
+    monitorSystemIds = shortcutMonitorSystemIds ?? [];
   } else {
-    preferredRoute = args.prefer
-      ? routes.find((r) => r.flag === args.prefer) ?? routes[0]
+    preferredRoute = effectivePrefer
+      ? routes.find((r) => r.flag === effectivePrefer) ?? routes[0]
       : routes.find((r) => r.flag === 'secure') ?? routes[0];
     const prefIndex = flags.indexOf(preferredRoute.flag);
     monitorSystemIds = routeResults[prefIndex] ?? [];
@@ -254,21 +373,17 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
 
     // Generate pre-flight briefing and append to summary
     try {
-      const briefingSnapshot = preferredRoute.danger_systems.map((system) => ({
+      if (dangerScan.error) throw new Error('route kill baseline unavailable');
+      const briefingDangerSystems = effectivePrefer === 'thera_shortcut' && theraRiskRoute
+        ? theraRiskRoute.danger_systems
+        : preferredRoute.danger_systems;
+      const briefingSnapshot = briefingDangerSystems.map((system) => ({
         systemId: system.systemId,
         name: system.name,
         sec: system.sec,
         kills_1h: system.kills_1h,
         total_value_m: system.total_value_m,
-        recentKills: system.kills.map((kill) => ({
-          killmail_id: kill.killmail_id,
-          killmail_time: kill.killmail_time ?? undefined,
-          total_value: (kill.value_m ?? 0) * 1_000_000,
-          ship_name: kill.victim_ship ?? undefined,
-          victim_character_name: kill.victim ?? undefined,
-          final_blow_character_name: kill.attacker ?? undefined,
-          attacker_count: 1,
-        })),
+        recentKills: system.kills.map((kill) => kill.threat),
         gate_camps: system.gate_camps.map((gc) => ({
           connectedSystemName: gc.connectedSystemName,
           killCount: gc.killCount,
@@ -298,21 +413,47 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
       if (ctx.chatId === undefined) {
         console.warn('[plan_route] skipping route monitor: no chat lane in context');
       } else {
-        startRouteMonitor(db, chatId, characterId, monitorSystemIds, shipTypeId, shipName, routeMonitorSender);
+        try {
+          const handoffAccepted = await startRouteMonitor(
+            db,
+            chatId,
+            characterId,
+            monitorSystemIds,
+            shipTypeId,
+            shipName,
+            routeMonitorSender,
+            {
+              baseline: dangerScan.snapshot ?? undefined,
+              initialEvents: capturedFeedEvents.filter(
+                (event) => event.killmail.solarSystemId !== undefined
+                  && monitorSystemIds.includes(event.killmail.solarSystemId),
+              ),
+            },
+          );
+          if (!handoffAccepted) {
+            captureBarrierFailure = new Error('route monitor did not accept the captured feed handoff');
+          }
+        } catch (error) {
+          captureBarrierFailure = error instanceof Error ? error : new Error(String(error));
+          throw error;
+        }
       }
     }
   }
 
-  return {
-    ok: true,
-    origin: originInfo,
-    destination: destInfo,
-    routes,
-    autopilot_set: autopilotSet,
-    autopilot_mode: autopilotMode,
-    error: null,
-    formatted_summary: formattedSummary,
-  };
+    return {
+      ok: true,
+      origin: originInfo,
+      destination: destInfo,
+      routes,
+      autopilot_set: autopilotSet,
+      autopilot_mode: autopilotMode,
+      error: null,
+      formatted_summary: formattedSummary,
+    };
+  } finally {
+    releaseFeedCapture();
+  }
 }
 
 function formatRouteSummary(
@@ -323,12 +464,14 @@ function formatRouteSummary(
   preferFlag?: RouteFlag,
   theraShortcut?: TheraShortcut | null,
   theraSelected?: boolean,
+  dangerScan?: DangerScanResult,
+  selectedRiskRoute?: RouteVariant | null,
 ): string {
   if (routes.length === 0) return 'Маршруты не найдены.';
 
   const esc = escapeHtml;
   const lines: string[] = [];
-  const preferred = (preferFlag && routes.find((route) => route.flag === preferFlag))
+  const preferred = selectedRiskRoute ?? (preferFlag && routes.find((route) => route.flag === preferFlag))
     ?? routes.find((route) => route.flag === 'secure')
     ?? routes[0];
   const dangerCount = preferred.danger_systems.length;
@@ -336,11 +479,11 @@ function formatRouteSummary(
   // Header — when thera_shortcut is selected, show it as the chosen route
   lines.push(`<b>${esc(origin.name)} → ${esc(dest.name)}</b>`);
   if (theraSelected && theraShortcut) {
-    lines.push(`\u{1F300} Выбран: WH шорткат | ${theraShortcut.total_jumps} прыжков (через Thera, экономия ${theraShortcut.saved_jumps})`);
+    lines.push(`\u{1F300} Выбран: WH шорткат | ${theraShortcut.total_jumps} прыжков (через ${esc(theraShortcut.hub_system)}, экономия ${theraShortcut.saved_jumps})`);
     lines.push(`Автопилот: ${esc(describeAutopilotMode(autopilotMode))}`);
   } else {
     const riskEmoji = describeRouteRiskEmoji(preferred, dangerCount);
-    lines.push(`${riskEmoji} Выбран: ${esc(preferred.flag)} | ${preferred.jumps} прыжков | мин. сек: ${preferred.min_sec.toFixed(1)} | киллов/ч: ${preferred.total_kills_1h} | потери: ${preferred.total_value_m}M`);
+    lines.push(`${riskEmoji} Выбран: ${esc(preferred.flag)} | ${preferred.jumps} прыжков | мин. сек: ${preferred.min_sec.toFixed(1)} | киллов/ч: ${preferred.total_kills_1h} | ${formatValueSample(preferred.total_value_m, preferred.value_resolved_kills, preferred.total_kills_1h)}`);
     lines.push(`Автопилот: ${esc(describeAutopilotMode(autopilotMode))} (${esc(preferred.flag)})`);
     const alternativeHint = describeAlternativeHint(routes, preferred);
     if (alternativeHint) {
@@ -370,10 +513,10 @@ function formatRouteSummary(
     lines.push(`Ключевые точки: <code>${esc(buildRoutePreview(preferred))}</code>`);
   }
 
-  const zkbLines = buildSelectedRouteKillSummary(preferred);
-  if (zkbLines.length > 0) {
+  const killboardLines = buildSelectedRouteKillSummary(preferred, dangerScan);
+  if (killboardLines.length > 0) {
     lines.push('');
-    lines.push(...zkbLines);
+    lines.push(...killboardLines);
   }
 
   return lines.join('\n').trim();
@@ -445,17 +588,25 @@ function buildRoutePreview(route: RouteVariant): string {
   return preview.join(' → ');
 }
 
-function buildSelectedRouteKillSummary(route: RouteVariant): string[] {
+function buildSelectedRouteKillSummary(
+  route: RouteVariant,
+  scan?: DangerScanResult,
+): string[] {
+  if (scan?.error) {
+    return ['EVE-KILL срез: данные временно недоступны; маршрут нельзя считать подтверждённо тихим.'];
+  }
   if (route.danger_systems.length === 0) {
-    return ['zKB срез: на выбранной трассе свежих killmail за последний час не видно.'];
+    const suffix = scan?.truncated ? ' Срез ограничен локальным лимитом.' : '';
+    return [`EVE-KILL срез: на выбранной трассе свежих killmail за последний час не видно.${suffix}`];
   }
 
-  const lines = ['zKB срез:'];
+  const lines = ['EVE-KILL срез:'];
+  if (scan?.truncated) lines.push('- Результат ограничен локальным лимитом; показана неполная выборка.');
   for (const system of route.danger_systems.slice(0, 2)) {
     const campLabel = system.gate_camps.length > 0
       ? ` \u{26A0}\u{FE0F} CAMP`
       : '';
-    lines.push(`- ${escapeHtml(system.name)} ${system.sec.toFixed(1)}: ${system.kills_1h} PvP, ${system.total_value_m}M${campLabel}`);
+    lines.push(`- ${escapeHtml(system.name)} ${system.sec.toFixed(1)}: ${system.kills_1h} PvP, ${formatValueSample(system.total_value_m, system.value_resolved_kills, system.kills_1h)}${campLabel}`);
     if (system.gate_camps.length > 0) {
       for (const gc of system.gate_camps.slice(0, 2)) {
         lines.push(`  \u{1F6A7} Гейт → ${escapeHtml(gc.connectedSystemName)}: ${gc.killCount} kill(s)${gc.recentKills > 0 ? ', свежие!' : ''}`);
@@ -467,7 +618,7 @@ function buildSelectedRouteKillSummary(route: RouteVariant): string[] {
       const attacker = escapeHtml(kill.attacker ?? '?');
       const value = kill.value_m && kill.value_m > 0 ? ` ${kill.value_m}M` : '';
       const time = kill.time ?? 'недавно';
-      const link = kill.url ? ` <a href="${escapeHtmlAttribute(kill.url)}">zkb</a>` : '';
+      const link = kill.url ? ` <a href="${escapeHtmlAttribute(kill.url)}">EVE-KILL</a>` : '';
       lines.push(`  ${time} ${victimShip}${value} ${victim} ← ${attacker}${link}`);
     }
   }
@@ -580,6 +731,14 @@ function resolveSystemBatch(db: Db, ids: Set<number>): Map<number, SystemInfo> {
 function normalizeSecurity(value: number | null | undefined): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
   return Math.round(value * 10) / 10;
+}
+
+function normalizeRouteSystems(systemIds: number[]): number[] {
+  return systemIds.filter((systemId, index) =>
+    Number.isSafeInteger(systemId)
+    && systemId > 0
+    && (index === 0 || systemId !== systemIds[index - 1]),
+  );
 }
 
 async function fetchRoute(
@@ -703,6 +862,7 @@ function buildRouteVariant(
   const dangerSystems: DangerSystem[] = [];
   let totalKills = 0;
   let totalValue = 0;
+  let valueResolvedKills = 0;
 
   for (const id of systemIds) {
     const info = systemInfoMap.get(id);
@@ -716,6 +876,7 @@ function buildRouteVariant(
       dangerSystems.push(danger);
       totalKills += danger.kills_1h;
       totalValue += danger.total_value_m;
+      valueResolvedKills += danger.value_resolved_kills;
     }
   }
 
@@ -729,226 +890,79 @@ function buildRouteVariant(
     safe_count: systemIds.length - dangerSystems.length,
     total_kills_1h: totalKills,
     total_value_m: totalValue,
+    value_resolved_kills: valueResolvedKills,
     danger_systems: dangerSystems,
     systems: systemNames,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Danger scan: zKillboard + ESI enrichment (EVE-KILL killlist ignores system_id)
+// Shared one-hour EVE-KILL route baseline
 // ---------------------------------------------------------------------------
-
-const MAX_KILLS_PER_SYSTEM = 3;
-const DANGER_SCAN_CONCURRENCY = 10;
-const DANGER_SCAN_PAST_SECONDS = 3600;
-const DANGER_SCAN_WINDOW_MINUTES = DANGER_SCAN_PAST_SECONDS / 60;
-
-type ZkillFeedItem = {
-  killmail_id: number;
-  zkb?: { hash?: string; totalValue?: number; npc?: boolean; solo?: boolean };
-};
 
 async function scanSystemDanger(
   db: Db,
   systemIds: Set<number>,
   systemInfoMap: Map<number, SystemInfo>,
-  _ctx: UserContext,
-): Promise<Map<number, DangerSystem>> {
+): Promise<DangerScanResult> {
   const ids = [...systemIds];
-  if (ids.length === 0) return new Map();
-
-  console.log('[danger_scan] scanning %d systems via zKillboard', ids.length);
-
-  // Step 1: Parallel zKB fetches
-  const feedMap = new Map<number, ZkillFeedItem[]>();
-  let idx = 0;
-  const fetchNext = async (): Promise<void> => {
-    while (idx < ids.length) {
-      const systemId = ids[idx++];
-      const feed = await fetchZkbFeed(systemId);
-      if (feed.length > 0) feedMap.set(systemId, feed);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(DANGER_SCAN_CONCURRENCY, ids.length) }, () => fetchNext()));
-
-  if (feedMap.size === 0) {
-    console.log('[danger_scan] no kills found');
-    return new Map();
+  if (ids.length === 0) {
+    return { systems: new Map(), truncated: false, requestCount: 0, error: null, snapshot: null };
   }
 
-  // Step 2: Enrich top kills per system via ESI
-  type EnrichItem = { systemId: number; item: ZkillFeedItem };
-  const enrichList: EnrichItem[] = [];
-  for (const [systemId, feed] of feedMap) {
-    for (const item of feed.slice(0, MAX_KILLS_PER_SYSTEM).filter((i) => i.zkb?.hash)) {
-      enrichList.push({ systemId, item });
-    }
-  }
-
-  type RawKill = {
-    systemId: number; killmailId: number; time: string | null;
-    victimCharId: number | null; victimCorpId: number | null; victimShipTypeId: number | null;
-    attackerCharId: number | null; attackerCorpId: number | null; attackerShipTypeId: number | null;
-    valueM: number;
-    isNpc: boolean;
-    position: { x: number; y: number; z: number } | null;
-  };
-  const rawKills: RawKill[] = [];
-  let eidx = 0;
-  const enrichNext = async (): Promise<void> => {
-    while (eidx < enrichList.length) {
-      const { systemId, item } = enrichList[eidx++];
-      const hash = item.zkb?.hash;
-      if (!hash) continue;
-      try {
-        const r = await callEsiOperation<Record<string, unknown>>(db, 'get_killmails_killmail_id_killmail_hash', { killmail_id: item.killmail_id, killmail_hash: hash });
-        if (!r.ok || !r.data) continue;
-        const km = r.data;
-        const victim = asRec(km.victim);
-        const attackers = Array.isArray(km.attackers) ? km.attackers as Record<string, unknown>[] : [];
-        const fb = attackers.find((a) => a.final_blow === true) ?? attackers[0] ?? {};
-        const victimPos = asRec(victim.position);
-        const pos = typeof victimPos.x === 'number' && typeof victimPos.y === 'number' && typeof victimPos.z === 'number'
-          ? { x: victimPos.x, y: victimPos.y, z: victimPos.z } : null;
-        rawKills.push({
-          systemId, killmailId: item.killmail_id,
-          time: typeof km.killmail_time === 'string' ? km.killmail_time : null,
-          victimCharId: numOrNull(victim.character_id), victimCorpId: numOrNull(victim.corporation_id),
-          victimShipTypeId: numOrNull(victim.ship_type_id),
-          attackerCharId: numOrNull(fb.character_id), attackerCorpId: numOrNull(fb.corporation_id),
-          attackerShipTypeId: numOrNull(fb.ship_type_id),
-          valueM: Math.round((item.zkb?.totalValue ?? 0) / 1_000_000),
-          isNpc: item.zkb?.npc === true,
-          position: pos,
-        });
-      } catch { /* skip */ }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(DANGER_SCAN_CONCURRENCY, enrichList.length) }, () => enrichNext()));
-
-  // Step 3: Batch resolve names
-  const idsToResolve = new Set<number>();
-  for (const rk of rawKills) {
-    for (const id of [rk.victimCharId, rk.victimCorpId, rk.attackerCharId, rk.attackerCorpId]) {
-      if (id) idsToResolve.add(id);
-    }
-  }
-  const nameMap = await resolveNamesBatch(db, idsToResolve);
-
-  // Step 4: Build DangerSystem entries
-  const dangerMap = new Map<number, DangerSystem>();
-  for (const [systemId] of feedMap) {
-    const info = systemInfoMap.get(systemId);
-    const systemKills = rawKills
-      .filter((rk) => rk.systemId === systemId && isKillInsideDangerWindow(rk.time));
-    if (systemKills.length === 0) continue;
-
-    const npcCount = systemKills.filter((rk) => rk.isNpc).length;
-    const pvpCount = systemKills.length - npcCount;
-    const totalValueM = systemKills.reduce((sum, rk) => sum + rk.valueM, 0);
-    const kills: RecentKill[] = systemKills.map((rk) => ({
-      time: rk.time ? toMSK(rk.time) : null,
-      killmail_time: rk.time,
-      killmail_id: rk.killmailId,
-      victim: nameMap.get(rk.victimCharId ?? 0) ?? nameMap.get(rk.victimCorpId ?? 0) ?? null,
-      victim_ship: resolveTypeName(db, rk.victimShipTypeId),
-      attacker: nameMap.get(rk.attackerCharId ?? 0) ?? nameMap.get(rk.attackerCorpId ?? 0) ?? null,
-      attacker_ship: resolveTypeName(db, rk.attackerShipTypeId),
-      value_m: rk.valueM,
-      url: `https://zkillboard.com/kill/${rk.killmailId}/`,
+  console.log('[danger_scan] scanning %d systems via EVE-KILL', ids.length);
+  const snapshot = await buildRouteThreatSnapshot(db, ids);
+  const systems = new Map<number, DangerSystem>();
+  for (const entry of snapshot.systems) {
+    const info = systemInfoMap.get(entry.systemId);
+    const kills: RecentKill[] = entry.recentKills.map((kill) => ({
+      time: kill.time_msk,
+      killmail_time: kill.killmail_time ?? null,
+      killmail_id: kill.killmail_id,
+      victim: kill.victim_character_name ?? null,
+      victim_ship: kill.ship_name ?? null,
+      attacker: kill.final_blow_character_name ?? null,
+      attacker_ship: kill.final_blow_ship_name ?? null,
+      value_m: kill.total_value === undefined ? null : Math.round(kill.total_value / 1_000_000),
+      url: kill.eve_kill_url,
+      threat: kill,
     }));
-
-    const gateCamps = attributeKillsToGates(
-      db,
-      systemId,
-      systemKills
-        .filter((rk) => rk.position)
-        .map((rk) => ({ position: rk.position!, killmail_id: rk.killmailId, killmail_time: rk.time ?? undefined })),
-    );
-
-    dangerMap.set(systemId, {
-      systemId,
-      name: info?.name ?? `ID:${systemId}`,
-      sec: info?.sec ?? 0,
-      kills_1h: systemKills.length,
-      pvp: pvpCount,
-      npc: npcCount,
-      total_value_m: totalValueM,
+    systems.set(entry.systemId, {
+      systemId: entry.systemId,
+      name: info?.name ?? entry.name,
+      sec: info?.sec ?? entry.sec,
+      kills_1h: entry.pvpKills,
+      pvp: entry.pvpKills,
+      npc: entry.npcKills,
+      total_value_m: entry.totalValueM,
+      value_resolved_kills: entry.valueResolvedKills,
       kills,
-      gate_camps: gateCamps,
+      gate_camps: entry.gateKills,
     });
   }
 
-  const campCount = [...dangerMap.values()].reduce((sum, ds) => sum + ds.gate_camps.length, 0);
-  console.log('[danger_scan] result: %d danger systems, %d gate camp(s)', dangerMap.size, campCount);
-  return dangerMap;
+  const campCount = [...systems.values()].reduce((sum, system) => sum + system.gate_camps.length, 0);
+  console.log(
+    '[danger_scan] result systems=%d camps=%d truncated=%s requests=%d',
+    systems.size,
+    campCount,
+    snapshot.truncated,
+    snapshot.requestCount,
+  );
+  return {
+    systems,
+    truncated: snapshot.truncated,
+    requestCount: snapshot.requestCount,
+    error: snapshot.error,
+    snapshot,
+  };
 }
 
-// zKB helpers
-async function fetchZkbFeed(systemId: number): Promise<ZkillFeedItem[]> {
-  const url = `${config.zkill.baseUrl}kills/systemID/${systemId}/pastSeconds/${DANGER_SCAN_PAST_SECONDS}/`;
-  try {
-    const res = await fetch(url, {
-      headers: { Accept: 'application/json', 'Accept-Encoding': 'gzip', 'User-Agent': config.zkill.userAgent },
-      signal: AbortSignal.timeout(config.zkill.timeoutMs),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    if (!Array.isArray(data)) return [];
-    return data.filter((item: unknown): item is ZkillFeedItem =>
-      !!item && typeof item === 'object' && typeof (item as Record<string, unknown>).killmail_id === 'number',
-    );
-  } catch { return []; }
-}
-
-async function resolveNamesBatch(db: Db, ids: Set<number>): Promise<Map<number, string>> {
-  const map = new Map<number, string>();
-  if (ids.size === 0) return map;
-  try {
-    const r = await callEsiOperation<Array<{ id: number; name: string }>>(db, 'post_universe_names', { ids: JSON.stringify([...ids].slice(0, 100)) });
-    if (r.ok && Array.isArray(r.data)) {
-      for (const e of r.data) { if (e.id && e.name) map.set(e.id, e.name); }
-    }
-  } catch { /* */ }
-  return map;
-}
-
-const typeNameCache = new Map<number, string | null>();
-function resolveTypeName(db: Db, typeId: number | null): string | null {
-  if (typeId === null) return null;
-  if (typeNameCache.has(typeId)) return typeNameCache.get(typeId)!;
-  const row = db.prepare('SELECT name FROM sde_types WHERE type_id = ?').get(typeId) as { name: string } | undefined;
-  const name = row?.name ?? null;
-  typeNameCache.set(typeId, name);
-  return name;
-}
-
-function asRec(v: unknown): Record<string, unknown> {
-  return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
-}
-
-function numOrNull(v: unknown): number | null {
-  return typeof v === 'number' && Number.isFinite(v) ? v : null;
-}
-
-function toMSK(utcTime: string): string {
-  try {
-    const d = new Date(utcTime);
-    return d.toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit' }) + ' MSK';
-  } catch {
-    return utcTime;
-  }
-}
-
-function isKillInsideDangerWindow(value: string | null): boolean {
-  const minutes = value ? minutesSinceIso(value) : null;
-  return minutes === null || minutes <= DANGER_SCAN_WINDOW_MINUTES;
-}
-
-function minutesSinceIso(value: string): number | null {
-  const ts = new Date(value).getTime();
-  if (!Number.isFinite(ts)) return null;
-  return Math.max(0, Math.round((Date.now() - ts) / 60_000));
+function formatValueSample(valueM: number, resolvedKills: number, totalKills: number): string {
+  const coverage = `${resolvedKills}/${totalKills}`;
+  return resolvedKills > 0
+    ? `оценка потерь по выборке ${coverage}: ${valueM}M`
+    : `оценка потерь недоступна (выборка ${coverage})`;
 }
 
 function describeAutopilotMode(mode: AutopilotMode): string {
@@ -972,10 +986,10 @@ function formatTheraShortcut(thera: TheraShortcut): string {
   const lifeLabel = minHours <= 0 ? 'EOL \u{26A0}\u{FE0F}' : minHours <= 4 ? `~${minHours}ч` : 'свежая';
   const shipLabel = SHIP_SIZE_LABELS[thera.max_ship_size] ?? thera.max_ship_size;
 
-  lines.push(`\u{1F300} <b>Шорткат через Thera: ~${thera.total_jumps} прыжков</b> (экономия ${thera.saved_jumps})`);
+  lines.push(`\u{1F300} <b>Шорткат через ${esc(thera.hub_system)}: ~${thera.total_jumps} прыжков</b> (экономия ${thera.saved_jumps})`);
   lines.push(
     `  Вход: ${esc(thera.entry_system)} (${thera.entry_class}, ${thera.entry_jumps}j от старта)`
-    + ` → Thera → `
+    + ` → ${esc(thera.hub_system)} → `
     + `Выход: ${esc(thera.exit_system)} (${thera.exit_class}, ${thera.exit_jumps}j до цели)`,
   );
   lines.push(`  WH: ${lifeLabel}, макс ${shipLabel} | Данные: EVE-Scout`);

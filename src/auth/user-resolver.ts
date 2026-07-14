@@ -1,7 +1,12 @@
 import type { Db } from '../db/sqlite.js';
 import { isDiscordOutboundRegistered, isTelegramOutboundRegistered } from '../messaging/outbound.js';
 
-export type UserContext = { userId: number; chatId?: number };
+export type UserContext = {
+  userId: number;
+  chatId?: number;
+  /** False for transient lanes that cannot receive durable background alerts. */
+  durableNotifications?: boolean;
+};
 
 export function getOrCreateUser(
   db: Db,

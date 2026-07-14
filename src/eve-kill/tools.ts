@@ -1,21 +1,11 @@
-/**
- * EVE-KILL tool definitions for the agent namespace system.
- *
- * Design: each tool covers a logical domain with only the params it needs.
- * This keeps descriptions focused for tool_search and avoids null-param waste.
- */
-
 import type { NativeFunctionTool, NativeNamespaceTool } from '../agent/native-responses.js';
-import { KILL_FEED_RESPONSE_FIELDS } from './feed.js';
-
-// ---------------------------------------------------------------------------
-// Tool names
-// ---------------------------------------------------------------------------
 
 export const EVE_KILL_TOOL_NAMES = [
-  'kill_feed', 'kill_query',
-  'kill_stats', 'kill_battles', 'kill_entity',
-  'kill_lookup', 'kill_spatial', 'kill_prices',
+  'kill_search',
+  'kill_activity',
+  'kill_detail',
+  'kill_intel',
+  'kill_battles',
   'kill_watch',
 ] as const;
 
@@ -25,303 +15,129 @@ export function isEveKillToolName(name: string): name is EveKillToolName {
   return (EVE_KILL_TOOL_NAMES as readonly string[]).includes(name);
 }
 
-// ---------------------------------------------------------------------------
-// Shared constants
-// ---------------------------------------------------------------------------
-
-const QUERY_FIELDS_REF = `Filterable fields (MongoDB-style):
-killmail_id, kill_time (unix seconds!), system_id, region_id,
-total_value, fitted_value, dropped_value, destroyed_value, point_value,
-victim.character_id, victim.corporation_id, victim.alliance_id, victim.ship_type_id,
-attackers.character_id, attackers.corporation_id, attackers.alliance_id, attackers.ship_type_id,
-is_npc, is_solo, is_awox, labels.
-Operators: $eq $ne $gt $gte $lt $lte $in $nin $exists $regex $and $or.
-kill_time = unix seconds. Sort default: {"kill_time":-1}. Max limit: 100.`;
-
-// ---------------------------------------------------------------------------
-// Tool definitions
-// ---------------------------------------------------------------------------
-
-const DEFERRED_EVE_KILL_TOOLS: NativeFunctionTool[] = [
-
-  // ── kill_feed ─────────────────────────────────────────────────────────────
+const tools: NativeFunctionTool[] = [
   {
     type: 'function',
-    name: 'kill_feed',
+    name: 'kill_search',
     description:
-      'Recent killmails from EVE-KILL by system, character, corporation, alliance, or ship type. ' +
-      'Pre-enriched with names/values (no ESI needed). ' +
-      `Response fields: ${KILL_FEED_RESPONSE_FIELDS.join(', ')}. ` +
-      'Always pass fields to select only what you need.',
+      'Search public killmails observed by EVE-KILL in an explicit time window. ' +
+      'This is third-party discovery, not an authoritative CCP record; caps and truncation are returned.',
     strict: true,
     defer_loading: true,
     parameters: {
       type: 'object',
       properties: {
-        scope: {
-          type: 'string',
-          enum: ['system', 'character', 'corporation', 'alliance', 'ship_type'],
-          description: 'Query target: system_id, character_id, corporation_id, alliance_id, or ship type_id.',
-        },
-        id: { type: 'integer', description: 'CCP ID matching scope. Resolve via sde_sql first.' },
-        activity: {
-          type: ['string', 'null'], enum: ['kills', 'losses', 'all', null],
-          description: 'kills=attacker, losses=victim, all=both (default). Ignored for system.',
-        },
-        past_seconds: { type: ['integer', 'null'], description: 'Time window. Defaults: system 3600, entity 86400, ship 604800. Max 2592000.' },
-        limit: { type: ['integer', 'null'], description: 'Max killmails (1-50, default 10).' },
-        detail_limit: { type: ['integer', 'null'], description: 'Killmails with full details (0-20, default min(limit,10)). Lower saves tokens.' },
-        fields: {
-          type: ['array', 'null'],
-          items: { type: 'string', enum: [...KILL_FEED_RESPONSE_FIELDS] },
-          description: 'Select response fields. Null = all.',
-        },
+        from: { type: 'string', description: 'ISO8601 window start.' },
+        to: { type: 'string', description: 'ISO8601 window end.' },
+        system_ids: nullableIdArray(),
+        constellation_ids: nullableIdArray(),
+        region_ids: nullableIdArray(),
+        character_ids: nullableIdArray(),
+        corporation_ids: nullableIdArray(),
+        alliance_ids: nullableIdArray(),
+        limit: { type: ['integer', 'null'], description: 'Tool result cap, 1-100.' },
       },
-      required: ['scope', 'id', 'activity', 'past_seconds', 'limit', 'detail_limit', 'fields'],
+      required: ['from', 'to', 'system_ids', 'constellation_ids', 'region_ids', 'character_ids', 'corporation_ids', 'alliance_ids', 'limit'],
       additionalProperties: false,
     },
   },
-
-  // ── kill_query ────────────────────────────────────────────────────────────
   {
     type: 'function',
-    name: 'kill_query',
+    name: 'kill_activity',
     description:
-      'Advanced killmail search with MongoDB-style filters. ' +
-      'For queries kill_feed cannot express: ISK thresholds, multi-entity, labels, regex, $or/$and combos. ' +
-      `\n${QUERY_FIELDS_REF}`,
+      'List public EVE-KILL activity for one system, character, corporation, or alliance. ' +
+      'Kills/losses describe observed killboard roles and may be incomplete.',
     strict: true,
     defer_loading: true,
     parameters: {
       type: 'object',
       properties: {
-        filter: { type: 'string', description: 'JSON string of MongoDB-style filter. Example: {"total_value":{"$gte":1000000000},"region_id":10000060}' },
-        sort: { type: ['string', 'null'], description: 'JSON string of sort spec. Default: {"kill_time":-1}. Example: {"total_value":-1}.' },
-        limit: { type: ['integer', 'null'], description: 'Max results (1-100, default 20).' },
-        fields: {
-          type: ['array', 'null'],
-          items: { type: 'string', enum: [...KILL_FEED_RESPONSE_FIELDS] },
-          description: 'Response field subset. Null = all.',
-        },
+        scope: { type: 'string', enum: ['system', 'character', 'corporation', 'alliance'] },
+        id: { type: 'integer', description: 'CCP entity or solar-system ID.' },
+        activity: { type: 'string', enum: ['kills', 'losses', 'all'] },
+        from: { type: ['string', 'null'], description: 'Optional ISO8601 lower time bound.' },
+        to: { type: ['string', 'null'], description: 'Optional ISO8601 upper time bound.' },
+        limit: { type: ['integer', 'null'], description: 'Tool result cap, 1-100.' },
       },
-      required: ['filter', 'sort', 'limit', 'fields'],
+      required: ['scope', 'id', 'activity', 'from', 'to', 'limit'],
       additionalProperties: false,
     },
   },
-
-  // ── kill_stats ────────────────────────────────────────────────────────────
   {
     type: 'function',
-    name: 'kill_stats',
+    name: 'kill_detail',
     description:
-      'PvP statistics and rankings for a character, corporation, or alliance from EVE-KILL. ' +
-      'Stats include kills, losses, ISK destroyed/lost, solo kills. Top lists rank by ships/systems/regions. ' +
-      'Global leaderboards: most valuable kills, top killers, active corps, etc.',
+      'Read EVE-KILL public detail/value enrichment, slot-grouped fitting, or ID-only hash discovery. ' +
+      'Hash discovery is non-authoritative; official detail requires CCP ESI with (id, hash).',
     strict: true,
     defer_loading: true,
     parameters: {
       type: 'object',
       properties: {
-        action: {
-          type: 'string',
-          enum: ['stats', 'shortstats', 'top', 'global_stats'],
-          description: 'stats=full PvP stats, shortstats=compact, top=rankings by ships/systems/regions, global_stats=server leaderboards.',
-        },
-        scope: {
-          type: ['string', 'null'], enum: ['character', 'corporation', 'alliance', null],
-          description: 'Entity type. Required for stats/shortstats/top. Null for global_stats.',
-        },
-        id: { type: ['integer', 'null'], description: 'Entity ID. Required for stats/shortstats/top.' },
-        top_type: {
-          type: ['string', 'null'], enum: ['ships', 'systems', 'regions', null],
-          description: 'For top: what to rank. For global_stats: category (characters|corporations|alliances|ships|solo|most_valuable_kills|most_valuable_structures|kill_count|new_characters).',
-        },
-        days: { type: ['integer', 'null'], description: '0=all-time, default 7.' },
-        limit: { type: ['integer', 'null'], description: 'For global_stats: 1-100, default 10.' },
+        action: { type: 'string', enum: ['detail', 'fitting', 'hash_discovery'] },
+        killmail_id: { type: 'integer' },
       },
-      required: ['action', 'scope', 'id', 'top_type', 'days', 'limit'],
+      required: ['action', 'killmail_id'],
       additionalProperties: false,
     },
   },
-
-  // ── kill_battles ──────────────────────────────────────────────────────────
+  {
+    type: 'function',
+    name: 'kill_intel',
+    description:
+      'Read third-party EVE-KILL character aggregates, killmail-derived public intel, or public leaderboards. ' +
+      'These observations are not authoritative identity, affiliation, history, or roster data.',
+    strict: true,
+    defer_loading: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['character_stats', 'character_intel', 'leaderboard'] },
+        character_id: { type: ['integer', 'null'] },
+        period: { type: ['string', 'null'], enum: ['alltime', 'weekly', null] },
+        days: { type: ['integer', 'null'] },
+        data_type: {
+          type: ['string', 'null'],
+          enum: ['characters', 'corporations', 'alliances', 'ships', 'systems', 'regions', 'solo_killers', 'dangerous_systems', 'deadliest_regions', 'most_valuable_ships', 'most_valuable_structures', null],
+        },
+        limit: { type: ['integer', 'null'], description: 'Leaderboard row cap, 1-100.' },
+      },
+      required: ['action', 'character_id', 'period', 'days', 'data_type', 'limit'],
+      additionalProperties: false,
+    },
+  },
   {
     type: 'function',
     name: 'kill_battles',
-    description:
-      'Battle reports from EVE-KILL. List battles globally or for an entity, get detailed battle with killmails. ' +
-      'Battles are auto-detected from killmail clusters.',
+    description: 'List or inspect public battle clusters computed by EVE-KILL. Battle grouping is third-party derived.',
     strict: true,
     defer_loading: true,
     parameters: {
       type: 'object',
       properties: {
-        action: {
-          type: 'string',
-          enum: ['list', 'detail'],
-          description: 'list=browse battles (optionally filtered by entity), detail=single battle with killmails.',
-        },
-        scope: {
-          type: ['string', 'null'], enum: ['character', 'corporation', 'alliance', null],
-          description: 'For list: filter by entity type. Null for global list.',
-        },
-        id: { type: ['integer', 'null'], description: 'For list: entity ID to filter. For detail: battle ID.' },
-        limit: { type: ['integer', 'null'], description: 'For list: 1-100, default 10.' },
+        action: { type: 'string', enum: ['list', 'detail'] },
+        battle_id: { type: ['integer', 'null'] },
+        page: { type: ['integer', 'null'] },
+        limit: { type: ['integer', 'null'], minimum: 1, maximum: 100, description: 'List row cap or detail member cap, 1-100.' },
+        sort: { type: ['string', 'null'], enum: ['battle_id', 'total_isk_destroyed', 'kill_count', 'start_time', null] },
       },
-      required: ['action', 'scope', 'id', 'limit'],
+      required: ['action', 'battle_id', 'page', 'limit', 'sort'],
       additionalProperties: false,
     },
   },
-
-  // ── kill_entity ───────────────────────────────────────────────────────────
-  {
-    type: 'function',
-    name: 'kill_entity',
-    description:
-      'Entity intelligence from EVE-KILL: character/corporation/alliance details, corp history, ' +
-      'alliance history, member lists, alliance corporations, coalition detection. ' +
-      'Use when user asks "who is this player/corp/alliance", "what corp was he in", "who are their allies".',
-    strict: true,
-    defer_loading: true,
-    parameters: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['entity_detail', 'corp_history', 'alliance_history', 'members', 'alliance_corps', 'coalition'],
-          description: 'entity_detail=char/corp/alliance info, corp_history=character corp changes, ' +
-            'alliance_history=corp alliance changes, members=corp/alliance member list, ' +
-            'alliance_corps=corps in alliance, coalition=top 10 coalition partners (alliance, 90d).',
-        },
-        scope: {
-          type: ['string', 'null'], enum: ['character', 'corporation', 'alliance', null],
-          description: 'Entity type. Required for entity_detail and members.',
-        },
-        id: { type: 'integer', description: 'Entity ID.' },
-        limit: { type: ['integer', 'null'], description: 'For members/alliance_corps: 1-100, default 100.' },
-      },
-      required: ['action', 'scope', 'id', 'limit'],
-      additionalProperties: false,
-    },
-  },
-
-  // ── kill_lookup ───────────────────────────────────────────────────────────
-  {
-    type: 'function',
-    name: 'kill_lookup',
-    description:
-      'Look up specific killmails, find related kills, search entities, or get war/faction details from EVE-KILL. ' +
-      'Use when user has a killmail ID, wants sibling kills, or needs to find an entity by name.',
-    strict: true,
-    defer_loading: true,
-    parameters: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['killmail', 'killmail_batch', 'killmail_sibling', 'search', 'war', 'war_killmails', 'faction'],
-          description: 'killmail=single kill by ID, killmail_batch=multiple by IDs, killmail_sibling=related loss ±1hr, ' +
-            'search=find entity by name, war=war details, war_killmails=kills in war, faction=faction details.',
-        },
-        id: { type: ['integer', 'null'], description: 'Killmail/war/faction ID. Required for all except search and killmail_batch.' },
-        ids: {
-          type: ['array', 'null'], items: { type: 'integer' },
-          description: 'For killmail_batch: array of killmail IDs.',
-        },
-        search_term: { type: ['string', 'null'], description: 'For search: entity name to look up.' },
-      },
-      required: ['action', 'id', 'ids', 'search_term'],
-      additionalProperties: false,
-    },
-  },
-
-  // ── kill_spatial ──────────────────────────────────────────────────────────
-  {
-    type: 'function',
-    name: 'kill_spatial',
-    description:
-      'Spatial killmail search from EVE-KILL: find kills near a celestial object or 3D coordinates. ' +
-      'Use when user asks "kills near this gate/station/planet" or needs proximity analysis.',
-    strict: true,
-    defer_loading: true,
-    parameters: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['near_celestial', 'near_coordinates'],
-          description: 'near_celestial=kills near a celestial (gate, station, planet), near_coordinates=kills near x/y/z in a system.',
-        },
-        celestial_id: { type: ['integer', 'null'], description: 'For near_celestial: celestial object ID.' },
-        system_id: { type: ['integer', 'null'], description: 'For near_coordinates: solar system ID.' },
-        x: { type: ['number', 'null'], description: 'For near_coordinates: X coordinate in meters.' },
-        y: { type: ['number', 'null'], description: 'For near_coordinates: Y coordinate.' },
-        z: { type: ['number', 'null'], description: 'For near_coordinates: Z coordinate.' },
-        distance_meters: { type: ['integer', 'null'], description: 'Search radius in meters (default 100000).' },
-        days: { type: ['integer', 'null'], description: 'Time window in days (default 7).' },
-        limit: { type: ['integer', 'null'], description: 'For near_coordinates: max results (1-50, default 50).' },
-      },
-      required: ['action', 'celestial_id', 'system_id', 'x', 'y', 'z', 'distance_meters', 'days', 'limit'],
-      additionalProperties: false,
-    },
-  },
-
-  // ── kill_prices ───────────────────────────────────────────────────────────
-  {
-    type: 'function',
-    name: 'kill_prices',
-    description:
-      'Item prices and build costs from EVE-KILL. Market prices across regions or blueprint build cost calculation. ' +
-      'Use when user asks "how much does it cost to build X" or needs price data from EVE-KILL.',
-    strict: true,
-    defer_loading: true,
-    parameters: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['build_price', 'type_prices'],
-          description: 'build_price=calculate blueprint build cost from materials, type_prices=market prices across regions.',
-        },
-        type_id: { type: 'integer', description: 'Item type_id. Resolve via sde_sql first.' },
-        days: { type: ['integer', 'null'], description: 'Price data window in days (default 7).' },
-      },
-      required: ['action', 'type_id', 'days'],
-      additionalProperties: false,
-    },
-  },
-
-  // ── kill_watch ────────────────────────────────────────────────────────────
   {
     type: 'function',
     name: 'kill_watch',
-    description:
-      'Kill alert subscriptions. Watch player/system/region for real-time Telegram kill alerts. ' +
-      'IMPORTANT: to remove ALL watches at once, use action=unwatch_all (no other params needed). ' +
-      'Single unwatch needs topic_type + topic_id.',
+    description: 'Manage durable EVE-KILL public feed alerts for system, region, victim, or attacker topics.',
     strict: false,
     defer_loading: true,
     parameters: {
       type: 'object',
       properties: {
-        action: {
-          type: 'string',
-          enum: ['watch', 'unwatch', 'unwatch_all', 'list'],
-          description: 'watch=subscribe, unwatch=remove one, unwatch_all=remove ALL watches + stop route monitor, list=show active.',
-        },
-        topic_type: {
-          type: 'string',
-          enum: ['victim', 'attacker', 'system', 'region'],
-          description: 'Required for watch/unwatch. Not needed for unwatch_all/list.',
-        },
-        topic_id: {
-          type: 'integer',
-          description: 'CCP ID: character_id, system_id, or region_id. Required for watch/unwatch.',
-        },
-        label: {
-          type: 'string',
-          description: 'Human-readable label (e.g. player/system name). Optional.',
-        },
+        action: { type: 'string', enum: ['watch', 'unwatch', 'unwatch_all', 'list'] },
+        topic_type: { type: 'string', enum: ['victim', 'attacker', 'system', 'region'] },
+        topic_id: { type: 'integer' },
+        label: { type: 'string' },
       },
       required: ['action'],
       additionalProperties: false,
@@ -329,19 +145,28 @@ const DEFERRED_EVE_KILL_TOOLS: NativeFunctionTool[] = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Namespace builder
-// ---------------------------------------------------------------------------
-
-export function buildEveKillNamespace(): NativeNamespaceTool {
+export function buildEveKillNamespace(
+  options: { includeWatch?: boolean } = {},
+): NativeNamespaceTool {
+  const includeWatch = options.includeWatch !== false;
   return {
     type: 'namespace',
     name: 'eve_kill',
     description:
-      'PvP killboard data and intelligence from EVE-KILL. ' +
-      'Use when user asks about: kills in a system, player/corp killboard, ship fits from losses, ' +
-      'expensive kills, battle reports, who is dangerous, coalition partners, build costs, PvP rankings, ' +
-      'OR when user wants real-time kill alerts/notifications ("follow player", "watch system", "alert me about kills").',
-    tools: DEFERRED_EVE_KILL_TOOLS,
+      'Third-party public kill discovery, aggregates, battle clusters, fittings/value enrichment, ' +
+      `non-authoritative hash discovery${includeWatch ? ', and feed watches' : ''} from EVE-KILL. Use official ESI for identity, ` +
+      'affiliation, history, wars, rosters, and official killmail detail; use local SDE for static data.',
+    tools: !includeWatch
+      ? tools.filter((tool) => tool.name !== 'kill_watch')
+      : tools,
+  };
+}
+
+function nullableIdArray(): Record<string, unknown> {
+  return {
+    type: ['array', 'null'],
+    items: { type: 'integer' },
+    maxItems: 3_840,
+    description: 'Optional CCP IDs; the client chunks each upstream request to at most 15.',
   };
 }

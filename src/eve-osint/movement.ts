@@ -1,5 +1,5 @@
 import type { Db } from '../db/sqlite.js';
-import type { OsintKillmail } from './zkill.js';
+import type { OsintKillmail } from './types.js';
 
 export type MovementProfile = {
   routes: Array<{

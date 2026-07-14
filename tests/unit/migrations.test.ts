@@ -88,4 +88,96 @@ describe('runMigrations', () => {
     const users = db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number };
     expect(users.n).toBe(1);
   });
+
+  it('cuts over only an explicitly marked legacy CLI identity and preserves its local data', () => {
+    db.prepare("INSERT INTO users (user_id, display_name) VALUES (101, 'CLI')").run();
+    db.prepare("INSERT INTO telegram_accounts (telegram_user_id, user_id, username, first_name) VALUES (1, 101, 'cli', 'CLI')")
+      .run();
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username, active_character_id) VALUES (1, 'cli', 90000001)")
+      .run();
+    db.prepare(`
+      INSERT INTO eve_accounts
+        (character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id)
+      VALUES (90000001, 'Pilot', 'enc:v1:x', 'enc:v1:y', datetime('now', '+1 hour'), '[]', 101)
+    `).run();
+    db.prepare("INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (1, 90000001, 101)")
+      .run();
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id, character_id, user_id) VALUES ('cli-thread', 1, 90000001, 101)")
+      .run();
+
+    runMigrations(db);
+
+    expect(db.prepare("SELECT user_id, chat_id FROM cli_accounts WHERE identity_key = 'local'").get())
+      .toEqual({ user_id: 101, chat_id: 0 });
+    expect(db.prepare('SELECT 1 FROM telegram_accounts WHERE telegram_user_id = 1').get()).toBeUndefined();
+    expect(db.prepare('SELECT chat_id FROM agent_threads WHERE thread_id = ?').get('cli-thread'))
+      .toEqual({ chat_id: 0 });
+    expect(db.prepare('SELECT chat_id, user_id FROM eve_character_links WHERE character_id = 90000001').get())
+      .toEqual({ chat_id: 0, user_id: 101 });
+    expect(db.prepare('SELECT active_character_id FROM telegram_sessions WHERE chat_id = 0').get())
+      .toEqual({ active_character_id: 90000001 });
+  });
+
+  it('creates durable EVE-KILL feed state without treating Telegram id 1 as the CLI', () => {
+    db.prepare("INSERT INTO users (user_id, display_name) VALUES (101, 'telegram user')").run();
+    db.prepare(`
+      INSERT INTO telegram_accounts (telegram_user_id, user_id, username, first_name)
+      VALUES (1, 101, 'real-user', 'Real User')
+    `).run();
+    db.prepare(`
+      INSERT INTO heartbeat_config (user_id, character_id, enabled, checks_json)
+      VALUES (101, 90000001, 1, '["mail"]')
+    `).run();
+    db.prepare("INSERT INTO kill_watches (chat_id, topic, label) VALUES (1, 'system.30000142', 'legacy CLI')")
+      .run();
+    db.prepare("INSERT INTO route_monitor_kill_dedup (chat_id, monitor_started_at, killmail_id, sequence_id) VALUES (1, '2026-07-13T00:00:00Z', 8001, 41)")
+      .run();
+    db.prepare(`
+      INSERT INTO route_monitors
+        (chat_id, character_id, origin_id, destination_id, route_systems, current_system_id,
+         ship_type_id, ship_name, ship_ehp, stats_json)
+      VALUES (1, 90000001, 30000142, 30000144, '[30000142,30000144]', 30000142,
+              648, 'Badger', 9000, '{"killsSeen":0,"jumpsCompleted":0,"startTime":"2026-07-13T00:00:00Z","systemTimes":{},"dangerEvents":[]}')
+    `).run();
+    db.prepare("INSERT INTO kill_watches (chat_id, topic, label) VALUES (?, ?, ?)")
+      .run(123, 'system.30000142', '[route] Jita');
+    db.prepare("INSERT INTO kill_watches (chat_id, topic, label) VALUES (?, ?, ?)")
+      .run(123, 'victim.90000001', 'manual');
+    runMigrations(db);
+    db.prepare("INSERT INTO kill_watches (chat_id, topic, label) VALUES (?, ?, ?)")
+      .run(456, 'system.30000144', '[route] manually preserved after cutover');
+    runMigrations(db);
+
+    db.prepare(`
+      INSERT INTO eve_kill_feed_state (feed_key, last_sequence_id)
+      VALUES ('global', 42)
+    `).run();
+    db.prepare(`
+      INSERT INTO eve_kill_notification_dedup (chat_id, killmail_id, sequence_id)
+      VALUES (?, ?, ?)
+    `).run(-123, 9001, 42);
+
+    const state = db.prepare(
+      "SELECT last_sequence_id FROM eve_kill_feed_state WHERE feed_key = 'global'",
+    ).get() as { last_sequence_id: number };
+    expect(state.last_sequence_id).toBe(42);
+    const watches = db.prepare('SELECT label FROM kill_watches ORDER BY id').all() as Array<{ label: string }>;
+    expect(watches).toEqual([
+      { label: 'legacy CLI' },
+      { label: 'manual' },
+      { label: '[route] manually preserved after cutover' },
+    ]);
+    expect(db.prepare('SELECT 1 FROM route_monitors WHERE chat_id = 1').get()).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM route_monitor_kill_dedup WHERE chat_id = 1').get()).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM heartbeat_config WHERE user_id = 101').get()).toBeDefined();
+    expect(db.prepare("SELECT 1 FROM kill_watches WHERE chat_id = 1 AND label = 'legacy CLI'").get()).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM cli_accounts').get()).toBeUndefined();
+    expect(db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'route_monitor_kill_dedup'",
+    ).get()).toBeDefined();
+    expect(() => db.prepare(`
+      INSERT INTO eve_kill_notification_dedup (chat_id, killmail_id, sequence_id)
+      VALUES (?, ?, ?)
+    `).run(-123, 9001, 43)).toThrow();
+  });
 });

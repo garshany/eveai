@@ -8,6 +8,7 @@
 - auth state is one-time and expires
 - encrypted storage is used for EVE token material
 - generated `USER.md` may contain rich gameplay data, but prompt ingestion must treat it as untrusted data, not instructions
+- third-party hosted MCP descriptors are not exposed to model turns that contain chat history, profiles, fits, or private ESI context
 
 ## Web Protections
 
@@ -30,6 +31,18 @@
 - live user-scoped EVE ownership resolves from `user_id` when available; user-scoped paths do not fall back to legacy `chat_id`
 - legacy ownership rows are backfilled in place only to attach old rows to the current `user_id`, not to keep mixed live authorization logic
 - prompt assembly wraps `USER.md` and long-memory summary blocks as explicitly untrusted data with delimiter framing
+- EVE-KILL REST and MCP analytics output is treated as untrusted third-party data, not model instructions
+- the runtime exposes EVE-KILL only through local function tools whose arguments are validated before the application performs network egress
+- non-2xx Responses bodies are reduced to HTTP status plus fixed recovery categories before exceptions can reach bot or CLI logs
+- direct hosted EVE-KILL MCP is disabled because its remote call executes before application code can inspect the exact arguments
+- local MCP analytics accept only public numeric CCP IDs, canonical date pairs, enums, booleans, and bounded limits; names are resolved locally first, and no context, profile, fit, private ESI result, credential, URL, or arbitrary text field is forwarded
+
+## EVE Data Ownership
+
+- official CCP ESI is the only authority for linked/private character flows, identity/affiliation, and official `(id, hash)` killmail details
+- the installed local SDE snapshot is the authority for static topology and type labels
+- EVE-KILL is limited to public third-party discovery, aggregates, battles, fitting/value enrichment, public hash discovery, and feed observations
+- route gate coordinates are accepted only from official CCP ESI `victim.position`; third-party coordinates and names are not promoted to authoritative fields
 
 ## Abuse Controls
 
@@ -46,3 +59,4 @@
 
 - no automated documentation drift enforcement yet
 - production secrets handling is operationally documented but not yet encoded as policy checks
+- direct hosted MCP remains intentionally disabled; the four supported analytics methods use the application-owned public-only wrapper instead

@@ -143,7 +143,7 @@ describe('CLI activity renderer', () => {
   it('maps tool names to friendly labels', () => {
     expect(toolLabel('sde_sql')).toContain('SDE');
     expect(toolLabel('batch_market_prices')).toContain('market');
-    expect(toolLabel('kill_feed')).toContain('killboard');
+    expect(toolLabel('kill_activity')).toContain('killboard');
     expect(toolLabel('get_characters_character_id_assets')).toContain('ESI');
     expect(toolLabel('mystery_tool')).toContain('mystery_tool');
   });

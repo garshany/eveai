@@ -27,6 +27,8 @@ Read the smallest document that answers the current question. Start here, then d
 - [community-showcase.md](./community-showcase.md): CCP Community Showcase submission bundle and eligibility gate
 - [heartbeat.md](./heartbeat.md): periodic background checks and notifications system
 - [osint.md](./osint.md): probabilistic residence/staging inference from activity graphs
+- [eve-kill.md](./eve-kill.md): current EVE-KILL REST/feed, locally wrapped MCP analytics, source ownership, and route handoff
+- [openai-integration.md](./openai-integration.md): stateless Responses loop and local function/MCP privacy boundary
 
 ## Indexed Subtrees
 

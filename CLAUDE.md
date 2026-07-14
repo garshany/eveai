@@ -44,7 +44,7 @@ Browser → Fastify → EVE SSO login redirect/callback + health → same SQLite
 - `src/db/` — SQLite schema (`schema.ts` is source of truth), migrations, helpers
 - `src/discord/` — discord.js bot, slash commands, snowflake identity (TEXT ids, negative chat keys), HTML→markdown formatting
 - `src/eve/` — ESI client (`esi-client.ts` is the only ESI transport), SSO token refresh, SDE lookups, capabilities gating, route planner
-- `src/eve-kill/` — EVE-KILL / zKillboard integration: kill queries, intel, live feed via zKB websocket
+- `src/eve-kill/` — current EVE-KILL public REST client, normalization, durable global poll feed, watches, and six-tool namespace
 - `src/eve-board/` — route monitoring: briefings, threat analytics, advisor, route snapshots
 - `src/eve-osint/` — OSINT inference from kill activity: movement, ships, social, temporal patterns
 - `src/eve-intel/`, `src/eve-local/`, `src/eve-scan/` — intel notes, local-chat analyzer, d-scan analyzer

@@ -50,6 +50,28 @@ export type DangerEvent = {
   description: string;
 };
 
+/**
+ * Source-neutral killmail projection used by deterministic route analysis.
+ * Transport payloads are normalized at the EVE-KILL boundary before reaching
+ * this type.
+ */
+export type ThreatKillmail = {
+  killmail_id: number;
+  killmail_time?: string;
+  total_value?: number;
+  attacker_count?: number;
+  is_npc?: boolean;
+  is_solo?: boolean;
+  ship_type_id?: number;
+  ship_name?: string;
+  ship_group_name?: string;
+  victim_character_id?: number;
+  victim_character_name?: string;
+  final_blow_character_id?: number;
+  final_blow_character_name?: string;
+  position?: { x: number; y: number; z: number };
+};
+
 // ---------------------------------------------------------------------------
 // Kill pattern for threat analysis
 // ---------------------------------------------------------------------------
@@ -148,13 +170,6 @@ export type SystemSnapshot = {
   jumpsFromPilot: number;
   /** Timestamp of this snapshot */
   timestamp: number;
-};
-
-/** Route-level watch: auto-subscribed R2Z2 topics while monitor is active */
-export type RouteWatch = {
-  chatId: number;
-  systemIds: number[];
-  topics: string[];        // 'system.{id}' topics registered with kill_watches
 };
 
 // ---------------------------------------------------------------------------

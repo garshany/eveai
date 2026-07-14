@@ -25,7 +25,11 @@ export function runMigrations(db: Db): void {
     ensureHeartbeatConfig(db);
     addColumnIfMissing(db, 'heartbeat_config', 'state_json', "TEXT NOT NULL DEFAULT '{}'");
     ensureKillWatches(db);
+    ensureEveKillFeedState(db);
+    removeLegacyRouteWatchesOnce(db);
     ensureRouteMonitors(db);
+    ensureRouteMonitorKillDedup(db);
+    cutoverMarkedLegacyCliIdentity(db);
     ensureIntelNotes(db);
     dropLegacyWebTables(db);
   });
@@ -65,6 +69,63 @@ function ensureSchema(db: Db): void {
   }
 }
 
+/**
+ * One-time clean cutover for CLI installations created by the former sentinel
+ * lane. Numeric id 1 alone is never evidence: the old adapter wrote this exact
+ * account/session marker. Conversation and EVE links move to the explicit
+ * local lane; background-only state is removed because the CLI cannot deliver
+ * it after the process exits.
+ */
+function cutoverMarkedLegacyCliIdentity(db: Db): void {
+  const alreadyMarked = db.prepare(
+    "SELECT 1 FROM cli_accounts WHERE identity_key = 'local'",
+  ).get();
+  if (alreadyMarked) return;
+
+  const legacy = db.prepare(`
+    SELECT a.user_id, s.active_character_id
+    FROM telegram_accounts a
+    JOIN telegram_sessions s ON s.chat_id = a.telegram_user_id
+    WHERE a.telegram_user_id = 1
+      AND a.username = 'cli'
+      AND a.first_name = 'CLI'
+      AND s.username = 'cli'
+  `).get() as { user_id: number; active_character_id: number | null } | undefined;
+  if (!legacy) return;
+
+  db.prepare(`
+    INSERT INTO telegram_sessions (chat_id, username, active_character_id, last_seen_at)
+    VALUES (0, 'cli', ?, datetime('now'))
+    ON CONFLICT(chat_id) DO UPDATE SET
+      username = 'cli',
+      active_character_id = COALESCE(telegram_sessions.active_character_id, excluded.active_character_id),
+      last_seen_at = datetime('now')
+  `).run(legacy.active_character_id);
+  db.prepare('UPDATE agent_threads SET chat_id = 0, user_id = ? WHERE chat_id = 1')
+    .run(legacy.user_id);
+  db.prepare(`
+    INSERT OR IGNORE INTO eve_character_links (chat_id, character_id, user_id, linked_at)
+    SELECT 0, character_id, ?, linked_at
+    FROM eve_character_links
+    WHERE chat_id = 1
+  `).run(legacy.user_id);
+  db.prepare('DELETE FROM eve_character_links WHERE chat_id = 1').run();
+  db.prepare('UPDATE auth_requests SET chat_id = 0 WHERE chat_id = 1 AND user_id = ?')
+    .run(legacy.user_id);
+
+  db.prepare('DELETE FROM kill_watches WHERE chat_id = 1').run();
+  db.prepare('DELETE FROM route_monitor_kill_dedup WHERE chat_id = 1').run();
+  db.prepare('DELETE FROM route_monitors WHERE chat_id = 1').run();
+  db.prepare('DELETE FROM eve_kill_notification_dedup WHERE chat_id = 1').run();
+  db.prepare('DELETE FROM heartbeat_config WHERE user_id = ?').run(legacy.user_id);
+  db.prepare('DELETE FROM telegram_accounts WHERE telegram_user_id = 1 AND user_id = ?')
+    .run(legacy.user_id);
+  db.prepare('DELETE FROM telegram_sessions WHERE chat_id = 1').run();
+  db.prepare(
+    "INSERT INTO cli_accounts (identity_key, user_id, chat_id) VALUES ('local', ?, 0)",
+  ).run(legacy.user_id);
+}
+
 function addColumnIfMissing(db: Db, table: string, column: string, type: string): void {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   const exists = cols.some((c) => c.name === column);
@@ -99,7 +160,7 @@ function backfillThreadCharacters(db: Db): void {
 function backfillUsers(db: Db): void {
   // Legacy backfill for pre-user_id Telegram DBs. Telegram private chat ids are
   // positive; Discord DM lanes reuse telegram_sessions with NEGATIVE chat keys
-  // and 0 is a legacy web placeholder — neither is a Telegram user, so excluding
+  // and 0 is the local CLI lane (formerly a web placeholder) — neither is a Telegram user, so excluding
   // chat_id <= 0 prevents fabricating a bogus telegram_account (with a negative
   // telegram_user_id) for every Discord lane on each boot.
   const sessions = db.prepare('SELECT chat_id, username, active_character_id FROM telegram_sessions WHERE chat_id > 0').all() as
@@ -180,6 +241,44 @@ function ensureKillWatches(db: Db): void {
   }
 }
 
+function ensureEveKillFeedState(db: Db): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS eve_kill_feed_state (
+      feed_key         TEXT PRIMARY KEY CHECK (feed_key = 'global'),
+      last_sequence_id INTEGER NOT NULL CHECK (last_sequence_id >= 0),
+      dedup_pruned_at  TEXT,
+      initialized_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS eve_kill_notification_dedup (
+      chat_id       INTEGER NOT NULL,
+      killmail_id   INTEGER NOT NULL,
+      sequence_id   INTEGER NOT NULL,
+      delivered_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (chat_id, killmail_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_eve_kill_notification_dedup_sequence
+      ON eve_kill_notification_dedup(sequence_id);
+    CREATE INDEX IF NOT EXISTS idx_eve_kill_notification_dedup_delivered
+      ON eve_kill_notification_dedup(delivered_at);
+    CREATE TABLE IF NOT EXISTS eve_kill_migrations (
+      migration_key TEXT PRIMARY KEY,
+      applied_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  addColumnIfMissing(db, 'eve_kill_feed_state', 'dedup_pruned_at', 'TEXT');
+}
+
+function removeLegacyRouteWatchesOnce(db: Db): void {
+  const migrationKey = 'remove-legacy-route-watches-v1';
+  const applied = db.prepare(
+    'SELECT 1 FROM eve_kill_migrations WHERE migration_key = ?',
+  ).get(migrationKey);
+  if (applied) return;
+  db.prepare("DELETE FROM kill_watches WHERE label LIKE '[route] %'").run();
+  db.prepare('INSERT INTO eve_kill_migrations (migration_key) VALUES (?)').run(migrationKey);
+}
+
 function ensureRouteMonitors(db: Db): void {
   const hasMonitors = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' AND name='route_monitors'",
@@ -221,6 +320,21 @@ function ensureRouteMonitors(db: Db): void {
       )
     `);
   }
+}
+
+function ensureRouteMonitorKillDedup(db: Db): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS route_monitor_kill_dedup (
+      chat_id           INTEGER NOT NULL,
+      monitor_started_at TEXT NOT NULL,
+      killmail_id       INTEGER NOT NULL,
+      sequence_id       INTEGER NOT NULL,
+      processed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (chat_id, monitor_started_at, killmail_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_route_monitor_kill_dedup_processed
+      ON route_monitor_kill_dedup(processed_at);
+  `);
 }
 
 function ensureIntelNotes(db: Db): void {

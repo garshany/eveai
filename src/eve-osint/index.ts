@@ -1,4 +1,4 @@
-export { executeOsintInference, executeOsintInferHome } from './inference.js';
+export { executeOsintInferHome } from './inference.js';
 export type { OsintInferenceArgs, OsintScope } from './types.js';
 export { type TemporalProfile, type SessionProfile } from './temporal.js';
 export { type ShipProfile, type ShipEntry, type FleetProfile } from './ships.js';

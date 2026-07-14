@@ -309,7 +309,7 @@
         <div class="card reticle"><div class="ci">TG</div><span class="tag">grammY · discord.js</span><h3>Telegram &amp; Discord</h3><p>The same agent runtime answers in a Telegram private chat or a Discord DM. Slash commands, character switching, and chunked replies on both.</p></div>
         <div class="card reticle"><div class="ci">SSO</div><span class="tag">OAuth2 · JWKS</span><h3>EVE SSO linking</h3><p>Link characters through EVE Single Sign-On. Tokens are encrypted at rest, auto-refreshed, and access is scope-aware — gated per character and chat.</p></div>
         <div class="card reticle"><div class="ci">ESI</div><span class="tag">live · cached</span><h3>Live ESI data</h3><p>Character, corp, market, assets, skills, industry, mail, location — fetched live from ESI with ETag revalidation and CCP-honoring cache timers.</p></div>
-        <div class="card reticle"><div class="ci">KB</div><span class="tag">real-time</span><h3>Killboard intel</h3><p>zKillboard &amp; EVE-KILL: real-time kill alerts, PvP stats, battle reports, observed fits, and gate-camp signals streamed straight to your chat.</p></div>
+        <div class="card reticle"><div class="ci">KB</div><span class="tag">live feed</span><h3>Killboard intel</h3><p>EVE-KILL: durable public kill alerts, PvP stats, battle reports, observed fits, and gate-camp signals delivered straight to your chat.</p></div>
         <div class="card reticle"><div class="ci">RT</div><span class="tag">danger scan</span><h3>Route planning</h3><p>Danger-aware routing with live kill density, gate-camp detection, Thera/Turnur shortcuts, and a monitor mode that watches the road while you fly.</p></div>
         <div class="card reticle"><div class="ci">OS</div><span class="tag">inference</span><h3>OSINT &amp; SDE</h3><p>Residence/staging inference from kill activity, plus fast local SDE lookups for items, systems, dogma, blueprints and routes — no ESI round-trip.</p></div>
       </div>
@@ -327,7 +327,7 @@
         <div class="feed live reticle">
           <h3>◈ Live · automatic</h3>
           <div class="sub">scheduled only when a matching monitor or heartbeat row is configured</div>
-          <div class="row"><span class="led"></span><span class="rt">Killboard stream<em>zKillboard R2Z2 poller runs from boot, matches your watches</em></span><span class="rc">real-time</span></div>
+          <div class="row"><span class="led"></span><span class="rt">Killboard stream<em>EVE-KILL durable poll feed resumes its SQLite cursor and matches your watches</em></span><span class="rc">live</span></div>
           <div class="row"><span class="led"></span><span class="rt">Heartbeat checks<em>mail · skills · wallet · industry · contracts · PI · kills</em></span><span class="rc">every 5 min</span></div>
           <div class="row"><span class="led"></span><span class="rt">Route monitor<em>location, kills &amp; online status while a route is active</em></span><span class="rc">15–60 s</span></div>
           <div class="row"><span class="led"></span><span class="rt">On-demand ESI<em>every tool call, cached &amp; revalidated per CCP cache headers</em></span><span class="rc">on request</span></div>

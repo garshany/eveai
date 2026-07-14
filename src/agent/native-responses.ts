@@ -9,6 +9,7 @@ import { getActivitySink, reportActivity } from './activity.js';
 
 export type NativeInputItem =
   | NativeInputMessage
+  | NativeReasoningItem
   | NativeFunctionCallItem
   | NativeFunctionCallOutputItem;
 
@@ -19,6 +20,14 @@ export type NativeInputMessage = {
     type: 'input_text' | 'output_text';
     text: string;
   }>;
+};
+
+export type NativeReasoningItem = {
+  type: 'reasoning';
+  id?: string;
+  encrypted_content?: string | null;
+  summary?: unknown[];
+  [key: string]: unknown;
 };
 
 export type NativeFunctionCallItem = {
@@ -110,6 +119,7 @@ export async function createNativeResponse(input: {
   reasoningMode?: ReasoningMode;
   safetyIdentifier?: string;
   maxOutputTokens?: number;
+  preserveReasoning?: boolean;
   /**
    * When true (the top-level agent loop only), stream output/reasoning to an
    * attached activity sink. Internal calls — compaction, OSINT, route advisor —
@@ -146,7 +156,7 @@ export async function createNativeResponse(input: {
       safety_identifier: input.safetyIdentifier || undefined,
       store: false,
       stream: true,
-      include: [],
+      include: input.preserveReasoning ? ['reasoning.encrypted_content'] : [],
     };
   // Only send optional parameters when explicitly configured.
   if (maxTokens > 0) bodyPayload.max_output_tokens = maxTokens;
@@ -187,11 +197,13 @@ export async function createNativeResponse(input: {
   }
 
   if (!response.ok) {
-    // Always carry the status code: transient-error classification upstream
-    // keys on "HTTP 429/5xx", and plain-text gateway bodies ("Bad Gateway",
-    // "Too Many Requests") say nothing machine-readable on their own.
-    const detail = extractErrorMessage(rawText);
-    throw new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
+    // Provider bodies can include hosted-tool arguments or output. Inspect
+    // them only for fixed recovery categories and never propagate raw detail
+    // into exceptions, callers, chat responses, or logs.
+    const category = classifyHttpError(rawText);
+    throw new Error(
+      `Responses API HTTP ${response.status}${category ? ` (${category})` : ''}`,
+    );
   }
 
   const events = parseSse(rawText);
@@ -203,12 +215,6 @@ export async function createNativeResponse(input: {
   let output = completedOutput && completedOutput.length > 0
     ? completedOutput
     : doneItems;
-  if (output.length === 0) {
-    output = reconstructFunctionCallsFromStream(events);
-    if (output.length > 0) {
-      console.log('[api] reconstructed %d function call(s) from stream events', output.length);
-    }
-  }
   const outputTextFromItems = extractOutputText(output);
   const outputTextFromStream = extractStreamedOutputText(events);
   const outputText = completedPayload?.output_text
@@ -317,6 +323,28 @@ export function buildFunctionCallInputItems(
       arguments: String(item.arguments ?? '{}'),
     }))
     .filter((item) => item.call_id && item.name);
+}
+
+/**
+ * Rebuild one stateless response round in provider output order. Opaque
+ * reasoning items stay in memory for the current turn and local function calls
+ * are normalized for Responses input.
+ */
+export function buildOrderedContinuationInputItems(
+  output: NativeResponseOutputItem[],
+): Array<NativeReasoningItem | NativeFunctionCallItem> {
+  const ordered: Array<NativeReasoningItem | NativeFunctionCallItem> = [];
+  for (const item of output) {
+    if (item.type === 'reasoning') {
+      ordered.push(item as NativeReasoningItem);
+      continue;
+    }
+    if (item.type === 'function_call') {
+      const functionCall = buildFunctionCallInputItems([item])[0];
+      if (functionCall) ordered.push(functionCall);
+    }
+  }
+  return ordered;
 }
 
 export function extractFunctionCalls(
@@ -438,9 +466,35 @@ function extractStreamedOutputText(events: NativeSseEvent[]): string {
 }
 
 function collectDoneItems(events: NativeSseEvent[]): NativeResponseOutputItem[] {
-  const output: NativeResponseOutputItem[] = [];
-  const seen = new Set<string>();
-  for (const event of events) {
+  type CollectedItem = {
+    item: NativeResponseOutputItem;
+    outputIndex: number | null;
+    sequence: number;
+  };
+  const addedFunctionCalls = new Map<string, CollectedItem>();
+  const output = new Map<string, CollectedItem>();
+
+  for (let sequence = 0; sequence < events.length; sequence += 1) {
+    const event = events[sequence]!;
+    if (event.event !== 'response.output_item.added' && event.event !== 'response.output_item.done') {
+      continue;
+    }
+    const data = event.data as {
+      item?: NativeResponseOutputItem;
+      output_item?: NativeResponseOutputItem;
+      output_index?: unknown;
+    } | null;
+    const item = data?.item ?? data?.output_item ?? null;
+    if (item?.type !== 'function_call' || typeof item.id !== 'string' || !item.id) continue;
+    addedFunctionCalls.set(item.id, {
+      item,
+      outputIndex: validOutputIndex(data?.output_index),
+      sequence,
+    });
+  }
+
+  for (let sequence = 0; sequence < events.length; sequence += 1) {
+    const event = events[sequence]!;
     if (
       event.event !== 'response.output_item.done'
       && event.event !== 'response.function_call_arguments.done'
@@ -450,16 +504,77 @@ function collectDoneItems(events: NativeSseEvent[]): NativeResponseOutputItem[] 
     const data = event.data as {
       item?: NativeResponseOutputItem;
       output_item?: NativeResponseOutputItem;
+      output_index?: unknown;
+      item_id?: unknown;
+      call_id?: unknown;
+      name?: unknown;
+      arguments?: unknown;
     } | null;
-    const item = data?.item ?? data?.output_item ?? null;
+    let item = data?.item ?? data?.output_item ?? null;
+    let added: CollectedItem | undefined;
+    if (!item && event.event === 'response.function_call_arguments.done') {
+      const itemId = typeof data?.item_id === 'string' ? data.item_id : '';
+      added = addedFunctionCalls.get(itemId);
+      const callId = typeof data?.call_id === 'string'
+        ? data.call_id
+        : typeof added?.item.call_id === 'string'
+          ? added.item.call_id
+          : '';
+      const name = typeof data?.name === 'string'
+        ? data.name
+        : typeof added?.item.name === 'string'
+          ? added.item.name
+          : '';
+      if (itemId && callId && name && typeof data?.arguments === 'string') {
+        item = {
+          ...(added?.item ?? {}),
+          type: 'function_call',
+          id: itemId,
+          call_id: callId,
+          name,
+          arguments: data.arguments,
+        };
+      }
+    }
     if (item && typeof item === 'object' && typeof item.type === 'string') {
-      const key = String(item.call_id ?? item.id ?? `${item.type}:${output.length}`);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      output.push(item);
+      const identity = item.call_id ?? item.id;
+      // Only function_call has a legitimate multi-event lifecycle that must be
+      // merged. Preserve other done records in provider order.
+      const key = item.type === 'function_call' && identity != null
+        ? `${item.type}:${String(identity)}`
+        : `${item.type}:${identity == null ? 'anonymous' : String(identity)}:sequence:${sequence}`;
+      const existing = output.get(key);
+      const mergedItem = existing ? { ...existing.item, ...item } : item;
+      if (
+        item.type === 'function_call'
+        && typeof existing?.item.arguments === 'string'
+        && typeof item.arguments === 'string'
+        && existing.item.arguments.length > item.arguments.length
+      ) {
+        mergedItem.arguments = existing.item.arguments;
+      }
+      output.set(key, {
+        item: mergedItem,
+        outputIndex: validOutputIndex(data?.output_index)
+          ?? added?.outputIndex
+          ?? existing?.outputIndex
+          ?? null,
+        sequence: existing?.sequence ?? sequence,
+      });
     }
   }
-  return output;
+  const collected = [...output.values()];
+  const hasCompleteCanonicalOrder = collected.every((entry) => entry.outputIndex !== null);
+  collected.sort((left, right) => hasCompleteCanonicalOrder
+    ? left.outputIndex! - right.outputIndex! || left.sequence - right.sequence
+    : left.sequence - right.sequence);
+  return collected.map((entry) => entry.item);
+}
+
+function validOutputIndex(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
 }
 
 function findCompletedPayload(events: NativeSseEvent[]): NativeResponseEnvelope | null {
@@ -481,7 +596,9 @@ function findStreamError(events: NativeSseEvent[]): string | null {
     const event = events[index];
     if (event.event === 'error' || event.event === 'response.error' || event.event === 'response.failed') {
       const data = event.data as Record<string, unknown> | null;
-      console.log('[api] stream error event=%s data=%s', event.event, JSON.stringify(data)?.slice(0, 500));
+      // Provider error payloads can contain hosted-tool details. Keep logs to
+      // event metadata; the caller receives the message only for control flow.
+      console.log('[api] stream error event=%s', event.event);
       const message = (data?.error as Record<string, unknown> | undefined)?.message
         ?? (data as Record<string, unknown> | undefined)?.message
         ?? (data?.error as Record<string, unknown> | undefined)?.code;
@@ -540,38 +657,6 @@ export const __test__ = {
   findCompletedPayload,
 };
 
-function reconstructFunctionCallsFromStream(events: NativeSseEvent[]): NativeResponseOutputItem[] {
-  const partials = new Map<string, Record<string, unknown>>();
-  for (const event of events) {
-    const data = event.data as Record<string, unknown> | null;
-    if (!data) continue;
-    if (event.event === 'response.output_item.added' || event.event === 'response.output_item.done') {
-      const item = (data.item ?? data.output_item) as Record<string, unknown> | undefined;
-      const candidate = item?.type === 'function_call' ? item : null;
-      if (candidate?.call_id) {
-        const callId = String(candidate.call_id);
-        const existing = partials.get(callId) ?? {};
-        partials.set(callId, { ...existing, ...candidate, type: 'function_call' });
-      }
-    }
-    if (event.event === 'response.function_call_arguments.done' && data.call_id) {
-      const callId = String(data.call_id);
-      const existing = partials.get(callId) ?? {};
-      partials.set(callId, {
-        ...existing,
-        type: 'function_call',
-        call_id: callId,
-        arguments: String(data.arguments ?? existing.arguments ?? '{}'),
-        name: existing.name ?? data.name,
-        id: existing.id ?? data.item_id ?? callId,
-      });
-    }
-  }
-  return [...partials.values()]
-    .filter((p) => p.name && p.call_id)
-    .map((p) => p as NativeResponseOutputItem);
-}
-
 function collectToolSearchNames(value: unknown, paths: Set<string>): void {
   if (!value || typeof value !== 'object') return;
   const record = value as Record<string, unknown>;
@@ -605,11 +690,15 @@ function extractReasoningSummary(items: NativeResponseOutputItem[]): string | nu
   return null;
 }
 
-function extractErrorMessage(raw: string): string | null {
-  try {
-    const parsed = JSON.parse(raw) as { detail?: string; error?: { message?: string } };
-    return parsed.detail ?? parsed.error?.message ?? null;
-  } catch {
-    return raw.trim() || null;
+function classifyHttpError(raw: string): 'tool_state_mismatch' | 'response_state_missing' | null {
+  const lower = raw.toLowerCase();
+  if (lower.includes('no tool call found for function call output with call_id')) {
+    return 'tool_state_mismatch';
   }
+  const referencesResponseState = lower.includes('previous_response_id')
+    || lower.includes('previous response');
+  if (referencesResponseState && (lower.includes('not found') || lower.includes('expired'))) {
+    return 'response_state_missing';
+  }
+  return null;
 }

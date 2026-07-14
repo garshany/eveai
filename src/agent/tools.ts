@@ -1,14 +1,15 @@
 import { config } from '../config.js';
 import { loadEsiCatalog, listEsiNamespaces } from '../eve/esi-catalog.js';
 import { buildEveKillNamespace, isEveKillToolName } from '../eve-kill/tools.js';
+import { buildEveKillAnalyticsNamespace, isEveKillAnalyticsToolName } from '../eve-kill/analytics-tools.js';
 import { buildEveScoutNamespace, isEveScoutToolName } from '../eve/eve-scout-tools.js';
 import type { NativeFunctionTool, NativeTool } from './native-responses.js';
-import { SDE_SCHEMA } from './tools/sde-schema.js';
+import { SDE_SCHEMA, STATIC_AGGREGATE_SDE_SCHEMA } from './tools/sde-schema.js';
 
 const SDE_SQL_TOOL_NAME = 'sde_sql';
 const WEB_SEARCH_TOOL_NAME = 'web_search';
 
-export { SDE_SCHEMA };
+export { SDE_SCHEMA, STATIC_AGGREGATE_SDE_SCHEMA };
 
 const UNIVERSE_COUNT_TOOL_NAME = 'count_universe_objects';
 const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
@@ -77,7 +78,7 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   {
     type: 'function',
     name: 'plan_route',
-    description: 'Plan a route between two EVE systems. Returns up to 3 variants (secure/shortest/insecure) with jump count, security, recent kill stats, danger systems with detailed killmails, and formatted_summary ready for output. Includes built-in danger scan — do NOT call zKill or ESI killmails separately. Sets autopilot waypoints when requested. Accepts system names or IDs.',
+    description: 'Plan a route between two EVE systems. Returns up to 3 variants (secure/shortest/insecure) with jump count, security, recent EVE-KILL activity, danger systems with detailed killmails, and formatted_summary ready for output. Includes one shared danger baseline; do not issue a second kill search. Sets autopilot waypoints when requested. Accepts system names or IDs.',
     strict: true,
     parameters: {
       type: 'object',
@@ -373,12 +374,19 @@ export function isSetActiveFitTool(name: string): boolean {
   return name === SET_ACTIVE_FIT_TOOL_NAME;
 }
 
-export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 'full'): Promise<NativeTool[]> {
+export async function buildNativeAgentTools(
+  mode: 'full' | 'static_aggregate' = 'full',
+  options: { includeDurableNotifications?: boolean } = {},
+): Promise<NativeTool[]> {
   if (mode === 'static_aggregate') {
-    return ALWAYS_ON_FUNCTION_TOOLS.filter((tool) =>
-      tool.name === UNIVERSE_COUNT_TOOL_NAME
-      || tool.name === SDE_SQL_TOOL_NAME,
-    );
+    return ALWAYS_ON_FUNCTION_TOOLS.flatMap((tool) => {
+      if (tool.name === UNIVERSE_COUNT_TOOL_NAME) return [tool];
+      if (tool.name !== SDE_SQL_TOOL_NAME) return [];
+      return [{
+        ...tool,
+        description: 'Resolve static EVE geography names and IDs from the local SDE with read-only SQL. Use only the geography tables and datasets listed in <sde_schema>; batch lookups when practical.',
+      }];
+    });
   }
 
   // Only offer web_search when a Tavily key is configured. Without it the tool
@@ -388,18 +396,19 @@ export async function buildNativeAgentTools(mode: 'full' | 'static_aggregate' = 
     ? ALWAYS_ON_FUNCTION_TOOLS
     : ALWAYS_ON_FUNCTION_TOOLS.filter((tool) => tool.name !== WEB_SEARCH_TOOL_NAME);
 
+  const includeDurableNotifications = options.includeDurableNotifications !== false;
   return [
     { type: 'tool_search' },
     ...alwaysOn,
-    ROUTE_MONITOR_TOOL,
-    HEARTBEAT_CONFIG_TOOL,
+    ...(includeDurableNotifications ? [ROUTE_MONITOR_TOOL, HEARTBEAT_CONFIG_TOOL] : []),
     BATCH_MARKET_TOOL,
     OSINT_INFER_TOOL,
     ANALYZE_LOCAL_TOOL,
     ANALYZE_SCAN_TOOL,
     INTEL_NOTE_TOOL,
     SET_ACTIVE_FIT_TOOL,
-    buildEveKillNamespace(),
+    buildEveKillNamespace({ includeWatch: includeDurableNotifications }),
+    buildEveKillAnalyticsNamespace(),
     buildEveScoutNamespace(),
     ...(await listEsiNamespaces()),
   ];
@@ -430,10 +439,11 @@ export function isSdeSqlTool(name: string): boolean {
 }
 
 export function isDeferredLookupToolName(name: string): boolean {
-  return isEveKillToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
+  return isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
 }
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
+export { isEveKillAnalyticsToolName } from '../eve-kill/analytics-tools.js';
 export { isEveScoutToolName } from '../eve/eve-scout-tools.js';
 
 export { executeSdeSql, executeUniverseObjectCount } from './tools/sde-execution.js';
@@ -448,6 +458,7 @@ export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'u
   // USER.md, intel_notes, heartbeat_config, and route monitors).
   if (
     name === 'update_plan'
+    || name === 'kill_watch'
     || isIntelNoteTool(name)
     || isSetActiveFitTool(name)
     || isHeartbeatConfigTool(name)
@@ -455,7 +466,7 @@ export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'u
   ) {
     return 'write';
   }
-  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
+  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();

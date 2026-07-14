@@ -131,7 +131,7 @@ export async function enrichKillmailReferenceList(
     expanded_count: expandedKillmails.length,
     linked_character_id: options?.linkedCharacterId ?? null,
     limitations: [
-      'ESI не даёт публичную глобальную ленту киллов по системе как zKillboard. Здесь обогащаются только killmail-ссылки, которые уже пришли из ESI.',
+      'ESI не даёт публичную глобальную ленту киллов по системе. Здесь обогащаются только killmail-ссылки, которые уже пришли из ESI.',
       'Подробно раскрыты первые killmail из списка. Остальные refs сохранены отдельно.',
     ],
     killmails: expandedKillmails,
@@ -232,8 +232,8 @@ export async function enrichKillmailDetail(
     source: 'esi',
     limitations: [
       'ESI killmail даёт полный фит и содержимое жертвы, но не полный фит атакующих.',
-      'Стоимость здесь рассчитана по ESI markets_prices с fallback на SDE basePrice. Это оценка, а не zKillboard total value.',
-      'Публичная статистика эффективности персонажей и корпораций в стиле zKillboard через ESI недоступна.',
+      'Стоимость здесь рассчитана по ESI markets_prices с fallback на SDE basePrice. Это оценка, а не сторонняя killboard-оценка.',
+      'Публичная агрегированная статистика эффективности персонажей и корпораций через ESI недоступна.',
     ],
     location: system,
     linked_character_role: linkedCharacterRole,

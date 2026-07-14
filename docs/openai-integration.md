@@ -43,6 +43,40 @@ continuation is incompatible with this project's no-provider-storage policy.
 
 GPT-5.6 `reasoning.context=all_turns` is intentionally not exposed. With `store=false`, correct persisted reasoning requires requesting `reasoning.encrypted_content`, preserving every response output item, and replaying those opaque items in order. The current SQLite history stores user-visible messages and tool audit data, not complete encrypted reasoning items. Sending `all_turns` without that storage path would silently overstate continuity.
 
+Within one active stateless tool loop, the runtime does request
+`reasoning.encrypted_content` and replays each opaque reasoning item in provider
+output order with the corresponding function calls and outputs. These items
+remain in memory for the current turn only: they are not logged, shown to the
+model operator, or persisted in SQLite. This preserves same-turn GPT-5.6
+reasoning without claiming cross-turn `all_turns` continuity.
+
+## EVE-KILL MCP Analytics
+
+Full agent turns do not serialize third-party hosted MCP descriptors. Those
+turns may contain chat history, linked-character context, profile data, active
+fits, and private ESI results. With a direct hosted MCP descriptor, a remote call
+can execute before application code receives the model response, so response
+validation cannot protect the outbound arguments.
+
+Ordinary EVE-KILL access uses the local `eve_kill` REST function namespace.
+`doctrine_detect`, `meta_pulse`, `killmail_forensics`, and `coalition_graph` use
+a separate local `eve_kill_analytics` function namespace. The model produces a
+strict local function call; application code accepts only public numeric IDs,
+canonical date pairs, enums, booleans, and bounded limits, and only then sends a
+fixed JSON-RPC `tools/call` request to EVE-KILL MCP. Aggregate-only mode exposes
+neither namespace.
+
+The OpenAI request never contains an EVE-KILL hosted MCP descriptor. Application
+validation, not prompt policy or a remote allowlist, is the pre-egress privacy
+boundary. Rejected analytics arguments are not persisted by value, and remote
+error bodies are not exposed to the model or logs.
+
+The streaming fallback follows the official `output_index` ordering and joins
+`response.output_item.added` with the documented flat
+`response.function_call_arguments.done` fields. Non-2xx provider bodies are
+reduced at the transport boundary to HTTP status plus a fixed recovery category;
+their raw text never enters an exception or bot log.
+
 ## Relevant Environment
 
 ```env

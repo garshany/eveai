@@ -33,7 +33,7 @@ type EsiCacheRow = {
  * high-cardinality endpoints (per-killmail, per-type market, universe/names)
  * mint unbounded distinct keys that are only ever overwritten on an exact
  * repeat — without this sweep the table grows without bound. Shared by the ESI,
- * eve-kill, zkill, and eve-scout clients (same table). Retains a 1-day grace so
+ * EVE-KILL and EVE-Scout clients (same table). Retains a 1-day grace so
  * conditional revalidation (ETag/If-None-Match) can still reuse recent rows.
  */
 export function pruneExpiredEsiCache(db: Db): number {

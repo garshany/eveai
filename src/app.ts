@@ -51,14 +51,15 @@ async function main() {
     markBotFailed,
   } = await import('./web/health.js');
   const { startHeartbeat, stopHeartbeat } = await import('./scheduled/heartbeat-worker.js');
-  const { startZkbWs, stopZkbWs } = await import('./eve-kill/zkb-ws.js');
+  const { startEveKillFeedPoller, stopEveKillFeedPoller } = await import('./eve-kill/feed-poll.js');
   const { setRouteMonitorSender } = await import('./eve/route-planner.js');
-  const { restoreMonitors } = await import('./eve-board/monitor.js');
+  const { restoreMonitors, shutdownRouteMonitors } = await import('./eve-board/monitor.js');
   const { pickTelegramParseMode } = await import('./telegram/formatting.js');
   const {
     registerTelegramOutbound,
     registerDiscordOutbound,
-    sendOutbound,
+    deliverOutbound,
+    isOutboundAvailable,
   } = await import('./messaging/outbound.js');
 
   // 2. Initialize database
@@ -99,7 +100,8 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info('Shutting down...');
-    stopZkbWs();
+    await stopEveKillFeedPoller();
+    shutdownRouteMonitors();
     stopHeartbeat();
     telegramBot?.stop();
     if (discordClient) {
@@ -167,15 +169,14 @@ async function main() {
   }
 
   // 5. Notification producers route through the platform-aware dispatcher.
-  setRouteMonitorSender((chatId, text) => {
-    sendOutbound(chatId, text);
-  });
+  setRouteMonitorSender(deliverOutbound);
   startHeartbeat(db);
-  startZkbWs(db, (chatId, text) => {
-    sendOutbound(chatId, text);
-  });
-  restoreMonitors(db, (chatId, text) => {
-    sendOutbound(chatId, text);
+  // The poller establishes a missing cursor first, then synchronously restores
+  // route listeners before processing any later event. Existing cursors restore
+  // listeners before the first resumed poll. This closes the baseline/head gap.
+  startEveKillFeedPoller(db, deliverOutbound, {
+    canDeliver: isOutboundAvailable,
+    onReady: () => restoreMonitors(db, deliverOutbound, isOutboundAvailable),
   });
 
   const version = process.env.npm_package_version ?? '';
@@ -203,6 +204,7 @@ async function main() {
       state: 'ok',
     },
     { label: 'Heartbeat', value: 'every 5 min', state: 'ok' },
+    { label: 'EVE-KILL feed', value: 'durable poll', state: 'ok' },
   ];
   printStartupBanner(version ? `EVE AI Agent v${version}` : 'EVE AI Agent', rows);
 

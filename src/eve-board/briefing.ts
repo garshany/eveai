@@ -9,21 +9,19 @@
  */
 
 import type { Db } from '../db/sqlite.js';
-import type { KilllistItem } from '../eve-kill/client.js';
 import { callEsiOperation } from '../eve/esi-client.js';
 import { assessShip, analyzeKillPattern, scoreThreat, detectGankWindow } from './threat.js';
-import type { RouteStats, DangerEvent, ThreatLevel, KillPattern, ShipAssessment } from './types.js';
+import type {
+  RouteStats,
+  DangerEvent,
+  ThreatLevel,
+  KillPattern,
+  ShipAssessment,
+  ThreatKillmail,
+} from './types.js';
 import { buildRouteThreatSnapshot } from './route-snapshot.js';
 
-export type RouteBriefingSnapshotKill = {
-  killmail_id: number;
-  killmail_time?: string;
-  total_value?: number;
-  ship_name?: string;
-  victim_character_name?: string;
-  final_blow_character_name?: string;
-  attacker_count?: number;
-};
+export type RouteBriefingSnapshotKill = ThreatKillmail;
 
 export type RouteBriefingSnapshotGateCamp = {
   connectedSystemName: string;
@@ -106,7 +104,7 @@ type DangerSystemInfo = {
   name: string;
   sec: number;
   pattern: KillPattern;
-  recentKills: KilllistItem[];
+  recentKills: ThreatKillmail[];
   threatLevel: ThreatLevel;
   threatReason: string;
   gate_camps: RouteBriefingSnapshotGateCamp[];
@@ -145,6 +143,9 @@ export async function generateBriefing(
 ): Promise<string> {
   const ship = assessShip(db, shipTypeId);
   const snapshot = await buildRouteThreatSnapshot(db, routeSystems);
+  if (snapshot.error) {
+    return 'Предполетный EVE-KILL срез временно недоступен; отсутствие предупреждений не означает безопасный маршрут.';
+  }
   const dangerSystems = buildDangerSystemsFromSnapshot(
     routeSystems,
     snapshot.systems.map((system) => ({
@@ -154,11 +155,24 @@ export async function generateBriefing(
       kills_1h: system.pvpKills,
       total_value_m: system.totalValueM,
       recentKills: system.recentKills,
+      gate_camps: system.gateKills,
     })),
     ship,
   );
   const gankWindow = detectGankWindow(dangerSystems.map((system) => system.pattern));
-  return formatBriefing(db, ship, dangerSystems, snapshot.jumpMap, gankWindow, originName, destName, routeSystems);
+  const briefing = formatBriefing(
+    db,
+    ship,
+    dangerSystems,
+    snapshot.jumpMap,
+    gankWindow,
+    originName,
+    destName,
+    routeSystems,
+  );
+  return snapshot.truncated
+    ? `${briefing}\nОграничение: EVE-KILL срез усечён локальным лимитом результатов.`
+    : briefing;
 }
 
 function buildDangerSystemsFromSnapshot(
@@ -500,7 +514,7 @@ function buildRecentKillLines(
   return lines;
 }
 
-function formatKillLine(systemName: string, kill: KilllistItem): string {
+function formatKillLine(systemName: string, kill: ThreatKillmail): string {
   const age = formatKillAge(kill.killmail_time);
   const victimShip = kill.ship_name ?? '?';
   const valueM = Math.round((kill.total_value ?? 0) / 1_000_000);

@@ -1,7 +1,7 @@
 # Repo Map
 
 Status: active
-Verified against code: 2026-07-06
+Verified against code: 2026-07-13
 
 This file is the fast file-and-domain map for the repository.
 
@@ -21,8 +21,8 @@ Use it when you need to find the right file or folder before reading implementat
 
 ### `src/agent/`
 
-- `native-responses.ts`: official OpenAI Responses API loop, including SSE function-call reconstruction from `response.function_call_arguments.done`
-- `executor.ts`: tool execution, continuation, persistence
+- `native-responses.ts`: official OpenAI Responses API loop, including SSE function/MCP output reconstruction and fixed hosted-MCP descriptor support
+- `executor.ts`: local tool execution, validated opaque MCP continuation, and final-text persistence
 - `planner.ts` / `replanner.ts`: plan generation and adjustment
 - `compact.ts`: history reduction and compaction
 - `prompts.ts`: prompt-policy boundary
@@ -70,17 +70,25 @@ Use it when you need to find the right file or folder before reading implementat
 
 ### `src/eve-kill/`
 
-PvP killboard integration (EVE-KILL, replaces zKillboard). See `docs/eve-kill.md`.
+Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integration. See `docs/eve-kill.md`.
 
-- `client.ts`: HTTP client with caching (getKilllist, getKillmail, etc.)
-- `tools.ts`: 8 deferred tools in `eve_kill` namespace
-- `executor.ts`: tool call router
-- `feed.ts`: kill_feed handler (recent kills via /api/killlist)
-- `kill-query.ts`: kill_query handler (MongoDB-style, pending API deployment)
-- `intel.ts`: kill_stats/battles/entity/lookup/spatial/prices handlers
-- `query.ts`: MongoDB filter builder and sanitizer
-- `types.ts`: shared TypeScript types
-- `zkb-ws.ts`: zKillboard R2Z2 poller for real-time kill alerts
+- `client.ts`: fixed-base defensive v1 REST client, cache, search/window chunking, stats, and battles
+- `normalize.ts`: runtime payload validation and source-neutral killmail normalization
+- `feed-poll.ts`: one durable global poller, startup readiness handoff, active-platform watch matching, and delivery dedup
+- `tools.ts`: six deferred public EVE-KILL tools
+- `executor.ts`: validated tool router with provenance/limitation projection
+- `analytics-tools.ts`: four strict deferred public analytics function schemas
+- `mcp-analytics.ts`: fixed-endpoint JSON-RPC transport with pre-egress validation and bounded parsing
+- `watch.ts`: durable system/region/victim/attacker watch CRUD
+- `types.ts`: normalized REST/feed contracts
+
+### `src/eve-board/`
+
+- `route-snapshot.ts`: one shared route search baseline; official ESI position/names and local-SDE labels
+- `monitor.ts`: serialized feed consumption with durable per-monitor-run killmail idempotency
+- `monitor.ts`: feed-driven route monitoring with awaited delivery and restart restoration
+- `briefing.ts`: pre-flight output from the shared baseline
+- `analytics.ts`, `threat.ts`, `advisor.ts`: deterministic threat, gate, digest, and action analysis
 
 ### `src/telegram/`
 

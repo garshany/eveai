@@ -14,6 +14,8 @@ import { getRoute, getSignatures } from './eve-scout-client.js';
 // ---------------------------------------------------------------------------
 
 export type TheraShortcut = {
+  hub_system: string;
+  hub_system_id: number;
   entry_system: string;
   entry_system_id: number;
   entry_class: string;
@@ -78,8 +80,9 @@ export async function findBestTheraShortcut(
 
   // Extract entry (system before hub) and exit (system after hub)
   const entrySystem = hubIndex > 0 ? route.route[hubIndex - 1] : null;
+  const hubSystem = route.route[hubIndex];
   const exitSystem = hubIndex < route.route.length - 1 ? route.route[hubIndex + 1] : null;
-  if (!entrySystem || !exitSystem) return null;
+  if (!entrySystem || !hubSystem || !exitSystem) return null;
 
   // Calculate jump segments
   const entryJumps = hubIndex - 1; // jumps from origin to entry system
@@ -89,6 +92,8 @@ export async function findBestTheraShortcut(
   const whMeta = await enrichWithSignatures(db, entrySystem.system_id, exitSystem.system_id);
 
   return {
+    hub_system: hubSystem.system_name,
+    hub_system_id: hubSystem.system_id,
     entry_system: entrySystem.system_name,
     entry_system_id: entrySystem.system_id,
     entry_class: entrySystem.system_class,

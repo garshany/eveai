@@ -1,4 +1,4 @@
-import type { OsintKillmail } from './zkill.js';
+import type { OsintKillmail } from './types.js';
 
 export type AltCandidate = {
   character_a: number;
@@ -75,20 +75,21 @@ function entityMatchesCharacter(
   entityId: number,
   characterId: number,
 ): boolean {
-  if (kill.activity === 'losses') {
+  if (kill.roles.victim) {
     if (kill.victim_character_id === characterId) {
       if (scope === 'character') return entityId === characterId;
       if (scope === 'corporation') return kill.victim_corporation_id === entityId;
       if (scope === 'alliance') return kill.victim_alliance_id === entityId;
     }
-    return false;
   }
 
-  for (const atk of kill.attackers) {
-    if (atk.character_id !== characterId) continue;
-    if (scope === 'character') return entityId === characterId;
-    if (scope === 'corporation') return atk.corporation_id === entityId;
-    if (scope === 'alliance') return atk.alliance_id === entityId;
+  if (kill.roles.attacker) {
+    for (const atk of kill.attackers) {
+      if (atk.character_id !== characterId) continue;
+      if (scope === 'character') return entityId === characterId;
+      if (scope === 'corporation') return atk.corporation_id === entityId;
+      if (scope === 'alliance') return atk.alliance_id === entityId;
+    }
   }
   return false;
 }
@@ -173,7 +174,7 @@ export function detectAlts(
 }
 
 export function analyzeVulnerability(kills: OsintKillmail[]): VulnerabilityProfile {
-  const losses = kills.filter((k) => k.activity === 'losses');
+  const losses = kills.filter((k) => k.roles.victim);
 
   const hourly: Record<number, number> = {};
   const systemHist = new Map<number, number>();

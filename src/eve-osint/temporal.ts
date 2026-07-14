@@ -1,4 +1,4 @@
-import type { OsintKillmail } from './zkill.js';
+import type { OsintKillmail } from './types.js';
 
 export type TemporalProfile = {
   hourly_histogram: Record<number, number>;

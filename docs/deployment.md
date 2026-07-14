@@ -49,6 +49,10 @@ WEB_BASE_URL=https://your-domain.example
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
 ESI_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_TIMEOUT_MS=8000
+EVE_KILL_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_RETRY_MAX_ATTEMPTS=3
+EVE_KILL_BACKOFF_MAX_MS=10000
 ```
 
 Generate `AUTH_SECRET_KEY` with:
@@ -97,6 +101,37 @@ Keep `OPENAI_RESPONSE_STATE_MODE=stateless`; this is the only accepted value. It
 `function_call` item together with `function_call_output` and keeps `store=false`.
 Server-side Responses continuation is not a supported deployment mode because
 this project deliberately does not store Responses at the API provider.
+
+## EVE-KILL
+
+The public REST client is pinned to `https://api.eve-kill.com/`; there is no
+deployment base-URL override. Configure a reachable operator contact in
+`EVE_KILL_USER_AGENT`.
+Timeout and backoff values must be positive and are hard-capped at 60 seconds;
+retry attempts are hard-capped at five.
+
+The first successful feed start stores the current upstream head and does not
+replay historical notifications. Back up the SQLite database to preserve the
+feed cursor, per-chat delivery dedup, watches, and active route monitors. A
+restored database resumes from its stored cursor; delivery is at-least-once, so
+a notification may repeat if the process crashes after network acceptance but
+before the SQLite commit.
+
+The app may run Telegram-only, Discord-only, or both. Watches and route monitors
+for a platform whose bot token is absent remain stored but are suspended for
+that run, so they cannot block the shared cursor; feed events missed during the
+suspension are not replayed when the platform is enabled later.
+
+The terminal CLI uses an explicit `cli_accounts` identity at `chat_id = 0`.
+It does not create a Telegram account, and migrations never infer CLI ownership
+from a positive numeric Telegram id.
+
+Direct hosted EVE-KILL MCP is disabled. Full agent mode uses the local
+`eve_kill` REST namespace plus the local `eve_kill_analytics` namespace for
+`doctrine_detect`, `meta_pulse`, `killmail_forensics`, and `coalition_graph`.
+The latter validates a narrow public-only argument object before calling the
+fixed MCP endpoint; it needs no additional token or deployment setting. See
+[`openai-integration.md`](./openai-integration.md) for the privacy boundary.
 
 ## Reverse Proxy
 
@@ -158,7 +193,7 @@ startup check, which also requires `AUTH_SECRET_KEY`.
 ## Operations
 
 - Keep `.env`, SQLite databases, SDE data, logs, and generated user profiles out of git.
-- Back up `data/` if you need to preserve local users, sessions, EVE links, cache, and notes.
+- Back up `data/` if you need to preserve local users, sessions, EVE links, feed cursors/dedup, route monitors, cache, and notes.
 - Rotate `AUTH_SECRET_KEY` only with an explicit session/token migration plan; it derives storage keys for protected local secrets.
 - Never publish tokens, SSH details, IP addresses, real domains, private reverse-proxy paths, or production runbooks in this repository.
 

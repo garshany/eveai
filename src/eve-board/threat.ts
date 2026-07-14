@@ -6,8 +6,7 @@
  */
 
 import type { Db } from '../db/sqlite.js';
-import type { KilllistItem } from '../eve-kill/client.js';
-import type { ThreatLevel, KillPattern, ShipAssessment } from './types.js';
+import type { ThreatLevel, KillPattern, ShipAssessment, ThreatKillmail } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -247,7 +246,7 @@ function ehpToSurvivalChance(ehp: number): ShipAssessment['survivalChance'] {
  * Analyze a list of kills in a system to extract attack patterns.
  */
 export function analyzeKillPattern(
-  kills: KilllistItem[],
+  kills: ThreatKillmail[],
   systemId: number,
   systemName: string,
   systemSec: number,
@@ -481,7 +480,7 @@ export function detectGankWindow(
  */
 export function updateGankerCache(
   db: Db,
-  kills: KilllistItem[],
+  kills: ThreatKillmail[],
   systemId: number,
 ): void {
   const stmt = db.prepare(`
@@ -494,7 +493,7 @@ export function updateGankerCache(
       ship_type_id = COALESCE(excluded.ship_type_id, ship_type_id)
   `);
 
-  const upsertMany = db.transaction((items: KilllistItem[]) => {
+  const upsertMany = db.transaction((items: ThreatKillmail[]) => {
     for (const kill of items) {
       const charId = kill.final_blow_character_id;
       if (!charId) continue;

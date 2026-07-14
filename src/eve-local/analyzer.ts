@@ -4,17 +4,14 @@
  */
 
 import type { Db } from '../db/sqlite.js';
-import { config } from '../config.js';
-import { getEntityShortStats, getEntityTop } from '../eve-kill/client.js';
+import { callEsiOperation } from '../eve/esi-client.js';
+import { batchCharacterStats } from '../eve-kill/client.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const MAX_PILOTS = 150;
-const STATS_CONCURRENCY = 10;
-const TOP_SHIPS_KILL_THRESHOLD = 5;
-const TOP_SHIPS_MAX_PILOTS = 20;
 const MAX_NAME_LENGTH = 37;
 
 // ---------------------------------------------------------------------------
@@ -57,59 +54,6 @@ interface PilotRecord {
   topShips: string[];
   threat: 'high' | 'medium' | 'low' | 'unknown';
   hasStats: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// ESI POST helper
-// ---------------------------------------------------------------------------
-
-async function esiPost<T>(
-  path: string,
-  body: unknown,
-): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
-  const base = config.esi.baseUrl.endsWith('/')
-    ? config.esi.baseUrl
-    : config.esi.baseUrl + '/';
-  const url = new URL(path.replace(/^\/+/, ''), base);
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'User-Agent': config.esi.userAgent,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) return { ok: false, error: `ESI HTTP ${res.status}` };
-    const data = (await res.json()) as T;
-    return { ok: true, data };
-  } catch (err) {
-    return { ok: false, error: `ESI request failed: ${(err as Error).message}` };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Concurrent runner
-// ---------------------------------------------------------------------------
-
-async function runConcurrent<T>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T) => Promise<void>,
-): Promise<void> {
-  let idx = 0;
-  const workers = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    async () => {
-      while (idx < items.length) {
-        const i = idx++;
-        await fn(items[i]);
-      }
-    },
-  );
-  await Promise.all(workers);
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +113,11 @@ export async function executeAnalyzeLocal(
   console.log(`[analyze_local] Parsing ${names.length} names, period=${days}d`);
 
   // 2. Resolve names → character IDs via ESI
-  const idsResult = await esiPost<EsiIdsResponse>('universe/ids/', names);
+  const idsResult = await callEsiOperation<EsiIdsResponse>(
+    db,
+    'post_universe_ids',
+    { names: JSON.stringify(names) },
+  );
   if (!idsResult.ok) {
     return { ok: false, error: `Failed to resolve names: ${idsResult.error}` };
   }
@@ -193,7 +141,11 @@ export async function executeAnalyzeLocal(
 
   // 3. Get affiliations
   const charIds = resolvedChars.map((c) => c.id);
-  const affResult = await esiPost<EsiAffiliation[]>('characters/affiliation/', charIds);
+  const affResult = await callEsiOperation<EsiAffiliation[]>(
+    db,
+    'post_characters_affiliation',
+    { characters: JSON.stringify(charIds) },
+  );
   if (!affResult.ok) {
     return { ok: false, error: `Failed to fetch affiliations: ${affResult.error}` };
   }
@@ -218,9 +170,10 @@ export async function executeAnalyzeLocal(
   }
 
   if (entityIds.size > 0) {
-    const namesResult = await esiPost<EsiNameEntry[]>(
-      'universe/names/',
-      [...entityIds],
+    const namesResult = await callEsiOperation<EsiNameEntry[]>(
+      db,
+      'post_universe_names',
+      { ids: JSON.stringify([...entityIds]) },
     );
     if (namesResult.ok) {
       for (const entry of namesResult.data) {
@@ -231,7 +184,7 @@ export async function executeAnalyzeLocal(
     }
   }
 
-  // 5. Fetch EVE-KILL stats concurrently
+  // 5. Fetch EVE-KILL stats through the batch endpoint
   const pilotRecords: PilotRecord[] = resolvedChars.map((c) => {
     const aff = affMap.get(c.id);
     return {
@@ -252,40 +205,34 @@ export async function executeAnalyzeLocal(
 
   console.log(`[analyze_local] Fetching kill stats for ${pilotRecords.length} pilots...`);
 
-  await runConcurrent(pilotRecords, STATS_CONCURRENCY, async (pilot) => {
-    const statsRes = await getEntityShortStats(db, 'characters', pilot.characterId, days);
-    if (statsRes.ok) {
-      pilot.kills = statsRes.data.kills ?? 0;
-      pilot.losses = statsRes.data.losses ?? 0;
-      pilot.soloKills = statsRes.data.solo_kills ?? 0;
-      pilot.iskDestroyed = statsRes.data.isk_destroyed ?? 0;
-      pilot.iskLost = statsRes.data.isk_lost ?? 0;
+  const statsTo = new Date().toISOString();
+  const statsFrom = new Date(Date.now() - days * 86_400_000).toISOString();
+  const statsResult = await batchCharacterStats(db, charIds, {
+    type: 'range',
+    from: statsFrom,
+    to: statsTo,
+  });
+  const statsById = new Map(
+    statsResult.ok ? statsResult.data.results.map((entry) => [entry.id, entry] as const) : [],
+  );
+  for (const pilot of pilotRecords) {
+    const stats = statsById.get(pilot.characterId);
+    if (stats) {
+      pilot.kills = stats.kills;
+      pilot.losses = stats.losses;
+      pilot.soloKills = stats.soloKills;
+      pilot.iskDestroyed = stats.iskDestroyed;
+      pilot.iskLost = stats.iskLost;
+      pilot.topShips = stats.topShips
+        .filter((ship) => typeof ship.shipName === 'string' && ship.kills + ship.losses > 0)
+        .slice(0, 3)
+        .map((ship) => ship.shipName!);
       pilot.hasStats = true;
     }
     pilot.threat = assessThreat(pilot.kills, pilot.soloKills, pilot.hasStats);
-  });
-
-  // 6. Fetch top ships for active PvPers
-  const activePvpers = pilotRecords
-    .filter((p) => p.kills >= TOP_SHIPS_KILL_THRESHOLD)
-    .sort((a, b) => b.kills - a.kills)
-    .slice(0, TOP_SHIPS_MAX_PILOTS);
-
-  if (activePvpers.length > 0) {
-    console.log(`[analyze_local] Fetching top ships for ${activePvpers.length} active PvPers...`);
-
-    await runConcurrent(activePvpers, STATS_CONCURRENCY, async (pilot) => {
-      const topRes = await getEntityTop(db, 'characters', pilot.characterId, 'ships');
-      if (topRes.ok && Array.isArray(topRes.data)) {
-        pilot.topShips = topRes.data
-          .filter((e) => e.name && e.count && e.count > 0)
-          .slice(0, 3)
-          .map((e) => e.name!);
-      }
-    });
   }
 
-  // 7. Group by alliance → corporation → pilots
+  // 6. Group by alliance → corporation → pilots
   interface CompactPilot {
     name: string;
     kills?: number;
@@ -366,7 +313,7 @@ export async function executeAnalyzeLocal(
 
   alliances.sort((a, b) => b.count - a.count);
 
-  // 8. Summary
+  // 7. Summary
   const totalKills = pilotRecords.reduce((s, p) => s + p.kills, 0);
   const totalLosses = pilotRecords.reduce((s, p) => s + p.losses, 0);
   const highThreat = pilotRecords.filter((p) => p.threat === 'high').length;
@@ -390,6 +337,33 @@ export async function executeAnalyzeLocal(
       resolved: resolvedChars.length,
       ...(unresolved.length > 0 ? { unresolved } : {}),
       period_days: days,
+      stats_source: 'eve-kill',
+      stats_window: { from: statsFrom, to: statsTo },
+      stats_coverage: statsResult.ok
+        ? {
+          requested: statsResult.data.requestedIds.length,
+          resolved: statsResult.data.resolvedIds.length,
+          missing: statsResult.data.missingIds.length,
+          missing_ids: statsResult.data.missingIds,
+          truncated: statsResult.data.truncated,
+          request_count: statsResult.data.requestCount,
+          period: statsResult.data.period,
+          source_error: null,
+          limitations: statsResult.data.truncated
+            ? ['One or more requested characters had no returned public EVE-KILL stats.']
+            : [],
+        }
+        : {
+          requested: charIds.length,
+          resolved: 0,
+          missing: charIds.length,
+          missing_ids: charIds,
+          truncated: true,
+          request_count: 0,
+          period: null,
+          source_error: statsResult.error,
+          limitations: [`EVE-KILL character stats unavailable: ${statsResult.error}`],
+        },
     },
     alliances,
     ...(noAlliance.length > 0 ? { no_alliance: noAlliance } : {}),
