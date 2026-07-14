@@ -54,17 +54,17 @@ The project is available under the MIT license. See its GitHub README for setup,
 
 If images are later added, place them in that same target directory. Each must be no larger than 250 KB or 1024×768 pixels; use no more than ten unless necessary.
 
-## Eligibility Matrix — checked 2026-07-13
+## Eligibility Matrix — checked 2026-07-14
 
 | CCP requirement | Verdict | Evidence and action |
 | --- | --- | --- |
 | Directly related to EVE Online | PASS | The public repository describes EVE SSO, ESI, local SDE, route planning, and EVE intelligence. |
 | Complies with the Developer License Agreement | PASS | The public source documents the agreement, non-affiliation, non-commercial boundary, and prohibited misuse. Operators remain responsible for complying when they configure and run an instance. |
 | Public service/resource | PASS | The canonical source repository, [`garshany/eveai`](https://github.com/garshany/eveai), is publicly visible on GitHub under MIT. |
-| Production-ready | PASS | The immutable v3.0.0 release is usable by the general EVE public as a self-hosted service: the public repository provides a reproducible install path, EVE application setup, deployment guidance, a public-artifact gate, and successful CI/release verification. |
+| Production-ready | PASS | The immutable v3.1.0 release is usable by the general EVE public as a self-hosted service: the public repository provides a reproducible install path, EVE application setup, deployment guidance, a public-artifact gate, and successful CI/release verification. |
 | Public for at least three months | PASS | GitHub records the repository's initial `PublicEvent` on 2026-03-24, and its public CI history includes a `master` run on 2026-03-25. The three-month threshold passed on 2026-06-25. |
-| Actively maintained within the last year | PASS | The public default branch and immutable v3.0.0 release were updated and verified on 2026-07-13. |
+| Actively maintained within the last year | PASS | The public default branch and immutable v3.1.0 release were updated and verified on 2026-07-14. |
 
 ## Publication Gate
 
-All listed requirements pass as checked on 2026-07-13. Re-check this matrix against the public repository and current CCP documentation immediately before submitting the page above as a focused `esi/esi-docs` pull request.
+All listed requirements pass as checked on 2026-07-14. Re-check this matrix against the public repository and current CCP documentation immediately before submitting the page above as a focused `esi/esi-docs` pull request.

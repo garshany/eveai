@@ -13,9 +13,9 @@ Self-hosted, chat-first AI assistant for EVE Online. Run it through Telegram, Di
 
 This repository is designed for operators to run their own instance in a terminal. It does not require Redis, Postgres, queues, workers, webhooks, or a web frontend.
 
-## v3.0.0 public release
+## v3.1.0 public release
 
-v3 makes the public self-hosting contract explicit: one Node.js process, local SQLite state, the official OpenAI Responses API, and no hosted dashboard or provider proxy. Every pull request now runs a tracked-file public-artifact audit in addition to build, tests, and linting.
+v3.1 completes the cutover to the current EVE-KILL v1 REST/feed contract, restores four public analytics methods through a local privacy-bounded MCP wrapper, and hardens the stateless GPT-5.6 tool loop. The v3 self-hosting contract remains unchanged: one Node.js process, local SQLite state, the official OpenAI Responses API, and no hosted dashboard or provider proxy.
 
 For a public SSO callback, use HTTPS, set the callback URL exactly in the EVE Developer Portal, generate a strong `AUTH_SECRET_KEY`, give ESI a reachable operator contact, and keep `.env` plus `data/` on the host only. The detailed production checklist is in [docs/deployment.md](./docs/deployment.md).
 
@@ -103,8 +103,8 @@ AUTH_SECRET_KEY=replace-with-random-secret
 EVE_CALLBACK_URL=http://localhost:3000/auth/eve/callback
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
-ESI_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
-EVE_KILL_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
+ESI_USER_AGENT=EVEAI/3.1 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_USER_AGENT=EVEAI/3.1 (+https://github.com/your-org/eveai; contact=you@example.com)
 ```
 
 Generate `AUTH_SECRET_KEY` with:

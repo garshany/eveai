@@ -1,5 +1,37 @@
 # Changelog
 
+## [3.1.0] - 2026-07-14
+
+### Added
+
+- Four strict deferred EVE-KILL analytics tools: `doctrine_detect`, `meta_pulse`, `killmail_forensics`, and `coalition_graph`.
+- A local public-only MCP wrapper with fixed-endpoint JSON-RPC/SSE transport, pre-egress argument validation, bounded response size/depth/node count, safe error projection, and a four-call per-turn analytics limit.
+- Durable process-wide EVE-KILL feed polling with one SQLite cursor, recipient deduplication, restart-safe route-monitor handoff, and platform-aware delivery.
+- Same-turn encrypted GPT-5.6 reasoning replay for stateless `store=false` tool loops without persisting provider reasoning in SQLite.
+
+### Changed
+
+- Cut public kill intelligence over to the current EVE-KILL v1 REST API at the fixed `https://api.eve-kill.com/` base; REST calls now converge on one validated client.
+- Route planning, route monitoring, heartbeat, local pilot analysis, and OSINT now share normalized EVE-KILL observations and explicit ESI/SDE authority boundaries.
+- Hardened prompt/tool routing and same-turn reasoning replay for the existing GPT-5.6 Sol/Terra/Luna model family.
+- Updated first-party User-Agent defaults and examples to `EVEAI/3.1`.
+- Kept direct third-party MCP descriptors out of OpenAI requests: the provider sees only application-owned local function schemas, and Fastify remains limited to EVE SSO and health.
+
+### Removed
+
+- Legacy zKill/RedisQ WebSocket transport and duplicate `query`, `kill-query`, `intel`, feed, and OSINT zKill request paths.
+
+### Security and reliability
+
+- MCP analytics accept only allowlisted public numeric CCP IDs, canonical date pairs, enums, booleans, and bounded limits; chat history, profiles, fits, private ESI results, credentials, URLs, and arbitrary text cannot cross the wrapper boundary.
+- Oversized, malformed, excessively deep, or excessively wide MCP responses fail closed before downstream recursive processing.
+- Feed replay, route baselines, tool-call budgets, audit persistence, and transient-chat notification boundaries are covered by regression tests.
+
+### Release verification
+
+- Full local gate passed: public artifact audit, TypeScript strict check, 417 Vitest tests, ESLint, production build, live EVE-KILL MCP smoke, and independent review.
+- GitHub Actions CI passed on the migration commit before release preparation.
+
 ## [3.0.0] - 2026-07-13
 
 ### Changed

@@ -48,9 +48,9 @@ EVE_CALLBACK_URL=https://your-domain.example/auth/eve/callback
 WEB_BASE_URL=https://your-domain.example
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
-ESI_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
+ESI_USER_AGENT=EVEAI/3.1 (+https://github.com/your-org/eveai; contact=you@example.com)
 EVE_KILL_TIMEOUT_MS=8000
-EVE_KILL_USER_AGENT=EVEAI/3.0 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_USER_AGENT=EVEAI/3.1 (+https://github.com/your-org/eveai; contact=you@example.com)
 EVE_KILL_RETRY_MAX_ATTEMPTS=3
 EVE_KILL_BACKOFF_MAX_MS=10000
 ```
