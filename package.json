@@ -1,6 +1,6 @@
 {
   "name": "eveonline-ai",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "description": "Self-hosted EVE Online AI assistant for Telegram, Discord, and the terminal, powered by EVE SSO, ESI, local SDE, and the OpenAI Responses API",
   "private": true,
   "type": "module",
