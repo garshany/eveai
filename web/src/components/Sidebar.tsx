@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Brand } from './Brand';
 import { ChatIcon, ChevronIcon, CloseIcon, LogOutIcon, PlusIcon } from '../icons';
 import type { Character, Conversation } from '../types';
@@ -8,10 +9,12 @@ type SidebarProps = {
   activeId: string | null;
   busy: boolean;
   character: Character | null;
+  characters: Character[];
   onClose: () => void;
   onNew: () => void;
   onSelect: (id: string) => void;
   onConnect: () => void;
+  onActivate: (characterId: number) => void;
   onLogout: () => void;
 };
 
@@ -21,12 +24,16 @@ export function Sidebar({
   activeId,
   busy,
   character,
+  characters,
   onClose,
   onNew,
   onSelect,
   onConnect,
+  onActivate,
   onLogout,
 }: SidebarProps) {
+  const [characterMenuOpen, setCharacterMenuOpen] = useState(false);
+
   return (
     <>
       <button
@@ -68,7 +75,48 @@ export function Sidebar({
         </nav>
 
         <div className="sidebar__account">
-          <button className="account-row" type="button" onClick={character ? undefined : onConnect} disabled={busy}>
+          {characterMenuOpen && (
+            <div className="character-switcher" aria-label="Подключённые персонажи">
+              <div className="character-switcher__title">Капсулёры</div>
+              {characters.map((entry) => (
+                <button
+                  className={`character-option${entry.id === character?.id ? ' character-option--active' : ''}`}
+                  type="button"
+                  key={entry.id}
+                  disabled={busy || entry.id === character?.id}
+                  onClick={() => {
+                    setCharacterMenuOpen(false);
+                    onActivate(entry.id);
+                  }}
+                >
+                  <span className="character-option__avatar" aria-hidden="true">
+                    {entry.name.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span>{entry.name}</span>
+                  {entry.id === character?.id && <small>активен</small>}
+                </button>
+              ))}
+              <button
+                className="character-add"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setCharacterMenuOpen(false);
+                  onConnect();
+                }}
+              >
+                <PlusIcon size={17} /> Добавить капсулёра
+              </button>
+              <p>Каждый персонаж подключается отдельно через EVE SSO.</p>
+            </div>
+          )}
+          <button
+            className="account-row"
+            type="button"
+            onClick={() => setCharacterMenuOpen((current) => !current)}
+            disabled={busy}
+            aria-expanded={characterMenuOpen}
+          >
             <span className="account-avatar" aria-hidden="true">
               {character?.name.slice(0, 1).toUpperCase() ?? '∞'}
             </span>
@@ -76,7 +124,9 @@ export function Sidebar({
               <strong>{character?.name ?? 'Гостевой режим'}</strong>
               <span>{character ? 'Персонаж подключён' : 'Подключить персонажа'}</span>
             </span>
-            <ChevronIcon size={19} />
+            <span className={`account-row__chevron${characterMenuOpen ? ' account-row__chevron--open' : ''}`}>
+              <ChevronIcon size={19} />
+            </span>
           </button>
           <button className="logout-action" type="button" onClick={onLogout} disabled={busy}>
             <LogOutIcon size={18} /> Выйти

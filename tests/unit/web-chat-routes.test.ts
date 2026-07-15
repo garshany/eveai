@@ -331,6 +331,15 @@ describe('web chat routes', () => {
       headers: mutationHeaders(session),
     });
     expect(activate.statusCode).toBe(200);
+    expect(activate.json()).toMatchObject({
+      session: {
+        character: { id: 9102, name: 'Pilot B' },
+        characters: [
+          { id: 9101, name: 'Pilot A', isActive: false },
+          { id: 9102, name: 'Pilot B', isActive: true },
+        ],
+      },
+    });
     const second = await app.inject({
       method: 'POST',
       url: '/api/web/conversations',
@@ -340,6 +349,19 @@ describe('web chat routes', () => {
     const firstId = (first.json() as { threadId: string }).threadId;
     const secondId = (second.json() as { threadId: string }).threadId;
     expect(secondId).not.toBe(firstId);
+    const activeConversations = await app.inject({
+      method: 'GET',
+      url: '/api/web/conversations',
+      headers: { cookie: session.cookie },
+    });
+    expect(activeConversations.json()).toEqual({
+      conversations: [{
+        id: secondId,
+        characterId: 9102,
+        title: 'Новый диалог',
+        updatedAt: expect.any(String),
+      }],
+    });
     expect(db.prepare(`
       SELECT thread_id, character_id
       FROM agent_threads

@@ -23,6 +23,7 @@ Read the smallest document that answers the current question. Start here, then d
 - [SECURITY.md](./SECURITY.md): auth, secret, and web protection rules
 - [deployment.md](./deployment.md): generic self-host deployment guide
 - [legal.md](./legal.md): CCP legal notices, Developer License Agreement, and Community Showcase readiness
+- [eve-sso-consent.md](./eve-sso-consent.md): bilingual player disclosure, optional ESI access groups, AI-provider data flow, and revocation
 - [open-source-release.md](./open-source-release.md): clean public release and history-safety checklist
 - [community-showcase.md](./community-showcase.md): CCP Community Showcase submission bundle and eligibility gate
 - [heartbeat.md](./heartbeat.md): periodic background checks and notifications system

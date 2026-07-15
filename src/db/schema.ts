@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS auth_requests (
   user_id      INTEGER NOT NULL REFERENCES users(user_id),
   chat_id      INTEGER,
   redirect_url TEXT,
+  requested_scopes_json TEXT,
+  consent_version TEXT,
+  consent_language TEXT CHECK (consent_language IS NULL OR consent_language IN ('ru', 'en')),
+  consented_at TEXT,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at   TEXT NOT NULL,
   used_at      TEXT
@@ -126,6 +130,9 @@ CREATE TABLE IF NOT EXISTS eve_accounts (
   refresh_token   TEXT NOT NULL,
   expires_at      TEXT NOT NULL,
   scopes_json     TEXT NOT NULL DEFAULT '[]',
+  consent_version TEXT,
+  consent_language TEXT CHECK (consent_language IS NULL OR consent_language IN ('ru', 'en')),
+  consented_at    TEXT,
   user_id         INTEGER
 );
 

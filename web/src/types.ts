@@ -1,6 +1,7 @@
 export type Character = {
   id: number;
   name: string;
+  isActive?: boolean;
 };
 
 export type SessionPayload = {
@@ -8,6 +9,7 @@ export type SessionPayload = {
     displayName: string;
     csrfToken: string;
     character: Character | null;
+    characters: Character[];
   } | null;
   ssoConfigured: boolean;
   runtime: {

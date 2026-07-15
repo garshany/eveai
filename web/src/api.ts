@@ -32,6 +32,11 @@ export const webApi = {
     { method: 'POST' },
     csrfToken,
   ),
+  activateCharacter: (characterId: number, csrfToken: string) => request<SessionPayload>(
+    `/api/web/characters/${encodeURIComponent(characterId)}/activate`,
+    { method: 'POST' },
+    csrfToken,
+  ),
   listConversations: () => request<{ conversations: Conversation[] }>('/api/web/conversations'),
   createConversation: (csrfToken: string) => request<{ threadId: string }>(
     '/api/web/conversations',

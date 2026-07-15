@@ -67,10 +67,23 @@ describe('runMigrations', () => {
     const cols = (legacyDb.prepare('PRAGMA table_info(agent_threads)').all() as Array<{ name: string }>).map((c) => c.name);
     expect(cols).toContain('user_id');
     expect(cols).toContain('last_response_message_id');
+    const eveAccountColumns = (legacyDb.prepare('PRAGMA table_info(eve_accounts)').all() as Array<{ name: string }>).map((column) => column.name);
+    expect(eveAccountColumns).toEqual(expect.arrayContaining([
+      'consent_version',
+      'consent_language',
+      'consented_at',
+    ]));
     expect(legacyDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='web_sessions'").get()).toBeDefined();
     const webColumns = (legacyDb.prepare('PRAGMA table_info(web_sessions)').all() as Array<{ name: string }>).map((column) => column.name);
     expect(webColumns).toContain('session_hash');
     expect(webColumns).toContain('csrf_hash');
+    const authRequestColumns = (legacyDb.prepare('PRAGMA table_info(auth_requests)').all() as Array<{ name: string }>).map((column) => column.name);
+    expect(authRequestColumns).toEqual(expect.arrayContaining([
+      'requested_scopes_json',
+      'consent_version',
+      'consent_language',
+      'consented_at',
+    ]));
     const link = legacyDb.prepare('SELECT user_id FROM eve_character_links WHERE chat_id = 1001').get() as { user_id: number | null };
     expect(link.user_id).toBeGreaterThan(0);
     legacyDb.close();
@@ -91,6 +104,39 @@ describe('runMigrations', () => {
     // The Discord user identity is not duplicated.
     const users = db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number };
     expect(users.n).toBe(1);
+  });
+
+  it('enforces consent languages on legacy tables whose columns had no CHECK constraint', () => {
+    const legacyConsentDb = new Database(':memory:');
+    legacyConsentDb.exec(`
+      CREATE TABLE auth_requests (
+        state TEXT PRIMARY KEY, type TEXT NOT NULL, user_id INTEGER NOT NULL,
+        chat_id INTEGER, redirect_url TEXT, requested_scopes_json TEXT,
+        consent_version TEXT, consent_language TEXT, consented_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at TEXT NOT NULL,
+        used_at TEXT
+      );
+      CREATE TABLE eve_accounts (
+        character_id INTEGER PRIMARY KEY, character_name TEXT NOT NULL,
+        access_token TEXT NOT NULL, refresh_token TEXT NOT NULL, expires_at TEXT NOT NULL,
+        scopes_json TEXT NOT NULL DEFAULT '[]', consent_version TEXT,
+        consent_language TEXT, consented_at TEXT, user_id INTEGER
+      );
+    `);
+
+    runMigrations(legacyConsentDb);
+    expect(() => legacyConsentDb.prepare(`
+      INSERT INTO auth_requests (
+        state, type, user_id, consent_language, expires_at
+      ) VALUES ('state', 'eve_sso', 1, 'de', datetime('now', '+10 minutes'))
+    `).run()).toThrow(/invalid consent_language/);
+    expect(() => legacyConsentDb.prepare(`
+      INSERT INTO eve_accounts (
+        character_id, character_name, access_token, refresh_token, expires_at,
+        consent_language
+      ) VALUES (1, 'Pilot', 'a', 'r', datetime('now', '+10 minutes'), 'de')
+    `).run()).toThrow(/invalid consent_language/);
+    legacyConsentDb.close();
   });
 
   it('cuts over only an explicitly marked legacy CLI identity and preserves its local data', () => {

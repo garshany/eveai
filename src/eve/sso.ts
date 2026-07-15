@@ -3,7 +3,10 @@ import type { Db } from '../db/sqlite.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { getUserTelegramChatId } from '../auth/user-resolver.js';
 import { decryptStoredSecret, encryptStoredSecret } from '../auth/secret-storage.js';
-import { deleteUserProfileArtifact } from './user-profile-storage.js';
+import {
+  deleteUserProfileArtifact,
+  withUserProfileAuthorizationLock,
+} from './user-profile-storage.js';
 import { getEveSsoMetadata, verifyEveAccessToken } from './sso-auth.js';
 import { fetchRetrying } from './http.js';
 
@@ -86,6 +89,13 @@ export function getLinkedCharacter(
   db: Db,
   ctx: UserContext,
 ): { characterId: number; characterName: string; scopes: string[] } | null {
+  if (
+    ctx.chatId !== undefined
+    && !db.prepare('SELECT 1 FROM telegram_sessions WHERE chat_id = ?').get(ctx.chatId)
+  ) return null;
+  if (ctx.userId > 0 && !db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(ctx.userId)) {
+    return null;
+  }
   backfillLegacyOwnership(db, ctx);
   const characterId = resolveActiveCharacterId(db, ctx);
   if (!characterId) return null;
@@ -194,35 +204,48 @@ export function setActiveCharacter(db: Db, ctx: UserContext, characterId: number
 }
 
 export async function unlinkCharacter(db: Db, ctx: UserContext, characterId: number): Promise<boolean> {
-  backfillLegacyOwnership(db, ctx);
+  return await withUserProfileAuthorizationLock(characterId, async () => {
+    backfillLegacyOwnership(db, ctx);
+    const linkedChats = ctx.userId
+      ? db.prepare('SELECT chat_id FROM eve_character_links WHERE user_id = ? AND character_id = ?')
+        .all(ctx.userId, characterId) as Array<{ chat_id: number }>
+      : [];
 
-  let deleted = false;
-  if (ctx.userId) {
-    const result = db.prepare('DELETE FROM eve_character_links WHERE user_id = ? AND character_id = ?')
-      .run(ctx.userId, characterId);
-    if (result.changes > 0) deleted = true;
-  }
-  if (!ctx.userId && !deleted && ctx.chatId !== undefined) {
-    const result = db.prepare('DELETE FROM eve_character_links WHERE chat_id = ? AND character_id = ?')
-      .run(ctx.chatId, characterId);
-    if (result.changes > 0) deleted = true;
-  }
-  if (!deleted) return false;
-
-  // If this was the active character, clear it
-  const active = resolveActiveCharacterId(db, ctx);
-  if (active === characterId) {
-    if (ctx.chatId !== undefined) {
-      db.prepare('UPDATE telegram_sessions SET active_character_id = NULL WHERE chat_id = ?').run(ctx.chatId);
-    }
+    let deleted = false;
     if (ctx.userId) {
-      db.prepare("UPDATE users SET active_character_id = NULL, updated_at = datetime('now') WHERE user_id = ?").run(ctx.userId);
+      const result = db.prepare('DELETE FROM eve_character_links WHERE user_id = ? AND character_id = ?')
+        .run(ctx.userId, characterId);
+      if (result.changes > 0) deleted = true;
     }
-  }
+    if (!ctx.userId && !deleted && ctx.chatId !== undefined) {
+      const result = db.prepare('DELETE FROM eve_character_links WHERE chat_id = ? AND character_id = ?')
+        .run(ctx.chatId, characterId);
+      if (result.changes > 0) deleted = true;
+    }
+    if (!deleted) return false;
 
-  await deleteUserProfileArtifact(ctx, characterId);
-  cleanupDetachedCharacter(db, characterId);
-  return true;
+    // If this was the active character, clear it
+    const active = resolveActiveCharacterId(db, ctx);
+    if (active === characterId) {
+      if (ctx.chatId !== undefined) {
+        db.prepare('UPDATE telegram_sessions SET active_character_id = NULL WHERE chat_id = ?').run(ctx.chatId);
+      }
+      if (ctx.userId) {
+        db.prepare("UPDATE users SET active_character_id = NULL, updated_at = datetime('now') WHERE user_id = ?").run(ctx.userId);
+      }
+    }
+
+    if (ctx.userId) {
+      for (const link of linkedChats) {
+        await deleteUserProfileArtifact({ userId: ctx.userId, chatId: link.chat_id }, characterId);
+      }
+      await deleteUserProfileArtifact({ userId: ctx.userId }, characterId);
+    } else {
+      await deleteUserProfileArtifact(ctx, characterId);
+    }
+    cleanupDetachedCharacter(db, characterId);
+    return true;
+  });
 }
 
 function resolveActiveCharacterId(db: Db, ctx: UserContext): number | null {

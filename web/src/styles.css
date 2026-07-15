@@ -468,9 +468,95 @@ button:disabled {
 }
 
 .sidebar__account {
+  position: relative;
   margin: auto 20px 22px;
   padding-top: 20px;
   border-top: 1px solid var(--border);
+}
+
+.character-switcher {
+  display: grid;
+  position: absolute;
+  right: 0;
+  bottom: 108px;
+  left: 0;
+  padding: 10px;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgb(8 18 29 / 0.98);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.42);
+}
+
+.character-switcher__title {
+  padding: 6px 8px 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.character-option,
+.character-add {
+  display: grid;
+  width: 100%;
+  min-height: 44px;
+  padding: 7px 8px;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-bright);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.character-option {
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+}
+
+.character-option:hover,
+.character-add:hover {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.character-option--active {
+  background: var(--surface);
+  color: var(--accent-bright);
+}
+
+.character-option__avatar {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: 12px;
+}
+
+.character-option small {
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.character-add {
+  grid-template-columns: 20px minmax(0, 1fr);
+  margin-top: 3px;
+  border-top: 1px solid var(--border-soft);
+  border-radius: 0 0 8px 8px;
+  color: var(--accent-bright);
+}
+
+.character-switcher p {
+  margin: 5px 8px 3px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .account-row {
@@ -517,6 +603,15 @@ button:disabled {
 .account-row__copy span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.account-row__chevron {
+  display: inline-grid;
+  transition: transform 160ms ease;
+}
+
+.account-row__chevron--open {
+  transform: rotate(90deg);
 }
 
 .logout-action {

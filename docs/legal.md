@@ -14,6 +14,12 @@ This project uses EVE Online SSO, ESI, SDE, and related game data. Those materia
 
 Each operator who creates an EVE Developer application and runs a self-hosted instance is responsible for accepting and complying with that agreement.
 
+For hosted/public instances, the application presents the versioned bilingual
+player disclosure documented in [eve-sso-consent.md](./eve-sso-consent.md)
+before every EVE SSO authorization. The player must acknowledge the disclosure
+but may decline any or all private ESI groups. This implements least-privilege
+scope selection before CCP asks the player to approve the resulting exact set.
+
 ## Community Showcase
 
 CCP's community documentation explains how to submit public EVE community tools and services:
@@ -30,4 +36,7 @@ The current ready-to-copy page, evidence matrix, and publication gate are in [co
 - Keep EVE SSO secrets, access tokens, refresh tokens, local databases, and deployment details private.
 - Do not misrepresent the project as official CCP software.
 - Do not use CCP tools or game data for phishing, spam, malware, scams, unauthorized tracking, or other prohibited activity.
+- Keep the consent copy aligned with the actual ESI scope mapping and configured
+  AI-provider data path; a generic privacy statement is not a substitute for
+  disclosing material data-flow changes.
 - Re-check CCP's current terms before monetizing or submitting a hosted service.

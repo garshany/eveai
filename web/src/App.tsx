@@ -106,6 +106,22 @@ export default function App() {
     }
   };
 
+  const activateCharacter = async (characterId: number) => {
+    if (!session || session.character?.id === characterId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const payload = await webApi.activateCharacter(characterId, session.csrfToken);
+      setBootstrap(payload);
+      await loadConversations();
+      setSidebarOpen(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Не удалось переключить персонажа.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const createConversation = async () => {
     if (!session) return;
     setBusy(true);
@@ -220,10 +236,12 @@ export default function App() {
         activeId={activeId}
         busy={busy}
         character={session.character}
+        characters={session.characters}
         onClose={() => setSidebarOpen(false)}
         onNew={() => void createConversation()}
         onSelect={(id) => void selectConversation(id)}
         onConnect={() => void connectEve()}
+        onActivate={(characterId) => void activateCharacter(characterId)}
         onLogout={() => void logout()}
       />
       <ChatScreen

@@ -15,6 +15,9 @@ export function runMigrations(db: Db): void {
     backfillThreadCharacters(db);
 
     addColumnIfMissing(db, 'eve_accounts', 'user_id', 'INTEGER');
+    addColumnIfMissing(db, 'eve_accounts', 'consent_version', 'TEXT');
+    addColumnIfMissing(db, 'eve_accounts', 'consent_language', 'TEXT');
+    addColumnIfMissing(db, 'eve_accounts', 'consented_at', 'TEXT');
     addColumnIfMissing(db, 'eve_character_links', 'user_id', 'INTEGER');
     addColumnIfMissing(db, 'agent_threads', 'user_id', 'INTEGER');
     createIndexIfMissing(db, 'idx_agent_threads_user', 'agent_threads', 'user_id');
@@ -33,6 +36,11 @@ export function runMigrations(db: Db): void {
     cutoverMarkedLegacyCliIdentity(db);
     ensureIntelNotes(db);
     ensureWebSessions(db);
+    addColumnIfMissing(db, 'auth_requests', 'requested_scopes_json', 'TEXT');
+    addColumnIfMissing(db, 'auth_requests', 'consent_version', 'TEXT');
+    addColumnIfMissing(db, 'auth_requests', 'consent_language', 'TEXT');
+    addColumnIfMissing(db, 'auth_requests', 'consented_at', 'TEXT');
+    ensureConsentLanguageGuards(db);
   });
 
   migrate();
@@ -141,6 +149,23 @@ function createIndexIfMissing(db: Db, index: string, table: string, columns: str
   ).get(index) as { name: string } | undefined;
   if (row?.name) return;
   db.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(${columns})`);
+}
+
+function ensureConsentLanguageGuards(db: Db): void {
+  for (const table of ['auth_requests', 'eve_accounts']) {
+    for (const event of ['INSERT', 'UPDATE']) {
+      const triggerName = `validate_${table}_consent_language_${event.toLowerCase()}`;
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS ${triggerName}
+        BEFORE ${event} ON ${table}
+        WHEN NEW.consent_language IS NOT NULL
+          AND NEW.consent_language NOT IN ('ru', 'en')
+        BEGIN
+          SELECT RAISE(ABORT, 'invalid consent_language');
+        END
+      `);
+    }
+  }
 }
 
 function backfillThreadCharacters(db: Db): void {

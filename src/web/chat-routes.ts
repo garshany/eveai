@@ -24,6 +24,7 @@ import {
 import { isEveSsoConfigured } from '../eve/eve-login.js';
 import {
   clearWebSessionCookies,
+  cleanExpiredWebSessions,
   createWebSession,
   evaluateWebSessionCreationAllowance,
   readWebSession,
@@ -54,6 +55,7 @@ const MAX_WEB_CONVERSATIONS = 40;
 export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
   app.addHook('onRequest', async (request, reply) => {
     if (request.url.startsWith('/api/web/')) {
+      await cleanExpiredWebSessions(db);
       reply.header('Cache-Control', 'no-store');
     }
   });
@@ -93,7 +95,7 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
   app.delete('/api/web/session', async (request, reply) => {
     const session = requireMutationSession(db, request, reply);
     if (!session) return;
-    revokeWebSession(db, request);
+    await revokeWebSession(db, request);
     clearWebSessionCookies(reply);
     return reply.status(204).send();
   });
@@ -267,7 +269,13 @@ function buildSessionPayload(db: Db, session: WebSession, csrfToken: string) {
   const user = db.prepare('SELECT display_name FROM users WHERE user_id = ?').get(session.userId) as {
     display_name: string;
   } | undefined;
-  const character = getLinkedCharacter(db, sessionContext(session));
+  const ctx = sessionContext(session);
+  const character = getLinkedCharacter(db, ctx);
+  const characters = listLinkedCharacters(db, ctx).map((entry) => ({
+    id: entry.characterId,
+    name: entry.characterName,
+    isActive: entry.isActive,
+  }));
   return {
     session: {
       displayName: user?.display_name ?? 'Web capsuleer',
@@ -276,6 +284,7 @@ function buildSessionPayload(db: Db, session: WebSession, csrfToken: string) {
         id: character.characterId,
         name: character.characterName,
       } : null,
+      characters,
     },
     ssoConfigured: isEveSsoConfigured(),
     runtime: webRuntimePayload(),
@@ -296,6 +305,7 @@ function sessionContext(session: WebSession) {
 }
 
 function listConversations(db: Db, session: WebSession) {
+  const characterId = getLinkedCharacter(db, sessionContext(session))?.characterId ?? null;
   const rows = db.prepare(`
     SELECT
       t.thread_id,
@@ -310,11 +320,13 @@ function listConversations(db: Db, session: WebSession) {
       ) AS title
     FROM agent_threads t
     LEFT JOIN messages m ON m.thread_id = t.thread_id
-    WHERE t.chat_id = ? AND t.user_id = ?
+    WHERE t.chat_id = ?
+      AND t.user_id = ?
+      AND ((t.character_id IS NULL AND ? IS NULL) OR t.character_id = ?)
     GROUP BY t.thread_id
     ORDER BY updated_at DESC
     LIMIT 40
-  `).all(session.chatId, session.userId) as ConversationRow[];
+  `).all(session.chatId, session.userId, characterId, characterId) as ConversationRow[];
   return rows.map((row) => ({
     id: row.thread_id,
     characterId: row.character_id,

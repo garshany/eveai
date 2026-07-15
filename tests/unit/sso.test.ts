@@ -37,6 +37,7 @@ import { getLinkedCharacter, getAccessToken, unlinkCharacter } from '../../src/e
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resetEveSsoMetadataCacheForTests } from '../../src/eve/sso-auth.js';
+import { withUserProfileAuthorizationLock } from '../../src/eve/user-profile-storage.js';
 
 let db: Database.Database;
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -231,18 +232,44 @@ describe('unlinkCharacter', () => {
     db.prepare("INSERT INTO telegram_accounts (telegram_user_id, user_id, username, first_name, created_at) VALUES (?, ?, ?, ?, datetime('now'))")
       .run(77, 7, 'pilot', 'Pilot');
     db.prepare("INSERT INTO telegram_sessions (chat_id, username, active_character_id) VALUES (?, ?, ?)").run(77, 'pilot', 12345);
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username, active_character_id) VALUES (?, ?, ?)").run(78, 'pilot-alt', 12345);
     db.prepare(`
       INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id)
       VALUES (?, ?, ?, ?, datetime('now', '+1200 seconds'), ?, ?)
     `).run(12345, 'Pilot', 'valid-token', 'ref-token', '[]', 7);
     db.prepare('INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (?, ?, ?)').run(77, 12345, 7);
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (?, ?, ?)').run(78, 12345, 7);
 
     const profilePath = join(profileDir, 'USER_77_12345.md');
+    const alternateProfilePath = join(profileDir, 'USER_78_12345.md');
+    const userOnlyProfilePath = join(profileDir, 'USER_7_12345.md');
     writeFileSync(profilePath, 'profile');
+    writeFileSync(alternateProfilePath, 'alternate profile');
+    writeFileSync(userOnlyProfilePath, 'user profile');
     db.prepare('UPDATE users SET active_character_id = ? WHERE user_id = ?').run(12345, 7);
 
-    expect(await unlinkCharacter(db, { userId: 7, chatId: 77 }, 12345)).toBe(true);
+    let releaseWriter = (): void => {};
+    let markWriterEntered = (): void => {};
+    const writerEntered = new Promise<void>((resolve) => {
+      markWriterEntered = resolve;
+    });
+    const writerRelease = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    const oldWriter = withUserProfileAuthorizationLock(12345, async () => {
+      markWriterEntered();
+      await writerRelease;
+      writeFileSync(profilePath, 'late old profile');
+    });
+    await writerEntered;
+    const unlink = unlinkCharacter(db, { userId: 7, chatId: 77 }, 12345);
+    releaseWriter();
+    await oldWriter;
+
+    expect(await unlink).toBe(true);
     expect(db.prepare('SELECT * FROM eve_accounts WHERE character_id = ?').get(12345)).toBeUndefined();
     expect(existsSync(profilePath)).toBe(false);
+    expect(existsSync(alternateProfilePath)).toBe(false);
+    expect(existsSync(userOnlyProfilePath)).toBe(false);
   });
 });

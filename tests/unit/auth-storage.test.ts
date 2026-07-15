@@ -18,6 +18,7 @@ import {
   createAuthRequestToken,
   findPendingAuthRequest,
   markAuthRequestUsed,
+  recordAuthRequestConsent,
 } from '../../src/auth/auth-request.js';
 
 let db: Database.Database;
@@ -43,7 +44,35 @@ describe('auth request storage', () => {
     expect(row.state.startsWith('h1:')).toBe(true);
 
     const pending = findPendingAuthRequest(db, 'eve_sso', token);
-    expect(pending).toEqual({ user_id: 1, chat_id: 99, type: 'eve_sso', redirect_url: null });
+    expect(pending).toMatchObject({ user_id: 1, chat_id: 99, type: 'eve_sso', redirect_url: null });
+    expect(pending?.requestedScopes).toBeNull();
+  });
+
+  it('binds the exact acknowledged scope set and bilingual consent metadata to the request', () => {
+    const token = createAuthRequestToken(db, 'eve_sso', 1, { chatId: 99, ttlSeconds: 600 });
+    expect(recordAuthRequestConsent(db, 'eve_sso', token, {
+      version: '2026-07-15.1',
+      language: 'en',
+      scopes: ['esi-location.read_location.v1'],
+    })).toBe(true);
+
+    expect(findPendingAuthRequest(db, 'eve_sso', token)).toMatchObject({
+      requestedScopes: ['esi-location.read_location.v1'],
+      consent_version: '2026-07-15.1',
+      consent_language: 'en',
+    });
+    expect(findPendingAuthRequest(db, 'eve_sso', token)?.consented_at).toBeTruthy();
+
+    expect(recordAuthRequestConsent(db, 'eve_sso', token, {
+      version: 'later-version',
+      language: 'ru',
+      scopes: ['esi-mail.send_mail.v1'],
+    })).toBe(false);
+    expect(findPendingAuthRequest(db, 'eve_sso', token)).toMatchObject({
+      requestedScopes: ['esi-location.read_location.v1'],
+      consent_version: '2026-07-15.1',
+      consent_language: 'en',
+    });
   });
 
   it('consumes SSO states only once', () => {
@@ -67,7 +96,7 @@ describe('auth request storage', () => {
       VALUES (?, 'eve_sso', ?, ?, datetime('now'), datetime('now', '+600 seconds'))
     `).run('legacy-state', 1, 99);
 
-    expect(findPendingAuthRequest(db, 'eve_sso', 'legacy-state')).toEqual({
+    expect(findPendingAuthRequest(db, 'eve_sso', 'legacy-state')).toMatchObject({
       user_id: 1,
       chat_id: 99,
       type: 'eve_sso',

@@ -4,8 +4,12 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
 import { matchesOpaqueToken, protectOpaqueToken } from '../auth/secret-storage.js';
-import { resolveUserProfilePath } from '../eve/user-profile-storage.js';
+import {
+  resolveUserProfilePath,
+  withUserProfileAuthorizationLock,
+} from '../eve/user-profile-storage.js';
 import { discardRouteMonitor } from '../eve-board/monitor.js';
+import { withWebLaneAuthorizationLock } from './web-lane-lock.js';
 
 export const WEB_SESSION_COOKIE = 'eveai_session';
 export const WEB_CSRF_COOKIE = 'eveai_csrf';
@@ -62,7 +66,6 @@ export function resetWebSessionCreationGuardForTests(): void {
 }
 
 export function createWebSession(db: Db): CreatedWebSession {
-  cleanExpiredWebSessions(db);
   const sessionToken = randomBytes(32).toString('base64url');
   const csrfToken = randomBytes(24).toString('base64url');
 
@@ -103,7 +106,6 @@ export function createWebSession(db: Db): CreatedWebSession {
 export function readWebSession(db: Db, request: FastifyRequest): WebSession | null {
   const rawToken = request.cookies[WEB_SESSION_COOKIE];
   if (!rawToken || rawToken.length > 128) return null;
-  cleanExpiredWebSessions(db);
   const row = db.prepare(`
     SELECT user_id, chat_id, csrf_hash
     FROM web_sessions
@@ -174,7 +176,7 @@ export function clearWebSessionCookies(reply: FastifyReply): void {
   reply.clearCookie(WEB_CSRF_COOKIE, options);
 }
 
-export function revokeWebSession(db: Db, request: FastifyRequest): void {
+export async function revokeWebSession(db: Db, request: FastifyRequest): Promise<void> {
   const token = request.cookies[WEB_SESSION_COOKIE];
   if (!token) return;
   const row = db.prepare(`
@@ -185,7 +187,7 @@ export function revokeWebSession(db: Db, request: FastifyRequest): void {
     user_id: number;
     chat_id: number;
   } | undefined;
-  if (row) purgeBrowserLane(db, row.user_id, row.chat_id);
+  if (row) await purgeBrowserLane(db, row.chat_id);
 }
 
 export function verifyWebMutation(request: FastifyRequest, session: WebSession): boolean {
@@ -203,7 +205,7 @@ export function verifyWebSessionCreation(request: FastifyRequest): boolean {
   return Boolean(origin && configuredOrigin && origin === configuredOrigin);
 }
 
-export function cleanExpiredWebSessions(db: Db): void {
+export async function cleanExpiredWebSessions(db: Db): Promise<void> {
   const expired = db.prepare(`
     SELECT user_id, chat_id
     FROM web_sessions
@@ -211,61 +213,84 @@ export function cleanExpiredWebSessions(db: Db): void {
     ORDER BY expires_at ASC
     LIMIT 100
   `).all() as Array<{ user_id: number; chat_id: number }>;
-  for (const row of expired) purgeBrowserLane(db, row.user_id, row.chat_id);
+  for (const row of expired) await purgeBrowserLane(db, row.chat_id);
 }
 
-function purgeBrowserLane(db: Db, userId: number, chatId: number): void {
-  discardRouteMonitor(chatId);
-  const linkedCharacters = db.prepare(`
-    SELECT character_id
-    FROM eve_character_links
-    WHERE chat_id = ?
-  `).all(chatId) as Array<{ character_id: number }>;
-  const purge = db.transaction(() => {
-    const threads = db.prepare(`
-      SELECT thread_id FROM agent_threads WHERE chat_id = ? AND user_id = ?
-    `).all(chatId, userId) as Array<{ thread_id: string }>;
-    for (const thread of threads) {
-      db.prepare('DELETE FROM thread_summaries WHERE thread_id = ?').run(thread.thread_id);
-      db.prepare('DELETE FROM messages WHERE thread_id = ?').run(thread.thread_id);
-      db.prepare('DELETE FROM thread_artifacts WHERE thread_id = ?').run(thread.thread_id);
-      db.prepare('DELETE FROM agent_threads WHERE thread_id = ?').run(thread.thread_id);
-    }
+async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
+  await withWebLaneAuthorizationLock(chatId, async () => {
+    const lane = db.prepare('SELECT user_id FROM web_sessions WHERE chat_id = ?')
+      .get(chatId) as { user_id: number } | undefined;
+    if (!lane) return;
+    const userId = lane.user_id;
+    discardRouteMonitor(chatId);
+    const linkedCharacters = db.prepare(`
+      SELECT character_id FROM eve_character_links WHERE chat_id = ? OR user_id = ?
+      UNION
+      SELECT character_id FROM eve_accounts WHERE user_id = ?
+    `).all(chatId, userId, userId) as Array<{ character_id: number }>;
+    const characterIds = [...new Set(linkedCharacters.map((entry) => entry.character_id))].sort((a, b) => a - b);
 
-    db.prepare('DELETE FROM route_monitor_kill_dedup WHERE chat_id = ?').run(chatId);
-    db.prepare('DELETE FROM route_monitors WHERE chat_id = ?').run(chatId);
-    db.prepare('DELETE FROM kill_watches WHERE chat_id = ?').run(chatId);
-    db.prepare('DELETE FROM eve_kill_notification_dedup WHERE chat_id = ?').run(chatId);
-    db.prepare('DELETE FROM eve_character_links WHERE chat_id = ?').run(chatId);
-    db.prepare('DELETE FROM auth_requests WHERE chat_id = ?').run(chatId);
-    db.prepare('DELETE FROM web_sessions WHERE chat_id = ?').run(chatId);
-    db.prepare('DELETE FROM telegram_sessions WHERE chat_id = ?').run(chatId);
+    await withCharacterAuthorizationLocks(characterIds, async () => {
+      const purge = db.transaction((): boolean => {
+        const threads = db.prepare(`
+          SELECT thread_id FROM agent_threads WHERE chat_id = ? AND user_id = ?
+        `).all(chatId, userId) as Array<{ thread_id: string }>;
+        for (const thread of threads) {
+          db.prepare('DELETE FROM thread_summaries WHERE thread_id = ?').run(thread.thread_id);
+          db.prepare('DELETE FROM messages WHERE thread_id = ?').run(thread.thread_id);
+          db.prepare('DELETE FROM thread_artifacts WHERE thread_id = ?').run(thread.thread_id);
+          db.prepare('DELETE FROM agent_threads WHERE thread_id = ?').run(thread.thread_id);
+        }
 
-    const hasOtherIdentity = Boolean(
-      db.prepare('SELECT 1 FROM web_sessions WHERE user_id = ? LIMIT 1').get(userId)
-      || db.prepare('SELECT 1 FROM telegram_accounts WHERE user_id = ? LIMIT 1').get(userId)
-      || db.prepare('SELECT 1 FROM discord_accounts WHERE user_id = ? LIMIT 1').get(userId)
-      || db.prepare('SELECT 1 FROM cli_accounts WHERE user_id = ? LIMIT 1').get(userId),
-    );
-    if (hasOtherIdentity) return;
+        db.prepare('DELETE FROM route_monitor_kill_dedup WHERE chat_id = ?').run(chatId);
+        db.prepare('DELETE FROM route_monitors WHERE chat_id = ?').run(chatId);
+        db.prepare('DELETE FROM kill_watches WHERE chat_id = ?').run(chatId);
+        db.prepare('DELETE FROM eve_kill_notification_dedup WHERE chat_id = ?').run(chatId);
+        db.prepare('DELETE FROM eve_character_links WHERE chat_id = ?').run(chatId);
+        db.prepare('DELETE FROM auth_requests WHERE chat_id = ?').run(chatId);
+        db.prepare('DELETE FROM web_sessions WHERE chat_id = ?').run(chatId);
+        db.prepare('DELETE FROM telegram_sessions WHERE chat_id = ?').run(chatId);
 
-    db.prepare('DELETE FROM heartbeat_config WHERE user_id = ?').run(userId);
-    db.prepare('DELETE FROM intel_notes WHERE user_id = ?').run(userId);
-    db.prepare('DELETE FROM auth_requests WHERE user_id = ?').run(userId);
-    db.prepare('DELETE FROM eve_character_links WHERE user_id = ?').run(userId);
-    db.prepare('DELETE FROM eve_accounts WHERE user_id = ?').run(userId);
-    db.prepare('DELETE FROM users WHERE user_id = ?').run(userId);
+        const hasOtherIdentity = Boolean(
+          db.prepare('SELECT 1 FROM web_sessions WHERE user_id = ? LIMIT 1').get(userId)
+          || db.prepare('SELECT 1 FROM telegram_accounts WHERE user_id = ? LIMIT 1').get(userId)
+          || db.prepare('SELECT 1 FROM discord_accounts WHERE user_id = ? LIMIT 1').get(userId)
+          || db.prepare('SELECT 1 FROM cli_accounts WHERE user_id = ? LIMIT 1').get(userId),
+        );
+        if (hasOtherIdentity) return false;
+
+        db.prepare('DELETE FROM heartbeat_config WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM intel_notes WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM auth_requests WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM eve_character_links WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM eve_accounts WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM users WHERE user_id = ?').run(userId);
+        return true;
+      });
+      const removedUser = purge.immediate();
+
+      for (const characterId of characterIds) {
+        try {
+          rmSync(resolveUserProfilePath({ userId, chatId }, characterId), { force: true });
+          if (removedUser) rmSync(resolveUserProfilePath({ userId }, characterId), { force: true });
+        } catch {
+          // Database revocation is authoritative even if best-effort artifact
+          // removal is blocked by an operational filesystem problem.
+        }
+      }
+    });
   });
-  purge.immediate();
+}
 
-  for (const linked of linkedCharacters) {
-    try {
-      rmSync(resolveUserProfilePath({ userId, chatId }, linked.character_id), { force: true });
-    } catch {
-      // Database revocation is authoritative even if best-effort artifact
-      // removal is blocked by an operational filesystem problem.
-    }
-  }
+async function withCharacterAuthorizationLocks<T>(
+  characterIds: number[],
+  action: () => Promise<T>,
+): Promise<T> {
+  const acquire = (index: number): Promise<T> => {
+    if (index >= characterIds.length) return action();
+    return withUserProfileAuthorizationLock(characterIds[index]!, () => acquire(index + 1));
+  };
+  return await acquire(0);
 }
 
 function normalizeOrigin(value: string | undefined): string | null {

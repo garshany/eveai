@@ -4,6 +4,36 @@ import { dirname, join, parse } from 'node:path';
 import { config } from '../config.js';
 import type { UserContext } from '../auth/user-resolver.js';
 
+const profileAuthorizationLocks = new Map<number, Promise<void>>();
+
+/**
+ * Serialize the final profile write with authorization replacement for one
+ * character. ESI reads stay concurrent; only the filesystem commit and SSO
+ * cutover share this lock.
+ */
+export async function withUserProfileAuthorizationLock<T>(
+  characterId: number,
+  action: () => Promise<T>,
+): Promise<T> {
+  const previous = profileAuthorizationLocks.get(characterId) ?? Promise.resolve();
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.catch(() => {}).then(() => gate);
+  profileAuthorizationLocks.set(characterId, queued);
+
+  await previous.catch(() => {});
+  try {
+    return await action();
+  } finally {
+    release();
+    if (profileAuthorizationLocks.get(characterId) === queued) {
+      profileAuthorizationLocks.delete(characterId);
+    }
+  }
+}
+
 export function resolveUserProfilePath(ctx: UserContext, characterId: number): string {
   const base = config.userProfile.path;
   const chatId = ctx.chatId;

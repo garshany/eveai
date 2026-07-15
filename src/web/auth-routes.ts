@@ -1,7 +1,11 @@
 import type { FastifyInstance } from 'fastify';
+import { rmSync } from 'node:fs';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
-import { deleteUserProfileArtifact } from '../eve/user-profile-storage.js';
+import {
+  resolveUserProfilePath,
+  withUserProfileAuthorizationLock,
+} from '../eve/user-profile-storage.js';
 import { refreshUserProfile } from '../eve/user-profile.js';
 import { linkCharacterToChat } from '../eve/sso.js';
 import { getEveSsoMetadata, verifyEveAccessToken } from '../eve/sso-auth.js';
@@ -9,11 +13,18 @@ import type { UserContext } from '../auth/user-resolver.js';
 import {
   findPendingAuthRequest,
   markAuthRequestUsed,
+  recordAuthRequestConsent,
 } from '../auth/auth-request.js';
 import { encryptStoredSecret } from '../auth/secret-storage.js';
 import { buildEveAuthorizeUrl } from '../eve/eve-login.js';
 import { fetchWithTimeout } from '../eve/http.js';
 import { createLogger } from '../observability/logger.js';
+import {
+  buildEveConsentPage,
+  EVE_CONSENT_VERSION,
+  parseEveConsentForm,
+} from './eve-consent.js';
+import { withWebLaneAuthorizationLock } from './web-lane-lock.js';
 
 const log = createLogger('auth');
 
@@ -32,9 +43,24 @@ interface TokenResponse {
 }
 
 export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
-  // GET /auth/eve/login -- short redirect to the full EVE SSO authorize URL.
-  // The bots send this short link (the real URL is ~2.1KB, too long for a
-  // Discord message/button); it 302s the browser on to EVE.
+  if (!app.hasContentTypeParser('application/x-www-form-urlencoded')) {
+    app.addContentTypeParser(
+      'application/x-www-form-urlencoded',
+      { parseAs: 'string' },
+      (_request, body, done) => {
+        const parsed: Record<string, string | string[]> = {};
+        for (const [key, value] of new URLSearchParams(String(body))) {
+          const current = parsed[key];
+          parsed[key] = current === undefined ? value : Array.isArray(current) ? [...current, value] : [current, value];
+        }
+        done(null, parsed);
+      },
+    );
+  }
+
+  // Every platform gets the same bilingual disclosure. The full EVE SSO URL
+  // is created only after the player selects an allowlisted least-privilege
+  // scope set and explicitly acknowledges how the data is used.
   app.get<{ Querystring: { state?: string } }>('/auth/eve/login', async (req, reply) => {
     const state = typeof req.query.state === 'string' ? req.query.state : '';
     if (!state) {
@@ -46,9 +72,46 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     if (!pending) {
       return reply.status(403).type('text/html').send(buildNoticePage('This login link has expired or was already used. Run /eve_login again in the bot.'));
     }
+    if (!pending.consented_at || !pending.requestedScopes || pending.consent_version !== EVE_CONSENT_VERSION) {
+      return reply
+        .header('Cache-Control', 'no-store')
+        .type('text/html; charset=utf-8')
+        .send(buildEveConsentPage(state));
+    }
     return reply
       .header('Cache-Control', 'no-store')
-      .redirect(buildEveAuthorizeUrl(state));
+      .redirect(buildEveAuthorizeUrl(state, pending.requestedScopes));
+  });
+
+  app.post<{ Body: unknown }>('/auth/eve/consent', async (req, reply) => {
+    const values = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+    const state = typeof values.state === 'string' ? values.state : '';
+    const pending = state ? findPendingAuthRequest(db, 'eve_sso', state) : null;
+    if (!pending) {
+      return reply.status(403).type('text/html').send(buildNoticePage('This login link has expired or was already used.'));
+    }
+    const consent = parseEveConsentForm(values);
+    if (!consent) {
+      return reply
+        .status(400)
+        .header('Cache-Control', 'no-store')
+        .type('text/html; charset=utf-8')
+        .send(buildEveConsentPage(
+          state,
+          'Подтвердите согласие, выберите язык и используйте только доступные категории. / Confirm consent, choose a language, and use only the available categories.',
+        ));
+    }
+    const recorded = recordAuthRequestConsent(db, 'eve_sso', state, {
+      version: EVE_CONSENT_VERSION,
+      language: consent.language,
+      scopes: consent.scopes,
+    });
+    if (!recorded) {
+      return reply.status(403).type('text/html').send(buildNoticePage('This login link has expired or was already used.'));
+    }
+    return reply
+      .header('Cache-Control', 'no-store')
+      .redirect(`/auth/eve/login?state=${encodeURIComponent(state)}`);
   });
 
   // GET /auth/eve/callback -- EVE SSO OAuth callback. Login links are issued
@@ -76,10 +139,13 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     if (!authRequest) {
       return reply.status(403).send({ error: 'Invalid or expired state parameter. Please try again.' });
     }
+    if (!authRequest.consented_at || !authRequest.requestedScopes || authRequest.consent_version !== EVE_CONSENT_VERSION) {
+      return reply.status(403).send({ error: 'EVE data access was not acknowledged. Please start the login flow again.' });
+    }
 
     markAuthRequestUsed(db, 'eve_sso', state);
 
-    let userId = authRequest.user_id;
+    const userId = authRequest.user_id;
     const chatId = authRequest.chat_id ?? null;
     const appRedirect = safeAppRedirect(authRequest.redirect_url);
 
@@ -111,39 +177,66 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       const payload = await verifyEveAccessToken(tokens.access_token);
       const characterId = extractCharacterId(payload.sub);
       const scopes = Array.isArray(payload.scp) ? payload.scp : payload.scp ? [payload.scp] : [];
-      userId = resolveBrowserSsoOwner(db, {
+      const requestedScopeSet = new Set(authRequest.requestedScopes);
+      if (scopes.some((scope) => !requestedScopeSet.has(scope))) {
+        return reply.status(403).send({ error: 'EVE SSO granted an unexpected scope. Please start the login flow again.' });
+      }
+      const ownerInput = {
         requestedUserId: userId,
         chatId,
         characterId,
         isBrowserFlow: Boolean(appRedirect),
+      };
+      // Validate browser ownership before any profile is removed. Browser
+      // flows then hold the lane lock before the character lock and revalidate
+      // inside the transaction, keeping owner and character membership stable.
+      planBrowserSsoOwner(db, ownerInput);
+      const persistCutover = async (): Promise<UserContext> => await withUserProfileAuthorizationLock(characterId, async () => {
+        const persistAuthorization = db.transaction((): UserContext => {
+          const ownerPlan = planBrowserSsoOwner(db, ownerInput);
+          deleteCharacterProfileArtifacts(db, characterId);
+          const resolvedUserId = applyBrowserSsoOwnerPlan(db, ownerPlan);
+          db.prepare(`
+            INSERT INTO eve_accounts (
+              character_id, character_name, access_token, refresh_token, expires_at,
+              scopes_json, consent_version, consent_language, consented_at, user_id
+            )
+            VALUES (?, ?, ?, ?, datetime('now', '+' || ? || ' seconds'), ?, ?, ?, ?, ?)
+            ON CONFLICT(character_id) DO UPDATE SET
+              character_name = excluded.character_name,
+              access_token = excluded.access_token,
+              refresh_token = excluded.refresh_token,
+              expires_at = excluded.expires_at,
+              scopes_json = excluded.scopes_json,
+              consent_version = excluded.consent_version,
+              consent_language = excluded.consent_language,
+              consented_at = excluded.consented_at,
+              user_id = excluded.user_id
+          `).run(
+            characterId,
+            payload.name,
+            encryptStoredSecret(tokens.access_token, 'eve_access_token'),
+            encryptStoredSecret(tokens.refresh_token, 'eve_refresh_token'),
+            tokens.expires_in,
+            JSON.stringify(scopes),
+            authRequest.consent_version,
+            authRequest.consent_language,
+            authRequest.consented_at,
+            resolvedUserId,
+          );
+
+          const persistedContext: UserContext = chatId !== null
+            ? { userId: resolvedUserId, chatId }
+            : { userId: resolvedUserId };
+          reassignCharacterOwnership(db, persistedContext.userId, characterId);
+          linkCharacterToChat(db, persistedContext, characterId);
+          return persistedContext;
+        });
+        return persistAuthorization.immediate();
       });
-
-      // Store in database
-      db.prepare(`
-        INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id)
-        VALUES (?, ?, ?, ?, datetime('now', '+' || ? || ' seconds'), ?, ?)
-        ON CONFLICT(character_id) DO UPDATE SET
-          character_name = excluded.character_name,
-          access_token = excluded.access_token,
-          refresh_token = excluded.refresh_token,
-          expires_at = excluded.expires_at,
-          scopes_json = excluded.scopes_json,
-          user_id = excluded.user_id
-      `).run(
-        characterId,
-        payload.name,
-        encryptStoredSecret(tokens.access_token, 'eve_access_token'),
-        encryptStoredSecret(tokens.refresh_token, 'eve_refresh_token'),
-        tokens.expires_in,
-        JSON.stringify(scopes),
-        userId,
-      );
-
-      // Build UserContext for linking
-      const ctx: UserContext = chatId !== null ? { userId, chatId } : { userId };
-
-      await reassignCharacterOwnership(db, ctx.userId, characterId);
-      linkCharacterToChat(db, ctx, characterId);
+      const ctx = appRedirect && chatId !== null
+        ? await withWebLaneAuthorizationLock(chatId, persistCutover)
+        : await persistCutover();
 
       void refreshUserProfile(db, ctx)
         .then((result) => {
@@ -233,7 +326,7 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#39;');
 }
 
-async function reassignCharacterOwnership(db: Db, userId: number, characterId: number): Promise<void> {
+function reassignCharacterOwnership(db: Db, userId: number, characterId: number): void {
   const staleLinks = db.prepare(`
     SELECT chat_id, user_id
     FROM eve_character_links
@@ -248,7 +341,6 @@ async function reassignCharacterOwnership(db: Db, userId: number, characterId: n
       db.prepare('UPDATE users SET active_character_id = NULL WHERE user_id = ? AND active_character_id = ?')
         .run(link.user_id, characterId);
     }
-    await deleteUserProfileArtifact({ userId: link.user_id ?? 0, chatId: link.chat_id }, characterId);
   }
 
   db.prepare('DELETE FROM eve_character_links WHERE character_id = ? AND COALESCE(user_id, 0) != ?')
@@ -256,7 +348,34 @@ async function reassignCharacterOwnership(db: Db, userId: number, characterId: n
   db.prepare('UPDATE eve_accounts SET user_id = ? WHERE character_id = ?').run(userId, characterId);
 }
 
-function resolveBrowserSsoOwner(
+function deleteCharacterProfileArtifacts(db: Db, characterId: number): void {
+  const links = db.prepare(`
+    SELECT chat_id, user_id
+    FROM eve_character_links
+    WHERE character_id = ?
+  `).all(characterId) as Array<{ chat_id: number; user_id: number | null }>;
+  const account = db.prepare('SELECT user_id FROM eve_accounts WHERE character_id = ?')
+    .get(characterId) as { user_id: number | null } | undefined;
+
+  for (const link of links) {
+    const ctx = { userId: link.user_id ?? account?.user_id ?? 0, chatId: link.chat_id };
+    rmSync(resolveUserProfilePath(ctx, characterId), { force: true });
+  }
+  const userIds = new Set<number>();
+  if (account?.user_id) userIds.add(account.user_id);
+  for (const link of links) {
+    if (link.user_id) userIds.add(link.user_id);
+  }
+  for (const linkedUserId of userIds) {
+    rmSync(resolveUserProfilePath({ userId: linkedUserId }, characterId), { force: true });
+  }
+}
+
+type BrowserSsoOwnerPlan =
+  | { kind: 'keep'; userId: number }
+  | { kind: 'merge'; requestedUserId: number; existingUserId: number; chatId: number };
+
+function planBrowserSsoOwner(
   db: Db,
   input: {
     requestedUserId: number;
@@ -264,8 +383,10 @@ function resolveBrowserSsoOwner(
     characterId: number;
     isBrowserFlow: boolean;
   },
-): number {
-  if (!input.isBrowserFlow || input.chatId === null) return input.requestedUserId;
+): BrowserSsoOwnerPlan {
+  if (!input.isBrowserFlow || input.chatId === null) {
+    return { kind: 'keep', userId: input.requestedUserId };
+  }
   const browserSession = db.prepare(`
     SELECT 1
     FROM web_sessions
@@ -278,7 +399,9 @@ function resolveBrowserSsoOwner(
     FROM eve_accounts
     WHERE character_id = ? AND user_id IS NOT NULL
   `).get(input.characterId) as { user_id: number } | undefined;
-  if (!existing || existing.user_id === input.requestedUserId) return input.requestedUserId;
+  if (!existing || existing.user_id === input.requestedUserId) {
+    return { kind: 'keep', userId: input.requestedUserId };
+  }
 
   const alreadyLinked = db.prepare(`
     SELECT 1 FROM eve_accounts WHERE user_id = ? LIMIT 1
@@ -287,17 +410,24 @@ function resolveBrowserSsoOwner(
     throw new Error('Browser identity already owns a different EVE character');
   }
 
-  const merge = db.transaction(() => {
-    db.prepare('UPDATE web_sessions SET user_id = ? WHERE user_id = ? AND chat_id = ?')
-      .run(existing.user_id, input.requestedUserId, input.chatId);
-    db.prepare('UPDATE agent_threads SET user_id = ? WHERE user_id = ? AND chat_id = ?')
-      .run(existing.user_id, input.requestedUserId, input.chatId);
-    db.prepare('UPDATE intel_notes SET user_id = ? WHERE user_id = ?')
-      .run(existing.user_id, input.requestedUserId);
-    db.prepare('UPDATE auth_requests SET user_id = ? WHERE user_id = ? AND chat_id = ?')
-      .run(existing.user_id, input.requestedUserId, input.chatId);
-    db.prepare('DELETE FROM users WHERE user_id = ?').run(input.requestedUserId);
-  });
-  merge.immediate();
-  return existing.user_id;
+  return {
+    kind: 'merge',
+    requestedUserId: input.requestedUserId,
+    existingUserId: existing.user_id,
+    chatId: input.chatId,
+  };
+}
+
+function applyBrowserSsoOwnerPlan(db: Db, plan: BrowserSsoOwnerPlan): number {
+  if (plan.kind === 'keep') return plan.userId;
+  db.prepare('UPDATE web_sessions SET user_id = ? WHERE user_id = ? AND chat_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId, plan.chatId);
+  db.prepare('UPDATE agent_threads SET user_id = ? WHERE user_id = ? AND chat_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId, plan.chatId);
+  db.prepare('UPDATE intel_notes SET user_id = ? WHERE user_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId);
+  db.prepare('UPDATE auth_requests SET user_id = ? WHERE user_id = ? AND chat_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId, plan.chatId);
+  db.prepare('DELETE FROM users WHERE user_id = ?').run(plan.requestedUserId);
+  return plan.existingUserId;
 }

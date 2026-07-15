@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 const profileDir = '/tmp/eve-agent-user-profile-tests';
+
+const { callEsiOperationMock } = vi.hoisted(() => ({
+  callEsiOperationMock: vi.fn(),
+}));
 
 vi.mock('../../src/config.js', () => ({
   config: {
@@ -19,7 +23,28 @@ vi.mock('../../src/config.js', () => ({
   },
 }));
 
-import { buildUserMarkdown, readUserProfile } from '../../src/eve/user-profile.js';
+vi.mock('../../src/eve/esi-client.js', () => ({
+  callEsiOperation: callEsiOperationMock,
+}));
+
+vi.mock('../../src/eve/esi-catalog.js', () => ({
+  loadEsiCatalog: vi.fn(async () => new Map([
+    ['get_characters_character_id', {
+      name: 'get_characters_character_id',
+      namespace: 'esi_characters_public',
+      requiresAuth: false,
+      requiredScopes: [],
+    }],
+    ['get_characters_character_id_wallet', {
+      name: 'get_characters_character_id_wallet',
+      namespace: 'esi_characters_wallet',
+      requiresAuth: true,
+      requiredScopes: ['esi-wallet.read_character_wallet.v1'],
+    }],
+  ])),
+}));
+
+import { buildUserMarkdown, readUserProfile, refreshUserProfile } from '../../src/eve/user-profile.js';
 
 let db: Database.Database;
 
@@ -29,6 +54,8 @@ beforeEach(() => {
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);
+  callEsiOperationMock.mockReset();
+  callEsiOperationMock.mockResolvedValue({ ok: true, data: {} });
 
   db.prepare("INSERT INTO telegram_sessions (chat_id, username, active_character_id) VALUES (?, ?, ?)").run(10, 'u1', 7001);
   db.prepare("INSERT INTO telegram_sessions (chat_id, username, active_character_id) VALUES (?, ?, ?)").run(11, 'u2', 7001);
@@ -51,6 +78,34 @@ describe('readUserProfile', () => {
 
     expect(await readUserProfile(db, { userId: 0, chatId: 10 })).toBe('profile for chat 10');
     expect(await readUserProfile(db, { userId: 0, chatId: 11 })).toBeNull();
+  });
+
+  it('does not commit a profile captured under an authorization that changed during ESI reads', async () => {
+    let continueEsi = (): void => {};
+    let markEsiStarted = (): void => {};
+    const esiStarted = new Promise<void>((resolve) => {
+      markEsiStarted = resolve;
+    });
+    const esiContinuation = new Promise<void>((resolve) => {
+      continueEsi = resolve;
+    });
+    callEsiOperationMock.mockImplementationOnce(async () => {
+      markEsiStarted();
+      await esiContinuation;
+      return { ok: true, data: {} };
+    });
+
+    const refresh = refreshUserProfile(db, { userId: 0, chatId: 10 });
+    await esiStarted;
+    db.prepare('UPDATE eve_accounts SET scopes_json = ? WHERE character_id = 7001')
+      .run(JSON.stringify(['esi-wallet.read_character_wallet.v1']));
+    continueEsi();
+
+    await expect(refresh).resolves.toEqual({
+      ok: false,
+      error: 'EVE authorization changed while the profile was refreshing.',
+    });
+    expect(existsSync(join(profileDir, 'USER_10_7001.md'))).toBe(false);
   });
 
   it('keeps full gameplay detail in USER.md while sanitizing text fields', () => {
