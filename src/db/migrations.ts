@@ -10,6 +10,7 @@ export function runMigrations(db: Db): void {
     addColumnIfMissing(db, 'esi_cache', 'etag', 'TEXT');
     addColumnIfMissing(db, 'esi_cache', 'last_modified', 'TEXT');
     addColumnIfMissing(db, 'agent_threads', 'last_response_id', 'TEXT');
+    addColumnIfMissing(db, 'agent_threads', 'last_response_message_id', 'INTEGER');
     createIndexIfMissing(db, 'idx_agent_threads_chat_character', 'agent_threads', 'chat_id, character_id');
     backfillThreadCharacters(db);
 

@@ -66,6 +66,7 @@ describe('runMigrations', () => {
 
     const cols = (legacyDb.prepare('PRAGMA table_info(agent_threads)').all() as Array<{ name: string }>).map((c) => c.name);
     expect(cols).toContain('user_id');
+    expect(cols).toContain('last_response_message_id');
     expect(legacyDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='web_sessions'").get()).toBeUndefined();
     const link = legacyDb.prepare('SELECT user_id FROM eve_character_links WHERE chat_id = 1001').get() as { user_id: number | null };
     expect(link.user_id).toBeGreaterThan(0);

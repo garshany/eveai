@@ -23,6 +23,7 @@ import {
   isRouteMonitorTool,
   isEveScoutToolName,
   isProgrammaticToolAllowed,
+  isLocalParallelBatchTool,
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
 import { updatePlan } from './planner.js';
@@ -33,13 +34,34 @@ import {
   buildOrderedContinuationInputItems,
   createNativeResponse,
   extractFunctionCalls,
+  extractClientToolSearchCalls,
   extractFinalAssistantText,
   toNativeMessage,
   toNativeAssistantMessage,
   type NativeInputItem,
   type NativeFunctionCaller,
 } from './native-responses.js';
+import {
+  prepareClientToolSearch,
+  searchClientTools,
+  type ClientToolSearchIndex,
+} from './client-tool-search.js';
 import { callEsiOperation } from '../eve/esi-client.js';
+import {
+  executeMarketHistorySummary,
+  isMarketHistorySummaryTool,
+  validateMarketHistorySummaryArgs,
+} from '../eve/market-history-summary.js';
+import {
+  executeSystemMetricSnapshot,
+  isSystemMetricSnapshotTool,
+  validateSystemMetricSnapshotArgs,
+} from '../eve/system-metric-snapshot.js';
+import {
+  executeDynamicItemSummary,
+  isDynamicItemSummaryTool,
+  validateDynamicItemSummaryArgs,
+} from '../eve/dynamic-item-summary.js';
 import { isTurnAborted, reportActivity, summarizeToolArgs, TURN_ABORTED_MESSAGE } from './activity.js';
 import { ESI_FIELD_WHITELIST, filterEsiFields, validateEsiFields } from './esi-field-filter.js';
 import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
@@ -56,6 +78,11 @@ import type { EveScoutToolName } from '../eve/eve-scout-tools.js';
 import type { EveKillToolName } from '../eve-kill/tools.js';
 import { executeEveKillAnalyticsTool } from '../eve-kill/mcp-analytics.js';
 import type { EveKillAnalyticsToolName } from '../eve-kill/analytics-tools.js';
+import {
+  executeDoctrineSummary,
+  isDoctrineSummaryTool,
+  validateDoctrineSummaryArgs,
+} from '../eve-kill/doctrine-summary.js';
 import { executeHeartbeatConfig } from '../scheduled/heartbeat-config.js';
 import type { HeartbeatConfigArgs } from '../scheduled/heartbeat-config.js';
 import { getLinkedCharacter } from '../eve/sso.js';
@@ -83,6 +110,7 @@ import {
   serializeProgrammaticToolOutput,
   validateProgrammaticToolOutput,
 } from './programmatic-contracts.js';
+import { ResponseAdmissionController } from './response-admission.js';
 
 const MAX_TOOL_ITERATIONS = 16;
 const MAX_PROGRAMMATIC_CALLS_PER_BATCH = 4;
@@ -98,6 +126,30 @@ const RECOVERY_TOOL_SUMMARY_LIMIT = 6;
 const RECOVERY_TOOL_RESULT_CHARS = 280;
 const TOOL_STATE_MISMATCH_FRAGMENT = 'tool_state_mismatch';
 const LEGACY_TOOL_STATE_MISMATCH_FRAGMENT = 'No tool call found for function call output with call_id';
+const RESPONSE_STATE_MISSING_FRAGMENT = 'response_state_missing';
+
+let readToolAdmission: ResponseAdmissionController | null = null;
+let writeToolAdmission: ResponseAdmissionController | null = null;
+
+function getReadToolAdmission(): ResponseAdmissionController {
+  readToolAdmission ??= new ResponseAdmissionController({
+    maxConcurrent: config.openai?.maxConcurrentReadTools ?? 16,
+    maxQueued: config.openai?.maxQueuedTools ?? 64,
+    queueTimeoutMs: config.openai?.toolQueueTimeoutMs ?? 15_000,
+    label: 'Read tool',
+  });
+  return readToolAdmission;
+}
+
+function getWriteToolAdmission(): ResponseAdmissionController {
+  writeToolAdmission ??= new ResponseAdmissionController({
+    maxConcurrent: 1,
+    maxQueued: config.openai?.maxQueuedTools ?? 64,
+    queueTimeoutMs: config.openai?.toolQueueTimeoutMs ?? 15_000,
+    label: 'Write tool',
+  });
+  return writeToolAdmission;
+}
 
 export { ESI_FIELD_WHITELIST, filterEsiFields, validateEsiFields } from './esi-field-filter.js';
 
@@ -335,16 +387,15 @@ export async function handleAgentMessage(
 
   const result = await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt, rebuildDeveloperPrompt);
 
-  // Advance the pre-turn compaction counter. In the default stateless mode the
-  // prompt is rebuilt from buildSmartContext (capped to MAX_CONTEXT_MESSAGES /
-  // MAX_CONTEXT_CHARS), so peakInputTokens is roughly constant regardless of
-  // backlog — accumulating it across turns therefore acts as a periodic "summarize
-  // the growing SQLite history" cadence that reaches autoCompactLimit after enough
-  // turns. Reset to 0 happens only inside compaction. Do NOT switch to storing the
-  // latest peak: that would make the counter constant and stop pre-turn compaction
-  // from ever firing in stateless mode.
+  // Advance the pre-turn compaction counter. Stateless prompts are rebuilt from
+  // a bounded SQLite window, so accumulating each peak acts as the periodic
+  // backlog-summary cadence. Server-mode usage already includes the retained
+  // previous-response chain, so its latest peak is the actual context size and
+  // must not be added repeatedly. Compaction resets either representation.
   db.prepare(
-    'UPDATE agent_threads SET total_tokens = COALESCE(total_tokens, 0) + ? WHERE thread_id = ?'
+    config.openai.responseStateMode === 'server'
+      ? 'UPDATE agent_threads SET total_tokens = ? WHERE thread_id = ?'
+      : 'UPDATE agent_threads SET total_tokens = COALESCE(total_tokens, 0) + ? WHERE thread_id = ?'
   ).run(result.peakInputTokens, threadId);
 
   return result;
@@ -505,7 +556,7 @@ async function runPreTurnCompactSafe(db: Db, threadId: string): Promise<void> {
  * successful response, so re-sending the identical call cannot duplicate them.
  */
 function isTransientModelError(message: string): boolean {
-  return /timed out|Incomplete response stream|HTTP (429|5\d\d)|terminated|fetch failed|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|rate.?limit|server had an error|server_error|overloaded|too many requests|bad gateway|service unavailable|gateway time-?out/i.test(message);
+  return /timed out|admission queue|Incomplete response stream|HTTP (429|5\d\d)|terminated|fetch failed|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|rate.?limit|server had an error|server_error|overloaded|too many requests|bad gateway|service unavailable|gateway time-?out/i.test(message);
 }
 
 const MAX_TRANSIENT_RETRIES = 3;
@@ -530,10 +581,14 @@ async function runNativeAgentLoop(
   responseFactory: typeof createNativeResponse = createNativeResponse,
 ): Promise<AgentResult> {
   const requestId = createRequestId();
-  const tools = await buildNativeAgentTools(
+  const builtTools = await buildNativeAgentTools(
     isSimpleStaticAggregateCountGoal(goal) ? 'static_aggregate' : 'full',
     { notificationCapability: ctx.notificationCapability ?? 'all' },
   );
+  const clientToolSearch = config.openai.toolSearchExecution === 'client'
+    ? prepareClientToolSearch(builtTools)
+    : { requestTools: builtTools, index: [] as ClientToolSearchIndex };
+  const tools = clientToolSearch.requestTools;
   const webSearchState = createWebSearchState();
   const reasoningEffort = resolveReasoningEffort(goal, config.openai.reasoningEffort);
   const safetyIdentifier = buildSafetyIdentifier(ctx.userId, config.auth.secretKey);
@@ -558,6 +613,15 @@ async function runNativeAgentLoop(
   let previousResponseId: string | null = useServerResponseState
     ? continuation.previousResponseId
     : null;
+  // Server mode normally sends only the newest input plus previous_response_id.
+  // Keep an exact in-memory replay for this active turn so an expired provider
+  // chain can restart cold without losing reasoning, calls, or tool outputs.
+  let serverRecoveryItems: NativeInputItem[] = useServerResponseState
+    ? buildSmartContext(db, threadId)
+    : [];
+  if (useServerResponseState && serverRecoveryItems.length === 0) {
+    serverRecoveryItems = [...pendingItems];
+  }
   console.log(
     '[executor] context: mode=%s state=%s items=%d prevId=%s',
     continuation.mode,
@@ -592,14 +656,21 @@ async function runNativeAgentLoop(
   const knownProgramIds = new Set<string>();
   const rejectedProgramIds = new Set<string>();
   const programmaticPrograms = new Map<string, ProgrammaticProgramState>();
+  const completedSideEffectResults = new Map<string, unknown>();
   let programInFlight = false;
+  const localBatchState = { callsExecuted: 0 };
+  let clientToolSearchCallsExecuted = 0;
+  const seenClientToolSearchCallIds = new Set<string>();
 
   console.log('[executor] === NEW REQUEST request=%s goal="%s" ===', requestId, goal.slice(0, 80));
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
     // Cooperative cancellation (CLI Ctrl-C): stop before spending another
     // model call. The CLI discards the turn's rows, so nothing is lost.
-    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+    if (isTurnAborted()) {
+      if (useServerResponseState) saveLastResponseId(db, threadId, null);
+      throw new Error(TURN_ABORTED_MESSAGE);
+    }
 
     reportActivity({ type: 'model_turn', iteration });
     let response;
@@ -617,9 +688,9 @@ async function runNativeAgentLoop(
         contextManagement,
         reasoningEffort,
         reasoningMode: config.openai.reasoningMode,
-        // With store:false, preserve opaque GPT-5.6 reasoning only inside this
-        // active tool loop. It is replayed in memory and never stored in SQLite.
-        preserveReasoning: !useServerResponseState,
+        // Preserve opaque reasoning for exact active-turn recovery in both
+        // modes. It remains in memory and is never stored in SQLite.
+        preserveReasoning: true,
         safetyIdentifier,
         // Only this top-level loop streams to the CLI activity feed; internal
         // model calls (compaction/OSINT/advisor) must not leak into the answer.
@@ -627,38 +698,56 @@ async function runNativeAgentLoop(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (
-        shouldUseToolStateRecovery(message, toolStateRecoveryCount >= MAX_TOOL_STATE_RECOVERIES,previousResponseId, pendingItems)
-      ) {
-        toolStateRecoveryCount += 1;
-        previousResponseId = null;
-        pendingItems = buildToolStateRecoveryContext(db, threadId);
-        saveLastResponseId(db, threadId, null);
-        console.warn('[executor] tool state lost, switching to cold recovery context');
-        continue;
-      }
       if (isTransientModelError(message) && transientRetries < MAX_TRANSIENT_RETRIES) {
         transientRetries += 1;
         const delay = transientRetryDelayMs(transientRetries);
         console.warn('[executor] transient model error retry=%d/%d delay_ms=%d message_length=%d',
           transientRetries, MAX_TRANSIENT_RETRIES, delay, message.length);
         await sleep(delay);
-        // pendingItems/previousResponseId are untouched — re-send the same call.
-        // No model response was processed, so the retry must not consume the
-        // tool-iteration budget or shift iteration-gated checks (mid-turn
-        // compaction fires only at iteration > 0).
+        // No response was processed: retry the exact same request without
+        // consuming a tool iteration or changing its continuation id.
         iteration -= 1;
         continue;
       }
+      if (
+        shouldUseToolStateRecovery(
+          message,
+          toolStateRecoveryCount >= MAX_TOOL_STATE_RECOVERIES,
+          previousResponseId,
+          pendingItems,
+        )
+      ) {
+        toolStateRecoveryCount += 1;
+        previousResponseId = null;
+        pendingItems = buildResponseStateRecoveryContext(db, threadId, serverRecoveryItems);
+        serverRecoveryItems = [...pendingItems];
+        saveLastResponseId(db, threadId, null);
+        console.warn('[executor] tool state lost, switching to cold recovery context');
+        continue;
+      }
+      if (useServerResponseState) saveLastResponseId(db, threadId, null);
       throw error;
     }
 
     // Cooperative cancellation, immediately after sampling: an abort during
     // the model call must stop the turn BEFORE mid-turn compaction (another
     // model call + history mutation) or any tool execution.
-    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+    if (isTurnAborted()) {
+      if (useServerResponseState) saveLastResponseId(db, threadId, null);
+      throw new Error(TURN_ABORTED_MESSAGE);
+    }
 
     if (response.error) {
+      if (isTransientModelError(response.error.message) && transientRetries < MAX_TRANSIENT_RETRIES) {
+        transientRetries += 1;
+        const delay = transientRetryDelayMs(transientRetries);
+        console.warn('[executor] transient response error retry=%d/%d delay_ms=%d message_length=%d',
+          transientRetries, MAX_TRANSIENT_RETRIES, delay, response.error.message.length);
+        await sleep(delay);
+        // Error envelopes are rejected before their output is processed.
+        iteration -= 1;
+        continue;
+      }
       if (
         shouldUseToolStateRecovery(
           response.error.message,
@@ -669,21 +758,10 @@ async function runNativeAgentLoop(
       ) {
         toolStateRecoveryCount += 1;
         previousResponseId = null;
-        pendingItems = buildToolStateRecoveryContext(db, threadId);
+        pendingItems = buildResponseStateRecoveryContext(db, threadId, serverRecoveryItems);
+        serverRecoveryItems = [...pendingItems];
         saveLastResponseId(db, threadId, null);
         console.warn('[executor] tool state lost in response payload, switching to cold recovery context');
-        continue;
-      }
-      if (isTransientModelError(response.error.message) && transientRetries < MAX_TRANSIENT_RETRIES) {
-        transientRetries += 1;
-        const delay = transientRetryDelayMs(transientRetries);
-        console.warn('[executor] transient response error retry=%d/%d delay_ms=%d message_length=%d',
-          transientRetries, MAX_TRANSIENT_RETRIES, delay, response.error.message.length);
-        await sleep(delay);
-        // The error envelope is rejected before any output is processed, so
-        // pendingItems/previousResponseId still describe the same request.
-        // As above, a failed call must not consume the iteration budget.
-        iteration -= 1;
         continue;
       }
       console.error('[executor] model error message_length=%d', response.error.message.length);
@@ -701,6 +779,13 @@ async function runNativeAgentLoop(
       storeAssistantMessage(db, threadId, message);
       saveLastResponseId(db, threadId, null);
       return { text: message, peakInputTokens };
+    }
+
+    if (useServerResponseState) {
+      serverRecoveryItems.push(...buildOrderedContinuationInputItems(
+        response.output,
+        config.openai.supportsEncryptedReasoningReplay,
+      ));
     }
 
     for (const item of response.output) {
@@ -722,29 +807,6 @@ async function runNativeAgentLoop(
       console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d cache_write=%d reasoning=%d',
         iteration, response.usage.input, response.usage.output, response.usage.cached,
         response.usage.cacheWrite ?? 0, response.usage.reasoning);
-    }
-
-    // Silent context loss detection: if we are in warm mode (prevId set) on the first
-    // iteration and the API returns cached=0, the previous response chain is gone.
-    // Fall back to cold mode so the model sees full message history from DB.
-    if (
-      iteration === 0 &&
-      previousResponseId &&
-      response.usage &&
-      response.usage.cached === 0 &&
-      !response.error
-    ) {
-      console.warn('[executor] silent context loss detected: warm mode with cached=0, falling back to cold recovery');
-      totalInputTokens = 0;
-      totalOutputTokens = 0;
-      totalCachedTokens = 0;
-      totalCacheWriteTokens = 0;
-      totalReasoningTokens = 0;
-      peakInputTokens = 0;
-      previousResponseId = null;
-      pendingItems = buildSmartContext(db, threadId);
-      saveLastResponseId(db, threadId, null);
-      continue;
     }
 
     // --- Codex-style mid-turn compaction ---
@@ -779,6 +841,7 @@ async function runNativeAgentLoop(
             role: 'user',
             content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку и восстановленные tool-результаты выше. Если нужные данные уже есть — используй их, не вызывай tools повторно.' }],
           } as NativeInputItem);
+          if (useServerResponseState) serverRecoveryItems = [...pendingItems];
           continue;
         } catch (compactError) {
           console.error('[executor] mid-turn compaction failed:', compactError);
@@ -791,7 +854,80 @@ async function runNativeAgentLoop(
       console.log('[executor] iteration=%d toolSearchPaths=%j', iteration, response.toolSearchPaths);
     }
 
+    const clientSearchCalls = extractClientToolSearchCalls(response.output);
+    const toolSearchItemCount = response.output.filter((item) => item.type === 'tool_search_call').length;
+    if (
+      config.openai.toolSearchExecution === 'client'
+      && toolSearchItemCount !== clientSearchCalls.length
+    ) {
+      const message = 'Не удалось безопасно выполнить локальный поиск tools. Попробуй ещё раз.';
+      storeAssistantMessage(db, threadId, message);
+      saveLastResponseId(db, threadId, null);
+      return { text: message, peakInputTokens };
+    }
+    if (clientSearchCalls.length > 0) {
+      const ordinaryCalls = extractFunctionCalls(response.output);
+      const duplicateCallId = clientSearchCalls.some((call) =>
+        seenClientToolSearchCallIds.has(call.callId)
+        || clientSearchCalls.filter((candidate) => candidate.callId === call.callId).length > 1);
+      if (
+        config.openai.toolSearchExecution !== 'client'
+        || ordinaryCalls.length > 0
+        || duplicateCallId
+        || clientToolSearchCallsExecuted + clientSearchCalls.length > 4
+      ) {
+        const message = 'Не удалось безопасно выполнить локальный поиск tools. Попробуй ещё раз.';
+        storeAssistantMessage(db, threadId, message);
+        saveLastResponseId(db, threadId, null);
+        return { text: message, peakInputTokens };
+      }
+      for (const call of clientSearchCalls) seenClientToolSearchCallIds.add(call.callId);
+      clientToolSearchCallsExecuted += clientSearchCalls.length;
+      const outputs = clientSearchCalls.map((call) => searchClientTools(
+        clientToolSearch.index,
+        call.callId,
+        call.arguments,
+      ));
+      console.log('[tool_search] local calls=%d returned_specs=%d',
+        outputs.length, outputs.reduce((total, output) => total + output.tools.length, 0));
+      if (useServerResponseState) {
+        if (!response.id) {
+          const message = 'Не удалось продолжить локальный поиск tools: provider did not return response id.';
+          storeAssistantMessage(db, threadId, message);
+          saveLastResponseId(db, threadId, null);
+          return { text: message, peakInputTokens };
+        }
+        previousResponseId = response.id;
+        pendingItems = outputs;
+        serverRecoveryItems.push(...outputs);
+      } else {
+        pendingItems = [
+          ...pendingItems,
+          ...buildOrderedContinuationInputItems(
+            response.output,
+            config.openai.supportsEncryptedReasoningReplay,
+          ),
+          ...outputs,
+        ];
+        previousResponseId = null;
+      }
+      continue;
+    }
+
     const toolCalls = extractFunctionCalls(response.output);
+
+    // Never dispatch an unanchored server response. Without a response id the
+    // resulting function outputs cannot be submitted safely.
+    if (
+      useServerResponseState
+      && toolCalls.length > 0
+      && (response.status !== 'completed' || !response.id)
+    ) {
+      const message = 'Не удалось продолжить tool loop: provider did not return response id.';
+      storeAssistantMessage(db, threadId, message);
+      saveLastResponseId(db, threadId, null);
+      return { text: message, peakInputTokens };
+    }
 
     // Anti-loop: detect consecutive same-tool calls
     if (toolCalls.length === 1) {
@@ -826,20 +962,21 @@ async function runNativeAgentLoop(
         programInFlight = false;
         const finalText = finalAssistantText || convenienceText;
         reportActivity({ type: 'final_assistant_message' });
-        storeAssistantMessage(db, threadId, finalText);
-        saveLastResponseId(db, threadId, useServerResponseState ? response.id : null);
+        storeAssistantMessage(db, threadId, finalText, useServerResponseState ? response.id : null);
         console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d answer=%d chars ===',
           iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
           totalReasoningTokens, finalText.length);
         return { text: finalText, peakInputTokens };
       }
       if (!programInFlight && convenienceText) {
-        storeAssistantMessage(db, threadId, convenienceText);
-        saveLastResponseId(db, threadId, useServerResponseState ? response.id : null);
+        storeAssistantMessage(db, threadId, convenienceText, useServerResponseState ? response.id : null);
         return { text: convenienceText, peakInputTokens };
       }
       if (!useServerResponseState && (response.output.length > 0 || convenienceText)) {
-        const continuationItems = buildOrderedContinuationInputItems(response.output);
+        const continuationItems = buildOrderedContinuationInputItems(
+          response.output,
+          config.openai.supportsEncryptedReasoningReplay,
+        );
         if (programInFlight && convenienceText) {
           continuationItems.push(toNativeAssistantMessage(convenienceText));
         }
@@ -873,7 +1010,10 @@ async function runNativeAgentLoop(
     // Re-check right before dispatch: an abort while extracting/answer-building
     // must not let any tool run — especially write tools (route_monitor,
     // intel_note, …). Sequential batches re-check before each tool too.
-    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+    if (isTurnAborted()) {
+      if (useServerResponseState) saveLastResponseId(db, threadId, null);
+      throw new Error(TURN_ABORTED_MESSAGE);
+    }
     const validated = validateProgrammaticBatch(
       toolCalls,
       knownProgramIds,
@@ -905,7 +1045,15 @@ async function runNativeAgentLoop(
       if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
       const rejection = validated.rejections[index];
       if (rejection) return rejection;
-      return executeToolCall(
+      const policy = policies[index];
+      const sideEffectKey = policy === 'write' || policy === 'ui'
+        ? buildSideEffectExecutionKey(toolCall.name, argsList[index] ?? {})
+        : null;
+      if (sideEffectKey && completedSideEffectResults.has(sideEffectKey)) {
+        console.warn('[executor] reused completed side-effect tool result name=%s', toolCall.name);
+        return completedSideEffectResults.get(sideEffectKey);
+      }
+      const result = await executeToolCall(
         db,
         requestId,
         goal,
@@ -914,11 +1062,20 @@ async function runNativeAgentLoop(
         argsList[index] ?? {},
         webSearchState,
         validated.callers[index] !== undefined,
+        localBatchState,
       );
+      if (sideEffectKey) completedSideEffectResults.set(sideEffectKey, result);
+      return result;
     };
-    const results = policies.every((policy) => policy === 'read')
-      ? await Promise.all(toolCalls.map(runOne))
-      : await executeValidatedToolCallsSequentially(toolCalls, runOne);
+    let results: unknown[];
+    try {
+      results = policies.every((policy) => policy === 'read')
+        ? await Promise.all(toolCalls.map(runOne))
+        : await executeValidatedToolCallsSequentially(toolCalls, runOne);
+    } catch (error) {
+      if (useServerResponseState) saveLastResponseId(db, threadId, null);
+      throw error;
+    }
 
     const outputs: Array<{ callId: string; output: string; caller?: NativeFunctionCaller }> = [];
     for (let index = 0; index < toolCalls.length; index += 1) {
@@ -927,25 +1084,37 @@ async function runNativeAgentLoop(
       const result = results[index];
       const isAnalytics = isEveKillAnalyticsToolName(toolCall.name);
       const isProgrammatic = validated.callers[index] !== undefined;
+      const isBoundedPublicFacade = isMarketHistorySummaryTool(toolCall.name)
+        || isSystemMetricSnapshotTool(toolCall.name)
+        || isDoctrineSummaryTool(toolCall.name)
+        || isDynamicItemSummaryTool(toolCall.name)
+        || isLocalParallelBatchTool(toolCall.name);
       const output = isProgrammaticToolName(toolCall.name)
         ? serializeProgrammaticToolOutput(toolCall.name, result)
         : truncateToolOutput(JSON.stringify(result));
-      const auditArgs = isAnalytics || isProgrammatic
-        ? { fields: Object.keys(args).sort() }
-        : args;
-      let programmaticAudit: Record<string, unknown> | null = null;
-      if (isProgrammatic) {
+      const auditArgs = isBoundedPublicFacade
+        ? {
+          classification: 'bounded-public-read',
+          ...(isLocalParallelBatchTool(toolCall.name)
+            ? { calls: localBatchAuditCalls(args) }
+            : {}),
+        }
+        : isAnalytics || isProgrammatic
+          ? { fields: Object.keys(args).sort() }
+          : args;
+      let boundedAudit: Record<string, unknown> | null = null;
+      if (isProgrammatic || isBoundedPublicFacade) {
         const parsedOutput = safeParseJsonRecord(output);
         const schemaValid = isProgrammaticToolName(toolCall.name)
           && validateProgrammaticToolOutput(toolCall.name, parsedOutput).valid;
-        programmaticAudit = {
+        boundedAudit = {
           ok: parsedOutput?.ok === true,
           blocked: parsedOutput?.blocked === true,
           schema_valid: schemaValid,
           output_chars: output.length,
         };
       }
-      const auditResult = programmaticAudit ?? compactToolResult(result);
+      const auditResult = boundedAudit ?? compactToolResult(result);
       db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(
         threadId,
         'tool',
@@ -997,19 +1166,15 @@ async function runNativeAgentLoop(
       }
     }
 
-    if (useServerResponseState && !response.id) {
-      const message = 'Не удалось продолжить tool loop: provider did not return response id.';
-      storeAssistantMessage(db, threadId, message);
-      saveLastResponseId(db, threadId, null);
-      return { text: message, peakInputTokens };
-    }
-
+    const functionOutputItems = buildFunctionCallOutputs(outputs);
+    if (useServerResponseState) serverRecoveryItems.push(...functionOutputItems);
     if (useServerResponseState) {
       previousResponseId = response.id;
-      pendingItems = buildFunctionCallOutputs(outputs);
+      pendingItems = functionOutputItems;
     } else {
       previousResponseId = null;
-      // Stateless mode is memoryless (store:false, no previous_response_id):
+      // Stateless mode does not use previous_response_id, independently of
+      // whether response logging is enabled with store=true:
       // each request's input is the model's entire view of the turn. Append
       // this round's calls/outputs to the accumulated items instead of
       // replacing them — otherwise the user's goal and earlier tool results
@@ -1018,19 +1183,24 @@ async function runNativeAgentLoop(
       // truncation:'auto', and mid-turn compaction.
       pendingItems = [
         ...pendingItems,
-        ...buildOrderedContinuationInputItems(response.output),
-        ...buildFunctionCallOutputs(outputs),
+        ...buildOrderedContinuationInputItems(
+          response.output,
+          config.openai.supportsEncryptedReasoningReplay,
+        ),
+        ...functionOutputItems,
       ];
     }
 
     // Anti-loop: if same tool called N+ times in a row, inject a nudge
     if (consecutiveSameToolCount >= MAX_CONSECUTIVE_SAME_TOOL) {
       console.log('[executor] anti-loop: %s called %d times consecutively, injecting nudge', lastToolName, consecutiveSameToolCount);
-      pendingItems.push({
+      const antiLoopNudge = {
         type: 'message',
         role: 'user',
         content: [{ type: 'input_text', text: '[system] Ты вызывал один и тот же tool несколько раз подряд. Переходи к следующему шагу: используй собранные данные для ответа или вызови другой tool (get_markets_region_id_orders, plan_route, и т.д.).' }],
-      } as NativeInputItem);
+      } as NativeInputItem;
+      pendingItems.push(antiLoopNudge);
+      if (useServerResponseState) serverRecoveryItems.push(antiLoopNudge);
       consecutiveSameToolCount = 0;
     }
   }
@@ -1058,6 +1228,7 @@ type ProgrammaticProgramState = {
   workUnits: number;
   seenKeys: Set<string>;
   marketTypeIdsKey?: string;
+  comparisonKey?: string;
   killWindows: ProgrammaticKillWindow[];
 };
 
@@ -1067,6 +1238,7 @@ type ProgrammaticCallPolicy = {
   workUnits: number;
   maxCalls: number;
   marketTypeIdsKey?: string;
+  comparisonKey?: string;
   killWindow?: ProgrammaticKillWindow;
 };
 
@@ -1198,6 +1370,13 @@ function validateProgrammaticBatch(
     ) {
       return rejectBatch('Market comparison must use the same ordered type_ids');
     }
+    if (
+      policy.data.comparisonKey
+      && state.comparisonKey
+      && state.comparisonKey !== policy.data.comparisonKey
+    ) {
+      return rejectBatch('Programmatic comparison arguments must use one coherent shape');
+    }
     if (policy.data.killWindow && state.killWindows.some((window) =>
       window.target === policy.data.killWindow!.target
       && policy.data.killWindow!.fromMs < window.toMs
@@ -1209,6 +1388,7 @@ function validateProgrammaticBatch(
     state.workUnits += policy.data.workUnits;
     state.seenKeys.add(policy.data.key);
     state.marketTypeIdsKey ??= policy.data.marketTypeIdsKey;
+    state.comparisonKey ??= policy.data.comparisonKey;
     if (policy.data.killWindow) state.killWindows.push(policy.data.killWindow);
     draftStates.set(caller.caller_id, state);
     normalizedArgs[index] = policy.data.args;
@@ -1334,6 +1514,66 @@ function validateProgrammaticCallPolicy(
     };
   }
 
+  if (name === 'market_history_summary') {
+    const validated = validateMarketHistorySummaryArgs(args, { programmatic: true });
+    if (!validated.ok) return { ok: false, error: validated.error.error };
+    return {
+      ok: true,
+      data: {
+        args: validated.data,
+        key: `${validated.data.region_id}:${validated.data.type_id}`,
+        comparisonKey: String(validated.data.days),
+        workUnits: validated.data.days,
+        maxCalls: 4,
+      },
+    };
+  }
+
+  if (name === 'system_metric_snapshot') {
+    const validated = validateSystemMetricSnapshotArgs(args, { programmatic: true });
+    if (!validated.ok) return { ok: false, error: validated.error.error };
+    return {
+      ok: true,
+      data: {
+        args: validated.data,
+        key: validated.data.metric,
+        comparisonKey: validated.data.system_ids.join(','),
+        workUnits: validated.data.system_ids.length,
+        maxCalls: 4,
+      },
+    };
+  }
+
+  if (name === 'doctrine_summary') {
+    const validated = validateDoctrineSummaryArgs(args, { programmatic: true });
+    if (!validated.ok) return { ok: false, error: validated.error.error };
+    return {
+      ok: true,
+      data: {
+        args: validated.data,
+        key: `${validated.data.entity_type}:${validated.data.entity_id}`,
+        comparisonKey: `${validated.data.from}\u0000${validated.data.to}\u0000${validated.data.top}`,
+        workUnits: validated.data.top,
+        maxCalls: 4,
+      },
+    };
+  }
+
+  if (name === 'dynamic_item_summary') {
+    const validated = validateDynamicItemSummaryArgs(args, { programmatic: true });
+    if (!validated.ok) return { ok: false, error: validated.error.error };
+    return {
+      ok: true,
+      data: {
+        args: validated.data,
+        key: `${validated.data.type_id}:${validated.data.item_id}`,
+        comparisonKey: validated.data.attribute_ids.join(','),
+        workUnits: validated.data.attribute_ids.length,
+        maxCalls: 4,
+      },
+    };
+  }
+
   return { ok: false, error: 'Tool is not allowed for programmatic calling' };
 }
 
@@ -1364,6 +1604,10 @@ function validateBatchMarketArgs(
 function programmaticWorkUnitLimit(name: string): number {
   if (name === 'batch_market_prices') return 40;
   if (name === 'kill_activity_summary') return 400;
+  if (name === 'market_history_summary') return 360;
+  if (name === 'system_metric_snapshot') return 400;
+  if (name === 'doctrine_summary') return 20;
+  if (name === 'dynamic_item_summary') return 40;
   return Number.POSITIVE_INFINITY;
 }
 
@@ -1373,11 +1617,18 @@ function programmaticPolicyRejection(name: string, error: string): Record<string
   }
   const source = name === 'batch_market_prices'
     ? 'CCP ESI'
-    : name === 'kill_activity_summary' ? 'EVE-KILL' : 'EVE-Scout';
+    : name === 'kill_activity_summary' ? 'EVE-KILL'
+      : name === 'doctrine_summary' ? 'EVE-KILL MCP'
+        : name === 'market_history_summary' || name === 'system_metric_snapshot' || name === 'dynamic_item_summary'
+          ? 'CCP ESI'
+          : 'EVE-Scout';
   return {
     ok: false,
     source,
-    authoritative: name === 'batch_market_prices',
+    authoritative: name === 'batch_market_prices'
+      || name === 'market_history_summary'
+      || name === 'system_metric_snapshot'
+      || name === 'dynamic_item_summary',
     error,
     status: null,
     blocked: true,
@@ -1396,6 +1647,159 @@ async function executeValidatedToolCallsSequentially(
   return results;
 }
 
+type LocalParallelBatchCall = {
+  id: string;
+  tool: ReturnType<typeof localProgrammaticToolName>;
+  args: Record<string, unknown>;
+};
+
+function localProgrammaticToolName(name: string) {
+  if (!isProgrammaticToolName(name)) throw new Error('Invalid local batch tool');
+  return name;
+}
+
+function validateLocalParallelBatch(
+  args: Record<string, unknown>,
+  alreadyExecuted: number,
+): { ok: true; calls: LocalParallelBatchCall[] } | { ok: false; error: string } {
+  if (Object.keys(args).length !== 1 || !Array.isArray(args.calls)) {
+    return { ok: false, error: 'Invalid local parallel batch' };
+  }
+  if (args.calls.length < 1 || args.calls.length > 4 || alreadyExecuted + args.calls.length > 4) {
+    return { ok: false, error: 'Local parallel batch budget exceeded' };
+  }
+
+  const calls: LocalParallelBatchCall[] = [];
+  const ids = new Set<string>();
+  const seenOperations = new Set<string>();
+  const familyStates = new Map<string, ProgrammaticProgramState>();
+  for (const raw of args.calls) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ok: false, error: 'Invalid local parallel batch' };
+    }
+    const record = raw as Record<string, unknown>;
+    if (
+      Object.keys(record).length !== 3
+      || Object.keys(record).some((key) => key !== 'id' && key !== 'tool' && key !== 'arguments_json')
+      || typeof record.id !== 'string'
+      || !/^[A-Za-z0-9_-]{1,64}$/.test(record.id)
+      || typeof record.tool !== 'string'
+      || typeof record.arguments_json !== 'string'
+      || record.arguments_json.length < 2
+      || record.arguments_json.length > 4_000
+      || ids.has(record.id)
+      || !isProgrammaticToolAllowed(record.tool)
+    ) {
+      return { ok: false, error: 'Invalid local parallel batch' };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(record.arguments_json) as unknown;
+    } catch {
+      return { ok: false, error: 'Invalid local parallel batch arguments' };
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, error: 'Invalid local parallel batch arguments' };
+    }
+    const policy = validateProgrammaticCallPolicy(record.tool, parsed as Record<string, unknown>);
+    if (!policy.ok) return { ok: false, error: 'Local parallel batch arguments were rejected' };
+    const operationKey = `${record.tool}\u0000${policy.data.key}`;
+    if (seenOperations.has(operationKey)) {
+      return { ok: false, error: 'Duplicate local parallel batch operation' };
+    }
+
+    const state = familyStates.get(record.tool) ?? {
+      toolName: record.tool,
+      calls: 0,
+      workUnits: 0,
+      seenKeys: new Set<string>(),
+      killWindows: [],
+    };
+    if (
+      state.calls + 1 > policy.data.maxCalls
+      || state.workUnits + policy.data.workUnits > programmaticWorkUnitLimit(record.tool)
+      || (policy.data.marketTypeIdsKey && state.marketTypeIdsKey
+        && policy.data.marketTypeIdsKey !== state.marketTypeIdsKey)
+      || (policy.data.comparisonKey && state.comparisonKey
+        && policy.data.comparisonKey !== state.comparisonKey)
+      || (policy.data.killWindow && state.killWindows.some((window) =>
+        window.target === policy.data.killWindow!.target
+        && policy.data.killWindow!.fromMs < window.toMs
+        && window.fromMs < policy.data.killWindow!.toMs))
+    ) {
+      return { ok: false, error: 'Local parallel batch coherence check failed' };
+    }
+    state.calls += 1;
+    state.workUnits += policy.data.workUnits;
+    state.seenKeys.add(policy.data.key);
+    state.marketTypeIdsKey ??= policy.data.marketTypeIdsKey;
+    state.comparisonKey ??= policy.data.comparisonKey;
+    if (policy.data.killWindow) state.killWindows.push(policy.data.killWindow);
+    familyStates.set(record.tool, state);
+    ids.add(record.id);
+    seenOperations.add(operationKey);
+    calls.push({
+      id: record.id,
+      tool: localProgrammaticToolName(record.tool),
+      args: policy.data.args,
+    });
+  }
+  return { ok: true, calls };
+}
+
+async function executeLocalParallelBatch(
+  args: Record<string, unknown>,
+  state: { callsExecuted: number },
+  dispatch: (tool: LocalParallelBatchCall['tool'], args: Record<string, unknown>) => Promise<unknown>,
+): Promise<Record<string, unknown>> {
+  if (!config.openai.supportsLocalParallelBatch) {
+    return { ok: false, blocked: true, error: 'Local parallel batch is unavailable' };
+  }
+  const validated = validateLocalParallelBatch(args, state.callsExecuted);
+  if (!validated.ok) return { ok: false, blocked: true, error: validated.error };
+  if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+
+  state.callsExecuted += validated.calls.length;
+  const settled = await Promise.allSettled(validated.calls.map((call) => dispatch(call.tool, call.args)));
+  const results = validated.calls.map((call, index) => {
+    const result = settled[index]!;
+    const value = result.status === 'fulfilled'
+      ? result.value
+      : programmaticPolicyRejection(call.tool, 'Tool execution failed');
+    return {
+      id: call.id,
+      tool: call.tool,
+      output: JSON.parse(serializeProgrammaticToolOutput(call.tool, value)) as unknown,
+    };
+  });
+
+  const envelope = { ok: true, results };
+  while (JSON.stringify(envelope).length > MAX_TOOL_OUTPUT_CHARS) {
+    const largest = results
+      .map((result, index) => ({ index, size: JSON.stringify(result.output).length }))
+      .filter((entry) => entry.size > 512)
+      .sort((left, right) => right.size - left.size)[0];
+    if (!largest) break;
+    const call = validated.calls[largest.index]!;
+    results[largest.index]!.output = JSON.parse(serializeProgrammaticToolOutput(
+      call.tool,
+      programmaticPolicyRejection(call.tool, 'Batch aggregate output limit exceeded'),
+    )) as unknown;
+  }
+  return envelope;
+}
+
+function localBatchAuditCalls(args: Record<string, unknown>): Array<Record<string, string>> {
+  if (!Array.isArray(args.calls)) return [];
+  return args.calls.slice(0, 4).flatMap((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+    const record = raw as Record<string, unknown>;
+    return typeof record.id === 'string' && typeof record.tool === 'string'
+      ? [{ id: record.id.slice(0, 64), tool: record.tool.slice(0, 64) }]
+      : [];
+  });
+}
+
 async function executeToolCall(
   db: Db,
   requestId: string,
@@ -1405,6 +1809,41 @@ async function executeToolCall(
   args: Record<string, unknown>,
   webSearchState: WebSearchState,
   programmatic = false,
+  localBatchState: { callsExecuted: number } = { callsExecuted: 0 },
+): Promise<unknown> {
+  // The batch container holds no permit while its children wait, preventing a
+  // semaphore deadlock. Every validated leaf re-enters this wrapper.
+  if (isLocalParallelBatchTool(name)) {
+    return executeToolCallUnadmitted(
+      db, requestId, goal, ctx, name, args, webSearchState, programmatic, localBatchState,
+    );
+  }
+  const policy = await getToolPolicy(name);
+  const admission = policy === 'read'
+    ? getReadToolAdmission()
+    : policy === 'write' || policy === 'ui'
+      ? getWriteToolAdmission()
+      : null;
+  const release = admission ? await admission.acquire() : null;
+  try {
+    return await executeToolCallUnadmitted(
+      db, requestId, goal, ctx, name, args, webSearchState, programmatic, localBatchState,
+    );
+  } finally {
+    release?.();
+  }
+}
+
+async function executeToolCallUnadmitted(
+  db: Db,
+  requestId: string,
+  goal: string,
+  ctx: UserContext,
+  name: string,
+  args: Record<string, unknown>,
+  webSearchState: WebSearchState,
+  programmatic = false,
+  localBatchState: { callsExecuted: number } = { callsExecuted: 0 },
 ): Promise<unknown> {
   // Live activity: surface which tool ("skill") is running to any attached sink
   // (the interactive CLI). No-op for the bots. Single point so it covers both
@@ -1413,6 +1852,11 @@ async function executeToolCall(
     type: 'tool_start',
     name,
     detail: programmatic
+      || isMarketHistorySummaryTool(name)
+      || isSystemMetricSnapshotTool(name)
+      || isDoctrineSummaryTool(name)
+      || isDynamicItemSummaryTool(name)
+      || isLocalParallelBatchTool(name)
       ? 'bounded public read'
       : isEveKillAnalyticsToolName(name) ? 'public analytics request' : summarizeToolArgs(name, args),
   });
@@ -1429,6 +1873,21 @@ async function executeToolCall(
         ? 'Heartbeat scheduling is unavailable in the terminal CLI. Route monitoring and EVE-KILL watches remain available while the CLI is running.'
         : 'Durable background notifications are unavailable in this transient chat lane. Use Telegram, Discord, or the interactive CLI.',
     };
+  }
+
+  if (isLocalParallelBatchTool(name)) {
+    return executeLocalParallelBatch(args, localBatchState, async (tool, normalizedArgs) =>
+      executeToolCall(
+        db,
+        requestId,
+        goal,
+        ctx,
+        tool,
+        normalizedArgs,
+        webSearchState,
+        true,
+        localBatchState,
+      ));
   }
 
   if (name === 'web_search') {
@@ -1479,6 +1938,18 @@ async function executeToolCall(
         blocked: false,
       };
     }
+  }
+
+  if (isMarketHistorySummaryTool(name)) {
+    return await executeMarketHistorySummary(db, args);
+  }
+
+  if (isSystemMetricSnapshotTool(name)) {
+    return await executeSystemMetricSnapshot(db, args);
+  }
+
+  if (isDynamicItemSummaryTool(name)) {
+    return await executeDynamicItemSummary(db, args);
   }
 
   if (isOsintInferTool(name)) {
@@ -1597,13 +2068,13 @@ async function executeToolCall(
     };
   }
 
-  if (isEveKillToolName(name) || isEveKillAnalyticsToolName(name)) {
+  if (isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isDoctrineSummaryTool(name)) {
     webSearchState.eveKillCallCount += 1;
     if (webSearchState.eveKillCallCount > MAX_EVE_KILL_CALLS_PER_TURN) {
       console.log('[eve-kill] blocked: limit %d reached (call #%d)', MAX_EVE_KILL_CALLS_PER_TURN, webSearchState.eveKillCallCount);
       return { ok: false, error: `Лимит eve-kill (${MAX_EVE_KILL_CALLS_PER_TURN}) на один ответ исчерпан. Анализируй уже собранные данные.`, blocked: true };
     }
-    if (isEveKillAnalyticsToolName(name)) {
+    if (isEveKillAnalyticsToolName(name) || isDoctrineSummaryTool(name)) {
       webSearchState.eveKillAnalyticsCallCount += 1;
       if (webSearchState.eveKillAnalyticsCallCount > MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN) {
         console.log(
@@ -1617,7 +2088,9 @@ async function executeToolCall(
           blocked: true,
         };
       }
-      const result = await executeEveKillAnalyticsTool(name as EveKillAnalyticsToolName, args);
+      const result = isDoctrineSummaryTool(name)
+        ? await executeDoctrineSummary(db, args)
+        : await executeEveKillAnalyticsTool(name as EveKillAnalyticsToolName, args);
       console.log('[eve-kill-analytics] %s completed (call #%d)', name, webSearchState.eveKillAnalyticsCallCount);
       return result;
     }
@@ -1800,6 +2273,14 @@ function buildToolStateRecoveryContext(db: Db, threadId: string): NativeInputIte
   return items;
 }
 
+function buildResponseStateRecoveryContext(
+  db: Db,
+  threadId: string,
+  replayItems: NativeInputItem[],
+): NativeInputItem[] {
+  return replayItems.length > 0 ? [...replayItems] : buildSmartContext(db, threadId);
+}
+
 function buildRecentToolSummaryMessage(db: Db, threadId: string): string | null {
   const rows = db.prepare(
     "SELECT content FROM messages WHERE thread_id = ? AND role = 'tool' ORDER BY id DESC LIMIT ?",
@@ -1850,27 +2331,6 @@ function shouldRecoverFromToolStateMismatch(
   return pendingItems.some((item) => item.type === 'function_call_output');
 }
 
-/** Errors that indicate a broken continuation chain — recoverable via cold restart. */
-const WS_RETRIABLE_PATTERNS = [
-  'response_state_missing',             // sanitized missing/expired previous response
-  'not found',                          // "Previous response with id ... not found"
-  'ws_transport_error',                 // provider transport failure
-  'ws closed',                          // server closed WebSocket
-  'ws timeout',                         // idle timeout
-  'ws idle timeout',                    // per-frame idle timeout
-  'ws error',                           // generic WS error
-  'connection_limit_reached',           // provider connection limit
-  'connection reset',                   // TCP reset
-  'socket hang up',                     // Node undici socket error
-  'econnrefused',                       // connection refused
-  'terminated',                         // undici terminated
-];
-
-function isWsRetriableError(message: string): boolean {
-  const lower = message.toLowerCase();
-  return WS_RETRIABLE_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
-}
-
 function shouldUseToolStateRecovery(
   message: string,
   exhausted: boolean,
@@ -1879,9 +2339,7 @@ function shouldUseToolStateRecovery(
 ): boolean {
   if (exhausted) return false;
   if (shouldRecoverFromToolStateMismatch(message, previousResponseId, pendingItems)) return true;
-  // Also recover from WS transport errors (broken continuation chain)
-  if (previousResponseId && isWsRetriableError(message)) return true;
-  return false;
+  return Boolean(previousResponseId && message.toLowerCase().includes(RESPONSE_STATE_MISSING_FRAGMENT));
 }
 
 export { deriveLiveContextNeeds } from './static-aggregate.js';
@@ -1896,26 +2354,46 @@ function planConversationContinuation(db: Db, threadId: string): ConversationCon
   const row = db.prepare(
     `SELECT
        t.last_response_id AS last_response_id,
+       t.last_response_message_id AS last_response_message_id,
+       (SELECT id FROM messages WHERE thread_id = t.thread_id AND role = 'user' ORDER BY id DESC LIMIT 1) AS latest_user_id,
        (SELECT content FROM messages WHERE thread_id = t.thread_id AND role = 'user' ORDER BY id DESC LIMIT 1) AS latest_user_content,
-       (SELECT created_at FROM messages WHERE thread_id = t.thread_id AND role = 'assistant' ORDER BY id DESC LIMIT 1) AS latest_assistant_at
+       (SELECT id FROM messages WHERE thread_id = t.thread_id AND role = 'assistant' ORDER BY id DESC LIMIT 1) AS latest_assistant_id,
+       (SELECT created_at FROM messages WHERE id = t.last_response_message_id AND thread_id = t.thread_id AND role = 'assistant') AS anchor_assistant_at,
+       (SELECT COUNT(*) FROM messages WHERE thread_id = t.thread_id AND id > COALESCE(t.last_response_message_id, 0)) AS messages_after_anchor,
+       (SELECT COUNT(*) FROM messages WHERE thread_id = t.thread_id AND role = 'user' AND id > COALESCE(t.last_response_message_id, 0)) AS users_after_anchor
      FROM agent_threads t
      WHERE t.thread_id = ?`
   ).get(threadId) as {
     last_response_id: string | null;
+    last_response_message_id: number | null;
+    latest_user_id: number | null;
     latest_user_content: string | null;
-    latest_assistant_at: string | null;
+    latest_assistant_id: number | null;
+    anchor_assistant_at: string | null;
+    messages_after_anchor: number;
+    users_after_anchor: number;
   } | undefined;
 
   if (
     row?.last_response_id
+    && row.last_response_message_id
     && row.latest_user_content
-    && isRecentSqliteTimestamp(row.latest_assistant_at, PREVIOUS_RESPONSE_MAX_AGE_MS)
+    && row.latest_assistant_id === row.last_response_message_id
+    && row.latest_user_id !== null
+    && row.latest_user_id > row.last_response_message_id
+    && row.messages_after_anchor === 1
+    && row.users_after_anchor === 1
+    && isRecentSqliteTimestamp(row.anchor_assistant_at, PREVIOUS_RESPONSE_MAX_AGE_MS)
   ) {
     return {
       mode: 'warm',
       items: [toNativeMessage(row.latest_user_content)],
       previousResponseId: row.last_response_id,
     };
+  }
+
+  if (row && (row.last_response_id || row.last_response_message_id)) {
+    saveLastResponseId(db, threadId, null);
   }
 
   return {
@@ -1927,8 +2405,22 @@ function planConversationContinuation(db: Db, threadId: string): ConversationCon
 
 function saveLastResponseId(db: Db, threadId: string, responseId: string | null): void {
   db.prepare(
-    "UPDATE agent_threads SET last_response_id = ?, updated_at = datetime('now') WHERE thread_id = ?"
+    "UPDATE agent_threads SET last_response_id = ?, last_response_message_id = NULL, updated_at = datetime('now') WHERE thread_id = ?"
   ).run(responseId, threadId);
+}
+
+function buildSideEffectExecutionKey(name: string, args: unknown): string {
+  return `${name}\0${JSON.stringify(sortJsonForExecutionKey(args))}`;
+}
+
+function sortJsonForExecutionKey(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonForExecutionKey);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortJsonForExecutionKey(entry)]),
+  );
 }
 
 function isRecentSqliteTimestamp(value: string | null, maxAgeMs: number): boolean {
@@ -2001,12 +2493,14 @@ export const __test__ = {
   isTransientModelError,
   buildSmartContext,
   buildToolStateRecoveryContext,
+  buildResponseStateRecoveryContext,
   buildRecentToolSummaryMessage,
   executeToolCall,
   deriveLiveContextNeeds,
   resolveSystemLocationContext,
   shouldRecoverFromToolStateMismatch,
   shouldUseToolStateRecovery,
+  buildSideEffectExecutionKey,
   isSimpleStaticAggregateCountGoal,
   detectStaticAggregateObjectKind,
   parseStaticAggregateIntent,
@@ -2018,6 +2512,8 @@ export const __test__ = {
   classifyReasoningEffort,
   resolveReasoningEffort,
   validateProgrammaticBatch,
+  validateLocalParallelBatch,
+  executeLocalParallelBatch,
   validateCompletedProgramShapes,
   truncateToolOutput,
 };
@@ -2191,8 +2687,23 @@ function smartAggregate(rows: unknown[]): {
   };
 }
 
-function storeAssistantMessage(db: Db, threadId: string, content: string): void {
-  db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'assistant', content);
+function storeAssistantMessage(
+  db: Db,
+  threadId: string,
+  content: string,
+  responseId: string | null = null,
+): void {
+  db.transaction(() => {
+    const inserted = db.prepare(
+      'INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)',
+    ).run(threadId, 'assistant', content);
+    const messageId = Number(inserted.lastInsertRowid);
+    db.prepare(
+      `UPDATE agent_threads
+       SET last_response_id = ?, last_response_message_id = ?, updated_at = datetime('now')
+       WHERE thread_id = ?`,
+    ).run(responseId, responseId ? messageId : null, threadId);
+  })();
 }
 
 function ensureThreadOwnership(db: Db, threadId: string, ctx: UserContext): void {

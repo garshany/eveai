@@ -290,8 +290,9 @@ export async function compactThread(
     // Reset cumulative token counter (compaction = fresh start)
     db.prepare('UPDATE agent_threads SET total_tokens = 0 WHERE thread_id = ?').run(threadId);
 
-    // Clear last_response_id to force cold start with new context
-    db.prepare("UPDATE agent_threads SET last_response_id = NULL, updated_at = datetime('now') WHERE thread_id = ?").run(threadId);
+    // Clear the response id and its message anchor to force a cold start with
+    // the newly compacted SQLite context.
+    db.prepare("UPDATE agent_threads SET last_response_id = NULL, last_response_message_id = NULL, updated_at = datetime('now') WHERE thread_id = ?").run(threadId);
   });
   tx();
 

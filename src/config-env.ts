@@ -66,6 +66,20 @@ export function parseOptionalBooleanEnv(env: EnvSource, name: string, fallback: 
   );
 }
 
+export function parseOptionalStrictBooleanEnv(
+  env: EnvSource,
+  name: string,
+  fallback: boolean,
+): boolean {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw new Error(`Env var ${name} must be either true or false; got: "${raw}"`);
+}
+
 function parseInteger(name: string, value: string): number {
   if (!/^[+-]?\d+$/.test(value)) {
     throw new Error(`Env var ${name} must be an integer, got: "${value}"`);

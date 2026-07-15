@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS agent_threads (
   character_id INTEGER,
   user_id    INTEGER,
   last_response_id TEXT,
+  last_response_message_id INTEGER,
   total_tokens INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))

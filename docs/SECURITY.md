@@ -37,6 +37,10 @@
 - non-2xx Responses bodies are reduced to HTTP status plus fixed recovery categories before exceptions can reach bot or CLI logs
 - direct hosted EVE-KILL MCP is disabled because its remote call executes before application code can inspect the exact arguments
 - local MCP analytics accept only public numeric CCP IDs, canonical date pairs, enums, booleans, and bounded limits; names are resolved locally first, and no context, profile, fit, private ESI result, credential, URL, or arbitrary text field is forwarded
+- Programmatic Tool Calling is default-off and grants eligibility only to the exact nine-name bounded public-read allowlist; exact caller linkage, strict arguments, coherence, work budgets, and output schemas are enforced by application code before dispatch
+- the four additional programmatic facades use only fixed public CCP ESI operations, the fixed local `doctrine_detect` wrapper, and optional local-SDE base values; they never request capabilities, refresh or send user tokens, or inspect linked identity, profile, chat history, fits, or private ESI
+- bounded public-facade output excludes raw market history, full bulk-system payloads, raw doctrine clusters/URLs/module lists, dynamic-item creator identity/effects/unrequested attributes, transport details, and upstream error bodies
+- routine audit records and console logs for bounded public facades contain only a fixed bounded-read classification plus sanitized status/size metadata, never argument names, values or IDs, generated programs, caller IDs, full upstream responses, or credentials
 - update discovery calls one fixed public GitHub API URL without credentials, accepts only a stable `vMAJOR.MINOR.PATCH` tag and its exact canonical release URL, and never renders remote release text
 
 ## EVE Data Ownership

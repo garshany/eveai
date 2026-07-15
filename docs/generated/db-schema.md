@@ -1,6 +1,6 @@
 # Database Schema
 
-Generated from `src/db/schema.ts` on 2026-07-14. Runtime migrations in
+Generated from `src/db/schema.ts` on 2026-07-15. Runtime migrations in
 `src/db/migrations.ts` may add operational tables to an existing database.
 
 ## Identity, chat lanes, and SSO
@@ -15,7 +15,8 @@ Generated from `src/db/schema.ts` on 2026-07-14. Runtime migrations in
 
 ## Agent Memory
 
-- `agent_threads`
+- `agent_threads`: canonical lane state plus an optional stored Response id and
+  the exact assistant-message id that anchors it
 - `messages`
 - `thread_summaries`
 - `thread_artifacts`

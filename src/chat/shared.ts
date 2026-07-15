@@ -17,7 +17,7 @@ export const MAX_INPUT_LENGTH = 2000;
 const DUPLICATE_REQUEST_WINDOW_MS = 30_000;
 const DEFAULT_REQUEST_WINDOW_MS = 60_000;
 const DEFAULT_MAX_REQUESTS_PER_WINDOW = 6;
-const DEFAULT_MAX_ACTIVE_REQUESTS = 24;
+const DEFAULT_MAX_ACTIVE_REQUESTS = 8;
 
 // ---------------------------------------------------------------------------
 // Chat session rows (telegram_sessions doubles as the generic chat registry;
@@ -84,10 +84,17 @@ const inFlightRequests = new Map<number, {
   threadId: string;
   text: string;
   startedAt: number;
+  userId: number;
 }>();
 
 export function hasInFlightRequest(chatId: number): boolean {
   return inFlightRequests.has(chatId);
+}
+
+export function hasInFlightRequestForActor(chatId: number, userId: number): boolean {
+  if (hasInFlightRequest(chatId)) return true;
+  if (userId <= 0) return false;
+  return [...inFlightRequests.values()].some((request) => request.userId === userId);
 }
 
 export function activeRequestCount(): number {
@@ -102,12 +109,20 @@ export function isDuplicateInFlightRequest(chatId: number, threadId: string, tex
   return now - current.startedAt < DUPLICATE_REQUEST_WINDOW_MS;
 }
 
-export function rememberInFlightRequest(chatId: number, threadId: string, text: string, token: string, startedAt = Date.now()): void {
+export function rememberInFlightRequest(
+  chatId: number,
+  threadId: string,
+  text: string,
+  token: string,
+  startedAt = Date.now(),
+  userId = 0,
+): void {
   inFlightRequests.set(chatId, {
     token,
     threadId,
     text,
     startedAt,
+    userId,
   });
 }
 

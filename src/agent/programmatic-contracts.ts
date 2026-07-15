@@ -6,6 +6,10 @@ export const PROGRAMMATIC_TOOL_NAMES = [
   'compare_wormhole_types',
   'scout_systems',
   'kill_activity_summary',
+  'market_history_summary',
+  'system_metric_snapshot',
+  'doctrine_summary',
+  'dynamic_item_summary',
 ] as const;
 
 export type ProgrammaticToolName = (typeof PROGRAMMATIC_TOOL_NAMES)[number];
@@ -70,6 +74,7 @@ const COUNT_UNIVERSE_OBJECTS_OUTPUT_SCHEMA = {
 const MARKET_ERROR_SCHEMA = facadeErrorSchema('CCP ESI', true);
 const EVE_SCOUT_ERROR_SCHEMA = facadeErrorSchema('EVE-Scout', false);
 const EVE_KILL_ERROR_SCHEMA = facadeErrorSchema('EVE-KILL', false);
+const EVE_KILL_MCP_ERROR_SCHEMA = facadeErrorSchema('EVE-KILL MCP', false);
 
 const BATCH_MARKET_PRICES_OUTPUT_SCHEMA = {
   anyOf: [
@@ -230,6 +235,180 @@ const KILL_ACTIVITY_SUMMARY_OUTPUT_SCHEMA = {
   ],
 } as const satisfies JsonSchema;
 
+const MARKET_HISTORY_SUMMARY_OUTPUT_SCHEMA = {
+  anyOf: [
+    objectSchema({
+      ok: { const: true },
+      source: { const: 'CCP ESI' },
+      authoritative: { const: true },
+      freshness: FRESHNESS_SCHEMA,
+      region_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+      type_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+      requested_days: { type: 'integer', enum: [30, 90] },
+      window: objectSchema({
+        first_date: { type: ['string', 'null'], pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+        last_date: { type: ['string', 'null'], pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+      }),
+      observed_days: { type: 'integer', minimum: 0, maximum: 90 },
+      price: objectSchema({
+        lowest: { type: ['number', 'null'], minimum: 0 },
+        highest: { type: ['number', 'null'], minimum: 0 },
+        mean_daily_average: { type: ['number', 'null'], minimum: 0 },
+        volume_weighted_average: { type: ['number', 'null'], minimum: 0 },
+        change_percent: { type: ['number', 'null'] },
+      }),
+      volume: objectSchema({
+        total: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        mean_per_observed_day: { type: ['number', 'null'], minimum: 0 },
+      }),
+      volatility: objectSchema({
+        daily_return_stddev_percent: { type: ['number', 'null'], minimum: 0 },
+      }),
+      liquidity: objectSchema({
+        total_orders: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        mean_orders_per_observed_day: { type: ['number', 'null'], minimum: 0 },
+        active_days: { type: 'integer', minimum: 0, maximum: 90 },
+      }),
+    }),
+    MARKET_ERROR_SCHEMA,
+  ],
+} as const satisfies JsonSchema;
+
+const SYSTEM_METRIC_COMMON_PROPERTIES = {
+  ok: { const: true },
+  source: { const: 'CCP ESI' },
+  authoritative: { const: true },
+  freshness: FRESHNESS_SCHEMA,
+  count: { type: 'integer', minimum: 1, maximum: 100 },
+} as const satisfies Record<string, JsonSchema>;
+
+const SYSTEM_METRIC_SNAPSHOT_OUTPUT_SCHEMA = {
+  anyOf: [
+    objectSchema({
+      ...SYSTEM_METRIC_COMMON_PROPERTIES,
+      metric: { const: 'kills' },
+      rows: {
+        type: 'array', minItems: 1, maxItems: 100,
+        items: objectSchema({
+          system_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          found: { type: 'boolean' },
+          ship: { type: ['integer', 'null'], minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+          npc: { type: ['integer', 'null'], minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+          pod: { type: ['integer', 'null'], minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        }),
+      },
+    }),
+    objectSchema({
+      ...SYSTEM_METRIC_COMMON_PROPERTIES,
+      metric: { const: 'jumps' },
+      rows: {
+        type: 'array', minItems: 1, maxItems: 100,
+        items: objectSchema({
+          system_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          found: { type: 'boolean' },
+          jumps: { type: ['integer', 'null'], minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        }),
+      },
+    }),
+    objectSchema({
+      ...SYSTEM_METRIC_COMMON_PROPERTIES,
+      metric: { const: 'industry' },
+      rows: {
+        type: 'array', minItems: 1, maxItems: 100,
+        items: objectSchema({
+          system_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          found: { type: 'boolean' },
+          cost_indices: {
+            type: 'array', minItems: 6, maxItems: 6,
+            items: { type: ['number', 'null'], minimum: 0 },
+          },
+        }),
+      },
+    }),
+    objectSchema({
+      ...SYSTEM_METRIC_COMMON_PROPERTIES,
+      metric: { const: 'sovereignty' },
+      rows: {
+        type: 'array', minItems: 1, maxItems: 100,
+        items: objectSchema({
+          system_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          found: { type: 'boolean' },
+          holder_type: { type: 'string', enum: ['alliance', 'corporation', 'faction', 'none'] },
+          holder_id: { type: ['integer', 'null'], minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+        }),
+      },
+    }),
+    MARKET_ERROR_SCHEMA,
+  ],
+} as const satisfies JsonSchema;
+
+const DOCTRINE_SUMMARY_OUTPUT_SCHEMA = {
+  anyOf: [
+    objectSchema({
+      ok: { const: true },
+      source: { const: 'EVE-KILL MCP' },
+      authoritative: { const: false },
+      limitation: {
+        const: 'Third-party public loss-fit inference; coverage and doctrine classifications may be incomplete.',
+      },
+      freshness: FRESHNESS_SCHEMA,
+      entity: objectSchema({
+        id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+        type: { type: 'string', enum: ['corporation', 'alliance'] },
+        name: { type: 'string', minLength: 1, maxLength: 128 },
+      }),
+      window: objectSchema({
+        from: { type: 'string', format: 'date-time' },
+        to: { type: 'string', format: 'date-time' },
+      }),
+      count: { type: 'integer', minimum: 0, maximum: 10 },
+      doctrines: {
+        type: 'array', maxItems: 10,
+        items: objectSchema({
+          family_id: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+          signature: { type: 'string', minLength: 1, maxLength: 256 },
+          ship_type_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          ship_name: { type: 'string', minLength: 1, maxLength: 128 },
+          losses: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+          isk_lost: { type: 'number', minimum: 0 },
+          average_isk_per_loss: { type: 'number', minimum: 0 },
+          first_loss: { type: 'string', format: 'date-time' },
+          last_loss: { type: 'string', format: 'date-time' },
+          evidence_killmail_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+        }),
+      },
+    }),
+    EVE_KILL_MCP_ERROR_SCHEMA,
+  ],
+} as const satisfies JsonSchema;
+
+const DYNAMIC_ITEM_SUMMARY_OUTPUT_SCHEMA = {
+  anyOf: [
+    objectSchema({
+      ok: { const: true },
+      source: { const: 'CCP ESI' },
+      authoritative: { const: true },
+      freshness: FRESHNESS_SCHEMA,
+      type_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+      item_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+      source_type_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+      mutator_type_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+      attributes: {
+        type: 'array', minItems: 1, maxItems: 20,
+        items: objectSchema({
+          attribute_id: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          found: { type: 'boolean' },
+          value: { type: ['number', 'null'] },
+          base_value: { type: ['number', 'null'] },
+          delta: { type: ['number', 'null'] },
+          delta_percent: { type: ['number', 'null'] },
+        }),
+      },
+    }),
+    MARKET_ERROR_SCHEMA,
+  ],
+} as const satisfies JsonSchema;
+
 export const PROGRAMMATIC_OUTPUT_SCHEMAS: Readonly<
   Record<ProgrammaticToolName, JsonSchema>
 > = {
@@ -238,6 +417,10 @@ export const PROGRAMMATIC_OUTPUT_SCHEMAS: Readonly<
   compare_wormhole_types: COMPARE_WORMHOLE_TYPES_OUTPUT_SCHEMA,
   scout_systems: SCOUT_SYSTEMS_OUTPUT_SCHEMA,
   kill_activity_summary: KILL_ACTIVITY_SUMMARY_OUTPUT_SCHEMA,
+  market_history_summary: MARKET_HISTORY_SUMMARY_OUTPUT_SCHEMA,
+  system_metric_snapshot: SYSTEM_METRIC_SNAPSHOT_OUTPUT_SCHEMA,
+  doctrine_summary: DOCTRINE_SUMMARY_OUTPUT_SCHEMA,
+  dynamic_item_summary: DYNAMIC_ITEM_SUMMARY_OUTPUT_SCHEMA,
 };
 
 const OUTPUT_ERROR_MESSAGES = {
@@ -318,7 +501,12 @@ function serializeOutputError(name: ProgrammaticToolName, reason: OutputErrorRea
 
 function outputError(name: ProgrammaticToolName, error: string): Record<string, unknown> {
   if (name === 'count_universe_objects') return { ok: false, error, blocked: false };
-  if (name === 'batch_market_prices') {
+  if (
+    name === 'batch_market_prices'
+    || name === 'market_history_summary'
+    || name === 'system_metric_snapshot'
+    || name === 'dynamic_item_summary'
+  ) {
     return {
       ok: false,
       source: 'CCP ESI',
@@ -332,6 +520,16 @@ function outputError(name: ProgrammaticToolName, error: string): Record<string, 
     return {
       ok: false,
       source: 'EVE-KILL',
+      authoritative: false,
+      error,
+      status: null,
+      blocked: false,
+    };
+  }
+  if (name === 'doctrine_summary') {
+    return {
+      ok: false,
+      source: 'EVE-KILL MCP',
       authoritative: false,
       error,
       status: null,
@@ -354,7 +552,7 @@ function facadeErrorSchema(source: string, authoritative: boolean): JsonSchema {
     source: { const: source },
     authoritative: { const: authoritative },
     error: { type: 'string', minLength: 1, maxLength: 256 },
-    status: { type: ['integer', 'null'] },
+    status: { type: ['integer', 'null'], minimum: 100, maximum: 599 },
     blocked: { type: 'boolean' },
   });
 }

@@ -3,6 +3,7 @@ import {
   parseOptionalEnumEnv,
   parseOptionalIntEnv,
   parseOptionalPositiveIntEnv,
+  parseOptionalStrictBooleanEnv,
   parseRequiredIntEnv,
   readOptionalEnv,
   readRequiredEnv,
@@ -14,6 +15,7 @@ import {
   type ResponseStateMode,
   TEXT_VERBOSITIES,
 } from './openai-options.js';
+import { resolveOpenAiProvider } from './openai-provider.js';
 
 // Strict parsing: malformed integers (e.g. "3000.5", "1e3", unsafe ints) fail
 // fast at startup instead of being silently coerced. See src/config-env.ts.
@@ -55,12 +57,19 @@ function boundedPositiveInt(
   return Math.min(maximum, Math.max(minimum, optionalPositiveInt(name, fallback)));
 }
 
-function parseResponseStateMode(): ResponseStateMode {
+function parseResponseStateMode(storeResponses: boolean): ResponseStateMode {
   const value = parseOptionalEnumEnv(process.env, 'OPENAI_RESPONSE_STATE_MODE', RESPONSE_STATE_MODES, 'stateless');
-  if (value === 'server') {
-    throw new Error('OPENAI_RESPONSE_STATE_MODE=server is unsupported: EVE AI Agent requires stateless Responses with store=false');
+  if (value === 'server' && !storeResponses) {
+    throw new Error('OPENAI_RESPONSE_STATE_MODE=server requires OPENAI_STORE_RESPONSES=true');
   }
   return value;
+}
+
+const storeResponses = parseOptionalStrictBooleanEnv(process.env, 'OPENAI_STORE_RESPONSES', false);
+const openAiProvider = resolveOpenAiProvider();
+const responseStateMode = parseResponseStateMode(storeResponses);
+if (openAiProvider.responsesTransport === 'websocket' && responseStateMode === 'server') {
+  throw new Error('CheapVibeCode WebSocket transport requires OPENAI_RESPONSE_STATE_MODE=stateless');
 }
 
 export const config = {
@@ -72,7 +81,7 @@ export const config = {
     allowedUserId: optionalInt('ALLOWED_TELEGRAM_USER_ID', 0),
     requestWindowMs: optionalInt('TELEGRAM_REQUEST_WINDOW_MS', 60000),
     maxRequestsPerWindow: optionalInt('TELEGRAM_MAX_REQUESTS_PER_WINDOW', 6),
-    maxActiveRequestsGlobal: optionalInt('TELEGRAM_MAX_ACTIVE_REQUESTS_GLOBAL', 24),
+    maxActiveRequestsGlobal: optionalInt('TELEGRAM_MAX_ACTIVE_REQUESTS_GLOBAL', 8),
   },
   discord: {
     botToken: optional('DISCORD_BOT_TOKEN', ''),
@@ -82,16 +91,30 @@ export const config = {
   openai: {
     apiKey: required('OPENAI_API_KEY'),
     model: optional('OPENAI_MODEL', 'gpt-5.6-sol'),
-    // The application deliberately uses the official OpenAI Responses API.
-    // Keeping the endpoint fixed prevents a self-hosting typo from sending the
-    // API key and chat data to an arbitrary OpenAI-compatible gateway.
-    baseUrl: 'https://api.openai.com/v1',
-    responseStateMode: parseResponseStateMode(),
+    providerId: openAiProvider.id,
+    providerName: openAiProvider.name,
+    // Provider IDs map to fixed transports and endpoints. There is deliberately no
+    // arbitrary base-URL escape hatch for credentials and private chat data.
+    baseUrl: openAiProvider.baseUrl,
+    responsesTransport: openAiProvider.responsesTransport,
+    toolSearchExecution: openAiProvider.toolSearchExecution,
+    supportsHostedProgrammaticToolCalling: openAiProvider.supportsHostedProgrammaticToolCalling,
+    supportsLocalParallelBatch: openAiProvider.supportsLocalParallelBatch,
+    supportsTruncation: openAiProvider.supportsTruncation,
+    supportsEncryptedReasoningReplay: openAiProvider.supportsEncryptedReasoningReplay,
+    responseStateMode,
     reasoningEffort: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_EFFORT', REASONING_EFFORTS, 'auto'),
     reasoningMode: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_MODE', REASONING_MODES, 'standard'),
     textVerbosity: parseOptionalEnumEnv(process.env, 'OPENAI_TEXT_VERBOSITY', TEXT_VERBOSITIES, 'low'),
     responsesTimeoutMs: optionalPositiveInt('OPENAI_RESPONSES_TIMEOUT_MS', 90_000),
+    maxConcurrentResponses: boundedPositiveInt('OPENAI_MAX_CONCURRENT_RESPONSES', 8, 1, 64),
+    maxQueuedResponses: Math.max(0, Math.min(256, optionalInt('OPENAI_MAX_QUEUED_RESPONSES', 32))),
+    responseQueueTimeoutMs: boundedPositiveInt('OPENAI_RESPONSE_QUEUE_TIMEOUT_MS', 15_000, 100, 120_000),
+    maxConcurrentReadTools: boundedPositiveInt('AGENT_MAX_CONCURRENT_READ_TOOLS', 16, 4, 128),
+    maxQueuedTools: Math.max(0, Math.min(512, optionalInt('AGENT_MAX_QUEUED_TOOLS', 64))),
+    toolQueueTimeoutMs: boundedPositiveInt('AGENT_TOOL_QUEUE_TIMEOUT_MS', 15_000, 100, 120_000),
     responseLanguage: optional('OPENAI_RESPONSE_LANGUAGE', 'Russian'),
+    storeResponses,
     programmaticToolCalling: optionalBoolean('OPENAI_PROGRAMMATIC_TOOL_CALLING', false),
     maxOutputTokens: optionalInt('OPENAI_MAX_OUTPUT_TOKENS', 0),
     compactThreshold: optionalInt('OPENAI_COMPACT_THRESHOLD', 0),

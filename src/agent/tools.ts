@@ -7,6 +7,22 @@ import {
 } from '../eve-kill/tools.js';
 import { buildEveKillAnalyticsNamespace, isEveKillAnalyticsToolName } from '../eve-kill/analytics-tools.js';
 import { buildEveScoutNamespace, isEveScoutToolName } from '../eve/eve-scout-tools.js';
+import {
+  MARKET_HISTORY_SUMMARY_TOOL,
+  isMarketHistorySummaryTool,
+} from '../eve/market-history-summary.js';
+import {
+  SYSTEM_METRIC_SNAPSHOT_TOOL,
+  isSystemMetricSnapshotTool,
+} from '../eve/system-metric-snapshot.js';
+import {
+  DYNAMIC_ITEM_SUMMARY_TOOL,
+  isDynamicItemSummaryTool,
+} from '../eve/dynamic-item-summary.js';
+import {
+  DOCTRINE_SUMMARY_TOOL,
+  isDoctrineSummaryTool,
+} from '../eve-kill/doctrine-summary.js';
 import type { NativeFunctionTool, NativeTool } from './native-responses.js';
 import {
   getProgrammaticOutputSchema,
@@ -16,6 +32,7 @@ import { SDE_SCHEMA, STATIC_AGGREGATE_SDE_SCHEMA } from './tools/sde-schema.js';
 
 const SDE_SQL_TOOL_NAME = 'sde_sql';
 const WEB_SEARCH_TOOL_NAME = 'web_search';
+const LOCAL_PARALLEL_BATCH_TOOL_NAME = 'local_parallel_batch';
 
 export { SDE_SCHEMA, STATIC_AGGREGATE_SDE_SCHEMA };
 
@@ -23,7 +40,9 @@ const UNIVERSE_COUNT_TOOL_NAME = 'count_universe_objects';
 export { PROGRAMMATIC_TOOL_ALLOWLIST } from './programmatic-contracts.js';
 
 function withProgrammaticPilot(tools: NativeTool[]): NativeTool[] {
-  if (!config.openai.programmaticToolCalling) return tools;
+  if (!config.openai.programmaticToolCalling || !config.openai.supportsHostedProgrammaticToolCalling) {
+    return tools;
+  }
   const decorated = tools.map((tool): NativeTool => {
     if (tool.type === 'namespace') {
       return {
@@ -35,6 +54,45 @@ function withProgrammaticPilot(tools: NativeTool[]): NativeTool[] {
   });
   return [{ type: 'programmatic_tool_calling' }, ...decorated];
 }
+
+const LOCAL_PARALLEL_BATCH_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: LOCAL_PARALLEL_BATCH_TOOL_NAME,
+  description: 'Run 1 to 4 independent, bounded public read operations concurrently. This is a local declarative PTC equivalent: provide data only, never code. Every call is validated atomically before any operation starts.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      calls: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 4,
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', minLength: 1, maxLength: 64 },
+            tool: { type: 'string', enum: [
+              'count_universe_objects',
+              'batch_market_prices',
+              'compare_wormhole_types',
+              'scout_systems',
+              'kill_activity_summary',
+              'market_history_summary',
+              'system_metric_snapshot',
+              'doctrine_summary',
+              'dynamic_item_summary',
+            ] },
+            arguments_json: { type: 'string', minLength: 2, maxLength: 4_000 },
+          },
+          required: ['id', 'tool', 'arguments_json'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['calls'],
+    additionalProperties: false,
+  },
+};
 
 function decorateProgrammaticTool(tool: NativeFunctionTool): NativeFunctionTool {
   if (!isProgrammaticToolName(tool.name)) return tool;
@@ -440,10 +498,15 @@ export async function buildNativeAgentTools(
   return withProgrammaticPilot([
     { type: 'tool_search' },
     ...alwaysOn,
+    ...(config.openai.supportsLocalParallelBatch ? [LOCAL_PARALLEL_BATCH_TOOL] : []),
     ...(includeFeedNotifications ? [ROUTE_MONITOR_TOOL] : []),
     ...(includeHeartbeat ? [HEARTBEAT_CONFIG_TOOL] : []),
     BATCH_MARKET_TOOL,
     KILL_ACTIVITY_SUMMARY_TOOL,
+    MARKET_HISTORY_SUMMARY_TOOL,
+    SYSTEM_METRIC_SNAPSHOT_TOOL,
+    DOCTRINE_SUMMARY_TOOL,
+    DYNAMIC_ITEM_SUMMARY_TOOL,
     OSINT_INFER_TOOL,
     ANALYZE_LOCAL_TOOL,
     ANALYZE_SCAN_TOOL,
@@ -458,6 +521,10 @@ export async function buildNativeAgentTools(
 
 export function isProgrammaticToolAllowed(name: string): boolean {
   return isProgrammaticToolName(name);
+}
+
+export function isLocalParallelBatchTool(name: string): boolean {
+  return name === LOCAL_PARALLEL_BATCH_TOOL_NAME;
 }
 
 export function getAlwaysOnFunctionToolNames(): string[] {
@@ -485,7 +552,10 @@ export function isSdeSqlTool(name: string): boolean {
 }
 
 export function isDeferredLookupToolName(name: string): boolean {
-  return isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
+  return isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name)
+    || isBatchMarketTool(name) || isMarketHistorySummaryTool(name) || isSystemMetricSnapshotTool(name)
+    || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name) || isOsintInferTool(name)
+    || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
 }
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
@@ -512,7 +582,11 @@ export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'u
   ) {
     return 'write';
   }
-  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
+  if (isLocalParallelBatchTool(name) || getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name)
+    || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name)
+    || isMarketHistorySummaryTool(name) || isSystemMetricSnapshotTool(name)
+    || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name)
+    || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();

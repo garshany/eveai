@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 describe('agent tools', () => {
-  it('keeps the feature absent by default and decorates exactly five public read tools when enabled', async () => {
+  it('keeps the feature absent by default and decorates exactly nine public read tools when enabled', async () => {
     process.env.OPENAI_API_KEY = 'test';
     process.env.EVE_CLIENT_ID = 'test';
     process.env.EVE_CLIENT_SECRET = 'test';
@@ -58,6 +58,10 @@ describe('agent tools', () => {
       'count_universe_objects',
       'batch_market_prices',
       'kill_activity_summary',
+      'market_history_summary',
+      'system_metric_snapshot',
+      'doctrine_summary',
+      'dynamic_item_summary',
       'compare_wormhole_types',
       'scout_systems',
     ]);
@@ -75,6 +79,12 @@ describe('agent tools', () => {
       'heartbeat_config',
       'kill_watch',
       'doctrine_detect',
+      'get_markets_region_id_history',
+      'get_universe_system_kills',
+      'get_universe_system_jumps',
+      'get_industry_systems',
+      'get_sovereignty_map',
+      'get_dogma_dynamic_items_type_id_item_id',
       'scout_route',
       'scout_wormhole_types',
       'kill_activity',
@@ -123,6 +133,10 @@ describe('agent tools', () => {
     expect(functionNames).toContain('sde_sql');
     expect(functionNames).toContain('batch_market_prices');
     expect(functionNames).toContain('kill_activity_summary');
+    expect(functionNames).toContain('market_history_summary');
+    expect(functionNames).toContain('system_metric_snapshot');
+    expect(functionNames).toContain('doctrine_summary');
+    expect(functionNames).toContain('dynamic_item_summary');
     // get_markets_region_id_orders is now in ESI namespace (eve_public_market_orders), not top-level
     expect(functionNames).not.toContain('get_markets_region_id_orders');
     expect(functionNames).not.toContain('sde_lookup_types');
@@ -157,6 +171,10 @@ describe('agent tools', () => {
     expect(await getToolPolicy('kill_watch')).toBe('write');
     expect(await getToolPolicy('kill_search')).toBe('read');
     expect(await getToolPolicy('doctrine_detect')).toBe('read');
+    expect(await getToolPolicy('market_history_summary')).toBe('read');
+    expect(await getToolPolicy('system_metric_snapshot')).toBe('read');
+    expect(await getToolPolicy('doctrine_summary')).toBe('read');
+    expect(await getToolPolicy('dynamic_item_summary')).toBe('read');
     const analyticsNamespace = namespaces.find((tool) => tool.name === 'eve_kill_analytics');
     expect(analyticsNamespace?.tools.map((entry) => entry.name)).toEqual([
       'doctrine_detect',
@@ -312,5 +330,24 @@ describe('agent tools', () => {
     expect(tools.some((tool) => tool.type === 'tool_search')).toBe(false);
     expect(tools.some((tool) => tool.type === 'namespace')).toBe(false);
     expect(tools.some((tool) => tool.type === 'mcp')).toBe(false);
+  });
+
+  it('gates hosted PTC off and exposes only the local batch on CheapVibeCode', async () => {
+    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    try {
+      const { buildNativeAgentTools } = await import('../../src/agent/tools.js');
+      const tools = await buildNativeAgentTools('full');
+      expect(tools.some((tool) => tool.type === 'programmatic_tool_calling')).toBe(false);
+      expect(tools.some((tool) => tool.type === 'function' && tool.name === 'local_parallel_batch')).toBe(true);
+      const decorated = tools.flatMap((tool) => tool.type === 'namespace' ? tool.tools : [tool])
+        .filter((tool) => tool.type === 'function' && (tool.allowed_callers || tool.output_schema));
+      expect(decorated).toEqual([]);
+    } finally {
+      delete process.env.OPENAI_PROVIDER;
+      process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'false';
+      vi.resetModules();
+    }
   });
 });

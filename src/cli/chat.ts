@@ -205,7 +205,7 @@ async function main(): Promise<void> {
   const discardTurnRows = (turn: ActiveTurn): void => {
     db.prepare('DELETE FROM messages WHERE thread_id = ? AND id > ?')
       .run(turn.threadId, turn.watermark);
-    db.prepare('UPDATE agent_threads SET last_response_id = NULL WHERE thread_id = ?')
+    db.prepare('UPDATE agent_threads SET last_response_id = NULL, last_response_message_id = NULL WHERE thread_id = ?')
       .run(turn.threadId);
   };
 

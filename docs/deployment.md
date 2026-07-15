@@ -84,24 +84,41 @@ https://your-domain.example/auth/eve/callback
 
 ## Model Provider
 
-The app uses the fixed official OpenAI Responses API endpoint
-`https://api.openai.com/v1`; it does not accept an alternate base URL:
+The app uses the Responses API and maps explicit provider IDs to fixed
+transports/endpoints. It does not accept an arbitrary base URL:
 
 ```env
+OPENAI_PROVIDER=openai
 OPENAI_MODEL=gpt-5.6-sol
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
 OPENAI_RESPONSES_TIMEOUT_MS=90000
 OPENAI_RESPONSE_STATE_MODE=stateless
+OPENAI_STORE_RESPONSES=false
 ```
 
-Choose `gpt-5.6-sol` for maximum capability, `gpt-5.6-terra` for a balanced deployment, or `gpt-5.6-luna` for efficient high-volume traffic. The integration uses streaming, function tools, `store=false`, prompt cache keys, and stateless tool-call replay by default. The replay path preserves assistant output item fields such as `phase` when passing output items between tool rounds.
+`OPENAI_PROVIDER=openai` targets `https://api.openai.com/v1`.
+`OPENAI_PROVIDER=cheapvibecode` targets the one-shot WebSocket route
+`wss://cheapvibecode.ru/backend-api/codex/responses` and requires stateless
+response mode. The explicit allowlist prevents an accidental
+base-URL typo from redirecting API credentials and chat/tool data. The
+CheapVibeCode profile omits the optional `truncation:"auto"` field because live
+tool-call probes showed that the gateway otherwise took the slow text-only path;
+it also omits encrypted reasoning replay because that option likewise changed a
+tool call into plain text on the gateway. Stateless continuation replays the
+function calls and outputs while filtering provider reasoning items. The
+application's bounded SQLite context and compaction remain active.
 
-Keep `OPENAI_RESPONSE_STATE_MODE=stateless`; this is the only accepted value. It sends the previous
-`function_call` item together with `function_call_output` and keeps `store=false`.
-Server-side Responses continuation is not a supported deployment mode because
-this project deliberately does not store Responses at the API provider.
+Choose `gpt-5.6-sol` for maximum capability, `gpt-5.6-terra` for a balanced deployment, or `gpt-5.6-luna` for efficient high-volume traffic. The integration uses streaming, function tools, prompt cache keys, and stateless tool-call replay. Stored Responses remain default-off; set `OPENAI_STORE_RESPONSES=true` only when the operator accepts provider retention of chat context and tool data and wants the requests visible at <https://platform.openai.com/logs?api=responses>. The replay path preserves assistant output item fields such as `phase` when passing output items between tool rounds.
+
+Keep `OPENAI_RESPONSE_STATE_MODE=stateless` for the default and rollback path.
+To evaluate provider continuation, set both
+`OPENAI_RESPONSE_STATE_MODE=server` and `OPENAI_STORE_RESPONSES=true`, then
+restart. Server mode reuses only a recent Response id atomically anchored to the
+latest assistant message; any drift, compaction, missing provider state, or
+unexpected history rebuilds from SQLite. The provider chain still counts toward
+input usage, and top-level instructions are resent on every request.
 
 ## EVE-KILL
 

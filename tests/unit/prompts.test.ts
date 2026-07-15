@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildDeveloperPrompt, normalizeResponseLanguage } from '../../src/agent/prompts.js';
 
 describe('buildDeveloperPrompt', () => {
-  it('adds the bounded five-tool orchestration contract only when the feature is enabled', () => {
+  it('adds the bounded nine-tool orchestration contract only when the feature is enabled', () => {
     const capabilities = {
       authenticated: false,
       characterId: null,
@@ -20,9 +20,13 @@ describe('buildDeveloperPrompt', () => {
     expect(enabled).toContain('compare_wormhole_types: exactly one facade call');
     expect(enabled).toContain('scout_systems: 2-4 distinct bounded searches');
     expect(enabled).toContain('kill_activity_summary: 2-4 public targets');
+    expect(enabled).toContain('market_history_summary: 2-4 distinct region/type pairs');
+    expect(enabled).toContain('system_metric_snapshot: 2-4 distinct metrics');
+    expect(enabled).toContain('doctrine_summary: 2-4 distinct corporation/alliance targets');
+    expect(enabled).toContain('dynamic_item_summary: 2-4 distinct dynamic item pairs');
     expect(enabled).toContain('Resolve names to numeric IDs/type IDs directly before');
     expect(enabled).toContain('Never mix tools, retry, loop, discover identifiers, use private ESI, web_search, sde_sql, raw kill tools, or mutate state');
-    expect(enabled).toContain('Use a direct call for a single count, market region, system search, or kill summary');
+    expect(enabled).toContain('Use a direct call for a single count, market region/history, system search/metric, kill/doctrine summary, or dynamic item');
   });
   it('keeps the main prompt compact and focused', () => {
     const prompt = buildDeveloperPrompt({

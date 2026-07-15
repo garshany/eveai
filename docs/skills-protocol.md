@@ -15,8 +15,17 @@ The app uses the official OpenAI Responses API. In the default stateless mode, t
 OPENAI_RESPONSE_STATE_MODE=stateless
 ```
 
-Provider-side continuation is deliberately unsupported because this project
-keeps `store=false` for Responses API requests.
+Provider-side continuation is optional:
+
+```env
+OPENAI_STORE_RESPONSES=true
+OPENAI_RESPONSE_STATE_MODE=server
+```
+
+SQLite remains canonical. The runtime reuses only a recent Response id anchored
+to the exact latest assistant message and cold-replays the active turn when that
+provider state is unavailable. Setting `OPENAI_STORE_RESPONSES=true` alone only
+enables Dashboard Logs; it does not change the state mode.
 
 ## Local Development Skills
 

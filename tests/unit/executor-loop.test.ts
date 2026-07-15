@@ -88,6 +88,7 @@ beforeEach(() => {
   process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
   process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
   process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'false';
+  delete process.env.OPENAI_PROVIDER;
   process.env.OPENAI_REASONING_EFFORT = 'auto';
   process.env.OPENAI_REASONING_MODE = 'standard';
   process.env.AUTH_SECRET_KEY = 'test-secret';
@@ -107,6 +108,7 @@ beforeEach(() => {
 
 afterEach(() => {
   db.close();
+  delete process.env.OPENAI_PROVIDER;
   vi.resetModules();
 });
 
@@ -160,6 +162,85 @@ describe('tool output truncation', () => {
     const truncated = __test__.truncateToolOutput(output);
     expect(truncated.length).toBeLessThanOrEqual(12_000);
     expect(() => JSON.parse(truncated)).not.toThrow();
+  });
+});
+
+describe('client tool search loop', () => {
+  function toolSearchCall(
+    callId: string,
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      type: 'tool_search_call',
+      id: `ts_${callId}`,
+      call_id: callId,
+      status: 'completed',
+      execution: 'client',
+      arguments: { query: 'market history summary', limit: 5 },
+      ...overrides,
+    };
+  }
+
+  function useCheapVibeCode(): void {
+    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+    vi.resetModules();
+  }
+
+  it('replays a valid client search call and its exact call-id output before continuing', async () => {
+    useCheapVibeCode();
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([toolSearchCall('search_1')]))
+      .mockResolvedValueOnce(textResponse('нашёл подходящий tool'));
+
+    expect((await runLoop()).text).toBe('нашёл подходящий tool');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(2);
+    const continuation = createNativeResponseMock.mock.calls[1][0].items as Array<Record<string, unknown>>;
+    const callIndex = continuation.findIndex((item) => item.type === 'tool_search_call');
+    const outputIndex = continuation.findIndex((item) => item.type === 'tool_search_output');
+    expect(callIndex).toBeGreaterThanOrEqual(0);
+    expect(outputIndex).toBeGreaterThan(callIndex);
+    expect(continuation[outputIndex]).toMatchObject({
+      type: 'tool_search_output',
+      call_id: 'search_1',
+      status: 'completed',
+      execution: 'client',
+    });
+    expect(JSON.stringify(continuation[outputIndex])).toContain('market_history_summary');
+    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 0 });
+  });
+
+  it.each([
+    {
+      label: 'mixed ordinary and search calls',
+      output: [
+        toolSearchCall('mixed_search'),
+        { type: 'function_call', call_id: 'mixed_sql', name: 'sde_sql', arguments: '{"sql":"SELECT 1"}' },
+      ],
+    },
+    {
+      label: 'duplicate call ids',
+      output: [toolSearchCall('duplicate'), toolSearchCall('duplicate')],
+    },
+    {
+      label: 'more than four calls',
+      output: [1, 2, 3, 4, 5].map((index) => toolSearchCall(`budget_${index}`)),
+    },
+    {
+      label: 'provider-owned execution mode',
+      output: [toolSearchCall('wrong_execution', { execution: 'server' })],
+    },
+    {
+      label: 'missing call id',
+      output: [toolSearchCall('missing_id', { call_id: '' })],
+    },
+  ])('fails closed on $label before any tool dispatch', async ({ output }) => {
+    useCheapVibeCode();
+    createNativeResponseMock.mockResolvedValueOnce(outputResponse(output));
+
+    const result = await runLoop();
+    expect(result.text).toBe('Не удалось безопасно выполнить локальный поиск tools. Попробуй ещё раз.');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 0 });
   });
 });
 
@@ -404,6 +485,126 @@ describe('stateless tool loop context accumulation', () => {
     const persisted = JSON.stringify(db.prepare("SELECT content FROM messages WHERE role = 'tool'").all());
     expect(persisted).not.toContain('10000002');
     expect(persisted).not.toContain('10000043');
+  });
+
+  it.each([
+    {
+      label: 'market-history windows',
+      tool: 'market_history_summary',
+      first: { region_id: 10000002, type_id: 34, days: 30 },
+      second: { region_id: 10000043, type_id: 34, days: 90 },
+    },
+    {
+      label: 'system-id ordering',
+      tool: 'system_metric_snapshot',
+      first: { metric: 'kills', system_ids: [30000142, 30002187] },
+      second: { metric: 'jumps', system_ids: [30002187, 30000142] },
+    },
+    {
+      label: 'doctrine comparison settings',
+      tool: 'doctrine_summary',
+      first: {
+        entity_id: 99000001,
+        entity_type: 'alliance',
+        from: '2026-07-01T00:00:00.000Z',
+        to: '2026-07-10T00:00:00.000Z',
+        top: 2,
+      },
+      second: {
+        entity_id: 99000002,
+        entity_type: 'alliance',
+        from: '2026-07-01T00:00:00.000Z',
+        to: '2026-07-10T00:00:00.000Z',
+        top: 3,
+      },
+    },
+    {
+      label: 'dynamic attribute ordering',
+      tool: 'dynamic_item_summary',
+      first: { type_id: 49726, item_id: 1000000001, attribute_ids: [9, 37] },
+      second: { type_id: 49727, item_id: 1000000002, attribute_ids: [37, 9] },
+    },
+  ])('rejects incoherent $label atomically before dispatch', async ({ tool, first, second }) => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    const caller = { type: 'program', caller_id: `prog_${tool}` };
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([
+        { type: 'program', call_id: caller.caller_id, code: 'hosted' },
+        {
+          type: 'function_call', call_id: `${tool}_1`, name: tool,
+          arguments: JSON.stringify(first), caller,
+        },
+        {
+          type: 'function_call', call_id: `${tool}_2`, name: tool,
+          arguments: JSON.stringify(second), caller,
+        },
+      ]))
+      .mockResolvedValueOnce(textResponse('rejected safely'));
+    const activity: Array<{ type: string }> = [];
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+
+    expect((await runWithActivitySink(
+      { emit: (event) => activity.push(event) },
+      () => runLoop(),
+    )).text).toBe('rejected safely');
+    expect(activity.filter((event) => event.type === 'tool_start')).toHaveLength(0);
+    const continuation = createNativeResponseMock.mock.calls[1][0].items as Array<Record<string, unknown>>;
+    const outputs = continuation.filter((item) => item.type === 'function_call_output');
+    expect(outputs).toHaveLength(2);
+    expect(outputs.every((item) => String(item.output).includes('one coherent shape'))).toBe(true);
+  });
+
+  it.each([
+    {
+      tool: 'market_history_summary',
+      calls: [
+        { region_id: 10000002, type_id: 34, days: 90 },
+        { region_id: 10000043, type_id: 34, days: 90 },
+      ],
+    },
+    {
+      tool: 'system_metric_snapshot',
+      calls: [
+        { metric: 'kills', system_ids: [30000142, 30002187] },
+        { metric: 'jumps', system_ids: [30000142, 30002187] },
+      ],
+    },
+    {
+      tool: 'doctrine_summary',
+      calls: [
+        { entity_id: 99000001, entity_type: 'alliance', from: '2026-07-01T00:00:00.000Z', to: '2026-07-10T00:00:00.000Z', top: 5 },
+        { entity_id: 99000002, entity_type: 'alliance', from: '2026-07-01T00:00:00.000Z', to: '2026-07-10T00:00:00.000Z', top: 5 },
+      ],
+    },
+    {
+      tool: 'dynamic_item_summary',
+      calls: [
+        { type_id: 49726, item_id: 1000000001, attribute_ids: [9, 37] },
+        { type_id: 49727, item_id: 1000000002, attribute_ids: [9, 37] },
+      ],
+    },
+  ])('reserves a coherent two-call $tool program', async ({ tool, calls }) => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const caller = { type: 'program', caller_id: `prog_${tool}` };
+    const extracted = calls.map((args, index) => ({
+      callId: `${tool}_${index}`,
+      name: tool,
+      argumentsText: JSON.stringify(args),
+      caller,
+    }));
+
+    const result = __test__.validateProgrammaticBatch(
+      extracted,
+      new Set([caller.caller_id]),
+      0,
+      new Map(),
+    );
+    expect(result.reservedProgrammaticCalls).toBe(2);
+    expect(result.rejections.filter(Boolean)).toHaveLength(0);
+    expect(result.normalizedArgs.filter(Boolean)).toHaveLength(2);
   });
 
   it('rejects mixed eligible tool families for one program without dispatch', async () => {
@@ -653,6 +854,94 @@ describe('stateless tool loop context accumulation', () => {
     }
   });
 
+  it.each([false, true])(
+    'keeps direct bounded public facades callable and redacts audit values when PTC enabled=%s',
+    async (programmaticEnabled) => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = String(programmaticEnabled);
+    vi.resetModules();
+    const calls = [
+      ['market_history_summary', { region_id: 10000002, type_id: 34, days: 7 }],
+      ['system_metric_snapshot', { metric: 'kills', system_ids: [30000142, 30002187], extra: 44 }],
+      ['doctrine_summary', {
+        scope: 'alliance', id: 1354830081, from: '2026-07-01T00:00:00.000Z',
+        to: '2026-07-02T00:00:00.000Z', top: 0,
+      }],
+      ['dynamic_item_summary', { type_id: 49722, item_id: 987654321, attribute_ids: [] }],
+    ].map(([name, args], index) => ({
+      type: 'function_call',
+      call_id: `facade_${index}`,
+      name,
+      arguments: JSON.stringify(args),
+    }));
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse(calls))
+      .mockResolvedValueOnce(textResponse('redacted'));
+
+    expect((await runLoop()).text).toBe('redacted');
+    const rows = db.prepare(
+      "SELECT content FROM messages WHERE thread_id = ? AND role = 'tool' ORDER BY id",
+    ).all('t1') as Array<{ content: string }>;
+    expect(rows).toHaveLength(4);
+    const audits = rows.map((row) => JSON.parse(row.content) as Record<string, unknown>);
+    expect(audits.map((audit) => audit.tool)).toEqual(calls.map((call) => call.name));
+    for (const audit of audits) {
+      const args = audit.args as Record<string, unknown>;
+      expect(args).toEqual({ classification: 'bounded-public-read' });
+    }
+    const persisted = JSON.stringify(audits);
+    for (const privateValue of ['10000002', '30000142', '1354830081', '987654321']) {
+      expect(persisted).not.toContain(privateValue);
+    }
+    },
+  );
+
+  it('persists only bounded metadata for a successful direct facade result', async () => {
+    process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
+    vi.resetModules();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([{
+      system_id: 30000142,
+      ship_kills: 7,
+      npc_kills: 11,
+      pod_kills: 3,
+    }]), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        expires: new Date(Date.now() + 60_000).toUTCString(),
+      },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([{
+        type: 'function_call',
+        call_id: 'facade_success',
+        name: 'system_metric_snapshot',
+        arguments: JSON.stringify({ metric: 'kills', system_ids: [30000142] }),
+      }]))
+      .mockResolvedValueOnce(textResponse('bounded'));
+
+    try {
+      expect((await runLoop()).text).toBe('bounded');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const row = db.prepare(
+        "SELECT content FROM messages WHERE thread_id = ? AND role = 'tool'",
+      ).get('t1') as { content: string };
+      const audit = JSON.parse(row.content) as Record<string, unknown>;
+      expect(audit).toMatchObject({
+        tool: 'system_metric_snapshot',
+        args: { classification: 'bounded-public-read' },
+        result: { ok: true, blocked: false, schema_valid: true },
+      });
+      expect((audit.result as Record<string, unknown>).output_chars).toEqual(expect.any(Number));
+      expect(row.content).not.toContain('30000142');
+      expect(row.content).not.toContain('ship_kills');
+      expect(row.content).not.toContain('npc_kills');
+      expect(row.content).not.toContain('pod_kills');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('caps local EVE-KILL analytics at four calls per turn', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
       jsonrpc: '2.0',
@@ -756,6 +1045,133 @@ describe('stateless tool loop context accumulation', () => {
 
     const persisted = db.prepare('SELECT content FROM messages ORDER BY id').all() as Array<{ content: string }>;
     expect(JSON.stringify(persisted)).not.toContain('opaque-reasoning-must-stay-in-memory');
+  });
+});
+
+describe('server-side Responses continuation', () => {
+  beforeEach(() => {
+    process.env.OPENAI_RESPONSE_STATE_MODE = 'server';
+    process.env.OPENAI_STORE_RESPONSES = 'true';
+    vi.resetModules();
+  });
+
+  it('retries transport failures with the exact same previous response and input', async () => {
+    createNativeResponseMock
+      .mockResolvedValueOnce({ ...toolCallResponse('call_1', 'SELECT 1'), status: 'completed' })
+      .mockRejectedValueOnce(new Error('socket hang up'))
+      .mockResolvedValueOnce({ ...textResponse('готово'), status: 'completed' });
+
+    const result = await runLoop();
+
+    expect(result.text).toBe('готово');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(3);
+    expect(createNativeResponseMock.mock.calls[2][0].previousResponseId)
+      .toBe(createNativeResponseMock.mock.calls[1][0].previousResponseId);
+    expect(createNativeResponseMock.mock.calls[2][0].items)
+      .toEqual(createNativeResponseMock.mock.calls[1][0].items);
+  });
+
+  it('replays the exact active turn after explicit provider state loss', async () => {
+    createNativeResponseMock
+      .mockResolvedValueOnce({ ...toolCallResponse('call_1', 'SELECT 1'), status: 'completed' })
+      .mockResolvedValueOnce(errorResponse('response_state_missing'))
+      .mockResolvedValueOnce({ ...textResponse('восстановлено'), status: 'completed' });
+
+    const result = await runLoop();
+
+    expect(result.text).toBe('восстановлено');
+    const chained = createNativeResponseMock.mock.calls[1][0];
+    const recovered = createNativeResponseMock.mock.calls[2][0];
+    expect(chained.previousResponseId).toBe('resp_call_1');
+    expect(recovered.previousResponseId).toBeNull();
+    const replay = JSON.stringify(recovered.items);
+    expect(replay).toContain(GOAL);
+    expect(replay).toContain('call_1');
+    expect(replay).toContain('function_call_output');
+  });
+
+  it('does not dispatch a server-side function call without a completed response id', async () => {
+    createNativeResponseMock.mockResolvedValueOnce({
+      ...toolCallResponse('call_unanchored', 'SELECT 1'),
+      id: null,
+      status: 'completed',
+    });
+
+    const result = await runLoop();
+
+    expect(result.text).toContain('provider did not return response id');
+    const toolRows = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get() as { n: number };
+    expect(toolRows.n).toBe(0);
+  });
+
+  it('stores the final response id atomically with its assistant-message anchor', async () => {
+    createNativeResponseMock.mockResolvedValueOnce({ ...textResponse('anchored'), status: 'completed' });
+
+    await runLoop();
+
+    const row = db.prepare(
+      `SELECT t.last_response_id, t.last_response_message_id, m.content
+       FROM agent_threads t
+       LEFT JOIN messages m ON m.id = t.last_response_message_id
+       WHERE t.thread_id = ?`,
+    ).get('t1') as {
+      last_response_id: string | null;
+      last_response_message_id: number | null;
+      content: string | null;
+    };
+    expect(row).toMatchObject({ last_response_id: 'resp_final', content: 'anchored' });
+    expect(row.last_response_message_id).not.toBeNull();
+  });
+
+  it('stores the latest server-chain input size instead of double-counting it', async () => {
+    db.prepare('UPDATE agent_threads SET total_tokens = 9000 WHERE thread_id = ?').run('t1');
+    createNativeResponseMock.mockResolvedValueOnce({ ...textResponse('sized'), status: 'completed' });
+    const { handleAgentMessage } = await import('../../src/agent/executor.js');
+
+    await handleAgentMessage(db as never, 't1', { userId: 1, chatId: 1 }, GOAL);
+
+    const row = db.prepare('SELECT total_tokens FROM agent_threads WHERE thread_id = ?').get('t1') as { total_tokens: number };
+    expect(row.total_tokens).toBe(1200);
+  });
+
+  it('reuses a completed write result when cold recovery repeats the same call', async () => {
+    const watchArgs = JSON.stringify({
+      action: 'watch',
+      topic_type: 'system',
+      topic_id: 30000142,
+      label: 'Jita',
+    });
+    const watchCall = (callId: string) => ({
+      ...outputResponse([{
+        type: 'function_call', call_id: callId, name: 'kill_watch', arguments: watchArgs,
+      }], `resp_${callId}`),
+      status: 'completed',
+    });
+    createNativeResponseMock
+      .mockResolvedValueOnce(watchCall('watch_1'))
+      .mockResolvedValueOnce(errorResponse('response_state_missing'))
+      .mockResolvedValueOnce(watchCall('watch_2'))
+      .mockResolvedValueOnce({ ...textResponse('watch ready'), status: 'completed' });
+    const starts: string[] = [];
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+
+    const result = await runWithActivitySink(
+      { emit: (event) => { if (event.type === 'tool_start') starts.push(event.name); } },
+      () => __test__.runNativeAgentLoop(
+        db as never,
+        't1',
+        { userId: 1, chatId: 1 },
+        GOAL,
+        'developer prompt',
+        () => 'developer prompt',
+      ),
+    );
+
+    expect(result.text).toBe('watch ready');
+    expect(starts.filter((name) => name === 'kill_watch')).toHaveLength(1);
+    const watches = db.prepare('SELECT COUNT(*) AS n FROM kill_watches').get() as { n: number };
+    expect(watches.n).toBe(1);
   });
 });
 

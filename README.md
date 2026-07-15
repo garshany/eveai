@@ -15,12 +15,13 @@ This repository is designed for operators to run their own instance in a termina
 
 ## v3.3.0 public release
 
-v3.3 adds default-off Programmatic Tool Calling for five bounded public-read
-facades: static counts, multi-region market prices, wormhole-type comparisons,
-system scouting, and compact kill-activity summaries. The application enforces
-caller linkage, homogeneous programs, work budgets, output schemas, and
-fail-closed exclusions for private ESI, SQL, writes, raw kill detail, web, and
-every unlisted tool. The v3 self-hosting contract remains unchanged.
+v3.3 introduced default-off Programmatic Tool Calling for five bounded
+public-read facades. The current runtime expands that exact allowlist to nine by
+adding compact market-history, system-metric, doctrine, and dynamic-item
+summaries. The application enforces caller linkage, homogeneous programs, work
+budgets, output schemas, and fail-closed exclusions for private ESI, SQL,
+writes, raw backing payloads, web, and every unlisted tool. The v3 self-hosting
+contract remains unchanged.
 
 For a public SSO callback, use HTTPS, set the callback URL exactly in the EVE Developer Portal, generate a strong `AUTH_SECRET_KEY`, give ESI a reachable operator contact, and keep `.env` plus `data/` on the host only. The detailed production checklist is in [docs/deployment.md](./docs/deployment.md).
 
@@ -95,8 +96,11 @@ Minimum local `.env` values (at least one bot token is required):
 ```env
 TELEGRAM_BOT_TOKEN=...        # and/or DISCORD_BOT_TOKEN
 DISCORD_BOT_TOKEN=...
+OPENAI_PROVIDER=openai
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-5.6-sol
+OPENAI_RESPONSE_STATE_MODE=stateless
+OPENAI_STORE_RESPONSES=false
 OPENAI_PROGRAMMATIC_TOOL_CALLING=false
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
@@ -121,8 +125,11 @@ openssl rand -base64 32
 
 Model defaults:
 
+- `OPENAI_PROVIDER=openai` uses the official OpenAI HTTP/SSE endpoint. `cheapvibecode` selects the fixed CheapVibeCode Codex Responses WebSocket endpoint; arbitrary `OPENAI_BASE_URL` overrides remain disabled.
 - `OPENAI_MODEL=gpt-5.6-sol` is the quality-first default. Use `gpt-5.6-terra` for a capability/cost balance or `gpt-5.6-luna` for latency-sensitive, high-volume deployments. The `gpt-5.6` alias routes to Sol.
-- `OPENAI_PROGRAMMATIC_TOOL_CALLING=false` keeps the default direct-tool path. Setting it to `true` opts into provider-entitled hosted programs for exactly five bounded public-read tools: static counts, batch market prices, wormhole-type comparisons, Scout system searches, and compact kill-activity summaries. Restart after changing it. See [OpenAI integration](./docs/openai-integration.md) for schemas, budgets, exclusions, real smoke matrices, and rollback.
+- `OPENAI_PROGRAMMATIC_TOOL_CALLING=false` keeps the default direct-tool path. Setting it to `true` opts into provider-entitled hosted programs for exactly nine bounded public-read tools: static counts, batch market prices, wormhole-type comparisons, Scout system searches, compact kill-activity summaries, market-history summaries, system-metric snapshots, doctrine summaries, and dynamic-item summaries. Restart after changing it. See [OpenAI integration](./docs/openai-integration.md) for schemas, budgets, exclusions, real smoke matrices, and rollback.
+- `OPENAI_RESPONSE_STATE_MODE=stateless` is the default and rollback path. `server` reuses `previous_response_id`, requires `OPENAI_STORE_RESPONSES=true`, and falls back to canonical SQLite history if the provider state is missing or no longer matches its anchored assistant message.
+- `OPENAI_STORE_RESPONSES=false` keeps provider-side Response logs opt-in. Set it to `true` to inspect requests in [OpenAI Responses Logs](https://platform.openai.com/logs?api=responses); storage alone does not switch the state mode.
 - `OPENAI_REASONING_EFFORT=auto` preserves EVE Agent's goal-based `low|medium|high` routing. Set `none`, `low`, `medium`, `high`, `xhigh`, or `max` to override it globally.
 - `OPENAI_REASONING_MODE=standard` is the normal path. Set `pro` only for difficult quality-first workloads that justify higher latency and token use; Pro is a mode, not a separate model name.
 - `OPENAI_TEXT_VERBOSITY=low` keeps chat answers compact; set `medium` if your community wants longer explanations.
@@ -223,7 +230,7 @@ npm start              # run built app: node dist/app.js
 npm run check          # typecheck + tests + lint
 npm test               # vitest
 npm run smoke          # env, model endpoint, app health checks
-npm run smoke:openai   # authenticated /v1/responses probe
+npm run smoke:openai   # authenticated provider-aware Responses probe
 npm run smoke:eve-tool # authenticated model + EVE SDE tool probe
 npm run update:check   # read-only latest stable release check
 npm run db:migrate     # run SQLite migrations

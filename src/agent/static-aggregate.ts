@@ -315,6 +315,6 @@ function storeAssistantMessage(db: Db, threadId: string, content: string): void 
 
 function saveLastResponseId(db: Db, threadId: string, responseId: string | null): void {
   db.prepare(
-    "UPDATE agent_threads SET last_response_id = ?, updated_at = datetime('now') WHERE thread_id = ?"
+    "UPDATE agent_threads SET last_response_id = ?, last_response_message_id = NULL, updated_at = datetime('now') WHERE thread_id = ?"
   ).run(responseId, threadId);
 }
