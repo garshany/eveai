@@ -67,7 +67,10 @@ describe('runMigrations', () => {
     const cols = (legacyDb.prepare('PRAGMA table_info(agent_threads)').all() as Array<{ name: string }>).map((c) => c.name);
     expect(cols).toContain('user_id');
     expect(cols).toContain('last_response_message_id');
-    expect(legacyDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='web_sessions'").get()).toBeUndefined();
+    expect(legacyDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='web_sessions'").get()).toBeDefined();
+    const webColumns = (legacyDb.prepare('PRAGMA table_info(web_sessions)').all() as Array<{ name: string }>).map((column) => column.name);
+    expect(webColumns).toContain('session_hash');
+    expect(webColumns).toContain('csrf_hash');
     const link = legacyDb.prepare('SELECT user_id FROM eve_character_links WHERE chat_id = 1001').get() as { user_id: number | null };
     expect(link.user_id).toBeGreaterThan(0);
     legacyDb.close();

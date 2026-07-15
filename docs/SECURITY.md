@@ -25,7 +25,9 @@
 - a bot-issued `/auth/eve/login?state=...` link validates a one-time EVE SSO state before it redirects to CCP
 - the EVE callback accepts only a live `auth_requests` state and marks it used before exchanging tokens
 - EVE SSO access and refresh tokens are encrypted before local storage
-- browser success/error pages do not create a dashboard session or expose bearer tokens
+- browser sessions are opaque HttpOnly cookies stored in SQLite only as keyed hashes; provider and EVE bearer tokens are never returned
+- browser mutations require both an exact configured origin and a matching hashed CSRF token
+- EVE SSO state remains one-time and binds the browser user/chat lane before returning to `/app`
 
 ## Runtime Isolation
 
@@ -52,14 +54,22 @@
 
 ## Abuse Controls
 
-- Telegram and Discord ingress allow only one active agent request per chat lane at a time
-- recent Telegram and Discord request rate is bounded per user or chat lane in-process; the shared settings retain `TELEGRAM_*` names for compatibility
-- a global in-process ceiling limits concurrent active Telegram and Discord requests and fails closed with a user-facing overload message
+- every chat adapter allows only one active agent request per chat lane at a time
+- recent requests are bounded per user/chat lane in-process; the shared settings retain `TELEGRAM_*` names for compatibility
+- a global in-process ceiling limits concurrent model requests and fails closed with a user-facing overload message
+- anonymous browser-session creation is bounded per effective client IP before persistent rows are created
+- browser lanes reuse an existing empty thread, cap durable conversation count,
+  and retain only one pending EVE SSO request per user/lane
+- browser contexts have notification capability `none`: durable heartbeat,
+  kill-watch, and route monitoring cannot create undeliverable push state
 
 ## Data Retention
 
 - unlinking a character removes the generated `USER.md` artifact for that user/chat and drops retained encrypted token material when no active links remain
 - stale profile artifacts are also deleted when ownership is reassigned away from a previously linked user
+- browser logout and session expiry purge browser-only history, links, encrypted
+  EVE credentials, and profile artifacts; data owned by another live platform
+  identity is retained
 
 ## Current Gaps
 

@@ -126,10 +126,18 @@ Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integratio
 
 ### `src/web/`
 
-- `server.ts`: Fastify server assembly (SSO login redirect/callback + health only)
+- `server.ts`: Fastify assembly for security headers, SSO, health, browser APIs, and built app assets
+- `web-session.ts`: opaque session, CSRF, reserved browser chat lanes, expiry, and creation admission
+- `chat-routes.ts`: isolated browser conversations, characters, and shared agent-loop adapter
 - `auth-routes.ts`: one-time EVE SSO login redirect, OAuth callback, and `/callback` alias
 - `health.ts`: runtime/dependency health endpoint for both bot platforms
 - `security.ts`: security headers
+
+### `web/`
+
+- `src/`: React chat client, safe Markdown rendering, responsive shell, and API adapter
+- `public/assets/`: generated production visual assets
+- `vite.config.ts`: `/web-assets/` production base and same-origin development proxy
 
 ## Tests
 

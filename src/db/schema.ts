@@ -70,6 +70,20 @@ CREATE TABLE IF NOT EXISTS telegram_sessions (
   last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Browser-only identities use opaque, keyed-hash sessions and a chat-id range
+-- reserved away from Telegram (>0), CLI (0), and Discord (-1, -2, ...).
+CREATE TABLE IF NOT EXISTS web_sessions (
+  session_hash TEXT PRIMARY KEY,
+  csrf_hash    TEXT NOT NULL,
+  user_id      INTEGER NOT NULL REFERENCES users(user_id),
+  chat_id      INTEGER NOT NULL UNIQUE REFERENCES telegram_sessions(chat_id),
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
+
 CREATE TABLE IF NOT EXISTS agent_threads (
   thread_id  TEXT PRIMARY KEY,
   chat_id    INTEGER NOT NULL REFERENCES telegram_sessions(chat_id),

@@ -16,6 +16,9 @@ const TEST_ENV_DEFAULTS: Record<string, string> = {
   OPENAI_PROVIDER: 'openai',
   OPENAI_STORE_RESPONSES: 'false',
   OPENAI_PROGRAMMATIC_TOOL_CALLING: 'false',
+  WEB_BASE_URL: 'http://localhost:3000',
+  WEB_CHAT_ENABLED: 'true',
+  WEB_SESSION_TTL_HOURS: '720',
 };
 
 for (const [key, value] of Object.entries(TEST_ENV_DEFAULTS)) {

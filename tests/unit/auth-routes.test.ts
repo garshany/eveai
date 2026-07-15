@@ -238,6 +238,72 @@ describe('auth routes', () => {
     await app.close();
   });
 
+  it('merges a browser SSO lane into the existing character owner without stealing other channel links', async () => {
+    const app = Fastify();
+    registerAuthRoutes(app, db);
+    db.prepare("INSERT INTO users (user_id, display_name) VALUES (1, 'Telegram Pilot'), (2, 'Web capsuleer')").run();
+    db.prepare(`
+      INSERT INTO telegram_accounts (telegram_user_id, user_id, username, first_name)
+      VALUES (111, 1, 'telegram', 'Pilot')
+    `).run();
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (111, 'telegram'), (-2000000000, 'web')").run();
+    db.prepare(`
+      INSERT INTO web_sessions (
+        session_hash, csrf_hash, user_id, chat_id, created_at, last_seen_at, expires_at
+      ) VALUES ('h1:web-session', 'h1:csrf', 2, -2000000000, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
+    `).run();
+    db.prepare(`
+      INSERT INTO eve_accounts (
+        character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id
+      ) VALUES (95465501, 'Shared Pilot', 'enc:old-a', 'enc:old-r', datetime('now', '+1 hour'), '[]', 1)
+    `).run();
+    db.prepare(`
+      INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (111, 95465501, 1)
+    `).run();
+    const state = createAuthRequestToken(db, 'eve_sso', 2, {
+      chatId: -2_000_000_000,
+      redirectUrl: '/app',
+      ttlSeconds: 600,
+    });
+
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        access_token: 'web-access',
+        refresh_token: 'web-refresh',
+        expires_in: 1200,
+        token_type: 'Bearer',
+      }),
+    });
+    jwtVerifyMock.mockResolvedValue({
+      payload: {
+        sub: 'CHARACTER:EVE:95465501',
+        name: 'Shared Pilot',
+        scp: ['esi-location.read_location.v1'],
+        aud: ['test-client', 'EVE Online'],
+      },
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
+    });
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe('/app?auth=connected');
+    expect(db.prepare('SELECT user_id FROM web_sessions WHERE chat_id = -2000000000').get())
+      .toEqual({ user_id: 1 });
+    expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeUndefined();
+    expect(db.prepare(`
+      SELECT chat_id, user_id FROM eve_character_links WHERE character_id = 95465501 ORDER BY chat_id
+    `).all()).toEqual([
+      { chat_id: -2_000_000_000, user_id: 1 },
+      { chat_id: 111, user_id: 1 },
+    ]);
+    expect(db.prepare('SELECT user_id FROM eve_accounts WHERE character_id = 95465501').get())
+      .toEqual({ user_id: 1 });
+    await app.close();
+  });
+
   it('GET /auth/eve/callback does not leak internal error details', async () => {
     const app = Fastify();
     registerAuthRoutes(app, db);

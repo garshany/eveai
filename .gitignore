@@ -18,6 +18,13 @@ output/
 *.png
 *.jpg
 *.jpeg
+# Checked-in visual specification and the single generated web background.
+!docs/design/
+!docs/design/web-chat/
+!docs/design/web-chat/*.png
+!web/public/
+!web/public/assets/
+!web/public/assets/*.png
 *.db
 *.db-journal
 *.db-wal

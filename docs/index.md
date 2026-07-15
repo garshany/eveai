@@ -30,6 +30,7 @@ Read the smallest document that answers the current question. Start here, then d
 - [eve-kill.md](./eve-kill.md): current EVE-KILL REST/feed, locally wrapped MCP analytics, bounded doctrine projection, source ownership, and route handoff
 - [eve-scout.md](./eve-scout.md): bounded EVE-Scout wormhole/system contracts, cache freshness, and programmatic boundary
 - [openai-integration.md](./openai-integration.md): stateless Responses loop, exact nine-tool Programmatic Tool Calling boundary, and local function/MCP privacy model
+- [product-specs/browser-sso.md](./product-specs/browser-sso.md): browser chat, opaque sessions, SSO, provider, and isolation contract
 - [product-specs/update-management.md](./product-specs/update-management.md): bounded release checks and the local-operator update boundary
 
 ## Indexed Subtrees

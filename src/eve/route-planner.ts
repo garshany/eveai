@@ -226,7 +226,10 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     releaseCaptureBarrier = resolve;
     rejectCaptureBarrier = reject;
   });
-  const unsubscribeFeedCapture = routeMonitorSender && args.set_autopilot !== false && ctx.chatId !== undefined
+  const unsubscribeFeedCapture = routeMonitorSender
+    && args.set_autopilot !== false
+    && ctx.chatId !== undefined
+    && ctx.notificationCapability !== 'none'
     ? subscribeEveKillFeed(async (event) => {
       if (!event.killmail.solarSystemId || !allSystemIds.has(event.killmail.solarSystemId)) return;
       if (capturedFeedEvents.length >= 2_500) {
@@ -410,7 +413,9 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     // Requires a real chat lane: a bare userId is not a valid outbound
     // address and would misroute monitor alerts.
     if (autopilotSet && routeMonitorSender && !isTurnAborted()) {
-      if (ctx.chatId === undefined) {
+      if (ctx.notificationCapability === 'none') {
+        console.warn('[plan_route] skipping route monitor: notifications unavailable for this chat lane');
+      } else if (ctx.chatId === undefined) {
         console.warn('[plan_route] skipping route monitor: no chat lane in context');
       } else {
         try {

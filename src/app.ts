@@ -16,9 +16,9 @@ async function main() {
     process.exit(1);
   }
 
-  if (!config.telegram.botToken && !config.discord.botToken) {
-    log.error('Не задан ни TELEGRAM_BOT_TOKEN, ни DISCORD_BOT_TOKEN — боту не с кем разговаривать.');
-    log.error('Заполни хотя бы один токен в .env и перезапусти.');
+  if (!config.telegram.botToken && !config.discord.botToken && !config.web.chatEnabled) {
+    log.error('Не задан канал общения: Telegram/Discord выключены и WEB_CHAT_ENABLED=false.');
+    log.error('Включи хотя бы один bot token или WEB_CHAT_ENABLED=true и перезапусти.');
     process.exit(1);
   }
 
@@ -172,16 +172,21 @@ async function main() {
       });
   }
 
-  // 5. Notification producers route through the platform-aware dispatcher.
-  setRouteMonitorSender(deliverOutbound);
-  startHeartbeat(db);
-  // The poller establishes a missing cursor first, then synchronously restores
-  // route listeners before processing any later event. Existing cursors restore
-  // listeners before the first resumed poll. This closes the baseline/head gap.
-  startEveKillFeedPoller(db, deliverOutbound, {
-    canDeliver: isOutboundAvailable,
-    onReady: () => restoreMonitors(db, deliverOutbound, isOutboundAvailable),
-  });
+  // 5. Notification producers need a live push-capable platform. The browser
+  // chat currently uses request/response delivery, so web-only mode must not
+  // poll feeds or start background notifications that have nowhere to go.
+  const hasOutboundPlatform = Boolean(config.telegram.botToken || config.discord.botToken);
+  if (hasOutboundPlatform) {
+    setRouteMonitorSender(deliverOutbound);
+    startHeartbeat(db);
+    // The poller establishes a missing cursor first, then synchronously restores
+    // route listeners before processing any later event. Existing cursors restore
+    // listeners before the first resumed poll. This closes the baseline/head gap.
+    startEveKillFeedPoller(db, deliverOutbound, {
+      canDeliver: isOutboundAvailable,
+      onReady: () => restoreMonitors(db, deliverOutbound, isOutboundAvailable),
+    });
+  }
 
   const version = getAppVersion();
   const rows: BannerRow[] = [
@@ -191,7 +196,12 @@ async function main() {
       value: sdeSystems > 0 ? `${sdeSystems} systems loaded` : 'missing — run: npm run setup',
       state: sdeSystems > 0 ? 'ok' : 'warn',
     },
-    { label: 'HTTP', value: `http://${config.server.host}:${config.server.port} (SSO callback + /health)`, state: 'ok' },
+    { label: 'HTTP', value: `http://${config.server.host}:${config.server.port} (SSO + /health${config.web.chatEnabled ? ' + /app' : ''})`, state: 'ok' },
+    {
+      label: 'Web chat',
+      value: config.web.chatEnabled ? 'same-origin /app' : 'disabled (WEB_CHAT_ENABLED=false)',
+      state: config.web.chatEnabled ? 'ok' : 'off',
+    },
     {
       label: 'Telegram',
       value: config.telegram.botToken ? 'long polling' : 'disabled (no TELEGRAM_BOT_TOKEN)',
@@ -203,12 +213,12 @@ async function main() {
       state: config.discord.botToken ? 'ok' : 'off',
     },
     {
-      label: 'OpenAI',
-      value: `${config.openai.model} · reasoning ${config.openai.reasoningEffort}/${config.openai.reasoningMode} · verbosity ${config.openai.textVerbosity}`,
+      label: 'Model',
+      value: `${config.openai.providerName} · ${config.openai.model} · reasoning ${config.openai.reasoningEffort}/${config.openai.reasoningMode} · verbosity ${config.openai.textVerbosity}`,
       state: 'ok',
     },
-    { label: 'Heartbeat', value: 'every 5 min', state: 'ok' },
-    { label: 'EVE-KILL feed', value: 'durable poll', state: 'ok' },
+    { label: 'Heartbeat', value: hasOutboundPlatform ? 'every 5 min' : 'disabled (no push platform)', state: hasOutboundPlatform ? 'ok' : 'off' },
+    { label: 'EVE-KILL feed', value: hasOutboundPlatform ? 'durable poll' : 'disabled (no push platform)', state: hasOutboundPlatform ? 'ok' : 'off' },
   ];
   printStartupBanner(`EVE AI Agent v${version}`, rows);
 

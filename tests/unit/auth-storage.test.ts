@@ -43,7 +43,7 @@ describe('auth request storage', () => {
     expect(row.state.startsWith('h1:')).toBe(true);
 
     const pending = findPendingAuthRequest(db, 'eve_sso', token);
-    expect(pending).toEqual({ user_id: 1, chat_id: 99, type: 'eve_sso' });
+    expect(pending).toEqual({ user_id: 1, chat_id: 99, type: 'eve_sso', redirect_url: null });
   });
 
   it('consumes SSO states only once', () => {
@@ -71,6 +71,7 @@ describe('auth request storage', () => {
       user_id: 1,
       chat_id: 99,
       type: 'eve_sso',
+      redirect_url: null,
     });
   });
 });

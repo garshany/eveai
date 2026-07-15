@@ -145,6 +145,21 @@ export const config = {
   },
   web: {
     baseUrl: optional('WEB_BASE_URL', 'http://localhost:3000'),
+    chatEnabled: optionalBoolean('WEB_CHAT_ENABLED', false),
+    trustProxy: optionalBoolean('WEB_TRUST_PROXY', false),
+    sessionTtlHours: boundedPositiveInt('WEB_SESSION_TTL_HOURS', 720, 1, 8760),
+    sessionCreationWindowSeconds: boundedPositiveInt(
+      'WEB_SESSION_CREATION_WINDOW_SECONDS',
+      600,
+      60,
+      86400,
+    ),
+    maxSessionCreationsPerWindow: boundedPositiveInt(
+      'WEB_MAX_SESSION_CREATIONS_PER_WINDOW',
+      30,
+      1,
+      1000,
+    ),
   },
   db: {
     path: optional('DB_PATH', './data/eve-agent.db'),

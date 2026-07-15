@@ -57,6 +57,12 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
   app.get<{ Querystring: CallbackQuery }>('/auth/eve/callback', async (req, reply) => {
     const { code, state, error, error_description } = req.query;
     if (error) {
+      const deniedRequest = state ? findPendingAuthRequest(db, 'eve_sso', state) : null;
+      if (deniedRequest && state) {
+        markAuthRequestUsed(db, 'eve_sso', state);
+        const redirect = safeAppRedirect(deniedRequest.redirect_url);
+        if (redirect) return reply.redirect(`${redirect}?auth=denied`);
+      }
       return reply.status(400).send({ error: `SSO error: ${error_description ?? error}` });
     }
     if (!code) {
@@ -73,8 +79,9 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
 
     markAuthRequestUsed(db, 'eve_sso', state);
 
-    const userId = authRequest.user_id;
+    let userId = authRequest.user_id;
     const chatId = authRequest.chat_id ?? null;
+    const appRedirect = safeAppRedirect(authRequest.redirect_url);
 
     try {
       // Exchange code for tokens
@@ -104,6 +111,12 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       const payload = await verifyEveAccessToken(tokens.access_token);
       const characterId = extractCharacterId(payload.sub);
       const scopes = Array.isArray(payload.scp) ? payload.scp : payload.scp ? [payload.scp] : [];
+      userId = resolveBrowserSsoOwner(db, {
+        requestedUserId: userId,
+        chatId,
+        characterId,
+        isBrowserFlow: Boolean(appRedirect),
+      });
 
       // Store in database
       db.prepare(`
@@ -146,9 +159,11 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
 
       log.info('Character linked: %s (%d), %d scopes, user_id=%d', payload.name, characterId, scopes.length, ctx.userId);
 
+      if (appRedirect) return reply.redirect(`${appRedirect}?auth=connected`);
       return reply.type('text/html').send(buildSuccessPage(payload.name, scopes.length));
     } catch (err) {
       log.error('Callback error: %s', err instanceof Error ? err.message : String(err));
+      if (appRedirect) return reply.redirect(`${appRedirect}?auth=error`);
       return reply.status(500).send({ error: 'Authentication failed. Please try /eve_login again.' });
     }
   });
@@ -162,6 +177,12 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     if (req.query.error_description) qs.set('error_description', req.query.error_description);
     return reply.redirect(`/auth/eve/callback?${qs.toString()}`);
   });
+}
+
+function safeAppRedirect(value: string | null): string | null {
+  if (!value) return null;
+  if (value === '/app' || value.startsWith('/app/')) return value;
+  return null;
 }
 
 function buildSuccessPage(characterName: string, scopeCount: number): string {
@@ -233,4 +254,50 @@ async function reassignCharacterOwnership(db: Db, userId: number, characterId: n
   db.prepare('DELETE FROM eve_character_links WHERE character_id = ? AND COALESCE(user_id, 0) != ?')
     .run(characterId, userId);
   db.prepare('UPDATE eve_accounts SET user_id = ? WHERE character_id = ?').run(userId, characterId);
+}
+
+function resolveBrowserSsoOwner(
+  db: Db,
+  input: {
+    requestedUserId: number;
+    chatId: number | null;
+    characterId: number;
+    isBrowserFlow: boolean;
+  },
+): number {
+  if (!input.isBrowserFlow || input.chatId === null) return input.requestedUserId;
+  const browserSession = db.prepare(`
+    SELECT 1
+    FROM web_sessions
+    WHERE user_id = ? AND chat_id = ?
+  `).get(input.requestedUserId, input.chatId);
+  if (!browserSession) throw new Error('Browser SSO session no longer exists');
+
+  const existing = db.prepare(`
+    SELECT user_id
+    FROM eve_accounts
+    WHERE character_id = ? AND user_id IS NOT NULL
+  `).get(input.characterId) as { user_id: number } | undefined;
+  if (!existing || existing.user_id === input.requestedUserId) return input.requestedUserId;
+
+  const alreadyLinked = db.prepare(`
+    SELECT 1 FROM eve_accounts WHERE user_id = ? LIMIT 1
+  `).get(input.requestedUserId);
+  if (alreadyLinked) {
+    throw new Error('Browser identity already owns a different EVE character');
+  }
+
+  const merge = db.transaction(() => {
+    db.prepare('UPDATE web_sessions SET user_id = ? WHERE user_id = ? AND chat_id = ?')
+      .run(existing.user_id, input.requestedUserId, input.chatId);
+    db.prepare('UPDATE agent_threads SET user_id = ? WHERE user_id = ? AND chat_id = ?')
+      .run(existing.user_id, input.requestedUserId, input.chatId);
+    db.prepare('UPDATE intel_notes SET user_id = ? WHERE user_id = ?')
+      .run(existing.user_id, input.requestedUserId);
+    db.prepare('UPDATE auth_requests SET user_id = ? WHERE user_id = ? AND chat_id = ?')
+      .run(existing.user_id, input.requestedUserId, input.chatId);
+    db.prepare('DELETE FROM users WHERE user_id = ?').run(input.requestedUserId);
+  });
+  merge.immediate();
+  return existing.user_id;
 }

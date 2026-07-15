@@ -9,10 +9,10 @@ Recommended baseline:
 - one Node.js process running `dist/app.js`
 - a dedicated unprivileged OS account (the sample unit uses `eveai`)
 - SQLite database on local disk
-- Telegram grammY long polling (not webhooks) and/or a Discord gateway bot
-- Fastify bound to localhost or a private interface; the EVE SSO login redirect and callback need browser reachability
+- Telegram grammY long polling, a Discord gateway bot, and/or the optional browser chat
+- Fastify bound to localhost or a private interface; browser chat and EVE SSO need reverse-proxy reachability
 - optional reverse proxy such as Caddy, nginx, or a platform load balancer for HTTPS on the SSO callback
-- no Redis, Postgres, background workers, queue system, or web frontend
+- no Redis, Postgres, background workers, or external queue system
 
 ## Build
 
@@ -47,6 +47,11 @@ EVE_CLIENT_SECRET=...
 AUTH_SECRET_KEY=...
 EVE_CALLBACK_URL=https://your-domain.example/auth/eve/callback
 WEB_BASE_URL=https://your-domain.example
+WEB_CHAT_ENABLED=true
+WEB_TRUST_PROXY=true
+WEB_SESSION_TTL_HOURS=720
+WEB_SESSION_CREATION_WINDOW_SECONDS=600
+WEB_MAX_SESSION_CREATIONS_PER_WINDOW=30
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
 ESI_USER_AGENT=EVEAI/3.3 (+https://github.com/your-org/eveai; contact=you@example.com)
@@ -110,6 +115,18 @@ tool call into plain text on the gateway. Stateless continuation replays the
 function calls and outputs while filtering provider reasoning items. The
 application's bounded SQLite context and compaction remain active.
 
+The provider selection and `OPENAI_API_KEY` are process-wide operator
+credentials shared by all enabled chat surfaces. The browser never receives
+the key. Each browser visitor gets an isolated opaque session and chat lane,
+while agent concurrency, provider admission, and actor rate limits remain
+server-controlled.
+
+Browser session creation is IP-admitted, each session has a hard conversation
+cap, and only one pending browser SSO request is retained. Logout and expiry
+remove browser-only durable data and encrypted EVE credentials transactionally;
+identities shared with Telegram, Discord, or CLI keep their canonical account
+and character links.
+
 Choose `gpt-5.6-sol` for maximum capability, `gpt-5.6-terra` for a balanced deployment, or `gpt-5.6-luna` for efficient high-volume traffic. The integration uses streaming, function tools, prompt cache keys, and stateless tool-call replay. Stored Responses remain default-off; set `OPENAI_STORE_RESPONSES=true` only when the operator accepts provider retention of chat context and tool data and wants the requests visible at <https://platform.openai.com/logs?api=responses>. The replay path preserves assistant output item fields such as `phase` when passing output items between tool rounds.
 
 Keep `OPENAI_RESPONSE_STATE_MODE=stateless` for the default and rollback path.
@@ -156,7 +173,10 @@ fixed MCP endpoint; it needs no additional token or deployment setting. See
 
 ## Reverse Proxy
 
-A reverse proxy is optional but recommended for serving the EVE SSO callback over HTTPS.
+A reverse proxy is required for a public browser deployment and recommended for
+serving the EVE SSO callback over HTTPS. Set `WEB_TRUST_PROXY=true` only when
+Fastify is directly behind a proxy you control; otherwise an attacker could
+forge the address used by anonymous-session admission limits.
 
 Generic Caddy example:
 

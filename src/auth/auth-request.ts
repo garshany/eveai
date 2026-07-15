@@ -14,6 +14,7 @@ interface AuthRequestRow {
   user_id: number;
   chat_id: number | null;
   type: AuthRequestType;
+  redirect_url: string | null;
 }
 
 const USED_AUTH_REQUEST_RETENTION_HOURS = 24;
@@ -26,6 +27,13 @@ export function createAuthRequestToken(
 ): string {
   cleanExpiredAuthRequests(db);
   const token = randomUUID();
+  db.prepare(`
+    DELETE FROM auth_requests
+    WHERE type = ?
+      AND user_id = ?
+      AND COALESCE(chat_id, 0) = COALESCE(?, 0)
+      AND used_at IS NULL
+  `).run(type, userId, options.chatId ?? null);
   db.prepare(`
     INSERT INTO auth_requests (state, type, user_id, chat_id, redirect_url, created_at, expires_at)
     VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now', '+' || ? || ' seconds'))
@@ -44,7 +52,7 @@ export function findPendingAuthRequest(db: Db, type: AuthRequestType, token: str
   cleanExpiredAuthRequests(db);
   const [protectedToken, legacyToken] = opaqueTokenCandidates(token, authRequestPurpose(type));
   const row = db.prepare(`
-    SELECT user_id, chat_id, type
+    SELECT user_id, chat_id, type, redirect_url
     FROM auth_requests
     WHERE type = ?
       AND state IN (?, ?)

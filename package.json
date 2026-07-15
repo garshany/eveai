@@ -26,18 +26,21 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run web:build",
     "clean": "rm -rf dist",
     "start": "node dist/app.js",
     "dev": "tsx watch src/app.ts",
+    "web:dev": "vite --config web/vite.config.ts",
+    "web:build": "tsc -p web/tsconfig.json --noEmit && vite build --config web/vite.config.ts",
+    "web:check": "tsc -p web/tsconfig.json --noEmit",
     "cli": "tsx src/cli/chat.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src/ --max-warnings 0",
+    "lint": "eslint src/ web/src/ --max-warnings 0",
     "audit:public": "bash scripts/public-artifact-audit.sh",
     "lint:fix": "eslint src/ --fix",
     "typecheck": "tsc --noEmit",
-    "check": "tsc --noEmit && vitest run && npm run lint",
+    "check": "tsc --noEmit && npm run web:check && vitest run && npm run lint",
     "db:migrate": "tsx src/db/migrations.ts",
     "db:diagnose-links": "tsx src/db/diagnose-links.ts",
     "sde:load": "tsx src/eve/sde-loader.ts",
@@ -49,6 +52,8 @@
     "update:check": "tsx src/update/check-cli.ts"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.1",
+    "@fastify/static": "^10.1.0",
     "better-sqlite3": "^12.11.1",
     "croner": "^10.0.1",
     "discord.js": "^14.26.4",
@@ -57,6 +62,8 @@
     "grammy": "^1.44.0",
     "https-proxy-agent": "^9.1.0",
     "jose": "^6.2.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "socks-proxy-agent": "^10.1.0",
     "ws": "^8.21.1"
   },
@@ -64,14 +71,18 @@
     "undici": "6.27.0"
   },
   "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^26.1.0",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.63.0",
     "@typescript-eslint/parser": "^8.63.0",
+    "@vitejs/plugin-react": "^6.0.3",
     "eslint": "^10.6.0",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3",
+    "vite": "^8.1.4",
     "vitest": "^4.1.10"
   }
 }

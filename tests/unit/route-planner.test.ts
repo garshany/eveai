@@ -194,6 +194,26 @@ describe('route planner', () => {
     expect(feedCaptureHarness.unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it('does not subscribe to the global feed or start a monitor for a transient browser lane', async () => {
+    const { planRoute, setRouteMonitorSender } = await import('../../src/eve/route-planner.js');
+    setRouteMonitorSender(async () => {});
+
+    const result = await planRoute(
+      db,
+      {
+        origin: 'current',
+        destination: 'Jita',
+        set_autopilot: true,
+        prefer: 'secure',
+      },
+      { userId: 1, chatId: -2_000_000_000, notificationCapability: 'none' },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(subscribeFeedMock).not.toHaveBeenCalled();
+    expect(startRouteMonitorMock).not.toHaveBeenCalled();
+  });
+
   it('includes the selected Thera legs in the one shared baseline and live handoff', async () => {
     const entrySystemId = 30002662;
     const exitSystemId = 30002663;

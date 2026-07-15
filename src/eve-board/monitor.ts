@@ -196,6 +196,15 @@ export function stopRouteMonitor(chatId: number, reason: StopReason): void {
   console.log(`${LOG} stopped chat=${chatId} reason=${reason} elapsed=${minutes}min`);
 }
 
+/** Detach and delete a monitor without sending to a lane that is being revoked. */
+export function discardRouteMonitor(chatId: number): void {
+  const instance = activeMonitors.get(chatId);
+  if (!instance) return;
+  detachInstance(instance);
+  activeMonitors.delete(chatId);
+  deleteMonitor(instance.db, chatId);
+}
+
 export function getActiveMonitor(chatId: number): RouteMonitor | null {
   return activeMonitors.get(chatId)?.monitor ?? null;
 }
