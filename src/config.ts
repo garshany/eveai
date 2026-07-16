@@ -3,6 +3,7 @@ import {
   parseOptionalEnumEnv,
   parseOptionalIntEnv,
   parseOptionalPositiveIntEnv,
+  parseOptionalStrictBooleanEnv,
   parseRequiredIntEnv,
   readOptionalEnv,
   readRequiredEnv,
@@ -14,6 +15,7 @@ import {
   type ResponseStateMode,
   TEXT_VERBOSITIES,
 } from './openai-options.js';
+import { resolveOpenAiProvider } from './openai-provider.js';
 
 // Strict parsing: malformed integers (e.g. "3000.5", "1e3", unsafe ints) fail
 // fast at startup instead of being silently coerced. See src/config-env.ts.
@@ -55,12 +57,26 @@ function boundedPositiveInt(
   return Math.min(maximum, Math.max(minimum, optionalPositiveInt(name, fallback)));
 }
 
-function parseResponseStateMode(): ResponseStateMode {
+function parseResponseStateMode(storeResponses: boolean): ResponseStateMode {
   const value = parseOptionalEnumEnv(process.env, 'OPENAI_RESPONSE_STATE_MODE', RESPONSE_STATE_MODES, 'stateless');
-  if (value === 'server') {
-    throw new Error('OPENAI_RESPONSE_STATE_MODE=server is unsupported: EVE AI Agent requires stateless Responses with store=false');
+  if (value === 'server' && !storeResponses) {
+    throw new Error('OPENAI_RESPONSE_STATE_MODE=server requires OPENAI_STORE_RESPONSES=true');
   }
   return value;
+}
+
+const storeResponses = parseOptionalStrictBooleanEnv(process.env, 'OPENAI_STORE_RESPONSES', false);
+const openAiProvider = resolveOpenAiProvider();
+const responseStateMode = parseResponseStateMode(storeResponses);
+const readSubagentsEnabled = optionalBoolean(
+  'CHEAPVIBE_READ_SUBAGENTS_ENABLED',
+  openAiProvider.id === 'cheapvibecode',
+);
+if (openAiProvider.responsesTransport === 'websocket' && responseStateMode === 'server') {
+  throw new Error('CheapVibeCode WebSocket transport requires OPENAI_RESPONSE_STATE_MODE=stateless');
+}
+if (process.env.WEB_TRUST_PROXY?.trim().toLowerCase() === 'true') {
+  throw new Error('WEB_TRUST_PROXY=true is unsafe; configure explicit WEB_TRUSTED_PROXY_CIDRS instead');
 }
 
 export const config = {
@@ -72,7 +88,7 @@ export const config = {
     allowedUserId: optionalInt('ALLOWED_TELEGRAM_USER_ID', 0),
     requestWindowMs: optionalInt('TELEGRAM_REQUEST_WINDOW_MS', 60000),
     maxRequestsPerWindow: optionalInt('TELEGRAM_MAX_REQUESTS_PER_WINDOW', 6),
-    maxActiveRequestsGlobal: optionalInt('TELEGRAM_MAX_ACTIVE_REQUESTS_GLOBAL', 24),
+    maxActiveRequestsGlobal: optionalInt('TELEGRAM_MAX_ACTIVE_REQUESTS_GLOBAL', 8),
   },
   discord: {
     botToken: optional('DISCORD_BOT_TOKEN', ''),
@@ -82,17 +98,35 @@ export const config = {
   openai: {
     apiKey: required('OPENAI_API_KEY'),
     model: optional('OPENAI_MODEL', 'gpt-5.6-sol'),
-    // The application deliberately uses the official OpenAI Responses API.
-    // Keeping the endpoint fixed prevents a self-hosting typo from sending the
-    // API key and chat data to an arbitrary OpenAI-compatible gateway.
-    baseUrl: 'https://api.openai.com/v1',
-    responseStateMode: parseResponseStateMode(),
+    providerId: openAiProvider.id,
+    providerName: openAiProvider.name,
+    // Provider IDs map to fixed transports and endpoints. There is deliberately no
+    // arbitrary base-URL escape hatch for credentials and private chat data.
+    baseUrl: openAiProvider.baseUrl,
+    responsesTransport: openAiProvider.responsesTransport,
+    toolSearchExecution: openAiProvider.toolSearchExecution,
+    supportsHostedProgrammaticToolCalling: openAiProvider.supportsHostedProgrammaticToolCalling,
+    supportsLocalParallelBatch: openAiProvider.supportsLocalParallelBatch,
+    supportsTruncation: openAiProvider.supportsTruncation,
+    supportsEncryptedReasoningReplay: openAiProvider.supportsEncryptedReasoningReplay,
+    responseStateMode,
     reasoningEffort: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_EFFORT', REASONING_EFFORTS, 'auto'),
     reasoningMode: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_MODE', REASONING_MODES, 'standard'),
     textVerbosity: parseOptionalEnumEnv(process.env, 'OPENAI_TEXT_VERBOSITY', TEXT_VERBOSITIES, 'low'),
     responsesTimeoutMs: optionalPositiveInt('OPENAI_RESPONSES_TIMEOUT_MS', 90_000),
+    turnDeadlineMs: boundedPositiveInt('AGENT_TURN_DEADLINE_MS', 180_000, 30_000, 600_000),
+    maxConcurrentResponses: boundedPositiveInt('OPENAI_MAX_CONCURRENT_RESPONSES', 8, 1, 64),
+    maxQueuedResponses: Math.max(0, Math.min(256, optionalInt('OPENAI_MAX_QUEUED_RESPONSES', 32))),
+    responseQueueTimeoutMs: boundedPositiveInt('OPENAI_RESPONSE_QUEUE_TIMEOUT_MS', 15_000, 100, 120_000),
+    maxConcurrentReadTools: boundedPositiveInt('AGENT_MAX_CONCURRENT_READ_TOOLS', 16, 4, 128),
+    maxConcurrentEsiLeaves: boundedPositiveInt('AGENT_MAX_CONCURRENT_ESI_LEAVES', 12, 1, 64),
+    maxQueuedTools: Math.max(0, Math.min(512, optionalInt('AGENT_MAX_QUEUED_TOOLS', 64))),
+    toolQueueTimeoutMs: boundedPositiveInt('AGENT_TOOL_QUEUE_TIMEOUT_MS', 15_000, 100, 120_000),
     responseLanguage: optional('OPENAI_RESPONSE_LANGUAGE', 'Russian'),
+    storeResponses,
     programmaticToolCalling: optionalBoolean('OPENAI_PROGRAMMATIC_TOOL_CALLING', false),
+    readSubagentsEnabled,
+    readSubagentConcurrency: boundedPositiveInt('CHEAPVIBE_READ_SUBAGENT_CONCURRENCY', 2, 1, 3),
     maxOutputTokens: optionalInt('OPENAI_MAX_OUTPUT_TOKENS', 0),
     compactThreshold: optionalInt('OPENAI_COMPACT_THRESHOLD', 0),
     // Floor the window so a misconfigured 0/negative value can't make
@@ -110,7 +144,7 @@ export const config = {
     specUrl: optional('ESI_SPEC_URL', 'https://esi.evetech.net/latest/swagger.json'),
     catalogCachePath: optional('ESI_CATALOG_CACHE_PATH', './data/cache/esi-swagger.json'),
     compatibilityDate: optional('ESI_COMPATIBILITY_DATE', '2026-03-15'),
-    userAgent: optional('ESI_USER_AGENT', 'EVEAI/3.3 (+https://github.com/example/eveai; contact=operator@example.com)'),
+    userAgent: optional('ESI_USER_AGENT', 'EVEAI/4.0 (+https://github.com/example/eveai; contact=operator@example.com)'),
     maxPages: Math.max(1, optionalInt('ESI_MAX_PAGES', 5)),
     backoffMaxSeconds: Math.max(1, optionalInt('ESI_BACKOFF_MAX_SECONDS', 10)),
     requestTimeoutMs: optionalInt('ESI_REQUEST_TIMEOUT_MS', 8000),
@@ -122,6 +156,39 @@ export const config = {
   },
   web: {
     baseUrl: optional('WEB_BASE_URL', 'http://localhost:3000'),
+    chatEnabled: optionalBoolean('WEB_CHAT_ENABLED', false),
+    trustedProxyCidrs: optional('WEB_TRUSTED_PROXY_CIDRS', '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
+    sessionTtlHours: boundedPositiveInt('WEB_SESSION_TTL_HOURS', 720, 1, 8760),
+    sessionCreationWindowSeconds: boundedPositiveInt(
+      'WEB_SESSION_CREATION_WINDOW_SECONDS',
+      600,
+      60,
+      86400,
+    ),
+    maxSessionCreationsPerWindow: boundedPositiveInt(
+      'WEB_MAX_SESSION_CREATIONS_PER_WINDOW',
+      30,
+      1,
+      1000,
+    ),
+    maxConcurrentAgentRequests: boundedPositiveInt('WEB_MAX_CONCURRENT_AGENT_REQUESTS', 8, 1, 32),
+    maxQueuedAgentRequests: boundedPositiveInt('WEB_MAX_QUEUED_AGENT_REQUESTS', 64, 1, 1000),
+    maxQueuedAgentRequestsPerUser: boundedPositiveInt('WEB_MAX_QUEUED_AGENT_REQUESTS_PER_USER', 1, 1, 10),
+    requestWindowSeconds: boundedPositiveInt('WEB_REQUEST_WINDOW_SECONDS', 60, 10, 3600),
+    maxRequestsPerUserWindow: boundedPositiveInt('WEB_MAX_REQUESTS_PER_USER_WINDOW', 6, 1, 1000),
+    maxRequestsGlobalWindow: boundedPositiveInt('WEB_MAX_REQUESTS_GLOBAL_WINDOW', 120, 1, 10000),
+    maxRequestsGlobalDay: boundedPositiveInt('WEB_MAX_REQUESTS_GLOBAL_DAY', 10_000, 1, 1_000_000),
+    maxCostUnitsPerUserWindow: boundedPositiveInt('WEB_MAX_COST_UNITS_PER_USER_WINDOW', 24, 1, 100_000),
+    maxCostUnitsGlobalWindow: boundedPositiveInt('WEB_MAX_COST_UNITS_GLOBAL_WINDOW', 480, 1, 1_000_000),
+    maxCostUnitsGlobalDay: boundedPositiveInt('WEB_MAX_COST_UNITS_GLOBAL_DAY', 40_000, 1, 10_000_000),
+    agentDeadlineMs: boundedPositiveInt('WEB_AGENT_DEADLINE_MS', 180_000, 30_000, 600_000),
+    requestRetentionDays: boundedPositiveInt('WEB_REQUEST_RETENTION_DAYS', 7, 1, 90),
+    turnstileSiteKey: optional('TURNSTILE_SITE_KEY', ''),
+    turnstileSecretKey: optional('TURNSTILE_SECRET_KEY', ''),
+    turnstileHostname: optional('TURNSTILE_EXPECTED_HOSTNAME', ''),
   },
   db: {
     path: optional('DB_PATH', './data/eve-agent.db'),
@@ -142,7 +209,7 @@ export const config = {
   },
   eveKill: {
     timeoutMs: boundedPositiveInt('EVE_KILL_TIMEOUT_MS', 8000, 250, 60_000),
-    userAgent: optional('EVE_KILL_USER_AGENT', 'EVEAI/3.3 (+https://github.com/example/eveai; contact=operator@example.com)'),
+    userAgent: optional('EVE_KILL_USER_AGENT', 'EVEAI/4.0 (+https://github.com/example/eveai; contact=operator@example.com)'),
     retryMaxAttempts: boundedPositiveInt('EVE_KILL_RETRY_MAX_ATTEMPTS', 3, 1, 5),
     backoffMaxMs: boundedPositiveInt('EVE_KILL_BACKOFF_MAX_MS', 10000, 100, 60_000),
   },
@@ -150,7 +217,7 @@ export const config = {
     baseUrl: optional('EVE_SCOUT_BASE_URL', 'https://api.eve-scout.com/v2/public/'),
     timeoutMs: optionalInt('EVE_SCOUT_TIMEOUT_MS', 8000),
     cacheTtlSeconds: optionalInt('EVE_SCOUT_CACHE_TTL_SECONDS', 300),
-    userAgent: optional('EVE_SCOUT_USER_AGENT', 'EVEAI/3.3 (+https://github.com/example/eveai; contact=operator@example.com)'),
+    userAgent: optional('EVE_SCOUT_USER_AGENT', 'EVEAI/4.0 (+https://github.com/example/eveai; contact=operator@example.com)'),
     retryMaxAttempts: optionalInt('EVE_SCOUT_RETRY_MAX_ATTEMPTS', 2),
     backoffMaxMs: optionalInt('EVE_SCOUT_BACKOFF_MAX_MS', 5000),
   },

@@ -9,7 +9,9 @@
 - `OPENAI_REASONING_MODE=pro` is scoped to the top-level user turn so internal compaction, OSINT, and advisor calls retain standard-mode latency.
 - Responses usage logs distinguish cached reads from GPT-5.6 cache writes.
 - top-level requests include an HMAC-derived `safety_identifier` when `AUTH_SECRET_KEY` is configured; raw platform and database user ids are not sent.
-- agent turns use `OPENAI_RESPONSE_STATE_MODE=stateless`, so tool continuation does not depend on provider-retained `previous_response_id` state.
+- agent turns default to `OPENAI_RESPONSE_STATE_MODE=stateless`; opt-in `server` mode requires stored Responses and reuses only a recent id atomically anchored to the exact latest assistant message.
+- SQLite remains canonical in both modes. Server-state drift or explicit provider state loss triggers an exact active-turn cold replay; transient transport failures retry the same continuation first.
+- `OPENAI_STORE_RESPONSES` controls OpenAI Dashboard/API retention independently; enabling it alone does not change the state mode.
 - ESI GETs use SQLite cache with `ETag` and `If-Modified-Since` revalidation.
 - ESI retry logic is bounded for `420`, `429`, and transient `5xx`.
 - token refresh is deduplicated in-flight per character.
@@ -26,12 +28,15 @@
 - Telegram and Discord ingress reject overlapping agent turns in the same chat lane, rate-limit recent requests per actor, and cap global in-process concurrency.
 - simple static aggregate count questions use local-SDE deterministic paths instead of exploratory web or live-ESI loops.
 - when a deterministic static count tool fully answers the user request, the executor finalizes the reply server-side and skips the extra model round-trip.
+- Programmatic Tool Calling remains default-off. When enabled, exactly nine bounded public-read tools use application-enforced caller linkage, one-family coherence, atomic batch reservation, four calls per batch/turn/program, family work ceilings, and a 16-iteration ceiling.
+- `market_history_summary`, `system_metric_snapshot`, `doctrine_summary`, and `dynamic_item_summary` validate strict inputs before fixed-source egress, validate and narrowly project upstream data, and replace drifted, non-finite, unserializable, or over-12,000-character results wholesale with fixed schema-valid errors.
+- upstream processing is also bounded before projection: market history accepts at most 500 daily rows, system bulk metrics at most 10,000 rows, dynamic dogma at most 1,000 attributes and 1,000 effects, and doctrine analytics retains the wrapper's 2 MiB/32-level/50,000-node response limits plus at most 100 example modules per projected cluster.
 - project update checks are outside the startup/health critical path. They use one process-wide 15-minute cache, coalesce concurrent checks, cap the response at 64 KiB, time out after five seconds, and degrade to an informational unavailable state.
 
 ### Context compaction
 
 - Per-thread history is compacted so old messages are summarized (not silently lost) as the conversation grows. The limit is `autoCompactLimit()` = 90% of `OPENAI_MODEL_CONTEXT_WINDOW` (default 200k → 180k), or `min(OPENAI_COMPACT_THRESHOLD, 90%)` when the override is set.
-- Two triggers: a mid-turn backstop fires when a single model call's real input (`response.usage.input`) reaches the limit; a pre-turn counter (`agent_threads.total_tokens`) accumulates each turn's peak input and triggers when it reaches the limit. In the default stateless mode the prompt is rebuilt each turn from `buildSmartContext` (capped to `MAX_CONTEXT_MESSAGES` / `MAX_CONTEXT_CHARS`), so the per-call input stays roughly constant and the pre-turn counter functions as a periodic "summarize the growing SQLite backlog" cadence — it is reset to 0 only by compaction.
+- Two triggers: a mid-turn backstop fires when a single model call's real input (`response.usage.input`) reaches the limit; a pre-turn counter tracks context growth. Stateless mode accumulates each turn's peak as a periodic SQLite-summary cadence, while server mode stores the latest chain input size because provider usage already includes the previous chain.
 - Compaction keeps the most recent user/assistant messages up to a ~20k-token budget and summarizes everything older into a ≤4k-char structured summary (preserving IDs, numbers, location/ship, and what was already fetched). The keep-window token budget uses a UTF-8-byte-based estimate (`estimateTokens`) so it is honest for Cyrillic (a flat chars/4 under-counted Russian and kept ~2x too much), and the summary is trimmed on a line boundary (`capOnLineBoundary`) so bullets are never cut mid-fact.
 - Summarization is incremental (the prior summary is extended, `last_message_id` tracks the boundary) and input-bounded (`COMPACT_MAX_INPUT_CHARS`); anything over budget carries to the next pass rather than being dropped unsummarized. After compaction the counter resets and `previous_response_id` is cleared, forcing a cold rebuild from `[summary + kept recent messages]`.
 
@@ -39,8 +44,11 @@
 
 - runtime tools are Responses API function tools implemented by this Node.js process.
 - in stateless mode, each tool continuation includes the previous `function_call` item plus its matching `function_call_output`.
+- in server mode, normal continuations send `previous_response_id` plus only new outputs while an exact in-memory replay remains available until the turn ends.
 - third-party hosted MCP descriptors are not serialized into model requests; EVE-KILL is available through local function tools whose bounded arguments are validated before REST or MCP egress.
 - doctrine, meta, forensics, and coalition analytics use a fixed-endpoint local wrapper, a 2 MiB response cap, fixed safe error categories, the shared EVE-KILL call budget, and a four-call analytics cap per turn.
+- the bounded doctrine facade consumes both the shared EVE-KILL and analytics call budgets; its programmatic family is additionally capped at four calls, `top<=5`, and 20 work units.
+- programmatic market-history, system-metric, and dynamic-item facades use only their fixed unauthenticated public ESI operations; their family ceilings are respectively 360 requested history-days, 400 requested system rows, and 40 requested attributes.
 - local `skills/` files are maintainer workflow docs and are not required for end-user runtime operation.
 - protocol notes: [skills-protocol.md](./skills-protocol.md).
 
@@ -57,6 +65,8 @@
 - if an official heartbeat killmail detail or outbound send fails, heartbeat state remains at the prior cursor and the finding is retried on a later scheduled run.
 - if required auth state expires, callback flows fail closed.
 - if enabled-chat ingress exceeds the configured recent-rate or global active ceiling, the request is rejected early with a retry-later message instead of consuming more model or ESI capacity.
+- if a programmatic batch is malformed, unlinked, mixed-family, duplicate, incoherent, over four calls, or over its family work ceiling, the entire batch is rejected before any external call dispatches; a partial program cannot waive its minimum completion shape.
+- if a bounded facade receives structural drift, conflicting duplicates, non-finite data, or an oversized result, it returns a fixed sanitized error instead of a partial or sliced success.
 
 ## Operational Checks
 
@@ -65,6 +75,8 @@
 - `npm run test`
 - `npm run typecheck`
 - `npm run lint`
+- `npm run smoke:eve-tool -- --public-source-matrix`
+- `OPENAI_PROGRAMMATIC_TOOL_CALLING=true npm run smoke:eve-tool -- --programmatic-matrix`
 
 ## ESI Notes
 

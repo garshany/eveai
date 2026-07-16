@@ -18,7 +18,7 @@ function releaseResponse(
 
 describe('project update checker', () => {
   it('reads the packaged version and compares strict stable semver', () => {
-    expect(getAppVersion()).toBe('3.3.1');
+    expect(getAppVersion()).toBe('4.0.0');
     expect(parseStableVersion('3.2.0')).toEqual([3, 2, 0]);
     expect(parseStableVersion('v3.2.0')).toBeNull();
     expect(parseStableVersion('3.3.1-rc.1')).toBeNull();

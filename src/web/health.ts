@@ -100,7 +100,36 @@ function platformCheck(platform: BotPlatform): { status: string; error?: string 
 async function collectDependencyChecks(options: HealthRouteOptions): Promise<Record<string, DependencyHealthCheck>> {
   return {
     database: await checkDatabase(options.db),
+    web_agent_queue: checkWebAgentQueue(options.db),
   };
+}
+
+function checkWebAgentQueue(db?: Db): DependencyHealthCheck {
+  if (!db) return { status: 'skipped' };
+  try {
+    const table = db.prepare(`
+      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'web_agent_requests'
+    `).get();
+    if (!table) return { status: 'skipped' };
+    const counts = db.prepare(`
+      SELECT
+        SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued,
+        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+        SUM(CASE WHEN status = 'running' AND lease_expires_at < datetime('now') THEN 1 ELSE 0 END) AS stale
+      FROM web_agent_requests
+    `).get() as { queued: number | null; running: number | null; stale: number | null };
+    return {
+      status: (counts.stale ?? 0) > 0 ? 'failed' : 'ok',
+      ...((counts.stale ?? 0) > 0 ? { error: 'Stale web agent lease detected' } : {}),
+      details: {
+        queued: counts.queued ?? 0,
+        running: counts.running ?? 0,
+        stale: counts.stale ?? 0,
+      },
+    };
+  } catch (error) {
+    return { status: 'failed', error: stringifyError(error) };
+  }
 }
 
 async function checkDatabase(db?: Db): Promise<DependencyHealthCheck> {

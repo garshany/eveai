@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import WebSocket, { type RawData } from 'ws';
 import { config } from '../config.js';
 import {
   toApiReasoningEffort,
@@ -6,6 +8,18 @@ import {
   type TextVerbosity,
 } from '../openai-options.js';
 import { getActivitySink, reportActivity } from './activity.js';
+import { ResponseAdmissionController } from './response-admission.js';
+
+let responseAdmission: ResponseAdmissionController | null = null;
+
+function getResponseAdmission(): ResponseAdmissionController {
+  responseAdmission ??= new ResponseAdmissionController({
+    maxConcurrent: config.openai?.maxConcurrentResponses ?? 8,
+    maxQueued: config.openai?.maxQueuedResponses ?? 32,
+    queueTimeoutMs: config.openai?.responseQueueTimeoutMs ?? 15_000,
+  });
+  return responseAdmission;
+}
 
 export type NativeInputItem =
   | NativeInputMessage
@@ -70,13 +84,27 @@ export type NativeFunctionCallOutputItem = {
   [key: string]: unknown;
 };
 
+export type NativeToolSearchOutputItem = {
+  type: 'tool_search_output';
+  call_id: string;
+  status: 'completed';
+  execution: 'client';
+  tools: NativeTool[];
+};
+
 export type NativeFunctionCaller = {
   type: 'program';
   caller_id: string;
 };
 
 export type NativeTool =
-  | { type: 'tool_search' }
+  | {
+    type: 'tool_search';
+    execution?: 'client' | 'server';
+    description?: string;
+    parameters?: Record<string, unknown>;
+    strict?: boolean;
+  }
   | { type: 'programmatic_tool_calling' }
   | NativeNamespaceTool
   | NativeFunctionTool;
@@ -160,6 +188,7 @@ export async function createNativeResponse(input: {
    * leave this false so their text never leaks into the CLI answer stream.
    */
   streamToActivity?: boolean;
+  signal?: AbortSignal;
 }): Promise<NativeResponseResult> {
   const baseUrl = normalizeBaseUrl(config.openai.baseUrl);
   const effectiveEffort = toApiReasoningEffort(input.reasoningEffort ?? config.openai.reasoningEffort);
@@ -171,8 +200,9 @@ export async function createNativeResponse(input: {
   // activity sink attached (the interactive CLI) so it can show a "thinking" line.
   // Bots (no sink) and internal calls (compaction/OSINT/advisor, streamToActivity
   // false) get an unchanged request — no extra summary tokens, no leaked text.
-  const streamThisCall = input.streamToActivity === true && getActivitySink() !== undefined;
-  const wantReasoningSummary = streamThisCall;
+  const activitySink = getActivitySink();
+  const streamThisCall = input.streamToActivity === true && activitySink !== undefined;
+  const wantReasoningSummary = streamThisCall && activitySink.reasoning !== false;
   const reasoningPayload: Record<string, unknown> = { effort: effectiveEffort };
   if (effectiveMode === 'pro') reasoningPayload.mode = 'pro';
   if (wantReasoningSummary) reasoningPayload.summary = 'auto';
@@ -188,13 +218,15 @@ export async function createNativeResponse(input: {
       text: textVerbosity ? { verbosity: textVerbosity } : undefined,
       reasoning: reasoningPayload,
       safety_identifier: input.safetyIdentifier || undefined,
-      store: false,
-      stream: true,
-      include: input.preserveReasoning ? ['reasoning.encrypted_content'] : [],
+      store: config.openai.storeResponses,
+      stream: config.openai.responsesTransport === 'http_sse' ? true : undefined,
+      include: input.preserveReasoning && config.openai.supportsEncryptedReasoningReplay
+        ? ['reasoning.encrypted_content']
+        : [],
     };
   // Only send optional parameters when explicitly configured.
   if (maxTokens > 0) bodyPayload.max_output_tokens = maxTokens;
-  if (input.truncation) {
+  if (input.truncation && config.openai.supportsTruncation) {
     bodyPayload.truncation = input.truncation;
   }
   if (input.contextManagement) {
@@ -204,44 +236,27 @@ export async function createNativeResponse(input: {
   console.log('[api] POST %s/responses — payload %d chars, %d tools, %d input items, prevId=%s',
     baseUrl, bodyJson.length, input.tools.length, input.items.length,
     input.previousResponseId ?? 'none');
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let response: Response;
-  let rawText: string;
+  const admissionStartedAt = Date.now();
+  const releaseResponseSlot = await getResponseAdmission().acquire(input.signal);
+  const requestStartedAt = Date.now();
+  let events: NativeSseEvent[];
   try {
-    response = await fetch(`${baseUrl}/responses`, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${config.openai.apiKey}`,
-      },
-      body: bodyJson,
-    });
-    // Keep the deadline active across the streamed body read: with stream:true,
-    // fetch resolves on headers, so a stalled body would otherwise hang forever.
-    rawText = await response.text();
-  } catch (error) {
-    if ((error as Error).name === 'AbortError' || (error as Error).name === 'TimeoutError') {
-      throw new Error(`Responses API timed out after ${Math.round(timeoutMs / 1000)}s`);
-    }
-    throw error;
+    events = config.openai.responsesTransport === 'websocket'
+      ? await requestWebSocketEvents(baseUrl, bodyPayload, timeoutMs, input.signal)
+      : await requestHttpSseEvents(baseUrl, bodyJson, timeoutMs, input.signal);
   } finally {
-    clearTimeout(timer);
+    releaseResponseSlot();
   }
-
-  if (!response.ok) {
-    // Provider bodies can include hosted-tool arguments or output. Inspect
-    // them only for fixed recovery categories and never propagate raw detail
-    // into exceptions, callers, chat responses, or logs.
-    const category = classifyHttpError(rawText);
-    throw new Error(
-      `Responses API HTTP ${response.status}${category ? ` (${category})` : ''}`,
-    );
-  }
-
-  const events = parseSse(rawText);
   const completedPayload = findCompletedPayload(events);
+  console.log(
+    '[api] DONE transport=%s queue_ms=%d request_ms=%d total_ms=%d events=%d status=%s',
+    config.openai.responsesTransport,
+    requestStartedAt - admissionStartedAt,
+    Date.now() - requestStartedAt,
+    Date.now() - admissionStartedAt,
+    events.length,
+    completedPayload?.status ?? 'unknown',
+  );
   const doneItems = collectDoneItems(events);
   const completedOutput = Array.isArray(completedPayload?.output)
     ? completedPayload.output
@@ -253,19 +268,17 @@ export async function createNativeResponse(input: {
   const outputTextFromStream = extractStreamedOutputText(events);
   const outputText = completedPayload?.output_text
     ?? (outputTextFromStream || outputTextFromItems);
-  // A stream that ends without a terminal event and produced nothing usable was
-  // truncated mid-flight — surface it as a (retriable) error instead of a
-  // silent empty completion that looks like a deliberate blank answer.
+  // Any stream without a terminal event is truncated. Partial output is not
+  // safe to dispatch: it may contain a function call whose response was never
+  // committed by the provider.
   const sawTerminalEvent = events.some(
     (event) => event.event === 'response.completed'
       || event.event === 'response.done'
       || event.event === 'response.incomplete'
       || event.event === 'response.failed',
   );
-  const incompleteStream = !sawTerminalEvent
-    && output.length === 0
-    && !outputText.trim();
-  const errorMessage = completedPayload?.error?.message
+  const incompleteStream = !sawTerminalEvent;
+  const errorMessage = sanitizeProviderErrorMessage(completedPayload?.error?.message)
     ?? findStreamError(events)
     ?? (incompleteStream ? 'Incomplete response stream (no terminal event received)' : null);
 
@@ -370,8 +383,11 @@ export function buildFunctionCallInputItems(
  */
 export function buildOrderedContinuationInputItems(
   output: NativeResponseOutputItem[],
+  includeReasoning = true,
 ): NativeResponseOutputItem[] {
-  return output.map((item) => ({ ...item }));
+  return output
+    .filter((item) => includeReasoning || item.type !== 'reasoning')
+    .map((item) => ({ ...item }));
 }
 
 export function extractFunctionCalls(
@@ -388,6 +404,20 @@ export function extractFunctionCalls(
     .filter((item) => item.callId && item.name);
 }
 
+export function extractClientToolSearchCalls(
+  output: NativeResponseOutputItem[],
+): Array<{ callId: string; arguments: unknown }> {
+  return output
+    .filter((item) => item.type === 'tool_search_call' && item.execution === 'client')
+    .map((item) => ({
+      callId: typeof item.call_id === 'string' && item.call_id === item.call_id.trim()
+        ? item.call_id
+        : '',
+      arguments: item.arguments,
+    }))
+    .filter((item) => item.callId.length > 0);
+}
+
 export function extractFinalAssistantText(output: NativeResponseOutputItem[]): string | null {
   for (let index = output.length - 1; index >= 0; index -= 1) {
     const item = output[index]!;
@@ -400,6 +430,272 @@ export function extractFinalAssistantText(output: NativeResponseOutputItem[]): s
     return chunks.join('\n').trim();
   }
   return null;
+}
+
+async function requestHttpSseEvents(
+  baseUrl: string,
+  bodyJson: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<NativeSseEvent[]> {
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  signal?.addEventListener('abort', abortFromCaller, { once: true });
+  if (signal?.aborted) controller.abort();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  let rawText: string;
+  try {
+    response = await fetch(`${baseUrl}/responses`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${config.openai.apiKey}`,
+      },
+      body: bodyJson,
+    });
+    rawText = await response.text();
+  } catch (error) {
+    if ((error as Error).name === 'AbortError' || (error as Error).name === 'TimeoutError') {
+      if (signal?.aborted) throw new Error('Responses request aborted');
+      throw new Error(`Responses API timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abortFromCaller);
+  }
+
+  if (!response.ok) {
+    const category = classifyHttpError(rawText);
+    throw new Error(`Responses API HTTP ${response.status}${category ? ` (${category})` : ''}`);
+  }
+  return parseSse(rawText);
+}
+
+async function requestWebSocketEvents(
+  baseUrl: string,
+  body: Record<string, unknown>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<NativeSseEvent[]> {
+  const url = responsesWebSocketUrl(baseUrl);
+  const payload = JSON.stringify(buildWebSocketCreatePayload(body));
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('Responses request aborted'));
+      return;
+    }
+    const events: NativeSseEvent[] = [];
+    let pendingText = '';
+    let settled = false;
+    const socket = new WebSocket(url, {
+      headers: buildWebSocketHeaders(config.openai.apiKey),
+      perMessageDeflate: true,
+      maxPayload: 1_000_000,
+      handshakeTimeout: timeoutMs,
+    });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', abortFromCaller);
+      socket.terminate();
+      reject(new Error(`Responses API timed out after ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+    const abortFromCaller = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.terminate();
+      reject(new Error('Responses request aborted'));
+    };
+    signal?.addEventListener('abort', abortFromCaller, { once: true });
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abortFromCaller);
+      if (error) reject(error);
+      else resolve(events);
+    };
+
+    socket.once('open', () => socket.send(payload));
+    socket.on('message', (raw: RawData) => {
+      if (settled) return;
+      let frames: NativeSseEvent[];
+      try {
+        const consumed = consumeWebSocketBuffer(pendingText + rawDataToUtf8(raw));
+        pendingText = consumed.rest;
+        if (pendingText.length > 1_000_000) throw new Error('oversized frame');
+        frames = consumed.frames;
+      } catch {
+        const bytes = rawDataLength(raw);
+        console.warn('[api] rejected malformed websocket message bytes=%d first_byte=%d',
+          bytes, rawDataFirstByte(raw));
+        socket.terminate();
+        finish(new Error('Responses WebSocket returned a malformed frame'));
+        return;
+      }
+      for (const frame of frames) {
+        events.push(frame);
+        if (
+          frame.event === 'response.completed'
+          || frame.event === 'response.done'
+          || frame.event === 'response.incomplete'
+          || frame.event === 'response.failed'
+        ) {
+          socket.close();
+          finish();
+          break;
+        }
+      }
+    });
+    socket.once('error', () => finish(new Error('Responses WebSocket transport failed')));
+    socket.once('close', () => {
+      if (!settled) finish(new Error('Responses WebSocket closed before a terminal event'));
+    });
+  });
+}
+
+function consumeWebSocketBuffer(buffer: string): { frames: NativeSseEvent[]; rest: string } {
+  const first = buffer.search(/\S/);
+  if (first < 0) return { frames: [], rest: '' };
+  const firstChar = buffer[first];
+  if (firstChar !== '{' && firstChar !== '[') {
+    return { frames: parseWebSocketMessage(buffer), rest: '' };
+  }
+
+  const frames: NativeSseEvent[] = [];
+  let cursor = first;
+  while (cursor < buffer.length) {
+    while (cursor < buffer.length && /\s/.test(buffer[cursor]!)) cursor += 1;
+    if (cursor >= buffer.length) return { frames, rest: '' };
+    const start = cursor;
+    const opening = buffer[cursor];
+    if (opening !== '{' && opening !== '[') throw new Error('invalid websocket frame prefix');
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let completedAt = -1;
+    for (; cursor < buffer.length; cursor += 1) {
+      const char = buffer[cursor]!;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === '{' || char === '[') depth += 1;
+      else if (char === '}' || char === ']') depth -= 1;
+      if (depth < 0) throw new Error('invalid websocket frame nesting');
+      if (depth === 0) {
+        completedAt = cursor;
+        break;
+      }
+    }
+    if (completedAt < 0) return { frames, rest: buffer.slice(start) };
+    frames.push(...parseWebSocketMessage(buffer.slice(start, completedAt + 1)));
+    cursor = completedAt + 1;
+  }
+  return { frames, rest: '' };
+}
+
+function parseWebSocketMessage(raw: string): NativeSseEvent[] {
+  const normalizeFrame = (frame: unknown): NativeSseEvent | null => {
+    if (!frame || typeof frame !== 'object' || Array.isArray(frame)) {
+      throw new Error('invalid frame');
+    }
+    const type = (frame as { type?: unknown }).type;
+    if (typeof type !== 'string' || !type.trim()) return null;
+    return { event: type.trim(), data: frame };
+  };
+
+  const parseFrames = (value: string): NativeSseEvent[] => {
+    const trimmed = value.trim();
+    if (
+      !trimmed
+      || trimmed === '[DONE]'
+      || trimmed === 'ping'
+      || trimmed === 'pong'
+      || /^[0-9]$/.test(trimmed)
+    ) return [];
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.map(normalizeFrame).filter((frame): frame is NativeSseEvent => frame !== null);
+    }
+    const frame = normalizeFrame(parsed);
+    return frame ? [frame] : [];
+  };
+
+  try {
+    return parseFrames(raw);
+  } catch {
+    const frames: NativeSseEvent[] = [];
+    let currentEvent = '';
+    for (const rawLine of raw.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith(':')) continue;
+      if (line.startsWith('event:')) {
+        currentEvent = line.slice(6).trim();
+        continue;
+      }
+      const value = line.startsWith('data:') ? line.slice(5).trim() : line;
+      const parsed = parseFrames(value);
+      for (const frame of parsed) {
+        frames.push(currentEvent ? { ...frame, event: currentEvent } : frame);
+      }
+      currentEvent = '';
+    }
+    if (frames.length === 0) throw new Error('invalid frame');
+    return frames;
+  }
+}
+
+function rawDataToUtf8(raw: RawData): string {
+  if (Array.isArray(raw)) return Buffer.concat(raw).toString('utf8');
+  if (raw instanceof ArrayBuffer) return Buffer.from(raw).toString('utf8');
+  return Buffer.from(raw).toString('utf8');
+}
+
+function rawDataLength(raw: RawData): number {
+  if (Array.isArray(raw)) return raw.reduce((total, part) => total + part.length, 0);
+  return raw.byteLength;
+}
+
+function rawDataFirstByte(raw: RawData): number {
+  if (Array.isArray(raw)) return raw[0]?.[0] ?? -1;
+  if (raw instanceof ArrayBuffer) return new Uint8Array(raw)[0] ?? -1;
+  return Buffer.from(raw)[0] ?? -1;
+}
+
+function responsesWebSocketUrl(baseUrl: string): string {
+  const url = new URL(`${normalizeBaseUrl(baseUrl)}/responses`);
+  if (url.protocol === 'https:') url.protocol = 'wss:';
+  else if (url.protocol === 'http:') url.protocol = 'ws:';
+  else throw new Error('Responses WebSocket provider URL must use HTTP or HTTPS');
+  return url.toString();
+}
+
+function buildWebSocketCreatePayload(body: Record<string, unknown>): Record<string, unknown> {
+  const payload = { ...body };
+  delete payload.stream;
+  delete payload.background;
+  return { type: 'response.create', ...payload };
+}
+
+function buildWebSocketHeaders(apiKey: string, requestId = randomUUID()): Record<string, string> {
+  return {
+    authorization: `Bearer ${apiKey}`,
+    'OpenAI-Beta': 'responses_websockets=2026-02-06',
+    originator: 'codex_cli_rs',
+    version: '0.144.1',
+    'x-client-request-id': requestId,
+  };
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -659,11 +955,29 @@ function findStreamError(events: NativeSseEvent[]): string | null {
       const message = (data?.error as Record<string, unknown> | undefined)?.message
         ?? (data as Record<string, unknown> | undefined)?.message
         ?? (data?.error as Record<string, unknown> | undefined)?.code;
-      if (typeof message === 'string' && message) return message;
-      return `API error: ${event.event} ${JSON.stringify(data)?.slice(0, 200)}`;
+      if (typeof message === 'string' && message) return sanitizeProviderErrorMessage(message);
+      return `Responses API error (${event.event})`;
     }
   }
   return null;
+}
+
+function sanitizeProviderErrorMessage(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const lower = value.toLowerCase();
+  if (lower.includes('no tool call found for function call output with call_id')) {
+    return 'tool_state_mismatch';
+  }
+  if (
+    (lower.includes('previous_response_id') || lower.includes('previous response'))
+    && (lower.includes('not found') || lower.includes('expired'))
+  ) {
+    return 'response_state_missing';
+  }
+  if (lower.includes('rate') && lower.includes('limit')) return 'Responses API error (rate_limit)';
+  if (lower.includes('overload')) return 'Responses API error (overloaded)';
+  if (lower.includes('server') || lower.includes('temporar')) return 'Responses API error (server_error)';
+  return 'Responses API provider error';
 }
 
 function extractOutputText(items: NativeResponseOutputItem[]): string {
@@ -712,6 +1026,12 @@ export const __test__ = {
   extractStreamedOutputText,
   collectDoneItems,
   findCompletedPayload,
+  responsesWebSocketUrl,
+  requestWebSocketEvents,
+  buildWebSocketCreatePayload,
+  buildWebSocketHeaders,
+  parseWebSocketMessage,
+  consumeWebSocketBuffer,
 };
 
 function collectToolSearchNames(value: unknown, paths: Set<string>): void {

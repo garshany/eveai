@@ -23,9 +23,17 @@ import {
   isRouteMonitorTool,
   isEveScoutToolName,
   isProgrammaticToolAllowed,
+  isLocalParallelBatchTool,
+  isReadSubagentBatchTool,
+  buildReadSubagentTools,
 } from './tools.js';
 import type { PlanRouteArgs } from './tools.js';
-import { updatePlan } from './planner.js';
+import {
+  finalizePlanCompletion,
+  finalizePlanFailure,
+  updatePlan,
+  type PlanFailureCategory,
+} from './planner.js';
 import { BULK_FILTER_OPERATIONS } from '../eve/esi-catalog.js';
 import { getActiveMonitor, stopRouteMonitor } from '../eve-board/monitor.js';
 import {
@@ -33,16 +41,50 @@ import {
   buildOrderedContinuationInputItems,
   createNativeResponse,
   extractFunctionCalls,
+  extractClientToolSearchCalls,
   extractFinalAssistantText,
   toNativeMessage,
   toNativeAssistantMessage,
   type NativeInputItem,
   type NativeFunctionCaller,
 } from './native-responses.js';
+import {
+  canApplyClientDiscoveryDelta,
+  prepareClientToolSearch,
+  searchClientTools,
+  validateClientToolSearchArguments,
+  type ClientToolSearchIndex,
+} from './client-tool-search.js';
 import { callEsiOperation } from '../eve/esi-client.js';
-import { isTurnAborted, reportActivity, summarizeToolArgs, TURN_ABORTED_MESSAGE } from './activity.js';
+import {
+  executeMarketHistorySummary,
+  isMarketHistorySummaryTool,
+  validateMarketHistorySummaryArgs,
+} from '../eve/market-history-summary.js';
+import {
+  executeSystemMetricSnapshot,
+  isSystemMetricSnapshotTool,
+  validateSystemMetricSnapshotArgs,
+} from '../eve/system-metric-snapshot.js';
+import {
+  executeDynamicItemSummary,
+  isDynamicItemSummaryTool,
+  validateDynamicItemSummaryArgs,
+} from '../eve/dynamic-item-summary.js';
+import {
+  isTurnAborted,
+  getActivitySink,
+  reportActivity,
+  summarizeToolArgs,
+  TURN_ABORTED_MESSAGE,
+  TURN_DEADLINE_MESSAGE,
+} from './activity.js';
 import { ESI_FIELD_WHITELIST, filterEsiFields, validateEsiFields } from './esi-field-filter.js';
-import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
+import {
+  isUserProfileStale,
+  readUserProfile,
+  refreshUserProfile,
+} from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
 import { getThreadSummary, runPreTurnCompact, needsMidTurnCompaction, runMidTurnCompact } from './compact.js';
 import { executeEveKillTool } from '../eve-kill/executor.js';
@@ -56,6 +98,11 @@ import type { EveScoutToolName } from '../eve/eve-scout-tools.js';
 import type { EveKillToolName } from '../eve-kill/tools.js';
 import { executeEveKillAnalyticsTool } from '../eve-kill/mcp-analytics.js';
 import type { EveKillAnalyticsToolName } from '../eve-kill/analytics-tools.js';
+import {
+  executeDoctrineSummary,
+  isDoctrineSummaryTool,
+  validateDoctrineSummaryArgs,
+} from '../eve-kill/doctrine-summary.js';
 import { executeHeartbeatConfig } from '../scheduled/heartbeat-config.js';
 import type { HeartbeatConfigArgs } from '../scheduled/heartbeat-config.js';
 import { getLinkedCharacter } from '../eve/sso.js';
@@ -83,8 +130,35 @@ import {
   serializeProgrammaticToolOutput,
   validateProgrammaticToolOutput,
 } from './programmatic-contracts.js';
+import { ResponseAdmissionController } from './response-admission.js';
+import {
+  EffectiveToolRegistry,
+  flattenFunctionTools,
+  validateEffectiveToolCalls,
+  type ToolRegistryLoadDelta,
+} from './tool-registry.js';
+import {
+  MAX_TOTAL_TURN_READ_LEAVES,
+  runReadSubagentBatch,
+  type ReadSubagentSharedBudget,
+} from './read-subagents.js';
+import {
+  buildAgentTurnContext,
+  captureTurnIdentity,
+  isTurnIdentityCurrent,
+  type AgentTurnContext,
+  type TurnIdentitySnapshot,
+} from './turn-context.js';
+import {
+  buildTurnCompletionNudge,
+  createTurnGoalLedger,
+  pendingTurnOutcomes,
+  recordTurnToolOutcome,
+} from './turn-goals.js';
 
-const MAX_TOOL_ITERATIONS = 16;
+const MAX_TOOL_ITERATIONS = 40;
+const MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE = 4;
+const MAX_CONSECUTIVE_EMPTY_CLIENT_SEARCHES = 3;
 const MAX_PROGRAMMATIC_CALLS_PER_BATCH = 4;
 const MAX_PROGRAMMATIC_CALLS_PER_TURN = 4;
 const MAX_PROGRAMMATIC_CALLS_PER_PROGRAM = 4;
@@ -98,6 +172,56 @@ const RECOVERY_TOOL_SUMMARY_LIMIT = 6;
 const RECOVERY_TOOL_RESULT_CHARS = 280;
 const TOOL_STATE_MISMATCH_FRAGMENT = 'tool_state_mismatch';
 const LEGACY_TOOL_STATE_MISMATCH_FRAGMENT = 'No tool call found for function call output with call_id';
+const RESPONSE_STATE_MISSING_FRAGMENT = 'response_state_missing';
+
+let readToolAdmission: ResponseAdmissionController | null = null;
+let writeToolAdmission: ResponseAdmissionController | null = null;
+let esiLeafAdmission: ResponseAdmissionController | null = null;
+
+function getReadToolAdmission(): ResponseAdmissionController {
+  readToolAdmission ??= new ResponseAdmissionController({
+    maxConcurrent: config.openai?.maxConcurrentReadTools ?? 16,
+    maxQueued: config.openai?.maxQueuedTools ?? 64,
+    queueTimeoutMs: config.openai?.toolQueueTimeoutMs ?? 15_000,
+    label: 'Read tool',
+  });
+  return readToolAdmission;
+}
+
+function getWriteToolAdmission(): ResponseAdmissionController {
+  writeToolAdmission ??= new ResponseAdmissionController({
+    maxConcurrent: 1,
+    maxQueued: config.openai?.maxQueuedTools ?? 64,
+    queueTimeoutMs: config.openai?.toolQueueTimeoutMs ?? 15_000,
+    label: 'Write tool',
+  });
+  return writeToolAdmission;
+}
+
+function getEsiLeafAdmission(): ResponseAdmissionController {
+  esiLeafAdmission ??= new ResponseAdmissionController({
+    maxConcurrent: config.openai?.maxConcurrentEsiLeaves ?? 12,
+    maxQueued: config.openai?.maxQueuedTools ?? 64,
+    queueTimeoutMs: config.openai?.toolQueueTimeoutMs ?? 15_000,
+    label: 'ESI leaf',
+  });
+  return esiLeafAdmission;
+}
+
+async function withEsiLeafAdmission<T>(
+  operation: () => Promise<T>,
+  guard: ToolExecutionGuard = {},
+): Promise<T> {
+  const release = await getEsiLeafAdmission().acquire(guard.signal);
+  try {
+    if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
+      throw new Error('ESI leaf cancelled before request dispatch');
+    }
+    return await operation();
+  } finally {
+    release();
+  }
+}
 
 export { ESI_FIELD_WHITELIST, filterEsiFields, validateEsiFields } from './esi-field-filter.js';
 
@@ -110,6 +234,7 @@ async function executeBatchMarketPrices(
   db: Db,
   args: Record<string, unknown>,
   _ctx: UserContext,
+  guard: ToolExecutionGuard = {},
 ): Promise<unknown> {
   const invalid = (error: string): Record<string, unknown> => ({
     ok: false,
@@ -152,11 +277,15 @@ async function executeBatchMarketPrices(
 
   const results: MarketResult[] = await Promise.all(
     typeIds.map(async (typeId): Promise<MarketResult> => {
-      const esiResult = await callEsiOperation<OrderData[]>(
-        db,
-        'get_markets_region_id_orders',
-        { region_id: regionId, order_type: 'all', type_id: typeId },
-        null,
+      const esiResult = await withEsiLeafAdmission(
+        () => callEsiOperation<OrderData[]>(
+          db,
+          'get_markets_region_id_orders',
+          { region_id: regionId, order_type: 'all', type_id: typeId },
+          null,
+          guard,
+        ),
+        guard,
       );
       if (!esiResult.ok || !Array.isArray(esiResult.data)) {
         return { type_id: typeId, error: 'Market data unavailable', sell: null, buy: null };
@@ -184,7 +313,10 @@ async function executeBatchMarketPrices(
   const needsGlobal = results.filter((r) => !r.error && r.sell === null && r.buy === null);
   if (needsGlobal.length > 0) {
     type GlobalPrice = { type_id: number; average_price?: number; adjusted_price?: number };
-    const globalResult = await callEsiOperation<GlobalPrice[]>(db, 'get_markets_prices', {}, null);
+    const globalResult = await withEsiLeafAdmission(
+      () => callEsiOperation<GlobalPrice[]>(db, 'get_markets_prices', {}, null, guard),
+      guard,
+    );
     if (globalResult.ok && Array.isArray(globalResult.data)) {
       // Use ONLY average_price (the ESI trade average). adjusted_price is CCP's
       // internal valuation, not a market quote — falling back to it would report a
@@ -271,30 +403,82 @@ export async function handleAgentMessage(
   userText: string,
 ): Promise<AgentResult> {
   ensureThreadOwnership(db, threadId, ctx);
+  if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+
+  // The budget covers the complete turn, including private preflight, live
+  // context hydration and pre-turn compaction—not only the native model loop.
+  const rootDeadlineAt = Date.now() + config.openai.turnDeadlineMs;
+  const throwIfDeadlineExceeded = (): void => {
+    if (Date.now() >= rootDeadlineAt) throw new Error(TURN_DEADLINE_MESSAGE);
+  };
 
   const linked = getLinkedCharacter(db, ctx);
-  let userProfile = await readUserProfile(db, ctx);
+  const turnIdentity = captureTurnIdentity(db, ctx, linked);
+  // Prime the per-lane capability snapshot before the model can call a private
+  // ESI tool. Without this, a direct wallet/skills/location call returns 428
+  // and costs several extra model round-trips just to discover and run the
+  // capability tool after the fact.
+  if (linked) {
+    await getEveCapabilities(db, 'agent_turn_preflight', ctx);
+    throwIfDeadlineExceeded();
+    if (!isTurnIdentityCurrent(db, ctx, turnIdentity)) {
+      return storeIdentityChangedResult(db, threadId);
+    }
+  }
+  let userProfile = await readUserProfile(db, ctx, turnIdentity.characterId);
+  throwIfDeadlineExceeded();
 
-  // Guard: if character is linked but profile file is missing, try to refresh it
-  if (linked && !userProfile) {
-    const PROFILE_GUARD_TIMEOUT_MS = 10_000;
+  // The root turn owns profile freshness for durable web work. This replaces
+  // the platform background refresh, so cancellation and deadline propagate.
+  if (linked && isUserProfileStale(userProfile, config.userProfile.refreshSeconds)) {
     try {
-      const result = await Promise.race([
-        refreshUserProfile(db, ctx),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), PROFILE_GUARD_TIMEOUT_MS)),
-      ]);
+      const result = await refreshMissingProfileWithinDeadline(
+        db,
+        ctx,
+        turnIdentity,
+        rootDeadlineAt,
+      );
+      throwIfDeadlineExceeded();
+      if (!isTurnIdentityCurrent(db, ctx, turnIdentity)) {
+        return storeIdentityChangedResult(db, threadId);
+      }
       if (result && result.ok) {
-        userProfile = await readUserProfile(db, ctx);
+        userProfile = await readUserProfile(db, ctx, turnIdentity.characterId);
       }
     } catch {
+      throwIfDeadlineExceeded();
       // proceed without profile
     }
   }
 
   const liveContextNeeds = deriveLiveContextNeeds(userText);
-  const liveContext = linked && (liveContextNeeds.location || liveContextNeeds.ship)
-    ? await fetchLiveContext(db, linked.characterId, ctx, liveContextNeeds)
-    : null;
+  let liveContext: LiveContext | null = null;
+  if (linked && (liveContextNeeds.location || liveContextNeeds.ship)) {
+    const liveController = new AbortController();
+    const liveAbortPoll = setInterval(() => {
+      if (
+        Date.now() >= rootDeadlineAt
+        || isTurnAborted()
+        || !isTurnIdentityCurrent(db, ctx, turnIdentity)
+      ) liveController.abort();
+    }, 100);
+    try {
+      liveContext = await fetchLiveContext(db, linked.characterId, ctx, liveContextNeeds, {
+        signal: liveController.signal,
+        identityCurrent: () => isTurnIdentityCurrent(db, ctx, turnIdentity),
+      });
+    } catch (error) {
+      throwIfDeadlineExceeded();
+      throw error;
+    } finally {
+      clearInterval(liveAbortPoll);
+    }
+  }
+  throwIfDeadlineExceeded();
+  if (!isTurnIdentityCurrent(db, ctx, turnIdentity)) {
+    return storeIdentityChangedResult(db, threadId);
+  }
+  if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
 
   const staticAggregateFastPath = tryHandleStaticAggregateFastPath(
     db,
@@ -308,7 +492,8 @@ export async function handleAgentMessage(
 
   // Codex-style pre-turn compaction: compact before first API call if accumulated
   // tokens exceed 90% of model context window.
-  await runPreTurnCompactSafe(db, threadId);
+  await runPreTurnCompactSafe(db, threadId, rootDeadlineAt);
+  throwIfDeadlineExceeded();
 
   const promptMode = isSimpleStaticAggregateCountGoal(userText) ? 'static_aggregate' : 'full';
 
@@ -333,21 +518,65 @@ export async function handleAgentMessage(
 
   const developerPrompt = rebuildDeveloperPrompt();
 
-  const result = await runNativeAgentLoop(db, threadId, ctx, userText, developerPrompt, rebuildDeveloperPrompt);
+  const result = await runNativeAgentLoop(
+    db,
+    threadId,
+    ctx,
+    userText,
+    developerPrompt,
+    rebuildDeveloperPrompt,
+    createNativeResponse,
+    turnIdentity,
+    Math.max(1, rootDeadlineAt - Date.now()),
+  );
 
-  // Advance the pre-turn compaction counter. In the default stateless mode the
-  // prompt is rebuilt from buildSmartContext (capped to MAX_CONTEXT_MESSAGES /
-  // MAX_CONTEXT_CHARS), so peakInputTokens is roughly constant regardless of
-  // backlog — accumulating it across turns therefore acts as a periodic "summarize
-  // the growing SQLite history" cadence that reaches autoCompactLimit after enough
-  // turns. Reset to 0 happens only inside compaction. Do NOT switch to storing the
-  // latest peak: that would make the counter constant and stop pre-turn compaction
-  // from ever firing in stateless mode.
+  // Advance the pre-turn compaction counter. Stateless prompts are rebuilt from
+  // a bounded SQLite window, so accumulating each peak acts as the periodic
+  // backlog-summary cadence. Server-mode usage already includes the retained
+  // previous-response chain, so its latest peak is the actual context size and
+  // must not be added repeatedly. Compaction resets either representation.
   db.prepare(
-    'UPDATE agent_threads SET total_tokens = COALESCE(total_tokens, 0) + ? WHERE thread_id = ?'
+    config.openai.responseStateMode === 'server'
+      ? 'UPDATE agent_threads SET total_tokens = ? WHERE thread_id = ?'
+      : 'UPDATE agent_threads SET total_tokens = COALESCE(total_tokens, 0) + ? WHERE thread_id = ?'
   ).run(result.peakInputTokens, threadId);
 
   return result;
+}
+
+const PROFILE_GUARD_TIMEOUT_MS = 10_000;
+
+async function refreshMissingProfileWithinDeadline(
+  db: Db,
+  ctx: UserContext,
+  turnIdentity: TurnIdentitySnapshot,
+  rootDeadlineAt: number,
+  refresher: typeof refreshUserProfile = refreshUserProfile,
+): Promise<Awaited<ReturnType<typeof refreshUserProfile>> | null> {
+  const remainingMs = Math.min(PROFILE_GUARD_TIMEOUT_MS, rootDeadlineAt - Date.now());
+  if (remainingMs <= 0) throw new Error(TURN_DEADLINE_MESSAGE);
+
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const refresh = refresher(db, ctx, {
+    signal: controller.signal,
+    identityCurrent: () => isTurnIdentityCurrent(db, ctx, turnIdentity),
+  }).catch((error: unknown) => {
+    if (controller.signal.aborted) return null;
+    throw error;
+  });
+  const deadline = new Promise<null>((resolve) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      resolve(null);
+    }, remainingMs);
+    timeout.unref?.();
+  });
+  try {
+    return await Promise.race([refresh, deadline]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 type LiveContextNeeds = {
@@ -372,18 +601,22 @@ async function fetchLiveContext(
   characterId: number,
   ctx: UserContext,
   needs: LiveContextNeeds,
+  guard: ToolExecutionGuard = {},
 ): Promise<LiveContext> {
   try {
     await getEveCapabilities(db, 'executor_live_context', ctx);
+    if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
+      return { summary: null, location: null, ship: null };
+    }
     const [locationResult, shipResult] = await Promise.all([
       needs.location
         ? callEsiOperation<{ solar_system_id: number; station_id?: number; structure_id?: number }>(
-            db, 'get_characters_character_id_location', { character_id: characterId }, ctx,
+            db, 'get_characters_character_id_location', { character_id: characterId }, ctx, guard,
           )
         : Promise.resolve(null),
       needs.ship
         ? callEsiOperation<{ ship_type_id: number; ship_item_id: number; ship_name: string }>(
-            db, 'get_characters_character_id_ship', { character_id: characterId }, ctx,
+            db, 'get_characters_character_id_ship', { character_id: characterId }, ctx, guard,
           )
         : Promise.resolve(null),
     ]);
@@ -486,15 +719,30 @@ function resolveSystemLocationContext(db: Db, systemId: number): SystemLocationC
  * this same file is already deliberately non-fatal. While total_tokens stays
  * over the limit the next turn simply retries compaction.
  */
-async function runPreTurnCompactSafe(db: Db, threadId: string): Promise<void> {
+async function runPreTurnCompactSafe(
+  db: Db,
+  threadId: string,
+  deadlineAt: number = Number.POSITIVE_INFINITY,
+): Promise<void> {
   // An abandoned turn (CLI Ctrl-C during the pre-loop work) must not spend a
   // summarizer model call or rewrite thread history — the loop would throw
   // TURN_ABORTED_MESSAGE right after anyway.
   if (isTurnAborted()) return;
+  const controller = new AbortController();
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) throw new Error(TURN_DEADLINE_MESSAGE);
+  const deadline = Number.isFinite(remainingMs)
+    ? setTimeout(() => controller.abort(), remainingMs)
+    : null;
+  deadline?.unref?.();
   try {
-    await runPreTurnCompact(db, threadId);
+    await runPreTurnCompact(db, threadId, undefined, controller.signal);
+    if (controller.signal.aborted) throw new Error(TURN_DEADLINE_MESSAGE);
   } catch (error) {
+    if (controller.signal.aborted) throw new Error(TURN_DEADLINE_MESSAGE);
     console.error('[executor] pre-turn compaction failed, continuing without compaction:', error);
+  } finally {
+    if (deadline) clearTimeout(deadline);
   }
 }
 
@@ -505,7 +753,7 @@ async function runPreTurnCompactSafe(db: Db, threadId: string): Promise<void> {
  * successful response, so re-sending the identical call cannot duplicate them.
  */
 function isTransientModelError(message: string): boolean {
-  return /timed out|Incomplete response stream|HTTP (429|5\d\d)|terminated|fetch failed|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|rate.?limit|server had an error|server_error|overloaded|too many requests|bad gateway|service unavailable|gateway time-?out/i.test(message);
+  return /timed out|admission queue|Incomplete response stream|HTTP (429|5\d\d)|terminated|fetch failed|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|rate.?limit|server had an error|server_error|overloaded|too many requests|bad gateway|service unavailable|gateway time-?out/i.test(message);
 }
 
 const MAX_TRANSIENT_RETRIES = 3;
@@ -528,11 +776,55 @@ async function runNativeAgentLoop(
   developerPrompt: string,
   rebuildDeveloperPrompt: () => string,
   responseFactory: typeof createNativeResponse = createNativeResponse,
+  turnIdentity: TurnIdentitySnapshot = captureTurnIdentity(db, ctx),
+  deadlineMs: number = config.openai.turnDeadlineMs,
 ): Promise<AgentResult> {
   const requestId = createRequestId();
-  const tools = await buildNativeAgentTools(
+  const terminalFailure = (
+    message: string,
+    category: PlanFailureCategory,
+    peakInputTokens = 0,
+  ): AgentResult => {
+    storeAssistantMessage(db, threadId, message);
+    saveLastResponseId(db, threadId, null);
+    finalizePlanFailure(db, requestId, category);
+    return { text: message, peakInputTokens };
+  };
+  const identityChangedFailure = (peakInputTokens = 0): AgentResult => terminalFailure(
+    'Активный персонаж или его доступы изменились во время запроса. Повтори запрос для текущего персонажа.',
+    'identity_changed',
+    peakInputTokens,
+  );
+  const abortTurn = (): never => {
+    finalizePlanFailure(db, requestId, 'cancelled');
+    saveLastResponseId(db, threadId, null);
+    throw new Error(TURN_ABORTED_MESSAGE);
+  };
+  const turnContext = buildAgentTurnContext(turnIdentity, {
+    requestId,
+    threadId,
+    locale: config.openai.responseLanguage,
+    deadlineMs: Math.max(1, deadlineMs),
+  });
+  const turnDeadlineExceeded = (): boolean => Date.now() >= turnContext.deadlineAt;
+  const deadlineFailure = (peakInputTokens = 0): never => {
+    terminalFailure(
+      'Запрос превысил безопасный лимит времени. Разбей задачу на несколько этапов и повтори.',
+      'deadline_exceeded',
+      peakInputTokens,
+    );
+    throw new Error(TURN_DEADLINE_MESSAGE);
+  };
+  const builtTools = await buildNativeAgentTools(
     isSimpleStaticAggregateCountGoal(goal) ? 'static_aggregate' : 'full',
     { notificationCapability: ctx.notificationCapability ?? 'all' },
+  );
+  const clientToolSearch = config.openai.toolSearchExecution === 'client'
+    ? prepareClientToolSearch(builtTools)
+    : { requestTools: builtTools, index: [] as ClientToolSearchIndex };
+  const tools = clientToolSearch.requestTools;
+  const effectiveToolRegistry = new EffectiveToolRegistry(
+    config.openai.toolSearchExecution === 'client' ? tools : builtTools,
   );
   const webSearchState = createWebSearchState();
   const reasoningEffort = resolveReasoningEffort(goal, config.openai.reasoningEffort);
@@ -558,6 +850,15 @@ async function runNativeAgentLoop(
   let previousResponseId: string | null = useServerResponseState
     ? continuation.previousResponseId
     : null;
+  // Server mode normally sends only the newest input plus previous_response_id.
+  // Keep an exact in-memory replay for this active turn so an expired provider
+  // chain can restart cold without losing reasoning, calls, or tool outputs.
+  let serverRecoveryItems: NativeInputItem[] = useServerResponseState
+    ? buildSmartContext(db, threadId)
+    : [];
+  if (useServerResponseState && serverRecoveryItems.length === 0) {
+    serverRecoveryItems = [...pendingItems];
+  }
   console.log(
     '[executor] context: mode=%s state=%s items=%d prevId=%s',
     continuation.mode,
@@ -592,16 +893,43 @@ async function runNativeAgentLoop(
   const knownProgramIds = new Set<string>();
   const rejectedProgramIds = new Set<string>();
   const programmaticPrograms = new Map<string, ProgrammaticProgramState>();
+  const completedSideEffectResults = new Map<string, unknown>();
   let programInFlight = false;
+  const localBatchState = { callsExecuted: 0 };
+  const readSubagentState = { batchesExecuted: 0 };
+  const sharedReadBudget: ReadSubagentSharedBudget = { modelCalls: 0, toolLeaves: 0 };
+  let clientDiscoveredFunctions = 0;
+  let clientDiscoveredNamespaces = 0;
+  let clientDiscoveredSchemaBytes = 0;
+  let consecutiveEmptyClientSearches = 0;
+  const clientDiscoveryReplayItems: NativeInputItem[] = [];
+  const seenProviderCallIds = new Set<string>();
+  const turnGoalLedger = createTurnGoalLedger(goal);
+  let completionNudges = 0;
 
   console.log('[executor] === NEW REQUEST request=%s goal="%s" ===', requestId, goal.slice(0, 80));
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
+    if (turnDeadlineExceeded()) return deadlineFailure(peakInputTokens);
+    if (!isTurnIdentityCurrent(db, ctx, turnContext)) {
+      return identityChangedFailure(peakInputTokens);
+    }
     // Cooperative cancellation (CLI Ctrl-C): stop before spending another
     // model call. The CLI discards the turn's rows, so nothing is lost.
-    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+    if (isTurnAborted()) {
+      if (useServerResponseState) saveLastResponseId(db, threadId, null);
+      abortTurn();
+    }
 
     reportActivity({ type: 'model_turn', iteration });
+    const modelController = new AbortController();
+    const modelAbortPoll = setInterval(() => {
+      if (
+        turnDeadlineExceeded()
+        || isTurnAborted()
+        || !isTurnIdentityCurrent(db, ctx, turnContext)
+      ) modelController.abort();
+    }, 100);
     let response;
     try {
       response = await responseFactory({
@@ -617,48 +945,76 @@ async function runNativeAgentLoop(
         contextManagement,
         reasoningEffort,
         reasoningMode: config.openai.reasoningMode,
-        // With store:false, preserve opaque GPT-5.6 reasoning only inside this
-        // active tool loop. It is replayed in memory and never stored in SQLite.
-        preserveReasoning: !useServerResponseState,
+        // Preserve opaque reasoning for exact active-turn recovery in both
+        // modes. It remains in memory and is never stored in SQLite.
+        preserveReasoning: true,
         safetyIdentifier,
         // Only this top-level loop streams to the CLI activity feed; internal
         // model calls (compaction/OSINT/advisor) must not leak into the answer.
         streamToActivity: true,
+        signal: modelController.signal,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (
-        shouldUseToolStateRecovery(message, toolStateRecoveryCount >= MAX_TOOL_STATE_RECOVERIES,previousResponseId, pendingItems)
-      ) {
-        toolStateRecoveryCount += 1;
-        previousResponseId = null;
-        pendingItems = buildToolStateRecoveryContext(db, threadId);
-        saveLastResponseId(db, threadId, null);
-        console.warn('[executor] tool state lost, switching to cold recovery context');
-        continue;
+      if (turnDeadlineExceeded()) return deadlineFailure(peakInputTokens);
+      if (!isTurnIdentityCurrent(db, ctx, turnContext)) {
+        return identityChangedFailure(peakInputTokens);
       }
+      if (isTurnAborted()) abortTurn();
+      const message = error instanceof Error ? error.message : String(error);
       if (isTransientModelError(message) && transientRetries < MAX_TRANSIENT_RETRIES) {
         transientRetries += 1;
         const delay = transientRetryDelayMs(transientRetries);
         console.warn('[executor] transient model error retry=%d/%d delay_ms=%d message_length=%d',
           transientRetries, MAX_TRANSIENT_RETRIES, delay, message.length);
         await sleep(delay);
-        // pendingItems/previousResponseId are untouched — re-send the same call.
-        // No model response was processed, so the retry must not consume the
-        // tool-iteration budget or shift iteration-gated checks (mid-turn
-        // compaction fires only at iteration > 0).
+        // No response was processed: retry the exact same request without
+        // consuming a tool iteration or changing its continuation id.
         iteration -= 1;
         continue;
       }
+      if (
+        shouldUseToolStateRecovery(
+          message,
+          toolStateRecoveryCount >= MAX_TOOL_STATE_RECOVERIES,
+          previousResponseId,
+          pendingItems,
+        )
+      ) {
+        toolStateRecoveryCount += 1;
+        previousResponseId = null;
+        pendingItems = buildResponseStateRecoveryContext(db, threadId, serverRecoveryItems);
+        serverRecoveryItems = [...pendingItems];
+        saveLastResponseId(db, threadId, null);
+        console.warn('[executor] tool state lost, switching to cold recovery context');
+        continue;
+      }
+      if (useServerResponseState) saveLastResponseId(db, threadId, null);
+      finalizePlanFailure(db, requestId, 'provider_failure');
       throw error;
+    } finally {
+      clearInterval(modelAbortPoll);
     }
 
     // Cooperative cancellation, immediately after sampling: an abort during
     // the model call must stop the turn BEFORE mid-turn compaction (another
     // model call + history mutation) or any tool execution.
-    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+    if (isTurnAborted()) {
+      if (useServerResponseState) saveLastResponseId(db, threadId, null);
+      abortTurn();
+    }
+    if (turnDeadlineExceeded()) return deadlineFailure(peakInputTokens);
 
     if (response.error) {
+      if (isTransientModelError(response.error.message) && transientRetries < MAX_TRANSIENT_RETRIES) {
+        transientRetries += 1;
+        const delay = transientRetryDelayMs(transientRetries);
+        console.warn('[executor] transient response error retry=%d/%d delay_ms=%d message_length=%d',
+          transientRetries, MAX_TRANSIENT_RETRIES, delay, response.error.message.length);
+        await sleep(delay);
+        // Error envelopes are rejected before their output is processed.
+        iteration -= 1;
+        continue;
+      }
       if (
         shouldUseToolStateRecovery(
           response.error.message,
@@ -669,38 +1025,34 @@ async function runNativeAgentLoop(
       ) {
         toolStateRecoveryCount += 1;
         previousResponseId = null;
-        pendingItems = buildToolStateRecoveryContext(db, threadId);
+        pendingItems = buildResponseStateRecoveryContext(db, threadId, serverRecoveryItems);
+        serverRecoveryItems = [...pendingItems];
         saveLastResponseId(db, threadId, null);
         console.warn('[executor] tool state lost in response payload, switching to cold recovery context');
         continue;
       }
-      if (isTransientModelError(response.error.message) && transientRetries < MAX_TRANSIENT_RETRIES) {
-        transientRetries += 1;
-        const delay = transientRetryDelayMs(transientRetries);
-        console.warn('[executor] transient response error retry=%d/%d delay_ms=%d message_length=%d',
-          transientRetries, MAX_TRANSIENT_RETRIES, delay, response.error.message.length);
-        await sleep(delay);
-        // The error envelope is rejected before any output is processed, so
-        // pendingItems/previousResponseId still describe the same request.
-        // As above, a failed call must not consume the iteration budget.
-        iteration -= 1;
-        continue;
-      }
       console.error('[executor] model error message_length=%d', response.error.message.length);
       const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
-      storeAssistantMessage(db, threadId, message);
-      saveLastResponseId(db, threadId, null);
       console.log('[executor] === DONE (error) total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d ===',
         totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens, totalReasoningTokens);
-      return { text: message, peakInputTokens };
+      return terminalFailure(message, 'provider_failure', peakInputTokens);
     }
 
     if (response.status && response.status !== 'completed') {
       console.error('[executor] non-completed model response status=%s', response.status);
       const message = 'Сервис модели временно недоступен. Попробуй ещё раз.';
-      storeAssistantMessage(db, threadId, message);
-      saveLastResponseId(db, threadId, null);
-      return { text: message, peakInputTokens };
+      return terminalFailure(message, 'provider_failure', peakInputTokens);
+    }
+
+    if (!isTurnIdentityCurrent(db, ctx, turnContext)) {
+      return identityChangedFailure(peakInputTokens);
+    }
+
+    if (useServerResponseState) {
+      serverRecoveryItems.push(...buildOrderedContinuationInputItems(
+        response.output,
+        config.openai.supportsEncryptedReasoningReplay,
+      ));
     }
 
     for (const item of response.output) {
@@ -724,29 +1076,6 @@ async function runNativeAgentLoop(
         response.usage.cacheWrite ?? 0, response.usage.reasoning);
     }
 
-    // Silent context loss detection: if we are in warm mode (prevId set) on the first
-    // iteration and the API returns cached=0, the previous response chain is gone.
-    // Fall back to cold mode so the model sees full message history from DB.
-    if (
-      iteration === 0 &&
-      previousResponseId &&
-      response.usage &&
-      response.usage.cached === 0 &&
-      !response.error
-    ) {
-      console.warn('[executor] silent context loss detected: warm mode with cached=0, falling back to cold recovery');
-      totalInputTokens = 0;
-      totalOutputTokens = 0;
-      totalCachedTokens = 0;
-      totalCacheWriteTokens = 0;
-      totalReasoningTokens = 0;
-      peakInputTokens = 0;
-      previousResponseId = null;
-      pendingItems = buildSmartContext(db, threadId);
-      saveLastResponseId(db, threadId, null);
-      continue;
-    }
-
     // --- Codex-style mid-turn compaction ---
     // After each sampling request, if input tokens >= autoCompactLimit AND model
     // needs follow-up (tool calls), compact and continue the loop.
@@ -760,8 +1089,17 @@ async function runNativeAgentLoop(
         console.log('[executor] mid-turn compaction: input=%d >= autoCompactLimit at iteration=%d',
           response.usage.input, iteration);
         usedMidTurnCompact = true;
+        const compactController = new AbortController();
+        const compactDeadline = setTimeout(
+          () => compactController.abort(),
+          Math.max(1, turnContext.deadlineAt - Date.now()),
+        );
+        compactDeadline.unref?.();
         try {
-          await runMidTurnCompact(db, threadId);
+          await runMidTurnCompact(db, threadId, undefined, compactController.signal);
+          if (compactController.signal.aborted || turnDeadlineExceeded()) {
+            return deadlineFailure(peakInputTokens);
+          }
           // Refresh `instructions` so the newly written summary reaches the model
           // for the rest of this turn; the prompt captured before the loop still
           // holds the pre-compaction summary state.
@@ -774,15 +1112,25 @@ async function runNativeAgentLoop(
           if (toolSummary) {
             pendingItems.push(toNativeAssistantMessage(toolSummary));
           }
+          // Client-discovered schemas are declarations, not persisted tool
+          // results. Re-link their trusted search calls/outputs after local
+          // compaction so the provider and effective registry stay coherent.
+          pendingItems.push(...clientDiscoveryReplayItems);
           pendingItems.push({
             type: 'message',
             role: 'user',
             content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку и восстановленные tool-результаты выше. Если нужные данные уже есть — используй их, не вызывай tools повторно.' }],
           } as NativeInputItem);
+          if (useServerResponseState) serverRecoveryItems = [...pendingItems];
           continue;
         } catch (compactError) {
+          if (compactController.signal.aborted || turnDeadlineExceeded()) {
+            return deadlineFailure(peakInputTokens);
+          }
           console.error('[executor] mid-turn compaction failed:', compactError);
           // Continue without compaction — truncation='auto' handles overflow
+        } finally {
+          clearTimeout(compactDeadline);
         }
       }
     }
@@ -791,7 +1139,164 @@ async function runNativeAgentLoop(
       console.log('[executor] iteration=%d toolSearchPaths=%j', iteration, response.toolSearchPaths);
     }
 
+    const clientSearchCalls = extractClientToolSearchCalls(response.output);
+    const toolSearchItemCount = response.output.filter((item) => item.type === 'tool_search_call').length;
+    if (
+      config.openai.toolSearchExecution === 'client'
+      && toolSearchItemCount !== clientSearchCalls.length
+    ) {
+      return terminalFailure(
+        'Локальный поиск tools отклонён: provider вернул некорректный протокол. Повтори запрос.',
+        'tool_discovery_protocol',
+        peakInputTokens,
+      );
+    }
+    if (clientSearchCalls.length > 0) {
+      const rawOrdinaryCallCount = response.output.filter((item) => item.type === 'function_call').length;
+      const duplicateCallId = clientSearchCalls.some((call) =>
+        seenProviderCallIds.has(call.callId)
+        || clientSearchCalls.filter((candidate) => candidate.callId === call.callId).length > 1);
+      const malformedArguments = clientSearchCalls.some((call) =>
+        validateClientToolSearchArguments(call.arguments) === null);
+      if (
+        config.openai.toolSearchExecution !== 'client'
+        || rawOrdinaryCallCount > 0
+        || duplicateCallId
+        || malformedArguments
+        || clientSearchCalls.length > MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE
+      ) {
+        return terminalFailure(
+          'Локальный поиск tools отклонён: небезопасный пакет discovery. Повтори запрос.',
+          'tool_discovery_protocol',
+          peakInputTokens,
+        );
+      }
+
+      // Resolve every search against the canonical local index, while hiding
+      // schemas already visible in this turn. Multiple calls in one response
+      // share the same staged exclusion set, so they cannot double-charge or
+      // duplicate one another.
+      const visibleNames = new Set(effectiveToolRegistry.names());
+      const outputs = clientSearchCalls.map((call) => {
+        const output = searchClientTools(
+          clientToolSearch.index,
+          call.callId,
+          call.arguments,
+          { excludeNames: visibleNames },
+        );
+        for (const tool of flattenFunctionTools(output.tools)) visibleNames.add(tool.name);
+        return output;
+      });
+      const discoveredTools = outputs.flatMap((output) => output.tools);
+      let discoveryDelta: ToolRegistryLoadDelta;
+      try {
+        discoveryDelta = effectiveToolRegistry.previewAdd(discoveredTools);
+      } catch {
+        return terminalFailure(
+          'Локальный поиск tools отклонён: конфликт или неподдерживаемая schema. Повтори запрос.',
+          'tool_discovery_protocol',
+          peakInputTokens,
+        );
+      }
+      if (!canApplyClientDiscoveryDelta({
+        functions: clientDiscoveredFunctions,
+        namespaces: clientDiscoveredNamespaces,
+        bytes: clientDiscoveredSchemaBytes,
+      }, discoveryDelta)) {
+        return terminalFailure(
+          'Локальный поиск tools остановлен: исчерпан безопасный бюджет новых schemas. Сузь задачу или раздели её на два сообщения.',
+          'tool_discovery_budget',
+          peakInputTokens,
+        );
+      }
+      consecutiveEmptyClientSearches = discoveryDelta.functions === 0
+        ? consecutiveEmptyClientSearches + 1
+        : 0;
+      if (consecutiveEmptyClientSearches > MAX_CONSECUTIVE_EMPTY_CLIENT_SEARCHES) {
+        return terminalFailure(
+          'Локальный поиск tools остановлен после повторных запросов без новых результатов. Переформулируй требуемую возможность.',
+          'tool_discovery_budget',
+          peakInputTokens,
+        );
+      }
+
+      effectiveToolRegistry.add(discoveredTools);
+      clientDiscoveredFunctions += discoveryDelta.functions;
+      clientDiscoveredNamespaces += discoveryDelta.namespaces;
+      clientDiscoveredSchemaBytes += discoveryDelta.bytes;
+      for (const call of clientSearchCalls) seenProviderCallIds.add(call.callId);
+      if (discoveryDelta.functions > 0) {
+        clientDiscoveryReplayItems.push(
+          ...buildOrderedContinuationInputItems(
+            response.output,
+            config.openai.supportsEncryptedReasoningReplay,
+          ),
+          ...outputs,
+        );
+      }
+      console.log(
+        '[tool_search] local calls=%d new_functions=%d new_namespaces=%d unique_schema_bytes=%d totals=%d/%d/%d',
+        outputs.length,
+        discoveryDelta.functions,
+        discoveryDelta.namespaces,
+        discoveryDelta.bytes,
+        clientDiscoveredFunctions,
+        clientDiscoveredNamespaces,
+        clientDiscoveredSchemaBytes,
+      );
+      if (useServerResponseState) {
+        if (!response.id) {
+          return terminalFailure(
+            'Локальный поиск tools не удалось продолжить: provider не вернул состояние ответа. Повтори запрос.',
+            'tool_state_failure',
+            peakInputTokens,
+          );
+        }
+        previousResponseId = response.id;
+        pendingItems = outputs;
+        serverRecoveryItems.push(...outputs);
+      } else {
+        pendingItems = [
+          ...pendingItems,
+          ...buildOrderedContinuationInputItems(
+            response.output,
+            config.openai.supportsEncryptedReasoningReplay,
+          ),
+          ...outputs,
+        ];
+        previousResponseId = null;
+      }
+      continue;
+    }
+
     const toolCalls = extractFunctionCalls(response.output);
+    const rawFunctionCallCount = response.output.filter((item) => item.type === 'function_call').length;
+    if (rawFunctionCallCount !== toolCalls.length) {
+      const message = 'Не удалось безопасно разобрать вызовы tools. Попробуй ещё раз.';
+      return terminalFailure(message, 'orchestration_failure', peakInputTokens);
+    }
+    const effectiveCallValidation = toolCalls.length > 0
+      ? validateEffectiveToolCalls(effectiveToolRegistry, toolCalls, seenProviderCallIds)
+      : null;
+    if (effectiveCallValidation && !effectiveCallValidation.ok) {
+      console.warn('[executor] rejected function call envelope reason=%s', effectiveCallValidation.error);
+      const message = 'Не удалось безопасно выполнить вызовы tools. Попробуй ещё раз.';
+      return terminalFailure(message, 'orchestration_failure', peakInputTokens);
+    }
+    if (effectiveCallValidation?.ok) {
+      for (const call of toolCalls) seenProviderCallIds.add(call.callId);
+    }
+
+    // Never dispatch an unanchored server response. Without a response id the
+    // resulting function outputs cannot be submitted safely.
+    if (
+      useServerResponseState
+      && toolCalls.length > 0
+      && (response.status !== 'completed' || !response.id)
+    ) {
+      const message = 'Не удалось продолжить tool loop: provider did not return response id.';
+      return terminalFailure(message, 'tool_state_failure', peakInputTokens);
+    }
 
     // Anti-loop: detect consecutive same-tool calls
     if (toolCalls.length === 1) {
@@ -819,27 +1324,62 @@ async function runNativeAgentLoop(
         if (programInFlight && shapeError) {
           console.error('[executor] rejected incomplete program shape: %s', shapeError);
           const message = 'Не удалось завершить безопасную программную выборку. Попробуй ещё раз.';
-          storeAssistantMessage(db, threadId, message);
-          saveLastResponseId(db, threadId, null);
-          return { text: message, peakInputTokens };
+          return terminalFailure(message, 'orchestration_failure', peakInputTokens);
         }
         programInFlight = false;
+        const pendingOutcomes = pendingTurnOutcomes(turnGoalLedger);
+        if (pendingOutcomes.length > 0 && completionNudges < 2) {
+          completionNudges += 1;
+          const nudge = toNativeMessage(buildTurnCompletionNudge(pendingOutcomes));
+          const continuationItems = buildOrderedContinuationInputItems(
+            response.output,
+            config.openai.supportsEncryptedReasoningReplay,
+          );
+          if (useServerResponseState) {
+            previousResponseId = response.id;
+            pendingItems = [nudge];
+            serverRecoveryItems.push(...continuationItems, nudge);
+          } else {
+            pendingItems = [...pendingItems, ...continuationItems, nudge];
+          }
+          continue;
+        }
         const finalText = finalAssistantText || convenienceText;
         reportActivity({ type: 'final_assistant_message' });
-        storeAssistantMessage(db, threadId, finalText);
-        saveLastResponseId(db, threadId, useServerResponseState ? response.id : null);
+        storeAssistantMessage(db, threadId, finalText, useServerResponseState ? response.id : null);
+        finalizePlanCompletion(db, requestId);
         console.log('[executor] === DONE (text) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d answer=%d chars ===',
           iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
           totalReasoningTokens, finalText.length);
         return { text: finalText, peakInputTokens };
       }
       if (!programInFlight && convenienceText) {
-        storeAssistantMessage(db, threadId, convenienceText);
-        saveLastResponseId(db, threadId, useServerResponseState ? response.id : null);
+        const pendingOutcomes = pendingTurnOutcomes(turnGoalLedger);
+        if (pendingOutcomes.length > 0 && completionNudges < 2) {
+          completionNudges += 1;
+          const nudge = toNativeMessage(buildTurnCompletionNudge(pendingOutcomes));
+          const continuationItems = buildOrderedContinuationInputItems(
+            response.output,
+            config.openai.supportsEncryptedReasoningReplay,
+          );
+          if (useServerResponseState) {
+            previousResponseId = response.id;
+            pendingItems = [nudge];
+            serverRecoveryItems.push(...continuationItems, nudge);
+          } else {
+            pendingItems = [...pendingItems, ...continuationItems, nudge];
+          }
+          continue;
+        }
+        storeAssistantMessage(db, threadId, convenienceText, useServerResponseState ? response.id : null);
+        finalizePlanCompletion(db, requestId);
         return { text: convenienceText, peakInputTokens };
       }
       if (!useServerResponseState && (response.output.length > 0 || convenienceText)) {
-        const continuationItems = buildOrderedContinuationInputItems(response.output);
+        const continuationItems = buildOrderedContinuationInputItems(
+          response.output,
+          config.openai.supportsEncryptedReasoningReplay,
+        );
         if (programInFlight && convenienceText) {
           continuationItems.push(toNativeAssistantMessage(convenienceText));
         }
@@ -864,16 +1404,18 @@ async function runNativeAgentLoop(
         continue;
       }
       const fallback = 'Не удалось завершить ответ: модель не вернула ни текст, ни tool calls.';
-      storeAssistantMessage(db, threadId, fallback);
-      saveLastResponseId(db, threadId, null);
-      return { text: fallback, peakInputTokens };
+      return terminalFailure(fallback, 'provider_failure', peakInputTokens);
     }
     emptyResponseRetries = 0;
 
     // Re-check right before dispatch: an abort while extracting/answer-building
     // must not let any tool run — especially write tools (route_monitor,
     // intel_note, …). Sequential batches re-check before each tool too.
-    if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+    if (isTurnAborted()) {
+      if (useServerResponseState) saveLastResponseId(db, threadId, null);
+      abortTurn();
+    }
+    if (turnDeadlineExceeded()) return deadlineFailure(peakInputTokens);
     const validated = validateProgrammaticBatch(
       toolCalls,
       knownProgramIds,
@@ -895,57 +1437,157 @@ async function runNativeAgentLoop(
       }
     }
     programmaticCallsExecuted += validated.reservedProgrammaticCalls;
-    const argsList = toolCalls.map((toolCall, index) => validated.rejections[index]
-      ? {}
-      : validated.normalizedArgs[index] ?? safeParseArguments(toolCall.argumentsText));
-    const policies = await Promise.all(toolCalls.map((toolCall, index) => validated.rejections[index]
+    const genericRejections = effectiveCallValidation?.ok
+      ? effectiveCallValidation.rejections
+      : [];
+    const genericArgs = effectiveCallValidation?.ok
+      ? effectiveCallValidation.args
+      : [];
+    const callRejections = toolCalls.map((_, index) =>
+      validated.rejections[index] ?? genericRejections[index]);
+    const argsList = toolCalls.map((_, index) =>
+      validated.normalizedArgs[index] ?? genericArgs[index] ?? {});
+    const policies = await Promise.all(toolCalls.map((toolCall, index) => callRejections[index]
       ? Promise.resolve('read' as const)
-      : getToolPolicy(toolCall.name)));
+      : getToolPolicy(toolCall.name, argsList[index])));
     const runOne = async (toolCall: typeof toolCalls[number], index: number): Promise<unknown> => {
-      if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
-      const rejection = validated.rejections[index];
+      if (turnDeadlineExceeded()) throw new Error(TURN_DEADLINE_MESSAGE);
+      if (isTurnAborted()) abortTurn();
+      const rejection = callRejections[index];
       if (rejection) return rejection;
-      return executeToolCall(
-        db,
-        requestId,
-        goal,
-        ctx,
-        toolCall.name,
-        argsList[index] ?? {},
-        webSearchState,
-        validated.callers[index] !== undefined,
-      );
+      if (!isTurnIdentityCurrent(db, ctx, turnContext)) {
+        return { ok: false, blocked: true, error: 'Turn identity changed before tool dispatch' };
+      }
+      const policy = policies[index];
+      if (!isReadSubagentBatchTool(toolCall.name) && policy === 'read') {
+        const requestedLeaves = isLocalParallelBatchTool(toolCall.name)
+          && Array.isArray(argsList[index]?.calls)
+          ? argsList[index]!.calls.length
+          : 1;
+        if (sharedReadBudget.toolLeaves + requestedLeaves > MAX_TOTAL_TURN_READ_LEAVES) {
+          return { ok: false, blocked: true, error: 'Shared turn read budget exceeded' };
+        }
+        sharedReadBudget.toolLeaves += requestedLeaves;
+      }
+      const sideEffectKey = policy === 'write' || policy === 'ui'
+        ? buildSideEffectExecutionKey(toolCall.name, argsList[index] ?? {})
+        : null;
+      if (sideEffectKey && completedSideEffectResults.has(sideEffectKey)) {
+        console.warn('[executor] reused completed side-effect tool result name=%s', toolCall.name);
+        return completedSideEffectResults.get(sideEffectKey);
+      }
+      const toolController = new AbortController();
+      const toolAbortPoll = setInterval(() => {
+        if (
+          turnDeadlineExceeded()
+          || isTurnAborted()
+          || !isTurnIdentityCurrent(db, ctx, turnContext)
+        ) toolController.abort();
+      }, 100);
+      let result: unknown;
+      try {
+        result = isReadSubagentBatchTool(toolCall.name)
+          ? await executeReadSubagentDelegation(
+          db,
+          requestId,
+          goal,
+          ctx,
+          argsList[index] ?? {},
+          webSearchState,
+          localBatchState,
+          readSubagentState,
+          safetyIdentifier,
+          reasoningEffort,
+          responseFactory,
+          turnContext,
+          sharedReadBudget,
+          )
+          : await executeToolCall(
+          db,
+          requestId,
+          goal,
+          ctx,
+          toolCall.name,
+          argsList[index] ?? {},
+          webSearchState,
+          validated.callers[index] !== undefined,
+          localBatchState,
+          {
+            signal: toolController.signal,
+            identityCurrent: () => isTurnIdentityCurrent(db, ctx, turnContext),
+          },
+          );
+      } finally {
+        clearInterval(toolAbortPoll);
+      }
+      if (sideEffectKey) completedSideEffectResults.set(sideEffectKey, result);
+      return result;
     };
-    const results = policies.every((policy) => policy === 'read')
-      ? await Promise.all(toolCalls.map(runOne))
-      : await executeValidatedToolCallsSequentially(toolCalls, runOne);
+    let results: unknown[];
+    try {
+      results = policies.every((policy) => policy === 'read')
+        ? await Promise.all(toolCalls.map(runOne))
+        : await executeValidatedToolCallsSequentially(toolCalls, runOne);
+    } catch (error) {
+      if (useServerResponseState) saveLastResponseId(db, threadId, null);
+      if (!isTurnIdentityCurrent(db, ctx, turnContext)) {
+        return identityChangedFailure(peakInputTokens);
+      }
+      if (turnDeadlineExceeded()) return deadlineFailure(peakInputTokens);
+      if (isTurnAborted()) abortTurn();
+      finalizePlanFailure(db, requestId, 'orchestration_failure');
+      throw error;
+    }
 
     const outputs: Array<{ callId: string; output: string; caller?: NativeFunctionCaller }> = [];
     for (let index = 0; index < toolCalls.length; index += 1) {
       const toolCall = toolCalls[index];
       const args = argsList[index] ?? {};
       const result = results[index];
+      if (!callRejections[index]) {
+        recordTurnToolOutcome(turnGoalLedger, toolCall.name, args, result);
+      }
       const isAnalytics = isEveKillAnalyticsToolName(toolCall.name);
       const isProgrammatic = validated.callers[index] !== undefined;
+      const isBoundedPublicFacade = isMarketHistorySummaryTool(toolCall.name)
+        || isSystemMetricSnapshotTool(toolCall.name)
+        || isDoctrineSummaryTool(toolCall.name)
+        || isDynamicItemSummaryTool(toolCall.name)
+        || isLocalParallelBatchTool(toolCall.name)
+        || isReadSubagentBatchTool(toolCall.name);
       const output = isProgrammaticToolName(toolCall.name)
         ? serializeProgrammaticToolOutput(toolCall.name, result)
         : truncateToolOutput(JSON.stringify(result));
-      const auditArgs = isAnalytics || isProgrammatic
-        ? { fields: Object.keys(args).sort() }
-        : args;
-      let programmaticAudit: Record<string, unknown> | null = null;
-      if (isProgrammatic) {
+      const auditArgs = callRejections[index]
+        ? {
+          ...(isBoundedPublicFacade ? { classification: 'bounded-public-read' } : {}),
+          fields: Object.keys(args).sort(),
+        }
+        : isBoundedPublicFacade
+        ? {
+          classification: 'bounded-public-read',
+          ...(isLocalParallelBatchTool(toolCall.name)
+            ? { calls: localBatchAuditCalls(args) }
+            : isReadSubagentBatchTool(toolCall.name)
+              ? { tasks: readSubagentAuditTasks(args) }
+            : {}),
+        }
+        : isAnalytics || isProgrammatic
+          ? { fields: Object.keys(args).sort() }
+          : args;
+      let boundedAudit: Record<string, unknown> | null = null;
+      if (isProgrammatic || isBoundedPublicFacade) {
         const parsedOutput = safeParseJsonRecord(output);
         const schemaValid = isProgrammaticToolName(toolCall.name)
           && validateProgrammaticToolOutput(toolCall.name, parsedOutput).valid;
-        programmaticAudit = {
+        boundedAudit = {
           ok: parsedOutput?.ok === true,
           blocked: parsedOutput?.blocked === true,
           schema_valid: schemaValid,
           output_chars: output.length,
         };
       }
-      const auditResult = programmaticAudit ?? compactToolResult(result);
+      const auditResult = boundedAudit ?? compactToolResult(result);
       db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(
         threadId,
         'tool',
@@ -972,44 +1614,22 @@ async function runNativeAgentLoop(
     if (deterministicAnswer) {
       storeAssistantMessage(db, threadId, deterministicAnswer);
       saveLastResponseId(db, threadId, null);
+      finalizePlanCompletion(db, requestId);
       console.log('[executor] === DONE (deterministic-count) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d answer=%d chars ===',
         iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
         totalReasoningTokens, deterministicAnswer.length);
       return { text: deterministicAnswer, peakInputTokens };
     }
 
-    // Route shortcircuit: if plan_route returned formatted_summary, output it directly.
-    // Saves one model iteration and guarantees the full danger report is shown.
-    const hasRouteCall = toolCalls.some((tc) => tc.name === 'plan_route');
-    if (hasRouteCall && !hasProgrammaticBatch) {
-      const routeIdx = toolCalls.findIndex((tc) => tc.name === 'plan_route');
-      const routeResult = results[routeIdx] as Record<string, unknown> | null;
-      const summary = routeResult?.formatted_summary;
-      if (typeof summary === 'string' && summary.length > 50) {
-        storeAssistantMessage(db, threadId, summary);
-        // Save null — the response has a dangling function_call (plan_route) without tool output,
-        // so continuing from this prevId would cause "No tool output found" API error.
-        saveLastResponseId(db, threadId, null);
-        console.log('[executor] === DONE (route-shortcircuit) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d answer=%d chars ===',
-          iteration + 1, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
-          totalReasoningTokens, summary.length);
-        return { text: summary, peakInputTokens };
-      }
-    }
-
-    if (useServerResponseState && !response.id) {
-      const message = 'Не удалось продолжить tool loop: provider did not return response id.';
-      storeAssistantMessage(db, threadId, message);
-      saveLastResponseId(db, threadId, null);
-      return { text: message, peakInputTokens };
-    }
-
+    const functionOutputItems = buildFunctionCallOutputs(outputs);
+    if (useServerResponseState) serverRecoveryItems.push(...functionOutputItems);
     if (useServerResponseState) {
       previousResponseId = response.id;
-      pendingItems = buildFunctionCallOutputs(outputs);
+      pendingItems = functionOutputItems;
     } else {
       previousResponseId = null;
-      // Stateless mode is memoryless (store:false, no previous_response_id):
+      // Stateless mode does not use previous_response_id, independently of
+      // whether response logging is enabled with store=true:
       // each request's input is the model's entire view of the turn. Append
       // this round's calls/outputs to the accumulated items instead of
       // replacing them — otherwise the user's goal and earlier tool results
@@ -1018,33 +1638,41 @@ async function runNativeAgentLoop(
       // truncation:'auto', and mid-turn compaction.
       pendingItems = [
         ...pendingItems,
-        ...buildOrderedContinuationInputItems(response.output),
-        ...buildFunctionCallOutputs(outputs),
+        ...buildOrderedContinuationInputItems(
+          response.output,
+          config.openai.supportsEncryptedReasoningReplay,
+        ),
+        ...functionOutputItems,
       ];
     }
 
     // Anti-loop: if same tool called N+ times in a row, inject a nudge
     if (consecutiveSameToolCount >= MAX_CONSECUTIVE_SAME_TOOL) {
       console.log('[executor] anti-loop: %s called %d times consecutively, injecting nudge', lastToolName, consecutiveSameToolCount);
-      pendingItems.push({
+      const antiLoopNudge = {
         type: 'message',
         role: 'user',
         content: [{ type: 'input_text', text: '[system] Ты вызывал один и тот же tool несколько раз подряд. Переходи к следующему шагу: используй собранные данные для ответа или вызови другой tool (get_markets_region_id_orders, plan_route, и т.д.).' }],
-      } as NativeInputItem);
+      } as NativeInputItem;
+      pendingItems.push(antiLoopNudge);
+      if (useServerResponseState) serverRecoveryItems.push(antiLoopNudge);
       consecutiveSameToolCount = 0;
     }
   }
 
   const timeout = 'Остановился после слишком большого числа tool iterations.';
-  storeAssistantMessage(db, threadId, timeout);
-  saveLastResponseId(db, threadId, null);
   console.log('[executor] === DONE (timeout) iterations=%d total_in=%d total_out=%d total_cached=%d total_cache_write=%d total_reasoning=%d ===',
     MAX_TOOL_ITERATIONS, totalInputTokens, totalOutputTokens, totalCachedTokens, totalCacheWriteTokens,
     totalReasoningTokens);
-  return { text: timeout, peakInputTokens };
+  return terminalFailure(timeout, 'iteration_budget', peakInputTokens);
 }
 
 type ExtractedToolCall = ReturnType<typeof extractFunctionCalls>[number];
+
+type ToolExecutionGuard = {
+  signal?: AbortSignal;
+  identityCurrent?: () => boolean;
+};
 
 type ProgrammaticKillWindow = {
   target: string;
@@ -1058,6 +1686,7 @@ type ProgrammaticProgramState = {
   workUnits: number;
   seenKeys: Set<string>;
   marketTypeIdsKey?: string;
+  comparisonKey?: string;
   killWindows: ProgrammaticKillWindow[];
 };
 
@@ -1067,6 +1696,7 @@ type ProgrammaticCallPolicy = {
   workUnits: number;
   maxCalls: number;
   marketTypeIdsKey?: string;
+  comparisonKey?: string;
   killWindow?: ProgrammaticKillWindow;
 };
 
@@ -1198,6 +1828,13 @@ function validateProgrammaticBatch(
     ) {
       return rejectBatch('Market comparison must use the same ordered type_ids');
     }
+    if (
+      policy.data.comparisonKey
+      && state.comparisonKey
+      && state.comparisonKey !== policy.data.comparisonKey
+    ) {
+      return rejectBatch('Programmatic comparison arguments must use one coherent shape');
+    }
     if (policy.data.killWindow && state.killWindows.some((window) =>
       window.target === policy.data.killWindow!.target
       && policy.data.killWindow!.fromMs < window.toMs
@@ -1209,6 +1846,7 @@ function validateProgrammaticBatch(
     state.workUnits += policy.data.workUnits;
     state.seenKeys.add(policy.data.key);
     state.marketTypeIdsKey ??= policy.data.marketTypeIdsKey;
+    state.comparisonKey ??= policy.data.comparisonKey;
     if (policy.data.killWindow) state.killWindows.push(policy.data.killWindow);
     draftStates.set(caller.caller_id, state);
     normalizedArgs[index] = policy.data.args;
@@ -1334,6 +1972,66 @@ function validateProgrammaticCallPolicy(
     };
   }
 
+  if (name === 'market_history_summary') {
+    const validated = validateMarketHistorySummaryArgs(args, { programmatic: true });
+    if (!validated.ok) return { ok: false, error: validated.error.error };
+    return {
+      ok: true,
+      data: {
+        args: validated.data,
+        key: `${validated.data.region_id}:${validated.data.type_id}`,
+        comparisonKey: String(validated.data.days),
+        workUnits: validated.data.days,
+        maxCalls: 4,
+      },
+    };
+  }
+
+  if (name === 'system_metric_snapshot') {
+    const validated = validateSystemMetricSnapshotArgs(args, { programmatic: true });
+    if (!validated.ok) return { ok: false, error: validated.error.error };
+    return {
+      ok: true,
+      data: {
+        args: validated.data,
+        key: validated.data.metric,
+        comparisonKey: validated.data.system_ids.join(','),
+        workUnits: validated.data.system_ids.length,
+        maxCalls: 4,
+      },
+    };
+  }
+
+  if (name === 'doctrine_summary') {
+    const validated = validateDoctrineSummaryArgs(args, { programmatic: true });
+    if (!validated.ok) return { ok: false, error: validated.error.error };
+    return {
+      ok: true,
+      data: {
+        args: validated.data,
+        key: `${validated.data.entity_type}:${validated.data.entity_id}`,
+        comparisonKey: `${validated.data.from}\u0000${validated.data.to}\u0000${validated.data.top}`,
+        workUnits: validated.data.top,
+        maxCalls: 4,
+      },
+    };
+  }
+
+  if (name === 'dynamic_item_summary') {
+    const validated = validateDynamicItemSummaryArgs(args, { programmatic: true });
+    if (!validated.ok) return { ok: false, error: validated.error.error };
+    return {
+      ok: true,
+      data: {
+        args: validated.data,
+        key: `${validated.data.type_id}:${validated.data.item_id}`,
+        comparisonKey: validated.data.attribute_ids.join(','),
+        workUnits: validated.data.attribute_ids.length,
+        maxCalls: 4,
+      },
+    };
+  }
+
   return { ok: false, error: 'Tool is not allowed for programmatic calling' };
 }
 
@@ -1364,6 +2062,10 @@ function validateBatchMarketArgs(
 function programmaticWorkUnitLimit(name: string): number {
   if (name === 'batch_market_prices') return 40;
   if (name === 'kill_activity_summary') return 400;
+  if (name === 'market_history_summary') return 360;
+  if (name === 'system_metric_snapshot') return 400;
+  if (name === 'doctrine_summary') return 20;
+  if (name === 'dynamic_item_summary') return 40;
   return Number.POSITIVE_INFINITY;
 }
 
@@ -1373,11 +2075,18 @@ function programmaticPolicyRejection(name: string, error: string): Record<string
   }
   const source = name === 'batch_market_prices'
     ? 'CCP ESI'
-    : name === 'kill_activity_summary' ? 'EVE-KILL' : 'EVE-Scout';
+    : name === 'kill_activity_summary' ? 'EVE-KILL'
+      : name === 'doctrine_summary' ? 'EVE-KILL MCP'
+        : name === 'market_history_summary' || name === 'system_metric_snapshot' || name === 'dynamic_item_summary'
+          ? 'CCP ESI'
+          : 'EVE-Scout';
   return {
     ok: false,
     source,
-    authoritative: name === 'batch_market_prices',
+    authoritative: name === 'batch_market_prices'
+      || name === 'market_history_summary'
+      || name === 'system_metric_snapshot'
+      || name === 'dynamic_item_summary',
     error,
     status: null,
     blocked: true,
@@ -1396,6 +2105,252 @@ async function executeValidatedToolCallsSequentially(
   return results;
 }
 
+type LocalParallelBatchCall = {
+  id: string;
+  tool: ReturnType<typeof localProgrammaticToolName>;
+  args: Record<string, unknown>;
+};
+
+function localProgrammaticToolName(name: string) {
+  if (!isProgrammaticToolName(name)) throw new Error('Invalid local batch tool');
+  return name;
+}
+
+function validateLocalParallelBatch(
+  args: Record<string, unknown>,
+  alreadyExecuted: number,
+): { ok: true; calls: LocalParallelBatchCall[] } | { ok: false; error: string } {
+  if (Object.keys(args).length !== 1 || !Array.isArray(args.calls)) {
+    return { ok: false, error: 'Invalid local parallel batch' };
+  }
+  if (args.calls.length < 1 || args.calls.length > 4 || alreadyExecuted + args.calls.length > 4) {
+    return { ok: false, error: 'Local parallel batch budget exceeded' };
+  }
+
+  const calls: LocalParallelBatchCall[] = [];
+  const ids = new Set<string>();
+  const seenOperations = new Set<string>();
+  const familyStates = new Map<string, ProgrammaticProgramState>();
+  for (const raw of args.calls) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ok: false, error: 'Invalid local parallel batch' };
+    }
+    const record = raw as Record<string, unknown>;
+    if (
+      Object.keys(record).length !== 3
+      || Object.keys(record).some((key) => key !== 'id' && key !== 'tool' && key !== 'arguments_json')
+      || typeof record.id !== 'string'
+      || !/^[A-Za-z0-9_-]{1,64}$/.test(record.id)
+      || typeof record.tool !== 'string'
+      || typeof record.arguments_json !== 'string'
+      || record.arguments_json.length < 2
+      || record.arguments_json.length > 4_000
+      || ids.has(record.id)
+      || !isProgrammaticToolAllowed(record.tool)
+    ) {
+      return { ok: false, error: 'Invalid local parallel batch' };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(record.arguments_json) as unknown;
+    } catch {
+      return { ok: false, error: 'Invalid local parallel batch arguments' };
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, error: 'Invalid local parallel batch arguments' };
+    }
+    const policy = validateProgrammaticCallPolicy(record.tool, parsed as Record<string, unknown>);
+    if (!policy.ok) return { ok: false, error: 'Local parallel batch arguments were rejected' };
+    const operationKey = `${record.tool}\u0000${policy.data.key}`;
+    if (seenOperations.has(operationKey)) {
+      return { ok: false, error: 'Duplicate local parallel batch operation' };
+    }
+
+    const state = familyStates.get(record.tool) ?? {
+      toolName: record.tool,
+      calls: 0,
+      workUnits: 0,
+      seenKeys: new Set<string>(),
+      killWindows: [],
+    };
+    if (
+      state.calls + 1 > policy.data.maxCalls
+      || state.workUnits + policy.data.workUnits > programmaticWorkUnitLimit(record.tool)
+      || (policy.data.marketTypeIdsKey && state.marketTypeIdsKey
+        && policy.data.marketTypeIdsKey !== state.marketTypeIdsKey)
+      || (policy.data.comparisonKey && state.comparisonKey
+        && policy.data.comparisonKey !== state.comparisonKey)
+      || (policy.data.killWindow && state.killWindows.some((window) =>
+        window.target === policy.data.killWindow!.target
+        && policy.data.killWindow!.fromMs < window.toMs
+        && window.fromMs < policy.data.killWindow!.toMs))
+    ) {
+      return { ok: false, error: 'Local parallel batch coherence check failed' };
+    }
+    state.calls += 1;
+    state.workUnits += policy.data.workUnits;
+    state.seenKeys.add(policy.data.key);
+    state.marketTypeIdsKey ??= policy.data.marketTypeIdsKey;
+    state.comparisonKey ??= policy.data.comparisonKey;
+    if (policy.data.killWindow) state.killWindows.push(policy.data.killWindow);
+    familyStates.set(record.tool, state);
+    ids.add(record.id);
+    seenOperations.add(operationKey);
+    calls.push({
+      id: record.id,
+      tool: localProgrammaticToolName(record.tool),
+      args: policy.data.args,
+    });
+  }
+  return { ok: true, calls };
+}
+
+async function executeLocalParallelBatch(
+  args: Record<string, unknown>,
+  state: { callsExecuted: number },
+  dispatch: (tool: LocalParallelBatchCall['tool'], args: Record<string, unknown>) => Promise<unknown>,
+): Promise<Record<string, unknown>> {
+  if (!config.openai.supportsLocalParallelBatch) {
+    return { ok: false, blocked: true, error: 'Local parallel batch is unavailable' };
+  }
+  const validated = validateLocalParallelBatch(args, state.callsExecuted);
+  if (!validated.ok) return { ok: false, blocked: true, error: validated.error };
+  if (isTurnAborted()) throw new Error(TURN_ABORTED_MESSAGE);
+
+  state.callsExecuted += validated.calls.length;
+  const settled = await Promise.allSettled(validated.calls.map((call) => dispatch(call.tool, call.args)));
+  const results = validated.calls.map((call, index) => {
+    const result = settled[index]!;
+    const value = result.status === 'fulfilled'
+      ? result.value
+      : programmaticPolicyRejection(call.tool, 'Tool execution failed');
+    return {
+      id: call.id,
+      tool: call.tool,
+      output: JSON.parse(serializeProgrammaticToolOutput(call.tool, value)) as unknown,
+    };
+  });
+
+  const envelope = { ok: true, results };
+  while (JSON.stringify(envelope).length > MAX_TOOL_OUTPUT_CHARS) {
+    const largest = results
+      .map((result, index) => ({ index, size: JSON.stringify(result.output).length }))
+      .filter((entry) => entry.size > 512)
+      .sort((left, right) => right.size - left.size)[0];
+    if (!largest) break;
+    const call = validated.calls[largest.index]!;
+    results[largest.index]!.output = JSON.parse(serializeProgrammaticToolOutput(
+      call.tool,
+      programmaticPolicyRejection(call.tool, 'Batch aggregate output limit exceeded'),
+    )) as unknown;
+  }
+  return envelope;
+}
+
+function localBatchAuditCalls(args: Record<string, unknown>): Array<Record<string, string>> {
+  if (!Array.isArray(args.calls)) return [];
+  return args.calls.slice(0, 4).flatMap((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+    const record = raw as Record<string, unknown>;
+    return typeof record.id === 'string' && typeof record.tool === 'string'
+      ? [{ id: record.id.slice(0, 64), tool: record.tool.slice(0, 64) }]
+      : [];
+  });
+}
+
+function readSubagentAuditTasks(args: Record<string, unknown>): Array<Record<string, unknown>> {
+  if (!Array.isArray(args.tasks)) return [];
+  return args.tasks.slice(0, 3).flatMap((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+    const record = raw as Record<string, unknown>;
+    if (typeof record.id !== 'string' || !Array.isArray(record.tool_hints)) return [];
+    return [{
+      id: record.id.slice(0, 48),
+      tool_hints: record.tool_hints
+        .filter((name): name is string => typeof name === 'string')
+        .slice(0, 4),
+    }];
+  });
+}
+
+async function executeReadSubagentDelegation(
+  db: Db,
+  requestId: string,
+  goal: string,
+  ctx: UserContext,
+  args: Record<string, unknown>,
+  webSearchState: WebSearchState,
+  localBatchState: { callsExecuted: number },
+  state: { batchesExecuted: number },
+  safetyIdentifier: string | undefined,
+  reasoningEffort: ReasoningEffort,
+  responseFactory: typeof createNativeResponse,
+  turnContext: AgentTurnContext,
+  sharedReadBudget: ReadSubagentSharedBudget,
+): Promise<unknown> {
+  if (!config.openai.readSubagentsEnabled) {
+    return { ok: false, blocked: true, error: 'Read subagents are unavailable' };
+  }
+  if (state.batchesExecuted >= 1) {
+    return { ok: false, blocked: true, error: 'Read subagent batch budget exceeded' };
+  }
+  state.batchesExecuted += 1;
+  reportActivity({
+    type: 'tool_start',
+    name: 'delegate_read_subagents',
+    detail: 'bounded public read workers',
+  });
+
+  const controller = new AbortController();
+  const deadlineMs = Math.max(1, Math.min(
+    120_000,
+    Math.max(10_000, config.openai.responsesTimeoutMs * 2),
+    turnContext.deadlineAt - Date.now(),
+  ));
+  const deadline = setTimeout(() => controller.abort(), deadlineMs);
+  const abortPoll = setInterval(() => {
+    if (
+      Date.now() >= turnContext.deadlineAt
+      || isTurnAborted()
+      || !isTurnIdentityCurrent(db, ctx, turnContext)
+    ) controller.abort();
+  }, 100);
+  try {
+    return await runReadSubagentBatch(args, {
+      toolsFor: buildReadSubagentTools,
+      dispatch: async (name, childArgs) => {
+        if (!isTurnIdentityCurrent(db, ctx, turnContext)) {
+          throw new Error('Turn identity changed');
+        }
+        return executeToolCall(
+          db,
+          requestId,
+          goal,
+          ctx,
+          name,
+          childArgs,
+          webSearchState,
+          false,
+          localBatchState,
+          {
+            signal: controller.signal,
+            identityCurrent: () => isTurnIdentityCurrent(db, ctx, turnContext),
+          },
+        );
+      },
+      concurrency: config.openai.readSubagentConcurrency,
+      reasoningEffort,
+      safetyIdentifier,
+      signal: controller.signal,
+      responseFactory,
+      budget: sharedReadBudget,
+    });
+  } finally {
+    clearTimeout(deadline);
+    clearInterval(abortPoll);
+  }
+}
+
 async function executeToolCall(
   db: Db,
   requestId: string,
@@ -1405,6 +2360,48 @@ async function executeToolCall(
   args: Record<string, unknown>,
   webSearchState: WebSearchState,
   programmatic = false,
+  localBatchState: { callsExecuted: number } = { callsExecuted: 0 },
+  guard: ToolExecutionGuard = {},
+): Promise<unknown> {
+  // The batch container holds no permit while its children wait, preventing a
+  // semaphore deadlock. Every validated leaf re-enters this wrapper.
+  if (isLocalParallelBatchTool(name)) {
+    return executeToolCallUnadmitted(
+      db, requestId, goal, ctx, name, args, webSearchState, programmatic, localBatchState,
+      guard,
+    );
+  }
+  const policy = await getToolPolicy(name, args);
+  const admission = policy === 'read'
+    ? getReadToolAdmission()
+    : policy === 'write' || policy === 'ui'
+      ? getWriteToolAdmission()
+      : null;
+  const release = admission ? await admission.acquire(guard.signal) : null;
+  try {
+    if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
+      return { ok: false, blocked: true, error: 'Turn identity changed or request was cancelled before dispatch' };
+    }
+    return await executeToolCallUnadmitted(
+      db, requestId, goal, ctx, name, args, webSearchState, programmatic, localBatchState,
+      guard,
+    );
+  } finally {
+    release?.();
+  }
+}
+
+async function executeToolCallUnadmitted(
+  db: Db,
+  requestId: string,
+  goal: string,
+  ctx: UserContext,
+  name: string,
+  args: Record<string, unknown>,
+  webSearchState: WebSearchState,
+  programmatic = false,
+  localBatchState: { callsExecuted: number } = { callsExecuted: 0 },
+  guard: ToolExecutionGuard = {},
 ): Promise<unknown> {
   // Live activity: surface which tool ("skill") is running to any attached sink
   // (the interactive CLI). No-op for the bots. Single point so it covers both
@@ -1413,6 +2410,11 @@ async function executeToolCall(
     type: 'tool_start',
     name,
     detail: programmatic
+      || isMarketHistorySummaryTool(name)
+      || isSystemMetricSnapshotTool(name)
+      || isDoctrineSummaryTool(name)
+      || isDynamicItemSummaryTool(name)
+      || isLocalParallelBatchTool(name)
       ? 'bounded public read'
       : isEveKillAnalyticsToolName(name) ? 'public analytics request' : summarizeToolArgs(name, args),
   });
@@ -1420,6 +2422,8 @@ async function executeToolCall(
   const notificationCapability = ctx.notificationCapability ?? 'all';
   const notificationBlocked = notificationCapability === 'none'
     ? name === 'kill_watch' || isHeartbeatConfigTool(name) || isRouteMonitorTool(name)
+    : notificationCapability === 'web'
+      ? name === 'kill_watch' || isHeartbeatConfigTool(name)
     : notificationCapability === 'feed' && isHeartbeatConfigTool(name);
   if (notificationBlocked) {
     return {
@@ -1427,8 +2431,26 @@ async function executeToolCall(
       blocked: true,
       error: notificationCapability === 'feed'
         ? 'Heartbeat scheduling is unavailable in the terminal CLI. Route monitoring and EVE-KILL watches remain available while the CLI is running.'
+        : notificationCapability === 'web'
+          ? 'Push watches and heartbeat scheduling are unavailable in the browser. Route monitoring is available in the Online Scan screen.'
         : 'Durable background notifications are unavailable in this transient chat lane. Use Telegram, Discord, or the interactive CLI.',
     };
+  }
+
+  if (isLocalParallelBatchTool(name)) {
+    return executeLocalParallelBatch(args, localBatchState, async (tool, normalizedArgs) =>
+      executeToolCall(
+        db,
+        requestId,
+        goal,
+        ctx,
+        tool,
+        normalizedArgs,
+        webSearchState,
+        true,
+        localBatchState,
+        guard,
+      ));
   }
 
   if (name === 'web_search') {
@@ -1468,7 +2490,7 @@ async function executeToolCall(
 
   if (isBatchMarketTool(name)) {
     try {
-      return await executeBatchMarketPrices(db, args, ctx);
+      return await executeBatchMarketPrices(db, args, ctx, guard);
     } catch {
       return {
         ok: false,
@@ -1479,6 +2501,18 @@ async function executeToolCall(
         blocked: false,
       };
     }
+  }
+
+  if (isMarketHistorySummaryTool(name)) {
+    return await executeMarketHistorySummary(db, args);
+  }
+
+  if (isSystemMetricSnapshotTool(name)) {
+    return await executeSystemMetricSnapshot(db, args);
+  }
+
+  if (isDynamicItemSummaryTool(name)) {
+    return await executeDynamicItemSummary(db, args);
   }
 
   if (isOsintInferTool(name)) {
@@ -1546,11 +2580,11 @@ async function executeToolCall(
     const routeArgs: PlanRouteArgs = {
       origin: String(args.origin ?? ''),
       destination: String(args.destination ?? ''),
-      set_autopilot: args.set_autopilot !== false,
+      set_autopilot: args.set_autopilot === true,
       avoid: Array.isArray(args.avoid) ? args.avoid.filter((v): v is number => typeof v === 'number') : [],
       prefer: args.prefer === 'shortest' || args.prefer === 'insecure' || args.prefer === 'thera_shortcut' ? args.prefer : 'secure',
     };
-    const routeResult = await planRoute(db, routeArgs, ctx);
+    const routeResult = await planRoute(db, routeArgs, ctx, guard.identityCurrent, guard.signal);
     console.log('[plan_route] origin=%s dest=%s routes=%d autopilot=%s error=%s',
       routeResult.origin?.name ?? '?', routeResult.destination?.name ?? '?',
       routeResult.routes.length, routeResult.autopilot_set, routeResult.error ?? 'none');
@@ -1568,6 +2602,7 @@ async function executeToolCall(
       destination: routeResult.destination,
       autopilot_set: routeResult.autopilot_set,
       autopilot_mode: routeResult.autopilot_mode,
+      monitor_started: routeResult.monitor_started,
       formatted_summary: routeResult.formatted_summary,
       routes: routeResult.routes.map((route) => ({
         flag: route.flag,
@@ -1597,13 +2632,13 @@ async function executeToolCall(
     };
   }
 
-  if (isEveKillToolName(name) || isEveKillAnalyticsToolName(name)) {
+  if (isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isDoctrineSummaryTool(name)) {
     webSearchState.eveKillCallCount += 1;
     if (webSearchState.eveKillCallCount > MAX_EVE_KILL_CALLS_PER_TURN) {
       console.log('[eve-kill] blocked: limit %d reached (call #%d)', MAX_EVE_KILL_CALLS_PER_TURN, webSearchState.eveKillCallCount);
       return { ok: false, error: `Лимит eve-kill (${MAX_EVE_KILL_CALLS_PER_TURN}) на один ответ исчерпан. Анализируй уже собранные данные.`, blocked: true };
     }
-    if (isEveKillAnalyticsToolName(name)) {
+    if (isEveKillAnalyticsToolName(name) || isDoctrineSummaryTool(name)) {
       webSearchState.eveKillAnalyticsCallCount += 1;
       if (webSearchState.eveKillAnalyticsCallCount > MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN) {
         console.log(
@@ -1617,7 +2652,9 @@ async function executeToolCall(
           blocked: true,
         };
       }
-      const result = await executeEveKillAnalyticsTool(name as EveKillAnalyticsToolName, args);
+      const result = isDoctrineSummaryTool(name)
+        ? await executeDoctrineSummary(db, args)
+        : await executeEveKillAnalyticsTool(name as EveKillAnalyticsToolName, args);
       console.log('[eve-kill-analytics] %s completed (call #%d)', name, webSearchState.eveKillAnalyticsCallCount);
       return result;
     }
@@ -1650,7 +2687,7 @@ async function executeToolCall(
     return { ok: false, status: 400, error: `filter_ids too large (${filterIds.length}). Maximum 100 IDs per request.` };
   }
 
-  const esiResult = await callEsiOperation(db, name, esiArgs, ctx);
+  const esiResult = await callEsiOperation(db, name, esiArgs, ctx, guard);
 
   // Bulk endpoint: filter rows by filter_ids
   if (esiResult.ok && esiResult.data != null && bulkSpec && filterIds) {
@@ -1698,18 +2735,6 @@ async function executeToolCall(
 
 export { areSimilarWebSearchQueries, createWebSearchState, normalizeWebSearchQuery, registerWebSearch } from './web-search.js';
 export type { WebSearchState } from './web-search.js';
-
-function safeParseArguments(raw: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // fall through
-  }
-  return {};
-}
 
 function safeParseJsonRecord(raw: string): Record<string, unknown> | null {
   try {
@@ -1800,6 +2825,14 @@ function buildToolStateRecoveryContext(db: Db, threadId: string): NativeInputIte
   return items;
 }
 
+function buildResponseStateRecoveryContext(
+  db: Db,
+  threadId: string,
+  replayItems: NativeInputItem[],
+): NativeInputItem[] {
+  return replayItems.length > 0 ? [...replayItems] : buildSmartContext(db, threadId);
+}
+
 function buildRecentToolSummaryMessage(db: Db, threadId: string): string | null {
   const rows = db.prepare(
     "SELECT content FROM messages WHERE thread_id = ? AND role = 'tool' ORDER BY id DESC LIMIT ?",
@@ -1850,27 +2883,6 @@ function shouldRecoverFromToolStateMismatch(
   return pendingItems.some((item) => item.type === 'function_call_output');
 }
 
-/** Errors that indicate a broken continuation chain — recoverable via cold restart. */
-const WS_RETRIABLE_PATTERNS = [
-  'response_state_missing',             // sanitized missing/expired previous response
-  'not found',                          // "Previous response with id ... not found"
-  'ws_transport_error',                 // provider transport failure
-  'ws closed',                          // server closed WebSocket
-  'ws timeout',                         // idle timeout
-  'ws idle timeout',                    // per-frame idle timeout
-  'ws error',                           // generic WS error
-  'connection_limit_reached',           // provider connection limit
-  'connection reset',                   // TCP reset
-  'socket hang up',                     // Node undici socket error
-  'econnrefused',                       // connection refused
-  'terminated',                         // undici terminated
-];
-
-function isWsRetriableError(message: string): boolean {
-  const lower = message.toLowerCase();
-  return WS_RETRIABLE_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
-}
-
 function shouldUseToolStateRecovery(
   message: string,
   exhausted: boolean,
@@ -1879,9 +2891,7 @@ function shouldUseToolStateRecovery(
 ): boolean {
   if (exhausted) return false;
   if (shouldRecoverFromToolStateMismatch(message, previousResponseId, pendingItems)) return true;
-  // Also recover from WS transport errors (broken continuation chain)
-  if (previousResponseId && isWsRetriableError(message)) return true;
-  return false;
+  return Boolean(previousResponseId && message.toLowerCase().includes(RESPONSE_STATE_MISSING_FRAGMENT));
 }
 
 export { deriveLiveContextNeeds } from './static-aggregate.js';
@@ -1896,26 +2906,46 @@ function planConversationContinuation(db: Db, threadId: string): ConversationCon
   const row = db.prepare(
     `SELECT
        t.last_response_id AS last_response_id,
+       t.last_response_message_id AS last_response_message_id,
+       (SELECT id FROM messages WHERE thread_id = t.thread_id AND role = 'user' ORDER BY id DESC LIMIT 1) AS latest_user_id,
        (SELECT content FROM messages WHERE thread_id = t.thread_id AND role = 'user' ORDER BY id DESC LIMIT 1) AS latest_user_content,
-       (SELECT created_at FROM messages WHERE thread_id = t.thread_id AND role = 'assistant' ORDER BY id DESC LIMIT 1) AS latest_assistant_at
+       (SELECT id FROM messages WHERE thread_id = t.thread_id AND role = 'assistant' ORDER BY id DESC LIMIT 1) AS latest_assistant_id,
+       (SELECT created_at FROM messages WHERE id = t.last_response_message_id AND thread_id = t.thread_id AND role = 'assistant') AS anchor_assistant_at,
+       (SELECT COUNT(*) FROM messages WHERE thread_id = t.thread_id AND id > COALESCE(t.last_response_message_id, 0)) AS messages_after_anchor,
+       (SELECT COUNT(*) FROM messages WHERE thread_id = t.thread_id AND role = 'user' AND id > COALESCE(t.last_response_message_id, 0)) AS users_after_anchor
      FROM agent_threads t
      WHERE t.thread_id = ?`
   ).get(threadId) as {
     last_response_id: string | null;
+    last_response_message_id: number | null;
+    latest_user_id: number | null;
     latest_user_content: string | null;
-    latest_assistant_at: string | null;
+    latest_assistant_id: number | null;
+    anchor_assistant_at: string | null;
+    messages_after_anchor: number;
+    users_after_anchor: number;
   } | undefined;
 
   if (
     row?.last_response_id
+    && row.last_response_message_id
     && row.latest_user_content
-    && isRecentSqliteTimestamp(row.latest_assistant_at, PREVIOUS_RESPONSE_MAX_AGE_MS)
+    && row.latest_assistant_id === row.last_response_message_id
+    && row.latest_user_id !== null
+    && row.latest_user_id > row.last_response_message_id
+    && row.messages_after_anchor === 1
+    && row.users_after_anchor === 1
+    && isRecentSqliteTimestamp(row.anchor_assistant_at, PREVIOUS_RESPONSE_MAX_AGE_MS)
   ) {
     return {
       mode: 'warm',
       items: [toNativeMessage(row.latest_user_content)],
       previousResponseId: row.last_response_id,
     };
+  }
+
+  if (row && (row.last_response_id || row.last_response_message_id)) {
+    saveLastResponseId(db, threadId, null);
   }
 
   return {
@@ -1927,8 +2957,22 @@ function planConversationContinuation(db: Db, threadId: string): ConversationCon
 
 function saveLastResponseId(db: Db, threadId: string, responseId: string | null): void {
   db.prepare(
-    "UPDATE agent_threads SET last_response_id = ?, updated_at = datetime('now') WHERE thread_id = ?"
+    "UPDATE agent_threads SET last_response_id = ?, last_response_message_id = NULL, updated_at = datetime('now') WHERE thread_id = ?"
   ).run(responseId, threadId);
+}
+
+function buildSideEffectExecutionKey(name: string, args: unknown): string {
+  return `${name}\0${JSON.stringify(sortJsonForExecutionKey(args))}`;
+}
+
+function sortJsonForExecutionKey(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonForExecutionKey);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortJsonForExecutionKey(entry)]),
+  );
 }
 
 function isRecentSqliteTimestamp(value: string | null, maxAgeMs: number): boolean {
@@ -1998,15 +3042,18 @@ export function resolveReasoningEffort(
 export const __test__ = {
   runNativeAgentLoop,
   runPreTurnCompactSafe,
+  refreshMissingProfileWithinDeadline,
   isTransientModelError,
   buildSmartContext,
   buildToolStateRecoveryContext,
+  buildResponseStateRecoveryContext,
   buildRecentToolSummaryMessage,
   executeToolCall,
   deriveLiveContextNeeds,
   resolveSystemLocationContext,
   shouldRecoverFromToolStateMismatch,
   shouldUseToolStateRecovery,
+  buildSideEffectExecutionKey,
   isSimpleStaticAggregateCountGoal,
   detectStaticAggregateObjectKind,
   parseStaticAggregateIntent,
@@ -2018,6 +3065,8 @@ export const __test__ = {
   classifyReasoningEffort,
   resolveReasoningEffort,
   validateProgrammaticBatch,
+  validateLocalParallelBatch,
+  executeLocalParallelBatch,
   validateCompletedProgramShapes,
   truncateToolOutput,
 };
@@ -2191,8 +3240,35 @@ function smartAggregate(rows: unknown[]): {
   };
 }
 
-function storeAssistantMessage(db: Db, threadId: string, content: string): void {
-  db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'assistant', content);
+function storeAssistantMessage(
+  db: Db,
+  threadId: string,
+  content: string,
+  responseId: string | null = null,
+): void {
+  db.transaction(() => {
+    const webRequestId = getActivitySink()?.requestId ?? null;
+    const inserted = db.prepare(
+      'INSERT INTO messages (thread_id, role, content, web_request_id) VALUES (?, ?, ?, ?)',
+    ).run(threadId, 'assistant', content, webRequestId);
+    const messageId = Number(inserted.lastInsertRowid);
+    db.prepare(
+      `UPDATE agent_threads
+       SET last_response_id = ?, last_response_message_id = ?, updated_at = datetime('now')
+       WHERE thread_id = ?`,
+    ).run(responseId, responseId ? messageId : null, threadId);
+  })();
+}
+
+function storeIdentityChangedResult(
+  db: Db,
+  threadId: string,
+  peakInputTokens = 0,
+): AgentResult {
+  const text = 'Активный персонаж или его доступы изменились во время запроса. Повтори запрос для текущего персонажа.';
+  storeAssistantMessage(db, threadId, text);
+  saveLastResponseId(db, threadId, null);
+  return { text, peakInputTokens };
 }
 
 function ensureThreadOwnership(db: Db, threadId: string, ctx: UserContext): void {

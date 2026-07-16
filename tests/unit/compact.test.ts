@@ -85,6 +85,12 @@ describe('pre-turn compaction', () => {
       db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', `msg ${i} ${longText}`);
       db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'assistant', `reply ${i} ${longText}`);
     }
+    const latestAssistant = db.prepare(
+      "SELECT id FROM messages WHERE thread_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1",
+    ).get('t1') as { id: number };
+    db.prepare(
+      'UPDATE agent_threads SET last_response_id = ?, last_response_message_id = ? WHERE thread_id = ?',
+    ).run('resp_before_compaction', latestAssistant.id, 't1');
     // Set above 180K (90% of 200K)
     db.prepare('UPDATE agent_threads SET total_tokens = 190000 WHERE thread_id = ?').run('t1');
 
@@ -141,10 +147,11 @@ describe('mid-turn compaction', () => {
     expect(changed).toBe(true);
     expect(getThreadSummary(db, 't1')).toContain('Mid-turn summary');
 
-    const row = db.prepare('SELECT total_tokens, last_response_id FROM agent_threads WHERE thread_id = ?').get('t1') as
-      { total_tokens: number; last_response_id: string | null };
+    const row = db.prepare('SELECT total_tokens, last_response_id, last_response_message_id FROM agent_threads WHERE thread_id = ?').get('t1') as
+      { total_tokens: number; last_response_id: string | null; last_response_message_id: number | null };
     expect(row.total_tokens).toBe(0);
     expect(row.last_response_id).toBe(null);
+    expect(row.last_response_message_id).toBe(null);
   });
 });
 

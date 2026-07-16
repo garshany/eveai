@@ -34,6 +34,18 @@ type WatchRow = { id: number; chat_id: number; topic: string; label: string };
 
 const listeners = new Set<FeedEventListener>();
 let running: { stopped: boolean; wake: AbortController; done: Promise<void> } | null = null;
+let lastPollAt: string | null = null;
+let lastSuccessAt: string | null = null;
+let lastError: string | null = null;
+
+export function getEveKillFeedRuntimeStatus(): {
+  running: boolean;
+  lastPollAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+} {
+  return { running: Boolean(running), lastPollAt, lastSuccessAt, lastError };
+}
 
 /** Registers an in-process consumer before the baseline poll. */
 export function subscribeEveKillFeed(listener: FeedEventListener): () => void {
@@ -211,6 +223,13 @@ async function feedLoop(
       }
     }
     const result = await runFeedPollOnce(db, send, options);
+    lastPollAt = new Date().toISOString();
+    if (result.ok) {
+      lastSuccessAt = lastPollAt;
+      lastError = null;
+    } else {
+      lastError = result.error.slice(0, 200);
+    }
     if (state.stopped) break;
     if (result.ok && !ready) {
       try {

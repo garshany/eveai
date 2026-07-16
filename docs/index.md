@@ -1,7 +1,7 @@
 # Docs Index
 
 Status: active
-Verified against code: 2026-07-13
+Verified against code: 2026-07-15
 
 This directory is the repository knowledge system of record.
 
@@ -23,13 +23,15 @@ Read the smallest document that answers the current question. Start here, then d
 - [SECURITY.md](./SECURITY.md): auth, secret, and web protection rules
 - [deployment.md](./deployment.md): generic self-host deployment guide
 - [legal.md](./legal.md): CCP legal notices, Developer License Agreement, and Community Showcase readiness
+- [eve-sso-consent.md](./eve-sso-consent.md): bilingual player disclosure, optional ESI access groups, AI-provider data flow, and revocation
 - [open-source-release.md](./open-source-release.md): clean public release and history-safety checklist
 - [community-showcase.md](./community-showcase.md): CCP Community Showcase submission bundle and eligibility gate
 - [heartbeat.md](./heartbeat.md): periodic background checks and notifications system
 - [osint.md](./osint.md): probabilistic residence/staging inference from activity graphs
-- [eve-kill.md](./eve-kill.md): current EVE-KILL REST/feed, locally wrapped MCP analytics, source ownership, and route handoff
+- [eve-kill.md](./eve-kill.md): current EVE-KILL REST/feed, locally wrapped MCP analytics, bounded doctrine projection, source ownership, and route handoff
 - [eve-scout.md](./eve-scout.md): bounded EVE-Scout wormhole/system contracts, cache freshness, and programmatic boundary
-- [openai-integration.md](./openai-integration.md): stateless Responses loop and local function/MCP privacy boundary
+- [openai-integration.md](./openai-integration.md): stateless Responses loop, exact nine-tool Programmatic Tool Calling boundary, and local function/MCP privacy model
+- [product-specs/browser-sso.md](./product-specs/browser-sso.md): browser chat, opaque sessions, SSO, provider, and isolation contract
 - [product-specs/update-management.md](./product-specs/update-management.md): bounded release checks and the local-operator update boundary
 
 ## Indexed Subtrees

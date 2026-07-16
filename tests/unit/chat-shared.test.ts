@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import { runMigrations } from '../../src/db/migrations.js';
-import { clearChatConversation } from '../../src/chat/shared.js';
+import {
+  clearChatConversation,
+  clearInFlightRequest,
+  hasInFlightRequestForActor,
+  rememberInFlightRequest,
+  resetChatRequestGuardForTests,
+} from '../../src/chat/shared.js';
 
 let db: Database.Database;
 
@@ -14,7 +20,18 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetChatRequestGuardForTests();
   db.close();
+});
+
+describe('multi-platform actor isolation', () => {
+  it('allows only one active request for the same user across different chat lanes', () => {
+    rememberInFlightRequest(42, 'telegram-thread', 'one', 'token', 1_000, 7);
+    expect(hasInFlightRequestForActor(-99, 7)).toBe(true);
+    expect(hasInFlightRequestForActor(-99, 8)).toBe(false);
+    clearInFlightRequest(42, 'token');
+    expect(hasInFlightRequestForActor(-99, 7)).toBe(false);
+  });
 });
 
 describe('clearChatConversation', () => {

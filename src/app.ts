@@ -1,4 +1,5 @@
 import { createLogger, printStartupBanner, type BannerRow } from './observability/logger.js';
+import { validatePublicWebProductionConfig } from './web/production-config.js';
 
 const log = createLogger('app');
 
@@ -16,9 +17,9 @@ async function main() {
     process.exit(1);
   }
 
-  if (!config.telegram.botToken && !config.discord.botToken) {
-    log.error('Не задан ни TELEGRAM_BOT_TOKEN, ни DISCORD_BOT_TOKEN — боту не с кем разговаривать.');
-    log.error('Заполни хотя бы один токен в .env и перезапусти.');
+  if (!config.telegram.botToken && !config.discord.botToken && !config.web.chatEnabled) {
+    log.error('Не задан канал общения: Telegram/Discord выключены и WEB_CHAT_ENABLED=false.');
+    log.error('Включи хотя бы один bot token или WEB_CHAT_ENABLED=true и перезапусти.');
     process.exit(1);
   }
 
@@ -29,6 +30,24 @@ async function main() {
       process.exit(1);
     }
     log.warn('AUTH_SECRET_KEY не задан — EVE-токены шифруются встроенным dev-ключом. Для продакшена: openssl rand -base64 32');
+  }
+
+  if (Boolean(config.web.turnstileSiteKey) !== Boolean(config.web.turnstileSecretKey)) {
+    log.error('TURNSTILE_SITE_KEY и TURNSTILE_SECRET_KEY должны быть заданы вместе.');
+    process.exit(1);
+  }
+
+  const publicWebErrors = validatePublicWebProductionConfig({
+    nodeEnv: process.env.NODE_ENV,
+    chatEnabled: config.web.chatEnabled,
+    baseUrl: config.web.baseUrl,
+    trustedProxyCidrs: config.web.trustedProxyCidrs,
+    turnstileSecretKey: config.web.turnstileSecretKey,
+    turnstileHostname: config.web.turnstileHostname,
+  });
+  if (publicWebErrors.length > 0) {
+    for (const error of publicWebErrors) log.error('%s', error);
+    process.exit(1);
   }
 
   if (config.esi.userAgent.includes('example')) {
@@ -56,6 +75,8 @@ async function main() {
   const { startEveKillFeedPoller, stopEveKillFeedPoller } = await import('./eve-kill/feed-poll.js');
   const { setRouteMonitorSender } = await import('./eve/route-planner.js');
   const { restoreMonitors, shutdownRouteMonitors } = await import('./eve-board/monitor.js');
+  const { cleanExpiredWebSessions } = await import('./web/web-session.js');
+  const { isActiveWebSessionLane } = await import('./web/web-session-state.js');
   const { pickTelegramParseMode } = await import('./telegram/formatting.js');
   const {
     registerTelegramOutbound,
@@ -68,6 +89,12 @@ async function main() {
   const runtimeLock = acquireRuntimeLock(config.db.path, 'bot service');
   const db = initDb(config.db.path);
   runMigrations(db);
+  const { recoverInterruptedPlans } = await import('./agent/planner.js');
+  const recoveredPlans = recoverInterruptedPlans(db);
+  if (recoveredPlans > 0) {
+    log.warn('Recovered %d interrupted agent plan(s) from the previous process.', recoveredPlans);
+  }
+  if (config.web.chatEnabled) await cleanExpiredWebSessions(db, { force: true });
   log.info('Database ready at %s', config.db.path);
 
   const sdeSystems = countSdeSystems(db);
@@ -172,16 +199,28 @@ async function main() {
       });
   }
 
-  // 5. Notification producers route through the platform-aware dispatcher.
-  setRouteMonitorSender(deliverOutbound);
-  startHeartbeat(db);
-  // The poller establishes a missing cursor first, then synchronously restores
-  // route listeners before processing any later event. Existing cursors restore
-  // listeners before the first resumed poll. This closes the baseline/head gap.
-  startEveKillFeedPoller(db, deliverOutbound, {
-    canDeliver: isOutboundAvailable,
-    onReady: () => restoreMonitors(db, deliverOutbound, isOutboundAvailable),
-  });
+  // 5. Route monitoring is durable for browser lanes as well as push lanes.
+  // Browser status is read from the persisted monitor; human-readable push
+  // messages remain exclusive to Telegram/Discord.
+  const hasOutboundPlatform = Boolean(config.telegram.botToken || config.discord.botToken);
+  const feedEnabled = hasOutboundPlatform || config.web.chatEnabled;
+  const isWebLane = (chatId: number) => isActiveWebSessionLane(db, chatId);
+  const routeMonitorSender = async (chatId: number, text: string) => {
+    if (isWebLane(chatId)) return;
+    await deliverOutbound(chatId, text);
+  };
+  const canRestoreRouteMonitor = (chatId: number) => isWebLane(chatId) || isOutboundAvailable(chatId);
+  if (feedEnabled) {
+    setRouteMonitorSender(routeMonitorSender);
+    // The poller establishes a missing cursor first, then synchronously restores
+    // route listeners before processing any later event. Existing cursors restore
+    // listeners before the first resumed poll. This closes the baseline/head gap.
+    startEveKillFeedPoller(db, deliverOutbound, {
+      canDeliver: isOutboundAvailable,
+      onReady: () => restoreMonitors(db, routeMonitorSender, canRestoreRouteMonitor),
+    });
+  }
+  if (hasOutboundPlatform) startHeartbeat(db);
 
   const version = getAppVersion();
   const rows: BannerRow[] = [
@@ -191,7 +230,12 @@ async function main() {
       value: sdeSystems > 0 ? `${sdeSystems} systems loaded` : 'missing — run: npm run setup',
       state: sdeSystems > 0 ? 'ok' : 'warn',
     },
-    { label: 'HTTP', value: `http://${config.server.host}:${config.server.port} (SSO callback + /health)`, state: 'ok' },
+    { label: 'HTTP', value: `http://${config.server.host}:${config.server.port} (SSO + /health${config.web.chatEnabled ? ' + /app' : ''})`, state: 'ok' },
+    {
+      label: 'Web chat',
+      value: config.web.chatEnabled ? 'same-origin /app' : 'disabled (WEB_CHAT_ENABLED=false)',
+      state: config.web.chatEnabled ? 'ok' : 'off',
+    },
     {
       label: 'Telegram',
       value: config.telegram.botToken ? 'long polling' : 'disabled (no TELEGRAM_BOT_TOKEN)',
@@ -203,12 +247,12 @@ async function main() {
       state: config.discord.botToken ? 'ok' : 'off',
     },
     {
-      label: 'OpenAI',
-      value: `${config.openai.model} · reasoning ${config.openai.reasoningEffort}/${config.openai.reasoningMode} · verbosity ${config.openai.textVerbosity}`,
+      label: 'Model',
+      value: `${config.openai.providerName} · ${config.openai.model} · reasoning ${config.openai.reasoningEffort}/${config.openai.reasoningMode} · verbosity ${config.openai.textVerbosity}`,
       state: 'ok',
     },
-    { label: 'Heartbeat', value: 'every 5 min', state: 'ok' },
-    { label: 'EVE-KILL feed', value: 'durable poll', state: 'ok' },
+    { label: 'Heartbeat', value: hasOutboundPlatform ? 'every 5 min' : 'disabled (no push platform)', state: hasOutboundPlatform ? 'ok' : 'off' },
+    { label: 'EVE-KILL feed', value: feedEnabled ? 'durable REST poll' : 'disabled', state: feedEnabled ? 'ok' : 'off' },
   ];
   printStartupBanner(`EVE AI Agent v${version}`, rows);
 

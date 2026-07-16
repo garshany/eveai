@@ -8,10 +8,12 @@
 
 import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from '../eve/esi-client.js';
+import { getLinkedCharacter } from '../eve/sso.js';
 import { getEveCapabilities, hasFreshCapabilitySnapshot } from '../eve/capabilities.js';
 import { subscribeEveKillFeed } from '../eve-kill/feed-poll.js';
 import type { FeedEvent } from '../eve-kill/types.js';
 import { resolveUserContextForChat, type UserContext } from '../auth/user-resolver.js';
+import { getWebSessionLaneState } from '../web/web-session-state.js';
 import {
   analyzeKillPattern,
   assessShip,
@@ -196,8 +198,39 @@ export function stopRouteMonitor(chatId: number, reason: StopReason): void {
   console.log(`${LOG} stopped chat=${chatId} reason=${reason} elapsed=${minutes}min`);
 }
 
+/** Detach and delete a monitor without sending to a lane that is being revoked. */
+export function discardRouteMonitor(chatId: number, db?: Db): void {
+  const instance = activeMonitors.get(chatId);
+  if (instance) {
+    detachInstance(instance);
+    activeMonitors.delete(chatId);
+    deleteMonitor(instance.db, chatId);
+    return;
+  }
+  if (db) deleteMonitor(db, chatId);
+}
+
 export function getActiveMonitor(chatId: number): RouteMonitor | null {
   return activeMonitors.get(chatId)?.monitor ?? null;
+}
+
+export type RouteMonitorRuntimeStatus = {
+  monitor: RouteMonitor | null;
+  active: boolean;
+  baselineReady: boolean;
+  locationFailures: number;
+  threatLevel: ThreatLevel | null;
+};
+
+export function getRouteMonitorRuntimeStatus(db: Db, chatId: number): RouteMonitorRuntimeStatus {
+  const instance = activeMonitors.get(chatId);
+  return {
+    monitor: instance?.monitor ?? loadMonitor(db, chatId),
+    active: Boolean(instance),
+    baselineReady: instance?.baselineReady ?? false,
+    locationFailures: instance?.locationFailures ?? 0,
+    threatLevel: instance?.lastOverallThreat ?? null,
+  };
 }
 
 export function restoreMonitors(
@@ -392,10 +425,11 @@ async function drainInitialFeedEvents(instance: MonitorInstance): Promise<void> 
 }
 
 async function handleRouteFeedEvent(instance: MonitorInstance, event: FeedEvent): Promise<void> {
+  if (!ensureMonitorCharacterStillActive(instance)) return;
   const systemId = event.killmail.solarSystemId;
   if (!systemId || !instance.monitor.routeSystems.includes(systemId)) return;
   await instance.baselinePromise;
-  if (activeMonitors.get(instance.monitor.chatId) !== instance) return;
+  if (!ensureMonitorCharacterStillActive(instance)) return;
   await enqueueRouteFeedEvent(instance, event);
 }
 
@@ -438,6 +472,7 @@ async function processRouteFeedEvent(instance: MonitorInstance, event: FeedEvent
     return;
   }
   const enriched = await enrichRouteKillmail(db, event.killmail);
+  if (!ensureMonitorCharacterStillActive(instance)) return;
   const existing = pruneThreatKills(instance.killsBySystem.get(systemId) ?? []);
   const nextKills = [enriched, ...existing.filter((kill) => kill.killmail_id !== killmailId)];
   const systemName = resolveSystemName(db, systemId);
@@ -558,13 +593,16 @@ async function pollLocation(instance: MonitorInstance): Promise<void> {
   instance.pollingLocation = true;
   const { monitor, db } = instance;
   try {
+    if (!ensureMonitorCharacterStillActive(instance)) return;
     await ensureMonitorCapabilities(instance, 'route-monitor-location');
+    if (!ensureMonitorCharacterStillActive(instance)) return;
     const result = await callEsiOperation<{ solar_system_id?: number }>(
       db,
       'get_characters_character_id_location',
       { character_id: monitor.characterId },
       getMonitorUserContext(db, monitor.chatId),
     );
+    if (!ensureMonitorCharacterStillActive(instance)) return;
     if (!result.ok || !result.data.solar_system_id) {
       instance.locationFailures += 1;
       if (instance.locationFailures >= MAX_LOCATION_FAILURES) stopRouteMonitor(monitor.chatId, 'auth');
@@ -572,7 +610,11 @@ async function pollLocation(instance: MonitorInstance): Promise<void> {
     }
     instance.locationFailures = 0;
     const nextSystem = result.data.solar_system_id;
-    if (nextSystem === monitor.currentSystemId) return;
+    monitor.lastLocationCheck = new Date().toISOString();
+    if (nextSystem === monitor.currentSystemId) {
+      saveMonitor(db, monitor);
+      return;
+    }
     const previousIndex = monitor.routeSystems.indexOf(monitor.currentSystemId);
     const nextIndex = monitor.routeSystems.indexOf(nextSystem);
     if (previousIndex >= 0) {
@@ -584,7 +626,6 @@ async function pollLocation(instance: MonitorInstance): Promise<void> {
       monitor.stats.jumpsCompleted += nextIndex - previousIndex;
     }
     monitor.currentSystemId = nextSystem;
-    monitor.lastLocationCheck = new Date().toISOString();
     saveMonitor(db, monitor);
     rebuildRouteDigests(instance, new Map());
     if (nextSystem === monitor.destinationId) stopRouteMonitor(monitor.chatId, 'arrived');
@@ -600,15 +641,19 @@ async function pollOnline(instance: MonitorInstance): Promise<void> {
   instance.pollingOnline = true;
   const { monitor, db } = instance;
   try {
+    if (!ensureMonitorCharacterStillActive(instance)) return;
     await ensureMonitorCapabilities(instance, 'route-monitor-online');
+    if (!ensureMonitorCharacterStillActive(instance)) return;
     const result = await callEsiOperation<{ online?: boolean }>(
       db,
       'get_characters_character_id_online',
       { character_id: monitor.characterId },
       getMonitorUserContext(db, monitor.chatId),
     );
+    if (!ensureMonitorCharacterStillActive(instance)) return;
     if (!result.ok) return;
     monitor.lastOnlineCheck = new Date().toISOString();
+    saveMonitor(db, monitor);
     if (result.data.online) {
       instance.offlineSince = null;
     } else if (instance.offlineSince === null) {
@@ -625,13 +670,16 @@ async function pollOnline(instance: MonitorInstance): Promise<void> {
 
 async function checkOwnDeath(instance: MonitorInstance): Promise<void> {
   const { monitor, db } = instance;
+  if (!ensureMonitorCharacterStillActive(instance)) return;
   await ensureMonitorCapabilities(instance, 'route-monitor-killmails');
+  if (!ensureMonitorCharacterStillActive(instance)) return;
   const recent = await callEsiOperation<Array<{ killmail_id: number; killmail_hash: string }>>(
     db,
     'get_characters_character_id_killmails_recent',
     { character_id: monitor.characterId },
     getMonitorUserContext(db, monitor.chatId),
   );
+  if (!ensureMonitorCharacterStillActive(instance)) return;
   if (!recent.ok || recent.data.length === 0) return;
   const latest = recent.data[0]!;
   const lastDeathId = (monitor.stats as RouteStats & { lastDeathId?: number }).lastDeathId;
@@ -641,6 +689,7 @@ async function checkOwnDeath(instance: MonitorInstance): Promise<void> {
     'get_killmails_killmail_id_killmail_hash',
     { killmail_id: latest.killmail_id, killmail_hash: latest.killmail_hash },
   );
+  if (!ensureMonitorCharacterStillActive(instance)) return;
   if (!detail.ok || detail.data.victim?.character_id !== monitor.characterId) return;
   (monitor.stats as RouteStats & { lastDeathId?: number }).lastDeathId = latest.killmail_id;
   updateMonitorStats(db, monitor.chatId, monitor.stats);
@@ -835,6 +884,30 @@ function prunePursuitHistory(instance: MonitorInstance): void {
 
 function getMonitorUserContext(db: Db, chatId: number): UserContext {
   return resolveUserContextForChat(db, chatId) ?? { userId: 0, chatId };
+}
+
+function ensureMonitorCharacterStillActive(instance: MonitorInstance): boolean {
+  const { monitor, db } = instance;
+  if (activeMonitors.get(monitor.chatId) !== instance) return false;
+  const web = getWebSessionLaneState(db, monitor.chatId);
+  if (!web) return true;
+  if (!web.active) {
+    console.warn(`${LOG} discarded chat=${monitor.chatId} reason=web-session-expired`);
+    discardRouteMonitor(monitor.chatId, db);
+    return false;
+  }
+  const ctx: UserContext = {
+    userId: web.userId,
+    chatId: monitor.chatId,
+    notificationCapability: 'web',
+  };
+  const activeCharacter = getLinkedCharacter(db, ctx);
+  if (activeCharacter?.characterId === monitor.characterId) return true;
+  console.warn(
+    `${LOG} discarded chat=${monitor.chatId} char=${monitor.characterId} reason=active-character-changed`,
+  );
+  discardRouteMonitor(monitor.chatId, db);
+  return false;
 }
 
 async function ensureMonitorCapabilities(instance: MonitorInstance, intent: string): Promise<void> {

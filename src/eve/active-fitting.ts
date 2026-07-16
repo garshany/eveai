@@ -7,7 +7,11 @@ import { readFile, access } from 'node:fs/promises';
 import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from './esi-client.js';
 import type { UserContext } from '../auth/user-resolver.js';
-import { resolveUserProfilePath, writeUserProfileAtomic } from './user-profile-storage.js';
+import {
+  resolveUserProfilePath,
+  withUserProfileAuthorizationLock,
+  writeUserProfileAtomic,
+} from './user-profile-storage.js';
 import { getLinkedCharacter } from './sso.js';
 import { isTurnAborted } from '../agent/activity.js';
 
@@ -59,9 +63,11 @@ export async function resolveActiveFitting(
   shipTypeName: string,
 ): Promise<string | null> {
   try {
+    const authorization = getLinkedCharacter(db, ctx);
+    if (!authorization) return null;
     const result = await callEsiOperation<EsiFitting[]>(
       db, 'get_characters_character_id_fittings',
-      { character_id: getLinkedCharacter(db, ctx)?.characterId },
+      { character_id: authorization.characterId },
       ctx,
     );
 
@@ -114,7 +120,7 @@ export async function resolveActiveFitting(
     const fittingText = lines.join('\n');
 
     // Persist to USER.md
-    await persistActiveFitting(db, ctx, fittingText);
+    await persistActiveFitting(db, ctx, fittingText, authorization);
 
     return fittingText;
   } catch (err) {
@@ -129,51 +135,62 @@ export async function resolveActiveFitting(
 
 const SECTION_MARKER = '## Active Fitting';
 
-async function persistActiveFitting(db: Db, ctx: UserContext, fittingText: string): Promise<void> {
-  const characterId = getLinkedCharacter(db, ctx)?.characterId;
-  if (!characterId) return;
-  const path = resolveUserProfilePath(ctx, characterId);
-  try {
-    await access(path);
-  } catch {
-    return; // file doesn't exist
-  }
+async function persistActiveFitting(
+  db: Db,
+  ctx: UserContext,
+  fittingText: string,
+  authorization: { characterId: number; scopes: string[] },
+): Promise<void> {
+  await withUserProfileAuthorizationLock(authorization.characterId, async () => {
+    const current = getLinkedCharacter(db, ctx);
+    if (
+      !current
+      || current.characterId !== authorization.characterId
+      || normalizeScopes(current.scopes) !== normalizeScopes(authorization.scopes)
+    ) return;
 
-  let content = await readFile(path, 'utf-8');
-
-  // Neutralize any line that would look like a Markdown section heading inside
-  // the fenced block — otherwise a fitting line like "## Wallet" corrupts the
-  // section-boundary search on the next re-save. A zero-width space before the
-  // '#' is invisible but breaks the '\n## ' boundary match.
-  const safeFitting = fittingText.replace(/^(\s*)#/gm, '$1\u200B#');
-  const newSection = `${SECTION_MARKER}\n\`\`\`\n${safeFitting}\n\`\`\``;
-
-  // Replace existing section or append before ## Wallet
-  const sectionStart = content.indexOf(SECTION_MARKER);
-  if (sectionStart !== -1) {
-    // Find next ## heading after the section
-    const nextHeading = content.indexOf('\n## ', sectionStart + SECTION_MARKER.length);
-    if (nextHeading !== -1) {
-      content = content.slice(0, sectionStart) + newSection + '\n\n' + content.slice(nextHeading + 1);
-    } else {
-      content = content.slice(0, sectionStart) + newSection + '\n';
+    const path = resolveUserProfilePath(ctx, authorization.characterId);
+    try {
+      await access(path);
+    } catch {
+      return; // file doesn't exist
     }
-  } else {
-    // Insert before ## Wallet or append at end
-    const walletPos = content.indexOf('## Wallet');
-    if (walletPos !== -1) {
-      content = content.slice(0, walletPos) + newSection + '\n\n' + content.slice(walletPos);
-    } else {
-      content = content.trimEnd() + '\n\n' + newSection + '\n';
-    }
-  }
 
-  // Last check after all the awaits above (ESI fetch, file reads): a turn the
-  // user abandoned via Ctrl-C must not rewrite USER.md. Single-threaded JS —
-  // nothing can flip the flag between this line and the write below.
-  if (isTurnAborted()) return;
-  await writeUserProfileAtomic(path, content);
-  console.log('[active-fitting] persisted to USER.md');
+    let content = await readFile(path, 'utf-8');
+
+    // Neutralize any line that would look like a Markdown section heading inside
+    // the fenced block — otherwise a fitting line like "## Wallet" corrupts the
+    // section-boundary search on the next re-save. A zero-width space before the
+    // '#' is invisible but breaks the '\n## ' boundary match.
+    const safeFitting = fittingText.replace(/^(\s*)#/gm, '$1\u200B#');
+    const newSection = `${SECTION_MARKER}\n\`\`\`\n${safeFitting}\n\`\`\``;
+
+    // Replace existing section or append before ## Wallet
+    const sectionStart = content.indexOf(SECTION_MARKER);
+    if (sectionStart !== -1) {
+      // Find next ## heading after the section
+      const nextHeading = content.indexOf('\n## ', sectionStart + SECTION_MARKER.length);
+      if (nextHeading !== -1) {
+        content = content.slice(0, sectionStart) + newSection + '\n\n' + content.slice(nextHeading + 1);
+      } else {
+        content = content.slice(0, sectionStart) + newSection + '\n';
+      }
+    } else {
+      // Insert before ## Wallet or append at end
+      const walletPos = content.indexOf('## Wallet');
+      if (walletPos !== -1) {
+        content = content.slice(0, walletPos) + newSection + '\n\n' + content.slice(walletPos);
+      } else {
+        content = content.trimEnd() + '\n\n' + newSection + '\n';
+      }
+    }
+
+    // SSO authorization replacement uses the same lock, so the checked scope
+    // snapshot remains valid through the atomic write.
+    if (isTurnAborted()) return;
+    await writeUserProfileAtomic(path, content);
+    console.log('[active-fitting] persisted to USER.md');
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -181,15 +198,19 @@ async function persistActiveFitting(db: Db, ctx: UserContext, fittingText: strin
 // ---------------------------------------------------------------------------
 
 export async function writeManualFitting(db: Db, ctx: UserContext, fittingText: string): Promise<{ ok: boolean; error?: string }> {
-  const characterId = getLinkedCharacter(db, ctx)?.characterId;
-  if (!characterId) return { ok: false, error: 'No character linked.' };
-  const path = resolveUserProfilePath(ctx, characterId);
+  const authorization = getLinkedCharacter(db, ctx);
+  if (!authorization) return { ok: false, error: 'No character linked.' };
+  const path = resolveUserProfilePath(ctx, authorization.characterId);
   try {
     await access(path);
   } catch {
     return { ok: false, error: 'USER.md not found. Refresh profile first.' };
   }
 
-  await persistActiveFitting(db, ctx, fittingText.trim());
+  await persistActiveFitting(db, ctx, fittingText.trim(), authorization);
   return { ok: true };
+}
+
+function normalizeScopes(scopes: string[]): string {
+  return JSON.stringify([...new Set(scopes)].sort());
 }

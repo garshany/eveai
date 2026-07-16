@@ -2,10 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 beforeEach(() => {
   vi.resetModules();
+  delete process.env.OPENAI_PROVIDER;
   process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1';
+  process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
+  process.env.OPENAI_STORE_RESPONSES = 'false';
 });
 
 afterEach(() => {
+  delete process.env.OPENAI_PROVIDER;
+  process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
+  process.env.OPENAI_STORE_RESPONSES = 'false';
   vi.unstubAllGlobals();
 });
 
@@ -60,6 +66,38 @@ describe('extractToolSearchPaths', () => {
 });
 
 describe('parseSse + streamed outputs', () => {
+  it('normalizes JSON, NDJSON, and SSE payloads carried in one WebSocket message', async () => {
+    const { __test__ } = await import('../../src/agent/native-responses.js');
+    expect(__test__.parseWebSocketMessage('{"type":"response.created"}')).toHaveLength(1);
+    expect(__test__.parseWebSocketMessage('[{"type":"response.created"},{"type":"codex.rate_limits"}]'))
+      .toHaveLength(2);
+    expect(__test__.parseWebSocketMessage('0')).toEqual([]);
+    expect(__test__.consumeWebSocketBuffer('{')).toEqual({ frames: [], rest: '{' });
+    const consumed = __test__.consumeWebSocketBuffer([
+      '{"type":"response.created","note":"brace } in string"}',
+      '{"type":"response.completed","response":{"status":"completed"}}',
+      '{"type":"response.output_text.delta"',
+    ].join(''));
+    expect(consumed.frames.map((event) => event.event)).toEqual([
+      'response.created',
+      'response.completed',
+    ]);
+    expect(consumed.rest).toBe('{"type":"response.output_text.delta"');
+    expect(__test__.parseWebSocketMessage([
+      '{"type":"response.output_text.delta","delta":"ok"}',
+      '{"type":"response.completed","response":{"status":"completed"}}',
+    ].join('\n')).map((event) => event.event)).toEqual([
+      'response.output_text.delta',
+      'response.completed',
+    ]);
+    expect(__test__.parseWebSocketMessage([
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"status":"completed"}}',
+      '',
+    ].join('\n'))[0]?.event).toBe('response.completed');
+    expect(() => __test__.parseWebSocketMessage('not-json')).toThrow();
+  });
+
   it('parses SSE stream, extracts deltas, done items, and terminal payload', async () => {
     process.env.ALLOWED_TELEGRAM_USER_ID = '1';
     process.env.TELEGRAM_BOT_TOKEN = 'test';
@@ -183,6 +221,35 @@ describe('parseSse + streamed outputs', () => {
   });
 });
 
+describe('Responses cancellation', () => {
+  it('propagates an external abort signal into the HTTP transport', async () => {
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const signal = init?.signal;
+      return await new Promise<Response>((_resolve, reject) => {
+        const abort = () => reject(new DOMException('aborted', 'AbortError'));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener('abort', abort, { once: true });
+      });
+    }));
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const controller = new AbortController();
+    const pending = createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(pending).rejects.toThrow('Responses request aborted');
+  });
+});
+
 describe('createNativeResponse request body', () => {
   it('never exposes a non-2xx provider body through the thrown error or logs', async () => {
     const sentinel = 'provider-private-payload-must-not-escape';
@@ -252,6 +319,7 @@ describe('createNativeResponse request body', () => {
     process.env.OPENAI_REASONING_EFFORT = 'auto';
     process.env.OPENAI_REASONING_MODE = 'standard';
     process.env.OPENAI_TEXT_VERBOSITY = 'low';
+    process.env.OPENAI_STORE_RESPONSES = 'false';
 
     let body: Record<string, unknown> | null = null;
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
@@ -277,6 +345,91 @@ describe('createNativeResponse request body', () => {
     expect(body?.text).toEqual({ verbosity: 'low' });
     expect(body?.store).toBe(false);
     expect(body?.stream).toBe(true);
+  });
+
+  it('opts the Responses request into stored logs when configured', async () => {
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    process.env.OPENAI_STORE_RESPONSES = 'true';
+
+    let body: Record<string, unknown> | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"resp_stored","output_text":"ok","output":[]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+    });
+
+    expect(body?.store).toBe(true);
+    expect(body?.previous_response_id).toBeUndefined();
+  });
+
+  it('uses the fixed CheapVibeCode WebSocket endpoint and omits stream', async () => {
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+
+    const { __test__ } = await import('../../src/agent/native-responses.js');
+    const requestBody = __test__.buildWebSocketCreatePayload({
+      model: 'gpt-5.6-sol',
+      input: [],
+      tools: [],
+      stream: true,
+      background: false,
+    });
+    const requestHeaders = __test__.buildWebSocketHeaders('test', '00000000-0000-4000-8000-000000000000');
+
+    expect(__test__.responsesWebSocketUrl('https://cheapvibecode.ru/backend-api/codex'))
+      .toBe('wss://cheapvibecode.ru/backend-api/codex/responses');
+    expect(requestBody).toMatchObject({ type: 'response.create', model: 'gpt-5.6-sol' });
+    expect(requestBody).not.toHaveProperty('stream');
+    expect(requestBody).not.toHaveProperty('background');
+    expect(requestHeaders.authorization).toBe('Bearer test');
+    expect(requestHeaders['OpenAI-Beta']).toBe('responses_websockets=2026-02-06');
+    expect(requestHeaders['x-client-request-id']).toBe('00000000-0000-4000-8000-000000000000');
+  });
+
+  it('keeps automatic truncation on the default OpenAI provider', async () => {
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+
+    let requestBody: Record<string, unknown> | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"resp_openai","output_text":"ok","output":[]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+      truncation: 'auto',
+    });
+
+    expect(requestBody?.truncation).toBe('auto');
   });
 
   it('requests encrypted reasoning only when same-turn stateless replay is enabled', async () => {
@@ -516,6 +669,7 @@ describe('createNativeResponse request body', () => {
       call,
       { type: 'message', content: [{ type: 'output_text', text: 'ignored' }] },
     ]);
+    expect(buildOrderedContinuationInputItems([reasoning, call], false)).toEqual([call]);
   });
 
   it('preserves program items and copies the validated caller to function outputs', async () => {
@@ -598,6 +752,27 @@ describe('createNativeResponse request body', () => {
     expect(result.outputText).toBe('');
   });
 
+  it('flags a truncated stream even when it contains a partial function call', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_partial"}}',
+      '',
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_partial","name":"sde_sql","arguments":"{\\"sql\\":\\"SELECT 1\\"}"}}',
+      '',
+    ].join('\n'), { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const result = await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+    });
+
+    expect(result.output.some((item) => item.type === 'function_call')).toBe(true);
+    expect(result.error?.message).toContain('Incomplete response stream');
+  });
+
   it('does not write raw streamed error payloads to logs', async () => {
     const sentinel = 'remote-error-must-not-be-logged';
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -609,7 +784,8 @@ describe('createNativeResponse request body', () => {
 
     const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
     const result = await createNativeResponse({ instructions: 'test', items: [toNativeMessage('pulse')], tools: [] });
-    expect(result.error?.message).toBe(sentinel);
+    expect(result.error?.message).toBe('Responses API provider error');
+    expect(result.error?.message).not.toContain(sentinel);
     expect(JSON.stringify(logSpy.mock.calls)).not.toContain(sentinel);
     logSpy.mockRestore();
   });

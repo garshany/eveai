@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { parseOptionalStrictBooleanEnv } from './config-env.js';
+import { resolveOpenAiProvider } from './openai-provider.js';
 
 type SmokeStatus = 'ok' | 'fail' | 'skip';
 
@@ -122,9 +124,43 @@ async function checkOpenAiResponses(): Promise<SmokeCheck> {
     return { name: 'model_responses', status: 'skip', detail: 'OPENAI_API_KEY is not set' };
   }
 
-  const baseUrl = 'https://api.openai.com/v1';
+  const provider = resolveOpenAiProvider();
+  const baseUrl = provider.baseUrl;
   const model = process.env.OPENAI_MODEL?.trim() || 'gpt-5.6-sol';
+  const storeResponses = parseOptionalStrictBooleanEnv(
+    process.env,
+    'OPENAI_STORE_RESPONSES',
+    false,
+  );
   const url = `${baseUrl}/responses`;
+  if (provider.responsesTransport === 'websocket') {
+    try {
+      const { createNativeResponse, toNativeMessage } = await import('./agent/native-responses.js');
+      const response = await createNativeResponse({
+        model,
+        instructions: 'Reply with the single word pong.',
+        items: [toNativeMessage('ping')],
+        tools: [],
+        parallelToolCalls: false,
+        maxOutputTokens: 32,
+      });
+      if (response.error || response.status !== 'completed') {
+        return {
+          name: 'model_responses',
+          status: 'fail',
+          detail: response.error?.message ?? `WebSocket response status was ${response.status ?? 'unknown'}`,
+        };
+      }
+      const wsUrl = `${baseUrl.replace(/^https:/, 'wss:')}/responses`;
+      return { name: 'model_responses', status: 'ok', detail: `${wsUrl} accepted model ${model}` };
+    } catch (error) {
+      return {
+        name: 'model_responses',
+        status: 'fail',
+        detail: error instanceof Error ? error.message : 'WebSocket model check failed',
+      };
+    }
+  }
   const payload = {
     model,
     instructions: 'Reply with the single word pong.',
@@ -134,7 +170,7 @@ async function checkOpenAiResponses(): Promise<SmokeCheck> {
       content: [{ type: 'input_text', text: 'ping' }],
     }],
     stream: true,
-    store: false,
+    store: storeResponses,
   };
 
   const result = await fetchWithTimeout(url, {

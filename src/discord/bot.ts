@@ -29,7 +29,7 @@ import {
   clearChatConversation,
   clearInFlightRequest,
   evaluateChatRequestAllowance,
-  hasInFlightRequest,
+  hasInFlightRequestForActor,
   activeRequestCount,
   insertSwitchNotification,
   isDuplicateInFlightRequest,
@@ -186,7 +186,7 @@ async function handleMessage(db: Db, message: Message): Promise<void> {
   const allowance = evaluateChatRequestAllowance({
     chatId: chatKey,
     userId: userCtx.userId,
-    hasActiveRequest: hasInFlightRequest(chatKey),
+    hasActiveRequest: hasInFlightRequestForActor(chatKey, userCtx.userId),
     activeRequestCount: activeRequestCount(),
   });
   if (!allowance.ok) {
@@ -202,7 +202,7 @@ async function handleMessage(db: Db, message: Message): Promise<void> {
   }
 
   const requestToken = randomUUID();
-  rememberInFlightRequest(chatKey, threadId, text, requestToken);
+  rememberInFlightRequest(chatKey, threadId, text, requestToken, Date.now(), userCtx.userId);
 
   const thinkingMsg = await message.reply(pickThinkingPhrase()).catch(() => null);
   const stopTyping = startTyping(message.channel as DMChannel);

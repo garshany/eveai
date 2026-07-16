@@ -1,7 +1,7 @@
 # EVE-KILL v1 Integration
 
 Status: active
-Verified against code: 2026-07-13
+Verified against code: 2026-07-15
 
 The app uses the current public EVE-KILL REST API at the fixed base
 `https://api.eve-kill.com/` and its durable `/feed/poll` transport. The
@@ -77,6 +77,30 @@ ceiling, and fixed schema-valid output. The original `kill_activity` and all
 other raw/detail/analytics/watch tools remain direct-only. The source is always
 non-authoritative EVE-KILL observation; search cache freshness is bounded at 90
 seconds and coverage may be incomplete.
+
+`doctrine_summary` is a second top-level public facade over the local
+`doctrine_detect` wrapper. It accepts only one already-resolved public
+corporation/alliance ID, an explicit canonical window of at most 366 days, and
+`top` (`1..10` direct, `1..5` programmatic). The application reconstructs the
+fixed upstream arguments with rookie ships excluded; callers cannot select a
+generic analytics method, character scope, implicit window, arbitrary URL, or
+cluster threshold.
+
+The facade validates the wrapper provenance plus upstream entity, window,
+cluster count, unique 64-character family hashes, timestamps, finite values,
+ship fields, and bounded example structure before projecting any value. Output
+preserves upstream rank order and contains only entity/window/freshness,
+bounded doctrine classification, loss/value aggregates, and one evidence
+killmail ID per row. Entity/example URLs, module lists, raw clusters, transport
+data, and unrecognized analytics fields are excluded. Structural drift or an
+over-12,000-character result becomes a fixed schema-valid error, never a
+partial success.
+
+With Programmatic Tool Calling enabled, one doctrine program compares two to
+four distinct corporation/alliance targets using exactly the same `from`, `to`,
+and `top`; the family ceiling is 20 requested rows. These calls also consume
+the shared EVE-KILL turn budget and the existing four-call analytics ceiling.
+Raw `doctrine_detect` and every other analytics method remain direct-only.
 
 The namespace intentionally does not expose competing identity, affiliation,
 history, roster, war, static-data, market, build-cost, arbitrary-query, or
@@ -209,12 +233,15 @@ ESI universe-reference namespace first. No chat history, profile, fit, private
 ESI result, credential, user/chat ID, or generic URL can cross this boundary.
 Remote errors are reduced to fixed local categories, and analytics calls share
 the EVE-KILL per-turn budget with an additional four-call analytics cap.
+The top-level `doctrine_summary` facade uses this same transport but adds a
+stable, narrow output contract and fail-closed upstream-drift validation; it
+does not make the remote MCP descriptor or raw analytics payload programmatic.
 
 ## Configuration
 
 ```env
 EVE_KILL_TIMEOUT_MS=8000
-EVE_KILL_USER_AGENT=EVEAI/3.3 (+https://github.com/example/eveai; contact=operator@example.com)
+EVE_KILL_USER_AGENT=EVEAI/4.0 (+https://github.com/example/eveai; contact=operator@example.com)
 EVE_KILL_RETRY_MAX_ATTEMPTS=3
 EVE_KILL_BACKOFF_MAX_MS=10000
 ```
@@ -248,5 +275,6 @@ retry attempts are hard-capped at five.
 | `src/eve-kill/executor.ts` | validated tool execution and provenance projection |
 | `src/eve-kill/analytics-tools.ts` | four strict deferred local analytics schemas |
 | `src/eve-kill/mcp-analytics.ts` | validated fixed-endpoint MCP JSON-RPC transport |
+| `src/eve-kill/doctrine-summary.ts` | bounded doctrine projection, drift validation, and direct/programmatic limits |
 | `src/eve-board/route-snapshot.ts` | shared route baseline and official position/name enrichment |
 | `src/eve-board/monitor.ts` | feed-driven route monitoring |

@@ -16,6 +16,21 @@ afterEach(() => {
 });
 
 describe('OpenAI runtime configuration', () => {
+  it('defaults stored response logs off and parses the opt-in strictly', async () => {
+    setRequiredEnv();
+    process.env.DOTENV_CONFIG_PATH = '/private/tmp/eveai-test-no-dotenv-file';
+    delete process.env.OPENAI_STORE_RESPONSES;
+    expect((await import('../../src/config.js')).config.openai.storeResponses).toBe(false);
+
+    vi.resetModules();
+    process.env.OPENAI_STORE_RESPONSES = ' TrUe ';
+    expect((await import('../../src/config.js')).config.openai.storeResponses).toBe(true);
+
+    vi.resetModules();
+    process.env.OPENAI_STORE_RESPONSES = 'yes';
+    await expect(import('../../src/config.js')).rejects.toThrow('OPENAI_STORE_RESPONSES');
+  });
+
   it('parses the programmatic tool calling pilot strictly and defaults it off', async () => {
     setRequiredEnv();
     delete process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING;
@@ -29,13 +44,77 @@ describe('OpenAI runtime configuration', () => {
     process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'yes';
     await expect(import('../../src/config.js')).rejects.toThrow('OPENAI_PROGRAMMATIC_TOOL_CALLING');
   });
-  it('pins requests to the official OpenAI endpoint even when a legacy override is present', async () => {
+  it('defaults to OpenAI and ignores a legacy arbitrary base URL override', async () => {
     setRequiredEnv();
+    delete process.env.OPENAI_PROVIDER;
     process.env.OPENAI_BASE_URL = 'https://untrusted.example/v1';
 
     const { config } = await import('../../src/config.js');
 
+    expect(config.openai.providerId).toBe('openai');
     expect(config.openai.baseUrl).toBe('https://api.openai.com/v1');
+    expect(config.openai.supportsTruncation).toBe(true);
+    expect(config.openai.supportsEncryptedReasoningReplay).toBe(true);
+  });
+
+  it('selects the fixed CheapVibeCode Responses endpoint by provider ID', async () => {
+    setRequiredEnv();
+    process.env.OPENAI_PROVIDER = ' cheapvibecode ';
+    process.env.OPENAI_BASE_URL = 'https://untrusted.example/v1';
+
+    const { config } = await import('../../src/config.js');
+
+    expect(config.openai.providerId).toBe('cheapvibecode');
+    expect(config.openai.providerName).toBe('CheapVibeCode');
+    expect(config.openai.baseUrl).toBe('https://cheapvibecode.ru/backend-api/codex');
+    expect(config.openai.responsesTransport).toBe('websocket');
+    expect(config.openai.toolSearchExecution).toBe('client');
+    expect(config.openai.supportsHostedProgrammaticToolCalling).toBe(false);
+    expect(config.openai.supportsLocalParallelBatch).toBe(true);
+    expect(config.openai.supportsTruncation).toBe(false);
+    expect(config.openai.supportsEncryptedReasoningReplay).toBe(false);
+    expect(config.openai.readSubagentsEnabled).toBe(true);
+    expect(config.openai.readSubagentConcurrency).toBe(2);
+    expect(config.openai.maxConcurrentEsiLeaves).toBe(12);
+  });
+
+  it('hard-bounds nested ESI leaf concurrency', async () => {
+    setRequiredEnv();
+    process.env.AGENT_MAX_CONCURRENT_ESI_LEAVES = '500';
+
+    expect((await import('../../src/config.js')).config.openai.maxConcurrentEsiLeaves).toBe(64);
+
+    vi.resetModules();
+    process.env.AGENT_MAX_CONCURRENT_ESI_LEAVES = '0';
+    await expect(import('../../src/config.js')).rejects.toThrow('AGENT_MAX_CONCURRENT_ESI_LEAVES');
+  });
+
+  it('allows application-managed read subagents on the OpenAI provider when explicitly enabled', async () => {
+    setRequiredEnv();
+    process.env.OPENAI_PROVIDER = 'openai';
+    process.env.CHEAPVIBE_READ_SUBAGENTS_ENABLED = 'true';
+
+    expect((await import('../../src/config.js')).config.openai.readSubagentsEnabled).toBe(true);
+  });
+
+  it('rejects unknown provider IDs instead of accepting arbitrary endpoints', async () => {
+    setRequiredEnv();
+    process.env.OPENAI_PROVIDER = 'custom-gateway';
+
+    await expect(import('../../src/config.js')).rejects.toThrow(
+      'OPENAI_PROVIDER must be one of: openai, cheapvibecode',
+    );
+  });
+
+  it('rejects server response state for one-shot CheapVibeCode WebSockets', async () => {
+    setRequiredEnv();
+    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+    process.env.OPENAI_RESPONSE_STATE_MODE = 'server';
+    process.env.OPENAI_STORE_RESPONSES = 'true';
+
+    await expect(import('../../src/config.js')).rejects.toThrow(
+      'CheapVibeCode WebSocket transport requires OPENAI_RESPONSE_STATE_MODE=stateless',
+    );
   });
 
   it('does not expose an EVE-KILL base override and keeps the client pinned to the current API', async () => {
@@ -81,12 +160,31 @@ describe('OpenAI runtime configuration', () => {
     }
   });
 
-  it('rejects unsupported server-side Responses state', async () => {
+  it('requires stored responses for server-side Responses state', async () => {
     setRequiredEnv();
     process.env.OPENAI_RESPONSE_STATE_MODE = 'server';
+    process.env.OPENAI_STORE_RESPONSES = 'false';
 
     await expect(import('../../src/config.js')).rejects.toThrow(
-      'OPENAI_RESPONSE_STATE_MODE=server is unsupported',
+      'OPENAI_RESPONSE_STATE_MODE=server requires OPENAI_STORE_RESPONSES=true',
     );
+
+    vi.resetModules();
+    process.env.OPENAI_STORE_RESPONSES = 'true';
+    const { config } = await import('../../src/config.js');
+    expect(config.openai.responseStateMode).toBe('server');
+    expect(config.openai.storeResponses).toBe(true);
+  });
+
+  it('rejects trust-all proxy mode and parses only explicit trusted CIDRs', async () => {
+    setRequiredEnv();
+    process.env.WEB_TRUST_PROXY = 'true';
+    await expect(import('../../src/config.js')).rejects.toThrow('WEB_TRUSTED_PROXY_CIDRS');
+
+    vi.resetModules();
+    delete process.env.WEB_TRUST_PROXY;
+    process.env.WEB_TRUSTED_PROXY_CIDRS = '127.0.0.0/8, ::1/128';
+    expect((await import('../../src/config.js')).config.web.trustedProxyCidrs)
+      .toEqual(['127.0.0.0/8', '::1/128']);
   });
 });

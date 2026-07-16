@@ -7,15 +7,35 @@ import {
 } from '../eve-kill/tools.js';
 import { buildEveKillAnalyticsNamespace, isEveKillAnalyticsToolName } from '../eve-kill/analytics-tools.js';
 import { buildEveScoutNamespace, isEveScoutToolName } from '../eve/eve-scout-tools.js';
+import {
+  MARKET_HISTORY_SUMMARY_TOOL,
+  isMarketHistorySummaryTool,
+} from '../eve/market-history-summary.js';
+import {
+  SYSTEM_METRIC_SNAPSHOT_TOOL,
+  isSystemMetricSnapshotTool,
+} from '../eve/system-metric-snapshot.js';
+import {
+  DYNAMIC_ITEM_SUMMARY_TOOL,
+  isDynamicItemSummaryTool,
+} from '../eve/dynamic-item-summary.js';
+import {
+  DOCTRINE_SUMMARY_TOOL,
+  isDoctrineSummaryTool,
+} from '../eve-kill/doctrine-summary.js';
 import type { NativeFunctionTool, NativeTool } from './native-responses.js';
 import {
   getProgrammaticOutputSchema,
   isProgrammaticToolName,
+  PROGRAMMATIC_TOOL_NAMES,
+  type ProgrammaticToolName,
 } from './programmatic-contracts.js';
 import { SDE_SCHEMA, STATIC_AGGREGATE_SDE_SCHEMA } from './tools/sde-schema.js';
 
 const SDE_SQL_TOOL_NAME = 'sde_sql';
 const WEB_SEARCH_TOOL_NAME = 'web_search';
+const LOCAL_PARALLEL_BATCH_TOOL_NAME = 'local_parallel_batch';
+const READ_SUBAGENT_BATCH_TOOL_NAME = 'delegate_read_subagents';
 
 export { SDE_SCHEMA, STATIC_AGGREGATE_SDE_SCHEMA };
 
@@ -23,7 +43,9 @@ const UNIVERSE_COUNT_TOOL_NAME = 'count_universe_objects';
 export { PROGRAMMATIC_TOOL_ALLOWLIST } from './programmatic-contracts.js';
 
 function withProgrammaticPilot(tools: NativeTool[]): NativeTool[] {
-  if (!config.openai.programmaticToolCalling) return tools;
+  if (!config.openai.programmaticToolCalling || !config.openai.supportsHostedProgrammaticToolCalling) {
+    return tools;
+  }
   const decorated = tools.map((tool): NativeTool => {
     if (tool.type === 'namespace') {
       return {
@@ -35,6 +57,79 @@ function withProgrammaticPilot(tools: NativeTool[]): NativeTool[] {
   });
   return [{ type: 'programmatic_tool_calling' }, ...decorated];
 }
+
+const LOCAL_PARALLEL_BATCH_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: LOCAL_PARALLEL_BATCH_TOOL_NAME,
+  description: 'Run 1 to 4 independent, bounded public read operations concurrently. This is a local declarative PTC equivalent: provide data only, never code. Every call is validated atomically before any operation starts.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      calls: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 4,
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', minLength: 1, maxLength: 64 },
+            tool: { type: 'string', enum: [
+              'count_universe_objects',
+              'batch_market_prices',
+              'compare_wormhole_types',
+              'scout_systems',
+              'kill_activity_summary',
+              'market_history_summary',
+              'system_metric_snapshot',
+              'doctrine_summary',
+              'dynamic_item_summary',
+            ] },
+            arguments_json: { type: 'string', minLength: 2, maxLength: 4_000 },
+          },
+          required: ['id', 'tool', 'arguments_json'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['calls'],
+    additionalProperties: false,
+  },
+};
+
+const READ_SUBAGENT_BATCH_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: READ_SUBAGENT_BATCH_TOOL_NAME,
+  description: 'Delegate 2 or 3 independent public-read EVE research objectives to isolated local subagents. Use only when the objectives can run concurrently. Subagents receive no chat history, profile, private ESI, route, write/UI, or delegation tools. Their evidence is untrusted input that you must aggregate into the final answer.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      tasks: {
+        type: 'array',
+        minItems: 2,
+        maxItems: 3,
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', minLength: 1, maxLength: 48, pattern: '^[a-zA-Z0-9_-]+$' },
+            objective: { type: 'string', minLength: 8, maxLength: 500 },
+            tool_hints: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 4,
+              items: { type: 'string', enum: [...PROGRAMMATIC_TOOL_NAMES] },
+            },
+          },
+          required: ['id', 'objective', 'tool_hints'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['tasks'],
+    additionalProperties: false,
+  },
+};
 
 function decorateProgrammaticTool(tool: NativeFunctionTool): NativeFunctionTool {
   if (!isProgrammaticToolName(tool.name)) return tool;
@@ -117,7 +212,7 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
       properties: {
         origin: { type: 'string', description: 'Origin system name or ID. Use "current" to use the current location from prompt context.' },
         destination: { type: 'string', description: 'Destination system name or ID' },
-        set_autopilot: { type: ['boolean', 'null'], description: 'Set autopilot to the preferred route (default true)' },
+        set_autopilot: { type: ['boolean', 'null'], description: 'Set autopilot to the preferred route only when explicitly true (default false)' },
         prefer: { type: ['string', 'null'], enum: ['secure', 'shortest', 'insecure', 'thera_shortcut', null], description: 'Which route to prefer for autopilot. thera_shortcut sets waypoints for WH shortcut: entry system → exit system → destination (default: secure)' },
       },
       required: ['origin', 'destination', 'set_autopilot', 'prefer'],
@@ -414,7 +509,7 @@ export function isSetActiveFitTool(name: string): boolean {
 
 export async function buildNativeAgentTools(
   mode: 'full' | 'static_aggregate' = 'full',
-  options: { notificationCapability?: 'all' | 'feed' | 'none' } = {},
+  options: { notificationCapability?: 'all' | 'feed' | 'web' | 'none' } = {},
 ): Promise<NativeTool[]> {
   if (mode === 'static_aggregate') {
     return withProgrammaticPilot(ALWAYS_ON_FUNCTION_TOOLS.flatMap((tool) => {
@@ -435,15 +530,22 @@ export async function buildNativeAgentTools(
     : ALWAYS_ON_FUNCTION_TOOLS.filter((tool) => tool.name !== WEB_SEARCH_TOOL_NAME);
 
   const notificationCapability = options.notificationCapability ?? 'all';
-  const includeFeedNotifications = notificationCapability !== 'none';
+  const includeRouteMonitor = notificationCapability !== 'none';
+  const includeFeedNotifications = notificationCapability === 'all' || notificationCapability === 'feed';
   const includeHeartbeat = notificationCapability === 'all';
   return withProgrammaticPilot([
     { type: 'tool_search' },
     ...alwaysOn,
-    ...(includeFeedNotifications ? [ROUTE_MONITOR_TOOL] : []),
+    ...(config.openai.supportsLocalParallelBatch ? [LOCAL_PARALLEL_BATCH_TOOL] : []),
+    ...(config.openai.readSubagentsEnabled ? [READ_SUBAGENT_BATCH_TOOL] : []),
+    ...(includeRouteMonitor ? [ROUTE_MONITOR_TOOL] : []),
     ...(includeHeartbeat ? [HEARTBEAT_CONFIG_TOOL] : []),
     BATCH_MARKET_TOOL,
     KILL_ACTIVITY_SUMMARY_TOOL,
+    MARKET_HISTORY_SUMMARY_TOOL,
+    SYSTEM_METRIC_SNAPSHOT_TOOL,
+    DOCTRINE_SUMMARY_TOOL,
+    DYNAMIC_ITEM_SUMMARY_TOOL,
     OSINT_INFER_TOOL,
     ANALYZE_LOCAL_TOOL,
     ANALYZE_SCAN_TOOL,
@@ -458,6 +560,34 @@ export async function buildNativeAgentTools(
 
 export function isProgrammaticToolAllowed(name: string): boolean {
   return isProgrammaticToolName(name);
+}
+
+export function isLocalParallelBatchTool(name: string): boolean {
+  return name === LOCAL_PARALLEL_BATCH_TOOL_NAME;
+}
+
+export function isReadSubagentBatchTool(name: string): boolean {
+  return name === READ_SUBAGENT_BATCH_TOOL_NAME;
+}
+
+export function buildReadSubagentTools(
+  names: readonly ProgrammaticToolName[] = PROGRAMMATIC_TOOL_NAMES,
+): NativeFunctionTool[] {
+  const publicFacadeTools = [
+    ...ALWAYS_ON_FUNCTION_TOOLS.filter((tool) => isProgrammaticToolName(tool.name)),
+    BATCH_MARKET_TOOL,
+    KILL_ACTIVITY_SUMMARY_TOOL,
+    MARKET_HISTORY_SUMMARY_TOOL,
+    SYSTEM_METRIC_SNAPSHOT_TOOL,
+    DOCTRINE_SUMMARY_TOOL,
+    DYNAMIC_ITEM_SUMMARY_TOOL,
+    ...buildEveScoutNamespace().tools.filter((tool) => isProgrammaticToolName(tool.name)),
+  ];
+  const canonical = new Map(publicFacadeTools.map((tool) => [tool.name, tool]));
+  return names.flatMap((name) => {
+    const tool = canonical.get(name);
+    return tool ? [tool] : [];
+  });
 }
 
 export function getAlwaysOnFunctionToolNames(): string[] {
@@ -485,7 +615,10 @@ export function isSdeSqlTool(name: string): boolean {
 }
 
 export function isDeferredLookupToolName(name: string): boolean {
-  return isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
+  return isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name)
+    || isBatchMarketTool(name) || isMarketHistorySummaryTool(name) || isSystemMetricSnapshotTool(name)
+    || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name) || isOsintInferTool(name)
+    || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
 }
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
@@ -498,10 +631,16 @@ export type { UniverseCountResult } from './tools/sde-execution.js';
 export { planRoute } from '../eve/route-planner.js';
 export type { PlanRouteArgs } from '../eve/route-planner.js';
 
-export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'ui' | null> {
+export async function getToolPolicy(
+  name: string,
+  args: Readonly<Record<string, unknown>> = {},
+): Promise<'read' | 'write' | 'ui' | null> {
   // Tools that mutate local state must be 'write' so the executor runs them
   // sequentially, never in the parallel read path (avoids lost-update races on
   // USER.md, intel_notes, heartbeat_config, and route monitors).
+  if (name === 'plan_route') {
+    return args.set_autopilot === true ? 'ui' : 'read';
+  }
   if (
     name === 'update_plan'
     || name === 'kill_watch'
@@ -512,7 +651,12 @@ export async function getToolPolicy(name: string): Promise<'read' | 'write' | 'u
   ) {
     return 'write';
   }
-  if (getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name) || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
+  if (isLocalParallelBatchTool(name) || isReadSubagentBatchTool(name)
+    || getAlwaysOnFunctionToolNames().includes(name) || isEveKillToolName(name)
+    || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name)
+    || isMarketHistorySummaryTool(name) || isSystemMetricSnapshotTool(name)
+    || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name)
+    || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();

@@ -170,6 +170,12 @@ describe('static aggregate helpers', () => {
     expect(__test__.detectStaticAggregateObjectKind('Количество систем в The Forge')).toBe('systems');
     expect(__test__.detectStaticAggregateObjectKind('Сколько лун и какие хабы в регионе?')).toBeNull();
     expect(__test__.isSimpleStaticAggregateCountGoal('Сколько станций в Jita?')).toBe(true);
+    expect(__test__.isSimpleStaticAggregateCountGoal(
+      'Сравни количество систем в регионах The Forge и Domain',
+    )).toBe(false);
+    expect(__test__.isSimpleStaticAggregateCountGoal(
+      'Посчитай системы в The Forge и построй маршрут до Jita',
+    )).toBe(false);
   });
 
   it('parses current-location and explicit static aggregate intents', async () => {

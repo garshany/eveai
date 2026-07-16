@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import Database from 'better-sqlite3';
+import { runMigrations } from '../src/db/migrations.js';
 import { copyFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -30,6 +31,7 @@ const tempDb = join(tmpdir(), `eveai-tool-smoke-${Date.now()}.db`);
 copyFileSync(sourceDb, tempDb);
 const db = new Database(tempDb);
 db.pragma('foreign_keys = ON');
+runMigrations(db);
 
 try {
   if (mode === 'direct') {
@@ -61,7 +63,17 @@ async function runSchemaWireMatrix(): Promise<void> {
   });
   let allPassed = true;
   const selectedScenario = process.env.EVE_TOOL_SMOKE_SCENARIO?.trim();
-  for (const name of ['count_universe_objects', 'batch_market_prices', 'compare_wormhole_types', 'scout_systems', 'kill_activity_summary']) {
+  for (const name of [
+    'count_universe_objects',
+    'batch_market_prices',
+    'compare_wormhole_types',
+    'scout_systems',
+    'kill_activity_summary',
+    'market_history_summary',
+    'system_metric_snapshot',
+    'doctrine_summary',
+    'dynamic_item_summary',
+  ]) {
     if (selectedScenario && selectedScenario !== name && selectedScenario !== `wire-schema-${name}`) continue;
     const tool = functions.find((candidate) => candidate.name === name);
     const started = Date.now();
@@ -105,36 +117,81 @@ async function acceptsWireTools(tools: NativeTool[]): Promise<boolean> {
 async function runPublicSourceMatrix(db: Database.Database): Promise<void> {
   const now = new Date();
   const from = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  const doctrineFrom = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const dynamicSamples = readDynamicSmokeSamples();
   const scenarios: Array<{
     id: string;
     tool: string;
     args: Record<string, unknown>;
     source: string;
+    workUnits: number;
   }> = [
     {
       id: 'public-market',
       tool: 'batch_market_prices',
       args: { region_id: 10000002, type_ids: [34, 44992] },
       source: 'CCP ESI',
+      workUnits: 2,
     },
     {
       id: 'public-wormhole-types',
       tool: 'compare_wormhole_types',
       args: { identifiers: ['C140', 'A239'] },
       source: 'EVE-Scout',
+      workUnits: 2,
     },
     {
       id: 'public-systems',
       tool: 'scout_systems',
       args: { query: 'Jita', space: null, limit: 5 },
       source: 'EVE-Scout',
+      workUnits: 5,
     },
     {
       id: 'public-kill-summary',
       tool: 'kill_activity_summary',
       args: { scope: 'system', id: 30000142, activity: 'all', from, to: now.toISOString(), evidence_limit: 5 },
       source: 'EVE-KILL',
+      workUnits: 5,
     },
+    {
+      id: 'public-market-history-summary',
+      tool: 'market_history_summary',
+      args: { region_id: 10000002, type_id: 34, days: 30 },
+      source: 'CCP ESI',
+      workUnits: 30,
+    },
+    {
+      id: 'public-system-metric-snapshot',
+      tool: 'system_metric_snapshot',
+      args: { metric: 'kills', system_ids: [30000142, 30002187] },
+      source: 'CCP ESI',
+      workUnits: 2,
+    },
+    {
+      id: 'public-doctrine-summary',
+      tool: 'doctrine_summary',
+      args: {
+        entity_id: 1354830081,
+        entity_type: 'alliance',
+        from: doctrineFrom,
+        to: now.toISOString(),
+        top: 2,
+      },
+      source: 'EVE-KILL MCP',
+      workUnits: 2,
+    },
+    ...(dynamicSamples.length > 0 ? [{
+      id: 'public-dynamic-item-summary',
+      tool: 'dynamic_item_summary',
+      args: {
+        type_id: dynamicSamples[0]!.typeId,
+        item_id: dynamicSamples[0]!.itemId,
+        attribute_ids: dynamicSamples[0]!.attributeIds,
+      },
+      source: 'CCP ESI plus local SDE',
+      workUnits: dynamicSamples[0]!.attributeIds.length,
+    }] : []),
   ];
 
   let allPassed = true;
@@ -171,8 +228,22 @@ async function runPublicSourceMatrix(db: Database.Database): Promise<void> {
       source_category: scenario.source,
       elapsed_milliseconds: Date.now() - started,
       eligible_tool_names: [scenario.tool],
+      work_units: scenario.workUnits,
       local_output_character_counts: [serialized.length],
       schema_validation: schema.valid,
+    }));
+  }
+  if (dynamicSamples.length < 1
+    && (!selectedScenario || selectedScenario === 'public-dynamic-item-summary')) {
+    allPassed = false;
+    console.log(JSON.stringify({
+      scenario_id: 'public-dynamic-item-summary',
+      passed: false,
+      status: 'NOT_RUN',
+      reason_category: 'public_sample_unavailable',
+      source_category: 'CCP ESI plus local SDE',
+      eligible_tool_names: ['dynamic_item_summary'],
+      schema_validation: false,
     }));
   }
   if (!allPassed) process.exitCode = 1;
@@ -185,6 +256,9 @@ async function runProgrammaticMatrix(db: Database.Database): Promise<void> {
   const now = new Date();
   const from = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
   const to = now.toISOString();
+  const doctrineFrom = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const doctrineTo = now.toISOString();
+  const dynamicSamples = readDynamicSmokeSamples();
   const scenarios = [
     {
       id: 'hosted-count', tool: 'count_universe_objects', count: 2,
@@ -206,6 +280,22 @@ async function runProgrammaticMatrix(db: Database.Database): Promise<void> {
       id: 'hosted-kill-summary', tool: 'kill_activity_summary', count: 2,
       prompt: `Use Programmatic Tool Calling and only kill_activity_summary. Run two concurrent public system summaries for ids 30000142 and 30002187, activity all, from ${from}, to ${to}, evidence_limit 5. Reduce compactly, no retries, then give a short final answer.`,
     },
+    {
+      id: 'hosted-market-history-summary', tool: 'market_history_summary', count: 2,
+      prompt: 'Use Programmatic Tool Calling and only market_history_summary. In one hosted program run exactly two concurrent calls with days 30: region/type pairs (10000002,34) and (10000043,34). Reduce only the declared bounded outputs, no retries, then give a short final answer.',
+    },
+    {
+      id: 'hosted-system-metric-snapshot', tool: 'system_metric_snapshot', count: 2,
+      prompt: 'Use Programmatic Tool Calling and only system_metric_snapshot. In one hosted program run exactly two concurrent calls over the same ordered system_ids [30000142,30002187], using distinct metrics kills and jumps. Join only the declared bounded rows, no retries, then give a short final answer.',
+    },
+    {
+      id: 'hosted-doctrine-summary', tool: 'doctrine_summary', count: 2,
+      prompt: `Use Programmatic Tool Calling and only doctrine_summary. In one hosted program run exactly two concurrent calls for alliance entity_ids 1354830081 and 99003214 with the identical window from ${doctrineFrom} to ${doctrineTo} and top 2. Compare only the declared bounded outputs, no retries, then give a short final answer.`,
+    },
+    ...(dynamicSamples.length >= 2 ? [{
+      id: 'hosted-dynamic-item-summary', tool: 'dynamic_item_summary', count: 2,
+      prompt: `Use Programmatic Tool Calling and only dynamic_item_summary. In one hosted program run exactly two concurrent calls for type/item pairs (${dynamicSamples[0]!.typeId},${dynamicSamples[0]!.itemId}) and (${dynamicSamples[1]!.typeId},${dynamicSamples[1]!.itemId}) with the identical ordered attribute_ids [${dynamicSamples[0]!.attributeIds.join(',')}]. Compare only the declared bounded outputs, no retries, then give a short final answer.`,
+    }] : []),
   ];
 
   let allPassed = true;
@@ -216,8 +306,38 @@ async function runProgrammaticMatrix(db: Database.Database): Promise<void> {
     allPassed &&= report.passed === true;
     console.log(JSON.stringify(report));
   }
+  if (dynamicSamples.length < 2
+    && (!selectedScenario || selectedScenario === 'hosted-dynamic-item-summary')) {
+    allPassed = false;
+    console.log(JSON.stringify({
+      scenario_id: 'hosted-dynamic-item-summary',
+      passed: false,
+      status: 'NOT_RUN',
+      reason_category: 'public_sample_unavailable',
+      source_category: 'OpenAI hosted program',
+      eligible_tool_names: ['dynamic_item_summary'],
+      accepted_programmatic_call_count: 0,
+      rejected_programmatic_call_count: 0,
+      schema_validation: false,
+    }));
+  }
   if (!selectedScenario || selectedScenario === 'hosted-negative-sde-sql') {
     const negative = await runHostedNegativeWireScenario(db);
+    allPassed &&= negative.passed === true;
+    console.log(JSON.stringify(negative));
+  }
+  for (const scenario of [
+    {
+      id: 'hosted-negative-mixed-family',
+      prompt: 'Use one hosted program with exactly two concurrent calls: market_history_summary for region_id 10000002 type_id 34 days 30, and system_metric_snapshot for metric kills system_ids [30000142]. The application should reject the mixed family. Do not retry; return a short final answer after the rejection.',
+    },
+    {
+      id: 'hosted-negative-over-budget',
+      prompt: 'Use one hosted program with exactly five concurrent market_history_summary calls, all days 30, for distinct region/type pairs (10000002,34), (10000043,34), (10000032,34), (10000042,34), and (10000030,34). The application should reject the over-budget program. Do not retry; return a short final answer after the rejection.',
+    },
+  ]) {
+    if (selectedScenario && selectedScenario !== scenario.id) continue;
+    const negative = await runHostedScenario(db, scenario.id, scenario.prompt, '', 0, true);
     allPassed &&= negative.passed === true;
     console.log(JSON.stringify(negative));
   }
@@ -424,8 +544,10 @@ async function runHostedScenario(
     && localChars.every((size) => size <= 12_000);
   const negativePassed = negative
     && result !== null
+    && finalObserved
     && accepted === 0
     && rejected > 0
+    && !activity.some((event) => event.type === 'tool_start')
     && audits.every((audit) => audit.result.ok !== true);
   return {
     scenario_id: scenarioId,
@@ -442,6 +564,35 @@ async function runHostedScenario(
     final_answer_character_count: result?.text.length ?? 0,
     schema_validation: eligibleAudits.every((audit) => audit.result.schema_valid === true),
   };
+}
+
+type DynamicSmokeSample = { typeId: number; itemId: number; attributeIds: number[] };
+
+function readDynamicSmokeSamples(): DynamicSmokeSample[] {
+  const raw = process.env.EVE_TOOL_SMOKE_DYNAMIC_SAMPLES?.trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed) || parsed.length > 2) return [];
+    return parsed.flatMap((value): DynamicSmokeSample[] => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+      const sample = value as Record<string, unknown>;
+      if (!Number.isSafeInteger(sample.type_id) || Number(sample.type_id) <= 0
+        || !Number.isSafeInteger(sample.item_id) || Number(sample.item_id) <= 0
+        || !Array.isArray(sample.attribute_ids)
+        || sample.attribute_ids.length < 1
+        || sample.attribute_ids.length > 10
+        || sample.attribute_ids.some((id) => !Number.isSafeInteger(id) || Number(id) <= 0)
+        || new Set(sample.attribute_ids).size !== sample.attribute_ids.length) return [];
+      return [{
+        typeId: Number(sample.type_id),
+        itemId: Number(sample.item_id),
+        attributeIds: sample.attribute_ids.map(Number),
+      }];
+    });
+  } catch {
+    return [];
+  }
 }
 
 function readSafeToolAudits(

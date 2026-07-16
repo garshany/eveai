@@ -7,7 +7,8 @@ vi.mock('../../src/config.js', () => ({
     telegram: { botToken: 'test', allowedUserId: 1 },
     openai: {
       apiKey: 'test', model: 'test', baseUrl: '', apiMode: 'native_responses',
-      reasoningEffort: '', store: true, compactThreshold: 100000,
+      reasoningEffort: '', reasoningMode: 'standard', storeResponses: true,
+      responseStateMode: 'server', programmaticToolCalling: false, compactThreshold: 100000,
     },
     eve: { clientId: 'test', clientSecret: 'test', callbackUrl: 'http://localhost:3000/auth/eve/callback' },
     server: { port: 3000, host: '127.0.0.1' },
@@ -89,9 +90,11 @@ describe('warm/cold path DB operations', () => {
 
   it('uses previous_response_id for fresh warm continuations', async () => {
     db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(1);
-    db.prepare("INSERT INTO agent_threads (thread_id, chat_id, last_response_id) VALUES (?, ?, ?)")
-      .run('t1', 1, 'resp_abc123');
-    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'assistant', 'Привет! Чем помочь?');
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)").run('t1', 1);
+    const assistant = db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)")
+      .run('t1', 'assistant', 'Привет! Чем помочь?');
+    db.prepare("UPDATE agent_threads SET last_response_id = ?, last_response_message_id = ? WHERE thread_id = ?")
+      .run('resp_abc123', Number(assistant.lastInsertRowid), 't1');
     db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'Покажи кошелек');
 
     const { __test__ } = await import('../../src/agent/executor.js');
@@ -110,12 +113,13 @@ describe('warm/cold path DB operations', () => {
 
   it('falls back to cold history when previous_response_id is stale', async () => {
     db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(1);
-    db.prepare("INSERT INTO agent_threads (thread_id, chat_id, last_response_id) VALUES (?, ?, ?)")
-      .run('t1', 1, 'resp_old');
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)").run('t1', 1);
     db.prepare("INSERT INTO messages (thread_id, role, content, created_at) VALUES (?, ?, ?, datetime('now', '-2 hours'))")
       .run('t1', 'user', 'Старое сообщение');
-    db.prepare("INSERT INTO messages (thread_id, role, content, created_at) VALUES (?, ?, ?, datetime('now', '-2 hours'))")
+    const assistant = db.prepare("INSERT INTO messages (thread_id, role, content, created_at) VALUES (?, ?, ?, datetime('now', '-2 hours'))")
       .run('t1', 'assistant', 'Старый ответ');
+    db.prepare("UPDATE agent_threads SET last_response_id = ?, last_response_message_id = ? WHERE thread_id = ?")
+      .run('resp_old', Number(assistant.lastInsertRowid), 't1');
     db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'Новый вопрос');
 
     const { __test__ } = await import('../../src/agent/executor.js');
@@ -123,6 +127,9 @@ describe('warm/cold path DB operations', () => {
 
     expect(continuation.mode).toBe('cold');
     expect(continuation.previousResponseId).toBeNull();
+    expect(db.prepare(
+      'SELECT last_response_id, last_response_message_id FROM agent_threads WHERE thread_id = ?',
+    ).get('t1')).toEqual({ last_response_id: null, last_response_message_id: null });
     expect(continuation.items).toEqual([
       {
         type: 'message',
@@ -140,6 +147,45 @@ describe('warm/cold path DB operations', () => {
         content: [{ type: 'input_text', text: 'Новый вопрос' }],
       },
     ]);
+  });
+
+  it('falls back to cold history when the stored response anchor is no longer the latest assistant', async () => {
+    db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(1);
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)").run('t1', 1);
+    const anchored = db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)")
+      .run('t1', 'assistant', 'Anchored answer');
+    db.prepare("UPDATE agent_threads SET last_response_id = ?, last_response_message_id = ? WHERE thread_id = ?")
+      .run('resp_anchor', Number(anchored.lastInsertRowid), 't1');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)")
+      .run('t1', 'assistant', 'Out-of-band assistant event');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)")
+      .run('t1', 'user', 'Next question');
+
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const continuation = __test__.planConversationContinuation(db, 't1');
+
+    expect(continuation.mode).toBe('cold');
+    expect(continuation.previousResponseId).toBeNull();
+    expect(db.prepare(
+      'SELECT last_response_id, last_response_message_id FROM agent_threads WHERE thread_id = ?',
+    ).get('t1')).toEqual({ last_response_id: null, last_response_message_id: null });
+  });
+
+  it('falls back to cold history when more than one message follows the anchor', async () => {
+    db.prepare("INSERT INTO telegram_sessions (chat_id) VALUES (?)").run(1);
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES (?, ?)").run('t1', 1);
+    const anchored = db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)")
+      .run('t1', 'assistant', 'Anchored answer');
+    db.prepare("UPDATE agent_threads SET last_response_id = ?, last_response_message_id = ? WHERE thread_id = ?")
+      .run('resp_anchor', Number(anchored.lastInsertRowid), 't1');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'First');
+    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)").run('t1', 'user', 'Second');
+
+    const { __test__ } = await import('../../src/agent/executor.js');
+    expect(__test__.planConversationContinuation(db, 't1').mode).toBe('cold');
+    expect(db.prepare(
+      'SELECT last_response_id, last_response_message_id FROM agent_threads WHERE thread_id = ?',
+    ).get('t1')).toEqual({ last_response_id: null, last_response_message_id: null });
   });
 
   it('builds cold recovery context with recent tool summaries', async () => {
@@ -262,6 +308,30 @@ describe('warm/cold path DB operations', () => {
       'resp_prev',
       pendingItems,
     )).toBe(false);
+  });
+
+  it('cold-recovers only explicit response-state loss, not transient transport errors', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const items = [{ type: 'function_call_output', call_id: 'call_123', output: '{"ok":true}' }];
+
+    expect(__test__.shouldUseToolStateRecovery(
+      'response_state_missing', false, 'resp_prev', items,
+    )).toBe(true);
+    expect(__test__.shouldUseToolStateRecovery(
+      'socket hang up', false, 'resp_prev', items,
+    )).toBe(false);
+    expect(__test__.shouldUseToolStateRecovery(
+      'terminated', false, 'resp_prev', items,
+    )).toBe(false);
+  });
+
+  it('builds stable side-effect keys independent of object key order', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    expect(__test__.buildSideEffectExecutionKey('kill_watch', {
+      topic: { id: 42, type: 'system' }, action: 'watch',
+    })).toBe(__test__.buildSideEffectExecutionKey('kill_watch', {
+      action: 'watch', topic: { type: 'system', id: 42 },
+    }));
   });
 });
 

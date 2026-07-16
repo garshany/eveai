@@ -9,24 +9,49 @@
 
 > **Landing-page source:** [`index.html`](./index.html). GitHub Pages is optional and is not currently a deployed product endpoint.
 
-Self-hosted, chat-first AI assistant for EVE Online. Run it through Telegram, Discord DMs, or the terminal CLI; it combines local EVE SDE data, live ESI data, killboard intelligence, route planning, and the official OpenAI Responses API model loop with tool calling.
+Self-hosted, chat-first AI assistant for EVE Online. Run it through the browser, Telegram, Discord DMs, or the terminal CLI; it combines local EVE SDE data, live ESI data, killboard intelligence, route planning, and a Responses-compatible model loop with tool calling.
 
-This repository is designed for operators to run their own instance in a terminal. It does not require Redis, Postgres, queues, workers, webhooks, or a web frontend.
+The optional same-origin browser app uses the same backend agent and SQLite state. The project does not require Redis, Postgres, queues, workers, or webhooks.
 
-## v3.3.0 public release
+## v4.0.0 public release
 
-v3.3 adds default-off Programmatic Tool Calling for five bounded public-read
-facades: static counts, multi-region market prices, wormhole-type comparisons,
-system scouting, and compact kill-activity summaries. The application enforces
-caller linkage, homogeneous programs, work budgets, output schemas, and
-fail-closed exclusions for private ESI, SQL, writes, raw kill detail, web, and
-every unlisted tool. The v3 self-hosting contract remains unchanged.
+v4 turns EVE AI Agent into a durable multi-user agent service while preserving
+the self-hosted single-process and SQLite architecture:
+
+- A root agent builds and maintains a dependency-aware plan, tracks required
+  outcomes, discovers deferred tools, and keeps working until the requested
+  result is completed or explicitly reported unavailable.
+- Independent public research can be delegated to bounded read subagents. They
+  receive only allowlisted public tool schemas and public numeric IDs—never chat
+  history, private ESI data, credentials, or write capabilities.
+- Direct tool calls, parallel public reads, local parallel batches, and optional
+  Programmatic Tool Calling share validation, admission, deadline, cancellation,
+  identity, and output-size boundaries.
+- The browser chat now uses a durable asynchronous SQLite queue with idempotent
+  submission, authenticated SSE plus polling recovery, explicit cancellation,
+  per-user lane serialization, and bounded global concurrency for public traffic.
+- Browser users can keep several EVE characters attached to one account, choose
+  the active character, and grant only the ESI scopes they want. Consent is
+  versioned and presented in Russian and English.
+- OpenAI remains the default provider path. The fixed CheapVibeCode Codex
+  WebSocket transport supports the same application-owned local tools and
+  defaults to the bounded public read-subagent path.
+- Public deployment controls now include Turnstile verification, trusted-proxy
+  CIDRs, HTTPS/hostname validation, request and compute-unit limits, durable
+  restart recovery, queue health, and sanitized terminal errors.
+
+The release evaluation covers complex multi-stage planning, tool discovery,
+parallel research, private/public data separation, cancellation, identity
+changes, terminal completeness, and a 100-user coordinator load scenario.
 
 For a public SSO callback, use HTTPS, set the callback URL exactly in the EVE Developer Portal, generate a strong `AUTH_SECRET_KEY`, give ESI a reachable operator contact, and keep `.env` plus `data/` on the host only. The detailed production checklist is in [docs/deployment.md](./docs/deployment.md).
 
 ## Capabilities
 
 - Natural-language Telegram and Discord assistant for EVE Online questions and workflows.
+- Same-origin browser chat with anonymous sessions, conversation history, optional EVE SSO, and the same guarded agent/tool loop.
+- Durable multi-user browser execution with idempotent `202` acceptance, SSE/poll recovery, cancellation, per-user lanes, and bounded shared capacity.
+- Dependency-aware root-agent planning, effective tool discovery, goal-ledger completion checks, parallel public reads, and sandboxed read subagents.
 - EVE SSO linking for private character data, with scope-aware capability gating.
 - Local SDE SQLite lookups for static game data such as systems, items, dogma, blueprints, and routes.
 - Live ESI access for character, corporation, market, location, mail, skills, industry, assets, and related data when scopes are granted.
@@ -38,15 +63,20 @@ For a public SSO callback, use HTTPS, set the callback URL exactly in the EVE De
 
 ```text
 Telegram private chat ──> grammY long polling bot ─┐
-                                                   ├─> shared agent runtime
-Discord DM ───────────────> discord.js gateway bot ─┘        │
+Discord DM ───────────────> discord.js gateway bot ├─> shared agent runtime
+Browser /app ─────────────> Fastify session API ───┘        │
+                                                            v
+                                      durable request coordinator + root agent
+                                                             │
+                           plan / goal ledger / tool registry / read subagents
+                                                             │
                                                              v
-                                        OpenAI Responses API (/v1/responses)
+                                    OpenAI or CheapVibeCode Responses transport
                                                              │
                                                              v
                                 ESI / local SDE / EVE-KILL REST+feed ──> SQLite
 
-Browser ──> Fastify ──> EVE SSO login redirect + callback + /health ──> same SQLite state
+Browser ──> Fastify ──> HttpOnly session + EVE SSO + /health ──> same SQLite state
 ```
 
 Hard constraints:
@@ -54,7 +84,7 @@ Hard constraints:
 - Single-process Node.js app.
 - SQLite only.
 - Telegram long polling only; no webhooks. Discord standard gateway connection.
-- Fastify is limited to the EVE SSO login redirect/callback and the health endpoint. There is no web frontend.
+- The browser app is explicit opt-in (`WEB_CHAT_ENABLED=true`), same-origin, and never receives provider or ESI credentials.
 - Static game data comes from the installed local SDE SQLite snapshot; its build/load metadata describes that snapshot and is not a claim of current freshness. Live authoritative character/market data comes from ESI; public kill discovery comes from EVE-KILL.
 - Private ESI access is isolated per user/chat and gated by `get_eve_capabilities`.
 - The model must not see tokens, refresh flow, pagination internals, retry logic, or secrets.
@@ -67,7 +97,7 @@ Hard constraints:
   - Telegram bot token from [@BotFather](https://t.me/BotFather), and/or
   - Discord bot token from <https://discord.com/developers/applications> (no privileged intents needed; the bot works in DMs).
 - EVE Developer application from <https://developers.eveonline.com/>.
-- OpenAI API key (official Responses API).
+- A provider API key for the selected `OPENAI_PROVIDER` (`openai` or `cheapvibecode`).
 
 ## Quick Start
 
@@ -80,7 +110,8 @@ npm run setup              # download + load EVE static data (SDE)
 npm run dev
 ```
 
-Then open a private chat with your Telegram bot, or DM your Discord bot.
+Then open a private chat with your Telegram bot, DM your Discord bot, or set
+`WEB_CHAT_ENABLED=true` and open `http://localhost:3000/app`.
 
 For local EVE SSO callbacks, set the callback URL in the EVE Developer Portal to:
 
@@ -90,13 +121,18 @@ http://localhost:3000/auth/eve/callback
 
 ## Required Environment
 
-Minimum local `.env` values (at least one bot token is required):
+Minimum local `.env` values (enable at least one bot or the browser chat):
 
 ```env
 TELEGRAM_BOT_TOKEN=...        # and/or DISCORD_BOT_TOKEN
 DISCORD_BOT_TOKEN=...
+WEB_CHAT_ENABLED=true
+WEB_BASE_URL=http://localhost:3000
+OPENAI_PROVIDER=openai
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-5.6-sol
+OPENAI_RESPONSE_STATE_MODE=stateless
+OPENAI_STORE_RESPONSES=false
 OPENAI_PROGRAMMATIC_TOOL_CALLING=false
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
@@ -109,8 +145,8 @@ AUTH_SECRET_KEY=replace-with-random-secret
 EVE_CALLBACK_URL=http://localhost:3000/auth/eve/callback
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
-ESI_USER_AGENT=EVEAI/3.3 (+https://github.com/your-org/eveai; contact=you@example.com)
-EVE_KILL_USER_AGENT=EVEAI/3.3 (+https://github.com/your-org/eveai; contact=you@example.com)
+ESI_USER_AGENT=EVEAI/4.0 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_USER_AGENT=EVEAI/4.0 (+https://github.com/your-org/eveai; contact=you@example.com)
 ```
 
 Generate `AUTH_SECRET_KEY` with:
@@ -121,8 +157,12 @@ openssl rand -base64 32
 
 Model defaults:
 
+- `OPENAI_PROVIDER=openai` uses the official OpenAI HTTP/SSE endpoint. `cheapvibecode` selects the fixed CheapVibeCode Codex Responses WebSocket endpoint; arbitrary `OPENAI_BASE_URL` overrides remain disabled.
+- The selected provider and its API key are process-wide operator settings. Browser users never provide or receive this key; each user gets an isolated opaque session and chat lane while requests share the configured concurrency and rate limits.
 - `OPENAI_MODEL=gpt-5.6-sol` is the quality-first default. Use `gpt-5.6-terra` for a capability/cost balance or `gpt-5.6-luna` for latency-sensitive, high-volume deployments. The `gpt-5.6` alias routes to Sol.
-- `OPENAI_PROGRAMMATIC_TOOL_CALLING=false` keeps the default direct-tool path. Setting it to `true` opts into provider-entitled hosted programs for exactly five bounded public-read tools: static counts, batch market prices, wormhole-type comparisons, Scout system searches, and compact kill-activity summaries. Restart after changing it. See [OpenAI integration](./docs/openai-integration.md) for schemas, budgets, exclusions, real smoke matrices, and rollback.
+- `OPENAI_PROGRAMMATIC_TOOL_CALLING=false` keeps the default direct-tool path. Setting it to `true` opts into provider-entitled hosted programs for exactly nine bounded public-read tools: static counts, batch market prices, wormhole-type comparisons, Scout system searches, compact kill-activity summaries, market-history summaries, system-metric snapshots, doctrine summaries, and dynamic-item summaries. Restart after changing it. See [OpenAI integration](./docs/openai-integration.md) for schemas, budgets, exclusions, real smoke matrices, and rollback.
+- `OPENAI_RESPONSE_STATE_MODE=stateless` is the default and rollback path. `server` reuses `previous_response_id`, requires `OPENAI_STORE_RESPONSES=true`, and falls back to canonical SQLite history if the provider state is missing or no longer matches its anchored assistant message.
+- `OPENAI_STORE_RESPONSES=false` keeps provider-side Response logs opt-in. Set it to `true` to inspect requests in [OpenAI Responses Logs](https://platform.openai.com/logs?api=responses); storage alone does not switch the state mode.
 - `OPENAI_REASONING_EFFORT=auto` preserves EVE Agent's goal-based `low|medium|high` routing. Set `none`, `low`, `medium`, `high`, `xhigh`, or `max` to override it globally.
 - `OPENAI_REASONING_MODE=standard` is the normal path. Set `pro` only for difficult quality-first workloads that justify higher latency and token use; Pro is a mode, not a separate model name.
 - `OPENAI_TEXT_VERBOSITY=low` keeps chat answers compact; set `medium` if your community wants longer explanations.
@@ -171,7 +211,7 @@ npm run cli
 ```
 
 ```text
-┌─ EVE AI Agent v3.3.0 · CLI ────────────────────────┐
+┌─ EVE AI Agent v4.0.0 · CLI ────────────────────────┐
 │ Talk to the agent in your terminal. Commands:      │
 │   /login   link an EVE character (opens SSO)       │
 │   /whoami  show the active character               │
@@ -223,8 +263,10 @@ npm start              # run built app: node dist/app.js
 npm run check          # typecheck + tests + lint
 npm test               # vitest
 npm run smoke          # env, model endpoint, app health checks
-npm run smoke:openai   # authenticated /v1/responses probe
+npm run smoke:openai   # authenticated provider-aware Responses probe
 npm run smoke:eve-tool # authenticated model + EVE SDE tool probe
+npm run eval:agent     # deterministic multi-stage orchestration evaluation
+npm run eval:web-load  # 100-user durable queue/isolation load harness
 npm run update:check   # read-only latest stable release check
 npm run db:migrate     # run SQLite migrations
 npm run setup          # download and load SDE data

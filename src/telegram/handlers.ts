@@ -13,7 +13,7 @@ import {
   clearInFlightRequest,
   ensureChatSessionRow,
   evaluateChatRequestAllowance,
-  hasInFlightRequest,
+  hasInFlightRequestForActor,
   activeRequestCount,
   insertSwitchNotification,
   isDuplicateInFlightRequest,
@@ -313,7 +313,7 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     const allowance = evaluateChatRequestAllowance({
       chatId,
       userId: userCtx.userId,
-      hasActiveRequest: hasInFlightRequest(chatId),
+      hasActiveRequest: hasInFlightRequestForActor(chatId, userCtx.userId),
       activeRequestCount: activeRequestCount(),
     });
     if (!allowance.ok) {
@@ -329,7 +329,7 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     }
 
     const requestToken = randomUUID();
-    rememberInFlightRequest(chatId, threadId, text, requestToken);
+    rememberInFlightRequest(chatId, threadId, text, requestToken, Date.now(), userCtx.userId);
 
     // Send EVE-flavored "thinking" placeholder. Guarded: a failed reply must
     // not leak the in-flight entry, or the chat wedges until restart.

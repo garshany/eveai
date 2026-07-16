@@ -1,16 +1,36 @@
 import { readFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Db } from '../db/sqlite.js';
-import { callEsiOperation } from './esi-client.js';
+import { callEsiOperation, type EsiExecutionGuard } from './esi-client.js';
 import { getEveCapabilities } from './capabilities.js';
 import { getLinkedCharacter } from './sso.js';
 import type { UserContext } from '../auth/user-resolver.js';
-import { resolveUserProfilePath, writeUserProfileAtomic } from './user-profile-storage.js';
+import {
+  resolveUserProfilePath,
+  withUserProfileAuthorizationLock,
+  writeUserProfileAtomic,
+} from './user-profile-storage.js';
 
 type JsonResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
-export async function readUserProfile(db: Db, ctx: UserContext): Promise<string | null> {
-  const characterId = getLinkedCharacter(db, ctx)?.characterId ?? null;
+export function isUserProfileStale(profile: string | null, refreshSeconds: number): boolean {
+  if (!profile) return true;
+  if (!refreshSeconds || refreshSeconds <= 0) return false;
+  const match = /^Updated:\s*(.+)$/m.exec(profile);
+  if (!match) return true;
+  const updatedAt = Date.parse(match[1]);
+  if (!Number.isFinite(updatedAt)) return true;
+  return (Date.now() - updatedAt) / 1000 >= refreshSeconds;
+}
+
+export async function readUserProfile(
+  db: Db,
+  ctx: UserContext,
+  expectedCharacterId?: number | null,
+): Promise<string | null> {
+  const currentCharacterId = getLinkedCharacter(db, ctx)?.characterId ?? null;
+  if (expectedCharacterId !== undefined && currentCharacterId !== expectedCharacterId) return null;
+  const characterId = expectedCharacterId ?? currentCharacterId;
   if (!characterId) return null;
   const path = resolveUserProfilePath(ctx, characterId);
   try {
@@ -22,77 +42,88 @@ export async function readUserProfile(db: Db, ctx: UserContext): Promise<string 
   return null;
 }
 
-export async function refreshUserProfile(db: Db, ctx: UserContext): Promise<JsonResult<{ path: string }>> {
+export async function refreshUserProfile(
+  db: Db,
+  ctx: UserContext,
+  guard: EsiExecutionGuard = {},
+): Promise<JsonResult<{ path: string }>> {
+  if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
+    return { ok: false, error: 'Profile refresh cancelled.' };
+  }
   const capabilities = await getEveCapabilities(db, 'user_profile', ctx);
+  if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
+    return { ok: false, error: 'Profile refresh cancelled.' };
+  }
   if (!capabilities.authenticated || !capabilities.characterId || !capabilities.characterName) {
     return { ok: false, error: 'No authenticated character available.' };
   }
 
   const characterId = capabilities.characterId;
   const characterName = capabilities.characterName;
+  const grantedScopes = normalizeScopes(capabilities.grantedScopes);
 
   const baseInfo = await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id', {
     character_id: characterId,
-  });
+  }, guard);
 
   const online = capabilities.allowedNamespaces.includes('esi_characters_online')
     ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_online', {
       character_id: characterId,
-    })
+    }, guard)
     : null;
 
   const location = capabilities.allowedNamespaces.includes('esi_characters_location')
     ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_location', {
       character_id: characterId,
-    })
+    }, guard)
     : null;
 
   const ship = capabilities.allowedNamespaces.includes('esi_characters_ship')
     ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_ship', {
       character_id: characterId,
-    })
+    }, guard)
     : null;
 
   const skills = capabilities.allowedNamespaces.includes('esi_characters_skills')
     ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_skills', {
       character_id: characterId,
-    })
+    }, guard)
     : null;
 
   const wallet = capabilities.allowedNamespaces.includes('esi_characters_wallet')
     ? await runEsiJson<number>(db, ctx, 'get_characters_character_id_wallet', {
       character_id: characterId,
-    })
+    }, guard)
     : null;
 
   const attributes = capabilities.allowedNamespaces.includes('esi_characters_skills')
     ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_attributes', {
       character_id: characterId,
-    })
+    }, guard)
     : null;
 
   const skillQueue = capabilities.allowedNamespaces.includes('esi_characters_skillqueue')
     ? await runEsiJson<Array<Record<string, unknown>>>(db, ctx, 'get_characters_character_id_skillqueue', {
       character_id: characterId,
-    })
+    }, guard)
     : null;
 
   const implants = capabilities.allowedNamespaces.includes('esi_clones_implants')
     ? await runEsiJson<number[]>(db, ctx, 'get_characters_character_id_implants', {
       character_id: characterId,
-    })
+    }, guard)
     : null;
 
   const clones = capabilities.allowedNamespaces.includes('esi_clones_clones')
     ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_characters_character_id_clones', {
       character_id: characterId,
-    })
+    }, guard)
     : null;
 
   const fittings = capabilities.allowedNamespaces.includes('esi_fittings')
     ? await runEsiJson<Array<Record<string, unknown>>>(db, ctx, 'get_characters_character_id_fittings', {
       character_id: characterId,
-    })
+    }, guard)
     : null;
 
   const corporationId = extractNumber(baseInfo, 'corporation_id');
@@ -102,17 +133,17 @@ export async function refreshUserProfile(db: Db, ctx: UserContext): Promise<Json
   const corporation = corporationId
     ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_corporations_corporation_id', {
       corporation_id: corporationId,
-    })
+    }, guard)
     : null;
 
   const alliance = allianceId
     ? await runEsiJson<Record<string, unknown>>(db, ctx, 'get_alliances_alliance_id', {
       alliance_id: allianceId,
-    })
+    }, guard)
     : null;
 
   const factionName = factionId
-    ? await resolveFactionName(db, ctx, factionId)
+    ? await resolveFactionName(db, ctx, factionId, guard)
     : null;
 
   const systemId = extractNumber(location, 'solar_system_id');
@@ -171,11 +202,29 @@ export async function refreshUserProfile(db: Db, ctx: UserContext): Promise<Json
     },
   });
 
-  const path = resolveUserProfilePath(ctx, characterId);
-  const dir = dirname(path);
-  await mkdir(dir, { recursive: true });
-  await writeUserProfileAtomic(path, markdown);
-  return { ok: true, data: { path } };
+  return await withUserProfileAuthorizationLock(characterId, async () => {
+    if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
+      return { ok: false, error: 'Profile refresh cancelled.' };
+    }
+    const current = getLinkedCharacter(db, ctx);
+    if (
+      !current
+      || current.characterId !== characterId
+      || normalizeScopes(current.scopes) !== grantedScopes
+    ) {
+      return { ok: false, error: 'EVE authorization changed while the profile was refreshing.' };
+    }
+
+    const path = resolveUserProfilePath(ctx, characterId);
+    const dir = dirname(path);
+    await mkdir(dir, { recursive: true });
+    await writeUserProfileAtomic(path, markdown, guard.signal);
+    return { ok: true, data: { path } };
+  });
+}
+
+function normalizeScopes(scopes: string[]): string {
+  return JSON.stringify([...new Set(scopes)].sort());
 }
 
 async function runEsiJson<T>(
@@ -183,8 +232,9 @@ async function runEsiJson<T>(
   ctx: UserContext,
   operationName: string,
   args: Record<string, unknown>,
+  guard: EsiExecutionGuard = {},
 ): Promise<JsonResult<T>> {
-  const result = await callEsiOperation<T>(db, operationName, args, ctx);
+  const result = await callEsiOperation<T>(db, operationName, args, ctx, guard);
 
   if (!result.ok) {
     return { ok: false, error: result.error ?? 'Unknown ESI error' };
@@ -327,8 +377,19 @@ function lookupSdeName(
   }
 }
 
-async function resolveFactionName(db: Db, ctx: UserContext, factionId: number): Promise<string | null> {
-  const result = await runEsiJson<Record<string, unknown>[]>(db, ctx, 'get_universe_factions', {});
+async function resolveFactionName(
+  db: Db,
+  ctx: UserContext,
+  factionId: number,
+  guard: EsiExecutionGuard,
+): Promise<string | null> {
+  const result = await runEsiJson<Record<string, unknown>[]>(
+    db,
+    ctx,
+    'get_universe_factions',
+    {},
+    guard,
+  );
   if (!result.ok) return null;
   for (const entry of result.data) {
     if (Number(entry['faction_id']) === factionId && typeof entry['name'] === 'string') {

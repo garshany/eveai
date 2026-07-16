@@ -1,5 +1,6 @@
 # Completed Execution Plans
 
+- [programmatic-tool-calling-priorities-1-4.md](./programmatic-tool-calling-priorities-1-4.md): exact nine-tool default-off hosted program boundary with four additional bounded public facades, strict privacy/coherence/work/output gates, real source and hosted verification, and fresh AC1–AC15 proof.
 - [programmatic-tool-calling-expansion.md](./programmatic-tool-calling-expansion.md): exact five-tool default-off hosted program boundary with bounded public facades, application-enforced budgets, real source/wire/program verification, and a production-loop negative dispatch gate.
 - [cli-durable-updates.md](./cli-durable-updates.md): durable CLI route/watch notifications, single-process feed ownership, safe cross-platform read-only update checks, and canonical local operator staging.
 - [eve-kill-analytics-wrapper.md](./eve-kill-analytics-wrapper.md): four EVE-KILL MCP analytics methods restored through a strict local public-only wrapper with bounded JSON/SSE transport and a pre-egress privacy boundary.

@@ -1,7 +1,7 @@
 # Repo Map
 
 Status: active
-Verified against code: 2026-07-13
+Verified against code: 2026-07-15
 
 This file is the fast file-and-domain map for the repository.
 
@@ -22,7 +22,8 @@ Use it when you need to find the right file or folder before reading implementat
 ### `src/agent/`
 
 - `native-responses.ts`: official OpenAI Responses API loop, including SSE function/MCP output reconstruction and fixed hosted-MCP descriptor support
-- `executor.ts`: local tool execution, validated opaque MCP continuation, and final-text persistence
+- `executor.ts`: local tool execution, exact programmatic caller/coherence/work enforcement, validated opaque MCP continuation, and final-text persistence
+- `programmatic-contracts.ts`: exact nine-tool allowlist plus strict bounded success/error output schemas and safe serialization
 - `planner.ts` / `replanner.ts`: plan generation and adjustment
 - `compact.ts`: history reduction and compaction
 - `prompts.ts`: prompt-policy boundary
@@ -60,6 +61,9 @@ Use it when you need to find the right file or folder before reading implementat
 - `sde.ts`, `sde-loader.ts`, `sde-downloader.ts`: static data ingestion and lookup
 - `route-planner.ts`, `killmail.ts`: higher-level EVE features
 - `eve-scout-client.ts`, `eve-scout-executor.ts`, `eve-scout-tools.ts`: fixed public EVE-Scout transport, bounded projections, and deferred tool schemas; see `docs/eve-scout.md`
+- `market-history-summary.ts`: bounded 30/90-day public ESI market aggregation without raw daily rows
+- `system-metric-snapshot.ts`: same-order projection of fixed public ESI system kill/jump/industry/sovereignty metrics
+- `dynamic-item-summary.ts`: requested dynamic-dogma attributes plus optional local-SDE base/delta evidence without creator/effect leakage
 - `user-profile.ts`: generated user snapshot/profile flow
 - `scopes.ts`, `eve-links.ts`, `http.ts`: support modules
 
@@ -81,6 +85,7 @@ Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integratio
 - `executor.ts`: validated tool router with provenance/limitation projection
 - `analytics-tools.ts`: four strict deferred public analytics function schemas
 - `mcp-analytics.ts`: fixed-endpoint JSON-RPC transport with pre-egress validation and bounded parsing
+- `doctrine-summary.ts`: strict corporation/alliance doctrine projection over `doctrine_detect`, with drift validation and raw-field exclusion
 - `watch.ts`: durable system/region/victim/attacker watch CRUD
 - `types.ts`: normalized REST/feed contracts
 
@@ -121,10 +126,18 @@ Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integratio
 
 ### `src/web/`
 
-- `server.ts`: Fastify server assembly (SSO login redirect/callback + health only)
+- `server.ts`: Fastify assembly for security headers, SSO, health, browser APIs, and built app assets
+- `web-session.ts`: opaque session, CSRF, reserved browser chat lanes, expiry, and creation admission
+- `chat-routes.ts`: isolated browser conversations, characters, and shared agent-loop adapter
 - `auth-routes.ts`: one-time EVE SSO login redirect, OAuth callback, and `/callback` alias
 - `health.ts`: runtime/dependency health endpoint for both bot platforms
 - `security.ts`: security headers
+
+### `web/`
+
+- `src/`: React chat client, safe Markdown rendering, responsive shell, and API adapter
+- `public/assets/`: generated production visual assets
+- `vite.config.ts`: `/web-assets/` production base and same-origin development proxy
 
 ## Tests
 

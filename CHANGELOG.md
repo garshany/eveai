@@ -1,5 +1,50 @@
 # Changelog
 
+## [4.0.0] - 2026-07-16
+
+### Agent orchestration
+
+- Added dependency-aware root-turn planning, a completion goal ledger, effective
+  deferred-tool discovery, bounded multi-iteration recovery, and explicit
+  terminal failure categories.
+- Added application-managed read subagents for parallel public research. Their
+  capability surface is limited to nine bounded public-read facades; private ESI,
+  chat history, credentials, and write tools never enter delegated prompts.
+- Unified direct, parallel-batch, and programmatic tool execution behind shared
+  schema validation, identity guards, deadlines, cancellation, and admission.
+
+### Browser and multi-user service
+
+- Added the production browser workspace with anonymous sessions, optional EVE
+  SSO, multiple linked characters, active-character switching, bilingual
+  least-privilege consent, pilot profile, chat history, and route scan views.
+- Replaced synchronous browser turns with a durable SQLite `202` request queue,
+  idempotency keys, authenticated SSE, polling recovery, explicit cancellation,
+  restart handling, per-user lane serialization, bounded global workers, and
+  request-scoped message cleanup.
+- Added Turnstile verification, explicit trusted-proxy CIDRs, HTTPS/hostname
+  production validation, rate/cost limits, queue health, retention, and safe
+  public errors.
+
+### Providers and tools
+
+- Added the fixed CheapVibeCode Codex WebSocket provider while retaining the
+  official OpenAI Responses API as the default and rollback path.
+- Expanded Programmatic Tool Calling to nine public facades and added bounded
+  client tool search, parallel read execution, market-history, system-metric,
+  doctrine, and dynamic-item summaries.
+- Added process-wide response, read/write tool, and ESI-leaf admission so nested
+  fan-out remains bounded across concurrent users and stops on root cancellation.
+
+### Release verification
+
+- Full local gate passed: public artifact audit, strict backend/frontend
+  TypeScript, 740 Vitest tests across 101 files, ESLint, and production build.
+- Agent evaluation passed 18/18 scenarios. The durable coordinator load harness
+  completed 100/100 users with zero stuck requests and eight peak workers.
+- Rendered browser verification covered login, request recovery, stable SSE with
+  polling fallback, cancellation cleanup, responsive layout, and a clean console.
+
 ## [3.3.1] - 2026-07-14
 
 ### Security and reliability

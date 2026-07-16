@@ -13,13 +13,17 @@ import {
 const now = '2026-07-14T12:00:00.000Z';
 
 describe('programmatic contracts', () => {
-  it('exports exactly the frozen five-name allowlist and one schema per name', () => {
+  it('exports exactly the frozen nine-name allowlist and one schema per name', () => {
     expect([...PROGRAMMATIC_TOOL_ALLOWLIST]).toEqual([
       'count_universe_objects',
       'batch_market_prices',
       'compare_wormhole_types',
       'scout_systems',
       'kill_activity_summary',
+      'market_history_summary',
+      'system_metric_snapshot',
+      'doctrine_summary',
+      'dynamic_item_summary',
     ]);
     expect(Object.keys(PROGRAMMATIC_OUTPUT_SCHEMAS)).toEqual(PROGRAMMATIC_TOOL_NAMES);
   });
@@ -38,9 +42,33 @@ describe('programmatic contracts', () => {
     ['compare_wormhole_types', facadeError('EVE-Scout', false)],
     ['scout_systems', facadeError('EVE-Scout', false)],
     ['kill_activity_summary', facadeError('EVE-KILL', false)],
+    ['market_history_summary', facadeError('CCP ESI', true)],
+    ['system_metric_snapshot', facadeError('CCP ESI', true)],
+    ['doctrine_summary', facadeError('EVE-KILL MCP', false)],
+    ['dynamic_item_summary', facadeError('CCP ESI', true)],
   ] as Array<[ProgrammaticToolName, unknown]>)('accepts the fixed %s error arm', (name, output) => {
     expect(validateProgrammaticToolOutput(name, output).valid).toBe(true);
   });
+
+  it.each(['market_history_summary', 'system_metric_snapshot', 'doctrine_summary', 'dynamic_item_summary'] as ProgrammaticToolName[])(
+    'rejects non-HTTP error status values for %s',
+    (name) => {
+      const source = name === 'doctrine_summary' ? 'EVE-KILL MCP' : 'CCP ESI';
+      const authoritative = name !== 'doctrine_summary';
+      expect(validateProgrammaticToolOutput(name, {
+        ...facadeError(source, authoritative),
+        status: 99,
+      }).valid).toBe(false);
+      expect(validateProgrammaticToolOutput(name, {
+        ...facadeError(source, authoritative),
+        status: 600,
+      }).valid).toBe(false);
+      expect(validateProgrammaticToolOutput(name, {
+        ...facadeError(source, authoritative),
+        status: 503,
+      }).valid).toBe(true);
+    },
+  );
 
   it('validates the schema keywords used by the registry', () => {
     const schema = {
@@ -264,6 +292,76 @@ function validOutputs(): Record<ProgrammaticToolName, Record<string, unknown>> {
         last_killmail_time: now,
       },
       evidence_killmail_ids: [123],
+    },
+    market_history_summary: {
+      ok: true,
+      source: 'CCP ESI',
+      authoritative: true,
+      freshness: { retrieved_at: now, data_through: now, cache_max_age_seconds: null },
+      region_id: 10_000_002,
+      type_id: 34,
+      requested_days: 30,
+      window: { first_date: '2026-07-13', last_date: '2026-07-14' },
+      observed_days: 2,
+      price: {
+        lowest: 4.5,
+        highest: 6,
+        mean_daily_average: 5.25,
+        volume_weighted_average: 5.3,
+        change_percent: 10,
+      },
+      volume: { total: 200, mean_per_observed_day: 100 },
+      volatility: { daily_return_stddev_percent: 0 },
+      liquidity: { total_orders: 20, mean_orders_per_observed_day: 10, active_days: 2 },
+    },
+    system_metric_snapshot: {
+      ok: true,
+      source: 'CCP ESI',
+      authoritative: true,
+      freshness: { retrieved_at: now, data_through: null, cache_max_age_seconds: 3600 },
+      metric: 'kills',
+      count: 1,
+      rows: [{ system_id: 30_000_142, found: true, ship: 4, npc: 12, pod: 1 }],
+    },
+    doctrine_summary: {
+      ok: true,
+      source: 'EVE-KILL MCP',
+      authoritative: false,
+      limitation: 'Third-party public loss-fit inference; coverage and doctrine classifications may be incomplete.',
+      freshness: { retrieved_at: now, data_through: now, cache_max_age_seconds: null },
+      entity: { id: 99_000_001, type: 'alliance', name: 'Example Alliance' },
+      window: { from: '2026-07-01T00:00:00.000Z', to: now },
+      count: 1,
+      doctrines: [{
+        family_id: 'a'.repeat(64),
+        signature: 'Raven / Cruise / Shield Buffer',
+        ship_type_id: 638,
+        ship_name: 'Raven',
+        losses: 12,
+        isk_lost: 1_000_000_000,
+        average_isk_per_loss: 83_333_333.333333,
+        first_loss: '2026-07-02T00:00:00.000Z',
+        last_loss: now,
+        evidence_killmail_id: 123,
+      }],
+    },
+    dynamic_item_summary: {
+      ok: true,
+      source: 'CCP ESI',
+      authoritative: true,
+      freshness: { retrieved_at: now, data_through: null, cache_max_age_seconds: null },
+      type_id: 49_726,
+      item_id: 1_000_000_001,
+      source_type_id: 33_103,
+      mutator_type_id: 47_845,
+      attributes: [{
+        attribute_id: 9,
+        found: true,
+        value: 350,
+        base_value: 300,
+        delta: 50,
+        delta_percent: 16.666667,
+      }],
     },
   };
 }

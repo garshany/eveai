@@ -12,6 +12,13 @@ const TEST_ENV_DEFAULTS: Record<string, string> = {
   AUTH_SECRET_KEY: 'test-auth-secret-key-32-bytes-min!!',
   DEFAULT_MARKET_REGION_ID: '10000002',
   DEFAULT_MARKET_REGION_NAME: 'The Forge',
+  OPENAI_RESPONSE_STATE_MODE: 'stateless',
+  OPENAI_PROVIDER: 'openai',
+  OPENAI_STORE_RESPONSES: 'false',
+  OPENAI_PROGRAMMATIC_TOOL_CALLING: 'false',
+  WEB_BASE_URL: 'http://localhost:3000',
+  WEB_CHAT_ENABLED: 'true',
+  WEB_SESSION_TTL_HOURS: '720',
 };
 
 for (const [key, value] of Object.entries(TEST_ENV_DEFAULTS)) {
@@ -19,6 +26,13 @@ for (const [key, value] of Object.entries(TEST_ENV_DEFAULTS)) {
     process.env[key] = value;
   }
 }
+
+// These feature flags are intentionally pinned even when the operator's shell
+// exports local pilot values. Individual tests may override them after setup.
+process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
+process.env.OPENAI_PROVIDER = 'openai';
+process.env.OPENAI_STORE_RESPONSES = 'false';
+process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'false';
 
 // The ESI catalog loads its swagger spec from disk and tests stub fetch to
 // stay offline. Seed the default cache path with the checked-in fixture so a

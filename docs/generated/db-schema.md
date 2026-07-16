@@ -1,6 +1,6 @@
 # Database Schema
 
-Generated from `src/db/schema.ts` on 2026-07-14. Runtime migrations in
+Generated from `src/db/schema.ts` on 2026-07-15. Runtime migrations in
 `src/db/migrations.ts` may add operational tables to an existing database.
 
 ## Identity, chat lanes, and SSO
@@ -10,12 +10,14 @@ Generated from `src/db/schema.ts` on 2026-07-14. Runtime migrations in
 - `discord_accounts`
 - `discord_sessions`
 - `cli_accounts`: explicit singleton owner for the collision-free local CLI lane (`chat_id = 0`)
-- `auth_requests`
+- `auth_requests`: one-time login state plus versioned consent language, time,
+  and the exact requested ESI scope set
 - `telegram_sessions`
 
 ## Agent Memory
 
-- `agent_threads`
+- `agent_threads`: canonical lane state plus an optional stored Response id and
+  the exact assistant-message id that anchors it
 - `messages`
 - `thread_summaries`
 - `thread_artifacts`
@@ -39,7 +41,8 @@ Generated from `src/db/schema.ts` on 2026-07-14. Runtime migrations in
 
 ## EVE and Cache
 
-- `eve_accounts`
+- `eve_accounts`: encrypted EVE tokens, granted scopes, and the durable consent
+  version/language/time for the active authorization
 - `eve_character_links`
 - `esi_cache`
 

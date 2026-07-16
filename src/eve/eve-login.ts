@@ -8,7 +8,6 @@
  */
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
-import { ALL_REQUESTED_SCOPES } from './scopes.js';
 import { createAuthRequestToken } from '../auth/auth-request.js';
 
 const PLACEHOLDER_CREDS = new Set([
@@ -53,12 +52,14 @@ export function buildEveSsoSetupGuide(): string {
 }
 
 /** Build the full EVE SSO authorize URL for a given (raw) state token. */
-export function buildEveAuthorizeUrl(state: string): string {
+export function buildEveAuthorizeUrl(state: string, requestedScopes: readonly string[]): string {
   const url = new URL('https://login.eveonline.com/v2/oauth/authorize');
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('redirect_uri', config.eve.callbackUrl);
   url.searchParams.set('client_id', config.eve.clientId);
-  url.searchParams.set('scope', ALL_REQUESTED_SCOPES.join(' '));
+  if (requestedScopes.length > 0) {
+    url.searchParams.set('scope', requestedScopes.join(' '));
+  }
   url.searchParams.set('state', state);
   return url.toString();
 }

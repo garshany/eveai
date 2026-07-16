@@ -204,6 +204,76 @@ describe('eve-board monitor', () => {
     db.close();
   });
 
+  it('discards an expired web monitor before a feed event can alert or block the cursor', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-13T12:00:00Z'));
+    const db = new Database(':memory:');
+    db.exec(SCHEMA_SQL);
+    runMigrations(db);
+    const chatId = -2_000_000_100;
+    const userId = 100;
+    const characterId = 90_000_100;
+    db.prepare("INSERT INTO users (user_id, display_name, active_character_id) VALUES (?, 'Web Pilot', ?)")
+      .run(userId, characterId);
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username, active_character_id) VALUES (?, 'web', ?)")
+      .run(chatId, characterId);
+    db.prepare(`
+      INSERT INTO web_sessions (session_hash, csrf_hash, user_id, chat_id, expires_at)
+      VALUES ('h1:web-monitor', 'h1:web-monitor-csrf', ?, ?, datetime('now', '+1 hour'))
+    `).run(userId, chatId);
+    db.prepare(`
+      INSERT INTO eve_accounts (
+        character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id
+      ) VALUES (?, 'Web Pilot', 'enc:a', 'enc:r', datetime('now', '+1 hour'), '[]', ?)
+    `).run(characterId, userId);
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (?, ?, ?)')
+      .run(chatId, characterId, userId);
+    db.prepare('INSERT INTO sde_systems (system_id, name, data_json) VALUES (?, ?, ?)')
+      .run(30_000_142, 'Jita', JSON.stringify({ securityStatus: 0.9 }));
+    const sender = vi.fn(async () => {});
+    const baseline = {
+      routeSystems: [30_000_142],
+      systems: [],
+      jumpMap: new Map<number, number>(),
+      totalKills: 0,
+      totalValueM: 0,
+      truncated: false,
+      requestCount: 1,
+      error: null,
+      scannedAt: '2026-07-13T12:00:00Z',
+    };
+    await expect(startRouteMonitor(
+      db, chatId, characterId, [30_000_142], 648, 'Badger', sender, { baseline },
+    )).resolves.toBe(true);
+    const listener = monitorMocks.getFeedListener();
+    expect(listener).not.toBeNull();
+    db.prepare("UPDATE web_sessions SET expires_at = datetime('now', '-1 second') WHERE chat_id = ?")
+      .run(chatId);
+
+    await listener!({
+      sequenceId: 550,
+      killmail: {
+        killmailId: 9_050,
+        killmailHash: 'expired-web-lane',
+        killmailTime: '2026-07-13T11:59:59Z',
+        solarSystemId: 30_000_142,
+        attackerCount: 3,
+        isNpc: false,
+        victim: { shipTypeId: 648 },
+        attackers: [],
+        items: [],
+        siblings: [],
+        sourceShape: 'feed',
+      },
+    });
+
+    expect(getActiveMonitor(chatId)).toBeNull();
+    expect(db.prepare('SELECT 1 FROM route_monitors WHERE chat_id = ?').get(chatId)).toBeUndefined();
+    expect(sender).not.toHaveBeenCalled();
+    expect(monitorMocks.enrichKillmail).not.toHaveBeenCalled();
+    db.close();
+  });
+
   it('starts from a supplied shared baseline and drains captured handoff events without rescanning', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-07-13T12:00:02Z'));

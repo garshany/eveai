@@ -6,9 +6,10 @@
 Telegram private chat -> grammY bot ─┐
                                      ├─> shared chat pipeline -> agent runtime
 Discord DM -> discord.js gateway bot ┤            │
-Terminal CLI -> local chat_id 0 ─────┘            │
+Terminal CLI -> local chat_id 0 ─────┤            │
+Browser /app -> Fastify session API ─┘            │
                                                   v
-                             native /v1/responses (official OpenAI API)
+                       selected Responses transport (OpenAI or CheapVibeCode)
                                                   │
                                                   v
              tool_search + deferred local ESI/SDE/EVE-KILL tools
@@ -19,13 +20,14 @@ Terminal CLI -> local chat_id 0 ─────┘            │
                                                   v
           local validated analytics wrapper -> fixed EVE-KILL MCP endpoint
 
-Browser -> Fastify -> EVE SSO login redirect/callback + health -> same SQLite state
+Browser -> Fastify -> opaque session + EVE SSO + health -> same SQLite state
 ```
 
 The app is a single-process Node.js service. The bot entrypoint and interactive
 CLI acquire the same DB-adjacent ownership lock, so exactly one process owns the
 SQLite feed cursor for a `DB_PATH`. There is no job queue, event bus, separate
-background worker tier, or web frontend.
+background worker tier, or external state store. The optional web frontend is
+built into and served by the same Fastify process.
 
 ## How To Read This Repo
 
@@ -42,7 +44,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 ### Chat Boundary (shared)
 
 - `src/chat/shared.ts` is the platform-neutral pipeline: chat-session rows, thread resolution, in-flight request tracking and dedupe, rate limiting, agent invocation, EVE SSO login links, and user-facing error normalization.
-- `src/messaging/outbound.ts` routes notifications by an explicit three-lane contract: zero -> CLI, positive -> Telegram, negative -> Discord.
+- `src/messaging/outbound.ts` routes push notifications by the established platform lane contract; browser chat is request/response only.
 
 ### Terminal CLI Boundary
 
@@ -73,8 +75,10 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 
 ### Web Boundary
 
-- `src/web/server.ts` registers HTTP concerns only: security headers, the EVE SSO login redirect/callback, and health.
-- `src/web/auth-routes.ts` validates the one-time login state at `/auth/eve/login`, handles the EVE OAuth callback (`/auth/eve/callback` plus the `/callback` alias), and renders a minimal success page.
+- `src/web/server.ts` registers security headers, health, EVE SSO, the browser session/chat API, and built React assets when explicitly enabled.
+- `src/web/web-session.ts` owns opaque hashed sessions, CSRF, browser chat-lane allocation, expiry, and anonymous-session admission.
+- `src/web/chat-routes.ts` owns session-bound history, character switching, and the adapter into the shared agent loop.
+- `src/web/auth-routes.ts` validates one-time EVE SSO state and returns browser logins to `/app` without exposing tokens.
 - `src/web/health.ts` exposes runtime and dependency health for both bot platforms.
 
 ### Project Update Boundary
@@ -109,6 +113,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `discord_accounts` maps Discord snowflakes (TEXT) to internal users.
 - `telegram_sessions` stores per-chat session state for all lanes; Discord lanes use negative chat keys.
 - `discord_sessions` maps Discord DM channels to negative chat keys.
+- `web_sessions` maps hashed browser cookies to isolated users and reserved negative chat keys.
 - `auth_requests` stores one-time EVE SSO state tokens.
 
 ### Agent Memory
@@ -135,16 +140,16 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 
 ## Request Flows
 
-### Chat Request Flow (Telegram, Discord, or CLI)
+### Chat Request Flow (Browser, Telegram, Discord, or CLI)
 
-1. User sends a message in a Telegram private chat or a Discord DM.
-2. Platform middleware validates access (private-chat/DM only, optional allowlist).
-3. The handler resolves user identity and the chat lane (Discord DMs map to a negative chat key), applies rate limits and in-flight dedupe.
+1. A user sends a message from one enabled adapter.
+2. The adapter validates its boundary: private-chat/DM policy, local CLI identity, or opaque browser session plus same-origin CSRF.
+3. The handler resolves the user and disjoint chat lane, then applies shared actor rate limits, in-flight dedupe, and global concurrency.
 4. The agent runtime rebuilds each top-level turn from SQLite history. During a tool turn it replays the preceding `function_call` item with its matching `function_call_output`; provider-retained response state is not used.
 5. When a linked character has fresh private location access, the developer prompt also carries current live location context resolved as system plus constellation and region via local SDE.
 6. The model uses hosted `tool_search` to discover/load deferred tools when endpoint selection is unclear or the needed namespace is not yet loaded, then reuses the loaded tools directly instead of repeating discovery.
 7. Tool calls and final messages are written back to SQLite.
-8. The reply is formatted per platform: Telegram HTML (4096-char chunks) or Discord markdown (2000-char chunks).
+8. The reply is formatted per platform: Telegram HTML, Discord markdown, terminal text, or safe browser Markdown elements.
 
 ### EVE SSO Linking Flow
 
@@ -183,7 +188,8 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/runtime/`: single-process DB ownership
 - `src/update/`: bounded read-only canonical release discovery
 - `src/telegram/`: Telegram bot and command handlers
-- `src/web/`: Fastify SSO login redirect/callback + health
+- `src/web/`: Fastify browser sessions/chat, EVE SSO, static app serving, and health
+- `web/`: React/Vite same-origin browser client
 - `tests/unit/`: module and policy regression coverage
 - `tests/integration/`: auth and Telegram seam coverage
 - `deploy/systemd/`: generic self-host service examples

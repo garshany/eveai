@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS users (
   user_id      INTEGER PRIMARY KEY AUTOINCREMENT,
   display_name TEXT NOT NULL,
   active_character_id INTEGER,
+  active_character_version INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -57,6 +58,10 @@ CREATE TABLE IF NOT EXISTS auth_requests (
   user_id      INTEGER NOT NULL REFERENCES users(user_id),
   chat_id      INTEGER,
   redirect_url TEXT,
+  requested_scopes_json TEXT,
+  consent_version TEXT,
+  consent_language TEXT CHECK (consent_language IS NULL OR consent_language IN ('ru', 'en')),
+  consented_at TEXT,
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at   TEXT NOT NULL,
   used_at      TEXT
@@ -70,12 +75,27 @@ CREATE TABLE IF NOT EXISTS telegram_sessions (
   last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Browser-only identities use opaque, keyed-hash sessions and a chat-id range
+-- reserved away from Telegram (>0), CLI (0), and Discord (-1, -2, ...).
+CREATE TABLE IF NOT EXISTS web_sessions (
+  session_hash TEXT PRIMARY KEY,
+  csrf_hash    TEXT NOT NULL,
+  user_id      INTEGER NOT NULL REFERENCES users(user_id),
+  chat_id      INTEGER NOT NULL UNIQUE REFERENCES telegram_sessions(chat_id),
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_web_sessions_user ON web_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
+
 CREATE TABLE IF NOT EXISTS agent_threads (
   thread_id  TEXT PRIMARY KEY,
   chat_id    INTEGER NOT NULL REFERENCES telegram_sessions(chat_id),
   character_id INTEGER,
   user_id    INTEGER,
   last_response_id TEXT,
+  last_response_message_id INTEGER,
   total_tokens INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -86,8 +106,10 @@ CREATE TABLE IF NOT EXISTS messages (
   thread_id  TEXT NOT NULL REFERENCES agent_threads(thread_id),
   role       TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
   content    TEXT NOT NULL,
+  web_request_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_messages_web_request ON messages(web_request_id);
 
 CREATE TABLE IF NOT EXISTS thread_summaries (
   thread_id       TEXT PRIMARY KEY REFERENCES agent_threads(thread_id),
@@ -111,6 +133,9 @@ CREATE TABLE IF NOT EXISTS eve_accounts (
   refresh_token   TEXT NOT NULL,
   expires_at      TEXT NOT NULL,
   scopes_json     TEXT NOT NULL DEFAULT '[]',
+  consent_version TEXT,
+  consent_language TEXT CHECK (consent_language IS NULL OR consent_language IN ('ru', 'en')),
+  consented_at    TEXT,
   user_id         INTEGER
 );
 
@@ -126,6 +151,57 @@ CREATE INDEX IF NOT EXISTS idx_eve_character_links_user ON eve_character_links(u
 
 CREATE INDEX IF NOT EXISTS idx_agent_threads_user ON agent_threads(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
+
+CREATE TABLE IF NOT EXISTS web_agent_requests (
+  request_id       TEXT PRIMARY KEY,
+  user_id          INTEGER NOT NULL REFERENCES users(user_id),
+  chat_id          INTEGER NOT NULL REFERENCES telegram_sessions(chat_id),
+  thread_id        TEXT NOT NULL REFERENCES agent_threads(thread_id) ON DELETE CASCADE,
+  character_id     INTEGER,
+  character_version INTEGER NOT NULL,
+  message          TEXT NOT NULL,
+  message_hash     TEXT NOT NULL,
+  idempotency_key  TEXT NOT NULL,
+  status           TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+  activity_json    TEXT NOT NULL DEFAULT '[]',
+  progress_sequence INTEGER NOT NULL DEFAULT 0,
+  result_text      TEXT,
+  assistant_message_id INTEGER,
+  error_code       TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)),
+  cost_reserved    INTEGER NOT NULL DEFAULT 1,
+  cost_actual      INTEGER NOT NULL DEFAULT 0,
+  created_at_ms    INTEGER NOT NULL,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  started_at       TEXT,
+  heartbeat_at     TEXT,
+  lease_expires_at TEXT,
+  finished_at      TEXT,
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_web_agent_requests_status
+  ON web_agent_requests(status, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_web_agent_requests_actor
+  ON web_agent_requests(user_id, chat_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_web_agent_requests_thread
+  ON web_agent_requests(thread_id, created_at_ms);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_web_agent_requests_idempotency
+  ON web_agent_requests(user_id, chat_id, idempotency_key);
+
+CREATE TABLE IF NOT EXISTS web_admission_events (
+  event_id       TEXT PRIMARY KEY,
+  event_kind     TEXT NOT NULL CHECK (event_kind IN ('session', 'chat')),
+  user_id        INTEGER,
+  ip_key         TEXT NOT NULL,
+  cost_units     INTEGER NOT NULL DEFAULT 0,
+  created_at_ms  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_web_admission_events_kind_time
+  ON web_admission_events(event_kind, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_web_admission_events_ip_time
+  ON web_admission_events(ip_key, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_web_admission_events_user_time
+  ON web_admission_events(user_id, created_at_ms);
 
 CREATE TABLE IF NOT EXISTS plans (
   request_id TEXT PRIMARY KEY,

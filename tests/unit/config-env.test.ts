@@ -4,6 +4,7 @@ import {
   parseOptionalBooleanEnv,
   parseOptionalIntEnv,
   parseOptionalPositiveIntEnv,
+  parseOptionalStrictBooleanEnv,
   parseRequiredIntEnv,
   readOptionalEnv,
   readRequiredEnv,
@@ -59,6 +60,15 @@ describe('config env parsing', () => {
     expect(parseOptionalBooleanEnv({}, 'FLAG', true)).toBe(true);
     expect(() => parseOptionalBooleanEnv({ FLAG: 'maybe' }, 'FLAG', true)).toThrow(
       /must be a boolean value/,
+    );
+  });
+
+  it('parses strict opt-in booleans without accepting aliases', () => {
+    expect(parseOptionalStrictBooleanEnv({}, 'STORE', false)).toBe(false);
+    expect(parseOptionalStrictBooleanEnv({ STORE: ' TrUe ' }, 'STORE', false)).toBe(true);
+    expect(parseOptionalStrictBooleanEnv({ STORE: 'false' }, 'STORE', true)).toBe(false);
+    expect(() => parseOptionalStrictBooleanEnv({ STORE: 'yes' }, 'STORE', false)).toThrow(
+      /must be either true or false/,
     );
   });
 });

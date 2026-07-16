@@ -24,6 +24,10 @@ export type AgentActivityEvent =
 
 export interface AgentActivitySink {
   emit: (event: AgentActivityEvent) => void;
+  /** Durable browser request owning assistant messages emitted by this turn. */
+  requestId?: string;
+  /** Set false for UIs that only display tool activity and do not consume model reasoning. */
+  reasoning?: boolean;
   /**
    * Optional cooperative-cancellation probe (the CLI's Ctrl-C). When it
    * returns true, the agent loop stops before the next model call or tool
@@ -35,6 +39,9 @@ export interface AgentActivitySink {
 
 /** Thrown (via error message match) when the user abandoned the turn. */
 export const TURN_ABORTED_MESSAGE = 'Turn aborted by user';
+
+/** Thrown when the single root turn wall-clock budget is exhausted. */
+export const TURN_DEADLINE_MESSAGE = 'Agent turn deadline exceeded';
 
 /** True when the active sink reports the user abandoned this turn. */
 export function isTurnAborted(): boolean {

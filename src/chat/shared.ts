@@ -9,7 +9,11 @@ import { config } from '../config.js';
 import { handleAgentMessage } from '../agent/executor.js';
 import { finalizeThreadMessage } from '../agent/finalizer.js';
 import { getLinkedCharacter } from '../eve/sso.js';
-import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
+import {
+  isUserProfileStale,
+  readUserProfile,
+  refreshUserProfile,
+} from '../eve/user-profile.js';
 import { stopRouteMonitor } from '../eve-board/monitor.js';
 import type { UserContext } from '../auth/user-resolver.js';
 
@@ -17,7 +21,7 @@ export const MAX_INPUT_LENGTH = 2000;
 const DUPLICATE_REQUEST_WINDOW_MS = 30_000;
 const DEFAULT_REQUEST_WINDOW_MS = 60_000;
 const DEFAULT_MAX_REQUESTS_PER_WINDOW = 6;
-const DEFAULT_MAX_ACTIVE_REQUESTS = 24;
+const DEFAULT_MAX_ACTIVE_REQUESTS = 8;
 
 // ---------------------------------------------------------------------------
 // Chat session rows (telegram_sessions doubles as the generic chat registry;
@@ -84,10 +88,17 @@ const inFlightRequests = new Map<number, {
   threadId: string;
   text: string;
   startedAt: number;
+  userId: number;
 }>();
 
 export function hasInFlightRequest(chatId: number): boolean {
   return inFlightRequests.has(chatId);
+}
+
+export function hasInFlightRequestForActor(chatId: number, userId: number): boolean {
+  if (hasInFlightRequest(chatId)) return true;
+  if (userId <= 0) return false;
+  return [...inFlightRequests.values()].some((request) => request.userId === userId);
 }
 
 export function activeRequestCount(): number {
@@ -102,12 +113,20 @@ export function isDuplicateInFlightRequest(chatId: number, threadId: string, tex
   return now - current.startedAt < DUPLICATE_REQUEST_WINDOW_MS;
 }
 
-export function rememberInFlightRequest(chatId: number, threadId: string, text: string, token: string, startedAt = Date.now()): void {
+export function rememberInFlightRequest(
+  chatId: number,
+  threadId: string,
+  text: string,
+  token: string,
+  startedAt = Date.now(),
+  userId = 0,
+): void {
   inFlightRequests.set(chatId, {
     token,
     threadId,
     text,
     startedAt,
+    userId,
   });
 }
 
@@ -207,9 +226,12 @@ export async function runAgentTurn(
   threadId: string,
   ctx: UserContext,
   text: string,
+  options: { userMessagePersisted?: boolean; backgroundProfileRefresh?: boolean } = {},
 ): Promise<string> {
-  db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'user', text);
-  void maybeRefreshUserProfile(db, ctx);
+  if (!options.userMessagePersisted) {
+    db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'user', text);
+  }
+  if (options.backgroundProfileRefresh !== false) void maybeRefreshUserProfile(db, ctx);
   const agentResult = await handleAgentMessage(db, threadId, ctx, text);
   return finalizeThreadMessage(db, threadId, agentResult.text);
 }
@@ -218,22 +240,7 @@ export async function maybeRefreshUserProfile(db: Db, ctx: UserContext): Promise
   const refreshSeconds = config.userProfile.refreshSeconds;
   if (!refreshSeconds || refreshSeconds <= 0) return;
   const profile = await readUserProfile(db, ctx);
-  if (!profile) {
-    void refreshUserProfile(db, ctx).catch(() => {});
-    return;
-  }
-  const match = /^Updated:\s*(.+)$/m.exec(profile);
-  if (!match) {
-    void refreshUserProfile(db, ctx).catch(() => {});
-    return;
-  }
-  const updatedAt = Date.parse(match[1]);
-  if (!Number.isFinite(updatedAt)) {
-    void refreshUserProfile(db, ctx).catch(() => {});
-    return;
-  }
-  const ageSeconds = (Date.now() - updatedAt) / 1000;
-  if (ageSeconds >= refreshSeconds) {
+  if (isUserProfileStale(profile, refreshSeconds)) {
     void refreshUserProfile(db, ctx).catch(() => {});
   }
 }
@@ -356,6 +363,10 @@ export function normalizeUiCommandError(error: string | null): string {
 
 export function normalizeAgentRuntimeError(err: unknown): string {
   const combined = collectErrorText(err).toLowerCase();
+
+  if (combined.includes('agent turn deadline exceeded')) {
+    return 'Запрос превысил безопасный лимит времени. Разбей задачу на несколько этапов и повтори.';
+  }
 
   if (
     combined.includes('unsupported state or unable to authenticate data')

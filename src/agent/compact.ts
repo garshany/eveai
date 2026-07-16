@@ -12,6 +12,7 @@ type MessageRow = {
 export type SummarizerFn = (input: {
   existingSummary: string | null;
   messages: MessageRow[];
+  signal?: AbortSignal;
 }) => Promise<string>;
 
 const MAX_SUMMARY_CHARS = 4000;
@@ -126,11 +127,12 @@ export async function runPreTurnCompact(
   db: Db,
   threadId: string,
   summarizer: SummarizerFn = defaultSummarizer,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   if (!needsPreTurnCompaction(db, threadId)) return false;
   console.log('[compact] pre-turn: total_tokens=%d >= limit=%d, compacting',
     getThreadTotalTokens(db, threadId), autoCompactLimit());
-  return compactThreadWithRetry(db, threadId, summarizer);
+  return compactThreadWithRetry(db, threadId, summarizer, signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -155,9 +157,10 @@ export async function runMidTurnCompact(
   db: Db,
   threadId: string,
   summarizer: SummarizerFn = defaultSummarizer,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   console.log('[compact] mid-turn: compacting thread=%s', threadId.slice(0, 12));
-  return compactThreadWithRetry(db, threadId, summarizer);
+  return compactThreadWithRetry(db, threadId, summarizer, signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -174,14 +177,15 @@ export async function compactThreadWithRetry(
   db: Db,
   threadId: string,
   summarizer: SummarizerFn = defaultSummarizer,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= COMPACT_MAX_RETRIES; attempt++) {
     // Ctrl-C during a failing summarizer: an abandoned turn must not keep
     // issuing compaction model calls (or block the input queue on backoff).
-    if (isTurnAborted()) return false;
+    if (isTurnAborted() || signal?.aborted) return false;
     try {
-      return await compactThread(db, threadId, summarizer);
+      return await compactThread(db, threadId, summarizer, signal);
     } catch (error) {
       lastError = error;
       console.warn('[compact] attempt %d/%d failed: %s',
@@ -204,6 +208,7 @@ export async function compactThread(
   db: Db,
   threadId: string,
   summarizer: SummarizerFn = defaultSummarizer,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const allMessages = db.prepare(
     "SELECT id, role, content FROM messages WHERE thread_id = ? AND role IN ('user','assistant') ORDER BY id ASC"
@@ -260,6 +265,7 @@ export async function compactThread(
   const summaryText = (await summarizer({
     existingSummary: existingSummaryRow?.summary ?? null,
     messages: candidates,
+    signal,
   })).trim();
 
   if (!summaryText) return false;
@@ -267,7 +273,7 @@ export async function compactThread(
   // Ctrl-C landed while the summarizer was in flight: don't rewrite history
   // (summary upsert + message pruning) for a turn the user already abandoned.
   // The backlog stays over the limit, so the next turn simply compacts again.
-  if (isTurnAborted()) return false;
+  if (isTurnAborted() || signal?.aborted) return false;
 
   // Cap the summary, but cut on a line (bullet) boundary rather than mid-bullet:
   // a half-truncated fact is worse than dropping it, and the capped summary is
@@ -290,8 +296,9 @@ export async function compactThread(
     // Reset cumulative token counter (compaction = fresh start)
     db.prepare('UPDATE agent_threads SET total_tokens = 0 WHERE thread_id = ?').run(threadId);
 
-    // Clear last_response_id to force cold start with new context
-    db.prepare("UPDATE agent_threads SET last_response_id = NULL, updated_at = datetime('now') WHERE thread_id = ?").run(threadId);
+    // Clear the response id and its message anchor to force a cold start with
+    // the newly compacted SQLite context.
+    db.prepare("UPDATE agent_threads SET last_response_id = NULL, last_response_message_id = NULL, updated_at = datetime('now') WHERE thread_id = ?").run(threadId);
   });
   tx();
 
@@ -307,6 +314,7 @@ export async function compactThread(
 async function defaultSummarizer(input: {
   existingSummary: string | null;
   messages: MessageRow[];
+  signal?: AbortSignal;
 }): Promise<string> {
   const transcript = buildTranscript(input.messages, config.compact.maxInputChars);
   if (!transcript) return '';
@@ -317,7 +325,7 @@ async function defaultSummarizer(input: {
     transcript,
   ].filter(Boolean).join('\n\n');
 
-  return await runModelText(COMPACTION_DEVELOPER_PROMPT, userText);
+  return await runModelText(COMPACTION_DEVELOPER_PROMPT, userText, input.signal);
 }
 
 function transcriptPrefix(msg: MessageRow): string {
