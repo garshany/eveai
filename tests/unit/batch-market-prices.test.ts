@@ -29,7 +29,7 @@ type BatchResult = {
   blocked?: boolean;
 };
 
-async function runBatch(typeIds: number[]): Promise<BatchResult> {
+async function runBatch(typeIds: number[], signal?: AbortSignal): Promise<BatchResult> {
   const { __test__ } = await import('../../src/agent/executor.js');
   const { createWebSearchState } = await import('../../src/agent/web-search.js');
   const db = {} as never;
@@ -42,6 +42,9 @@ async function runBatch(typeIds: number[]): Promise<BatchResult> {
     'batch_market_prices',
     { region_id: 10000002, type_ids: typeIds },
     createWebSearchState(),
+    false,
+    { callsExecuted: 0 },
+    { signal },
   )) as BatchResult;
   return result;
 }
@@ -121,5 +124,69 @@ describe('batch_market_prices global-average fallback', () => {
     const duplicate = await runBatch([TRITANIUM, TRITANIUM]);
     expect(duplicate).toMatchObject({ ok: false, source: 'CCP ESI', blocked: false });
     expect(callEsiOperationMock).not.toHaveBeenCalled();
+  });
+
+  it('bounds nested regional ESI leaves across a full 30-item batch', async () => {
+    let active = 0;
+    let peak = 0;
+    const releases: Array<() => void> = [];
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string) => {
+      if (operation !== 'get_markets_region_id_orders') {
+        return { ok: false, error: `unexpected op ${operation}` };
+      }
+      return await new Promise((resolve) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        releases.push(() => {
+          active -= 1;
+          resolve({
+            ok: true,
+            data: [{ price: 5, volume_remain: 1, is_buy_order: false }],
+          });
+        });
+      });
+    });
+
+    const running = runBatch(Array.from({ length: 30 }, (_, index) => index + 1));
+    await vi.waitFor(() => expect(callEsiOperationMock).toHaveBeenCalledTimes(12));
+    expect(active).toBe(12);
+
+    while (callEsiOperationMock.mock.calls.length < 30) {
+      const wave = releases.splice(0);
+      wave.forEach((release) => release());
+      await vi.waitFor(() => expect(releases.length).toBeGreaterThan(0));
+    }
+    releases.splice(0).forEach((release) => release());
+
+    const result = await running;
+    expect(result).toMatchObject({ ok: true, source: 'CCP ESI' });
+    expect(peak).toBe(12);
+  });
+
+  it('removes queued leaves and aborts active ESI calls with the root turn signal', async () => {
+    const controller = new AbortController();
+    callEsiOperationMock.mockImplementation(async (
+      _db: unknown,
+      operation: string,
+      _args: Record<string, unknown>,
+      _ctx: unknown,
+      guard: { signal?: AbortSignal },
+    ) => {
+      if (operation !== 'get_markets_region_id_orders') {
+        return { ok: false, error: `unexpected op ${operation}` };
+      }
+      return await new Promise((resolve) => {
+        const finish = () => resolve({ ok: false, status: 409, error: 'cancelled' });
+        if (guard.signal?.aborted) finish();
+        else guard.signal?.addEventListener('abort', finish, { once: true });
+      });
+    });
+
+    const running = runBatch(Array.from({ length: 30 }, (_, index) => index + 1), controller.signal);
+    await vi.waitFor(() => expect(callEsiOperationMock).toHaveBeenCalledTimes(12));
+    controller.abort();
+
+    await expect(running).resolves.toMatchObject({ ok: false, source: 'CCP ESI' });
+    expect(callEsiOperationMock).toHaveBeenCalledTimes(12);
   });
 });

@@ -169,6 +169,9 @@ describe('agent tools', () => {
     expect(eveKillNamespace?.description).toContain('Use official ESI');
     expect(eveKillNamespace?.description).toContain('use local SDE');
     expect(await getToolPolicy('kill_watch')).toBe('write');
+    expect(await getToolPolicy('plan_route', { set_autopilot: false })).toBe('read');
+    expect(await getToolPolicy('plan_route', { set_autopilot: null })).toBe('read');
+    expect(await getToolPolicy('plan_route', { set_autopilot: true })).toBe('ui');
     expect(await getToolPolicy('kill_search')).toBe('read');
     expect(await getToolPolicy('doctrine_detect')).toBe('read');
     expect(await getToolPolicy('market_history_summary')).toBe('read');
@@ -349,16 +352,54 @@ describe('agent tools', () => {
     process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
     vi.resetModules();
     try {
-      const { buildNativeAgentTools } = await import('../../src/agent/tools.js');
+      const { buildNativeAgentTools, buildReadSubagentTools } = await import('../../src/agent/tools.js');
       const tools = await buildNativeAgentTools('full');
       expect(tools.some((tool) => tool.type === 'programmatic_tool_calling')).toBe(false);
       expect(tools.some((tool) => tool.type === 'function' && tool.name === 'local_parallel_batch')).toBe(true);
+      expect(tools.some((tool) => tool.type === 'function' && tool.name === 'delegate_read_subagents')).toBe(true);
+      const delegation = tools.find(
+        (tool) => tool.type === 'function' && tool.name === 'delegate_read_subagents',
+      );
+      const tasks = delegation?.type === 'function'
+        ? delegation.parameters.properties.tasks as {
+          items?: { properties?: { tool_hints?: Record<string, unknown> } };
+        }
+        : undefined;
+      expect(tasks?.items?.properties?.tool_hints).not.toHaveProperty('uniqueItems');
+      expect(buildReadSubagentTools().map((tool) => tool.name)).toEqual([
+        'count_universe_objects',
+        'batch_market_prices',
+        'compare_wormhole_types',
+        'scout_systems',
+        'kill_activity_summary',
+        'market_history_summary',
+        'system_metric_snapshot',
+        'doctrine_summary',
+        'dynamic_item_summary',
+      ]);
       const decorated = tools.flatMap((tool) => tool.type === 'namespace' ? tool.tools : [tool])
         .filter((tool) => tool.type === 'function' && (tool.allowed_callers || tool.output_schema));
       expect(decorated).toEqual([]);
     } finally {
       delete process.env.OPENAI_PROVIDER;
       process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'false';
+      vi.resetModules();
+    }
+  });
+
+  it('exposes the same application-managed delegation tool on an explicit OpenAI opt-in', async () => {
+    process.env.OPENAI_PROVIDER = 'openai';
+    process.env.CHEAPVIBE_READ_SUBAGENTS_ENABLED = 'true';
+    vi.resetModules();
+    try {
+      const { buildNativeAgentTools } = await import('../../src/agent/tools.js');
+      const tools = await buildNativeAgentTools('full');
+      expect(tools.some(
+        (tool) => tool.type === 'function' && tool.name === 'delegate_read_subagents',
+      )).toBe(true);
+    } finally {
+      delete process.env.OPENAI_PROVIDER;
+      delete process.env.CHEAPVIBE_READ_SUBAGENTS_ENABLED;
       vi.resetModules();
     }
   });

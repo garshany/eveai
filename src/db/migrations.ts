@@ -6,6 +6,7 @@ export function runMigrations(db: Db): void {
   const migrate = db.transaction(() => {
     ensureSchema(db);
     addColumnIfMissing(db, 'telegram_sessions', 'active_character_id', 'INTEGER');
+    addColumnIfMissing(db, 'users', 'active_character_version', 'INTEGER NOT NULL DEFAULT 0');
     addColumnIfMissing(db, 'agent_threads', 'character_id', 'INTEGER');
     addColumnIfMissing(db, 'esi_cache', 'etag', 'TEXT');
     addColumnIfMissing(db, 'esi_cache', 'last_modified', 'TEXT');
@@ -25,7 +26,9 @@ export function runMigrations(db: Db): void {
     backfillUsers(db);
     clearLegacyOauthStates(db);
     addColumnIfMissing(db, 'agent_threads', 'total_tokens', 'INTEGER DEFAULT 0');
+    addColumnIfMissing(db, 'messages', 'web_request_id', 'TEXT');
     createIndexIfMissing(db, 'idx_messages_thread', 'messages', 'thread_id');
+    createIndexIfMissing(db, 'idx_messages_web_request', 'messages', 'web_request_id');
     ensureHeartbeatConfig(db);
     addColumnIfMissing(db, 'heartbeat_config', 'state_json', "TEXT NOT NULL DEFAULT '{}'");
     ensureKillWatches(db);
@@ -36,6 +39,7 @@ export function runMigrations(db: Db): void {
     cutoverMarkedLegacyCliIdentity(db);
     ensureIntelNotes(db);
     ensureWebSessions(db);
+    ensureWebAgentRequests(db);
     addColumnIfMissing(db, 'auth_requests', 'requested_scopes_json', 'TEXT');
     addColumnIfMissing(db, 'auth_requests', 'consent_version', 'TEXT');
     addColumnIfMissing(db, 'auth_requests', 'consent_language', 'TEXT');
@@ -70,7 +74,7 @@ function ensureSchema(db: Db): void {
       db.exec(stmt);
     } catch (err) {
       const msg = String((err as Error).message || err);
-      if (msg.includes('no such column') && /^CREATE\s+INDEX/i.test(stmt)) {
+      if (msg.includes('no such column') && /^CREATE\s+(?:UNIQUE\s+)?INDEX/i.test(stmt)) {
         continue;
       }
       throw err;
@@ -412,6 +416,74 @@ function ensureWebSessions(db: Db): void {
     CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
   `);
   db.exec('DROP TABLE IF EXISTS telegram_login_attempts');
+}
+
+function ensureWebAgentRequests(db: Db): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS web_agent_requests (
+      request_id       TEXT PRIMARY KEY,
+      user_id          INTEGER NOT NULL REFERENCES users(user_id),
+      chat_id          INTEGER NOT NULL REFERENCES telegram_sessions(chat_id),
+      thread_id        TEXT NOT NULL REFERENCES agent_threads(thread_id) ON DELETE CASCADE,
+      character_id     INTEGER,
+      character_version INTEGER NOT NULL,
+      message          TEXT NOT NULL,
+      message_hash     TEXT NOT NULL,
+      idempotency_key  TEXT NOT NULL,
+      status           TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+      activity_json    TEXT NOT NULL DEFAULT '[]',
+      progress_sequence INTEGER NOT NULL DEFAULT 0,
+      result_text      TEXT,
+      assistant_message_id INTEGER,
+      error_code       TEXT,
+      cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)),
+      cost_reserved    INTEGER NOT NULL DEFAULT 1,
+      cost_actual      INTEGER NOT NULL DEFAULT 0,
+      created_at_ms    INTEGER NOT NULL,
+      created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+      started_at       TEXT,
+      heartbeat_at     TEXT,
+      lease_expires_at TEXT,
+      finished_at      TEXT,
+      updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  addColumnIfMissing(db, 'web_agent_requests', 'character_id', 'INTEGER');
+  addColumnIfMissing(db, 'web_agent_requests', 'character_version', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'web_agent_requests', 'idempotency_key', "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, 'web_agent_requests', 'progress_sequence', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'web_agent_requests', 'assistant_message_id', 'INTEGER');
+  addColumnIfMissing(db, 'web_agent_requests', 'cost_reserved', 'INTEGER NOT NULL DEFAULT 1');
+  addColumnIfMissing(db, 'web_agent_requests', 'cost_actual', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'web_agent_requests', 'heartbeat_at', 'TEXT');
+  addColumnIfMissing(db, 'web_agent_requests', 'lease_expires_at', 'TEXT');
+  db.prepare(`
+    UPDATE web_agent_requests SET idempotency_key = request_id WHERE idempotency_key = ''
+  `).run();
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_web_agent_requests_status
+      ON web_agent_requests(status, created_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_web_agent_requests_actor
+      ON web_agent_requests(user_id, chat_id, created_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_web_agent_requests_thread
+      ON web_agent_requests(thread_id, created_at_ms);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_web_agent_requests_idempotency
+      ON web_agent_requests(user_id, chat_id, idempotency_key);
+    CREATE TABLE IF NOT EXISTS web_admission_events (
+      event_id       TEXT PRIMARY KEY,
+      event_kind     TEXT NOT NULL CHECK (event_kind IN ('session', 'chat')),
+      user_id        INTEGER,
+      ip_key         TEXT NOT NULL,
+      cost_units     INTEGER NOT NULL DEFAULT 0,
+      created_at_ms  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_web_admission_events_kind_time
+      ON web_admission_events(event_kind, created_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_web_admission_events_ip_time
+      ON web_admission_events(ip_key, created_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_web_admission_events_user_time
+      ON web_admission_events(user_id, created_at_ms);
+  `);
 }
 
 async function main(): Promise<void> {

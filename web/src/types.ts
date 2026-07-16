@@ -12,6 +12,7 @@ export type SessionPayload = {
     characters: Character[];
   } | null;
   ssoConfigured: boolean;
+  turnstileSiteKey: string | null;
 };
 
 export type ProfileAvailability = 'available' | 'missing_scope' | 'unavailable';
@@ -52,6 +53,20 @@ export type Conversation = {
 export type ActivityStep = {
   name: string;
   detail?: string;
+};
+
+export type WebAgentRequest = {
+  requestId: string;
+  threadId: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  activity: ActivityStep[];
+  progressSequence: number;
+  result: string | null;
+  error: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  retryAfterMs: number;
 };
 
 export type ChatMessage = {

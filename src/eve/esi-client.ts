@@ -28,6 +28,11 @@ type EsiCacheRow = {
   last_modified: string | null;
 };
 
+export type EsiExecutionGuard = {
+  signal?: AbortSignal;
+  identityCurrent?: () => boolean;
+};
+
 /**
  * Delete expired esi_cache rows. The cache key embeds the full request URL, so
  * high-cardinality endpoints (per-killmail, per-type market, universe/names)
@@ -48,6 +53,7 @@ export async function callEsiOperation<T = unknown>(
   operationName: string,
   args: Record<string, unknown>,
   ctx?: UserContext | number | null,
+  guard: EsiExecutionGuard = {},
 ): Promise<EsiCallResult<T>> {
   const userCtx = normalizeCtx(ctx);
   const catalog = await loadEsiCatalog();
@@ -59,6 +65,9 @@ export async function callEsiOperation<T = unknown>(
   const access = await resolveAccess(db, operation, userCtx);
   if (!access.ok) {
     return { ok: false, status: access.status, error: access.error };
+  }
+  if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
+    return { ok: false, status: 409, error: 'ESI operation cancelled before request dispatch.' };
   }
 
   const prepared = prepareRequest(operation, args, access.characterId);
@@ -73,7 +82,9 @@ export async function callEsiOperation<T = unknown>(
     if (cached) return cached;
   }
 
-  const fetchResult = await fetchEsi<T>(db, cacheKey, cacheRow, prepared.url, operation, prepared.body, access.token);
+  const fetchResult = await fetchEsi<T>(
+    db, cacheKey, cacheRow, prepared.url, operation, prepared.body, access.token, guard,
+  );
   if (!fetchResult.ok) {
     return fetchResult;
   }
@@ -213,6 +224,7 @@ async function fetchEsi<T>(
   operation: EsiOperationMeta,
   body: string | null,
   token: string | null,
+  guard: EsiExecutionGuard,
 ): Promise<EsiCallResult<T>> {
   const headers = new Headers({
     Accept: 'application/json',
@@ -239,7 +251,10 @@ async function fetchEsi<T>(
       headers.set('If-Modified-Since', cacheRow.last_modified);
     }
 
-    const response = await fetchEsiWithRetry(pageUrl, operation, headers, body);
+    if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
+      return { ok: false, status: 409, error: 'ESI operation cancelled before request dispatch.' };
+    }
+    const response = await fetchEsiWithRetry(pageUrl, operation, headers, body, guard);
     if (!response.ok) {
       return response.result;
     }
@@ -318,16 +333,24 @@ async function fetchEsiWithRetry(
   operation: EsiOperationMeta,
   headers: Headers,
   body: string | null,
+  guard: EsiExecutionGuard,
 ): Promise<{ ok: true; value: Response } | { ok: false; result: EsiCallResult<never> }> {
   const maxAttempts = Math.max(1, config.esi.retryMaxAttempts);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
+      return {
+        ok: false,
+        result: { ok: false, status: 409, error: 'ESI operation cancelled before request dispatch.' },
+      };
+    }
     let response: Response;
     try {
       response = await fetchWithTimeout(url, {
         method: operation.method,
         headers,
         body,
+        signal: guard.signal,
       }, config.esi.requestTimeoutMs);
     } catch (error) {
       // Network failure is safe to retry for idempotent verbs. A POST may have

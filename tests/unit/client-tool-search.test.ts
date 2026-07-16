@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { NativeTool } from '../../src/agent/native-responses.js';
-import { prepareClientToolSearch, searchClientTools } from '../../src/agent/client-tool-search.js';
+import {
+  canApplyClientDiscoveryDelta,
+  MAX_CLIENT_DISCOVERED_FUNCTIONS,
+  MAX_CLIENT_DISCOVERED_NAMESPACES,
+  MAX_CLIENT_DISCOVERED_SCHEMA_BYTES,
+  prepareClientToolSearch,
+  searchClientTools,
+} from '../../src/agent/client-tool-search.js';
 
 const tools: NativeTool[] = [
   { type: 'tool_search' },
@@ -64,5 +71,54 @@ describe('client tool search', () => {
       limit: 101,
     }).tools).toEqual([]);
     expect(searchClientTools(prepared.index, 'call_bad_json', '{bad json').tools).toEqual([]);
+  });
+
+  it('omits already exposed schemas from overlapping searches', () => {
+    const prepared = prepareClientToolSearch(tools);
+    const first = searchClientTools(prepared.index, 'first', {
+      query: 'market history summary',
+      limit: 2,
+    });
+    const exposed = new Set(first.tools.flatMap((tool) =>
+      tool.type === 'function' ? [tool.name] : tool.type === 'namespace'
+        ? tool.tools.map((nested) => nested.name)
+        : []));
+    const repeated = searchClientTools(
+      prepared.index,
+      'repeated',
+      { query: 'market history summary', limit: 2 },
+      { excludeNames: exposed },
+    );
+
+    expect(JSON.stringify(first.tools)).toContain('market_history_summary');
+    expect(JSON.stringify(repeated.tools)).not.toContain('market_history_summary');
+  });
+
+  it('enforces function, namespace, and serialized-byte discovery ceilings', () => {
+    const atBoundary = {
+      functions: MAX_CLIENT_DISCOVERED_FUNCTIONS - 1,
+      namespaces: MAX_CLIENT_DISCOVERED_NAMESPACES - 1,
+      bytes: MAX_CLIENT_DISCOVERED_SCHEMA_BYTES - 10,
+    };
+    expect(canApplyClientDiscoveryDelta(atBoundary, {
+      functions: 1,
+      namespaces: 1,
+      bytes: 10,
+    })).toBe(true);
+    expect(canApplyClientDiscoveryDelta(atBoundary, {
+      functions: 2,
+      namespaces: 1,
+      bytes: 10,
+    })).toBe(false);
+    expect(canApplyClientDiscoveryDelta(atBoundary, {
+      functions: 1,
+      namespaces: 2,
+      bytes: 10,
+    })).toBe(false);
+    expect(canApplyClientDiscoveryDelta(atBoundary, {
+      functions: 1,
+      namespaces: 1,
+      bytes: 11,
+    })).toBe(false);
   });
 });

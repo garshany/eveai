@@ -3,24 +3,28 @@ import type { CSSProperties } from 'react';
 import { Brand } from './Brand';
 import { ShieldIcon, TargetIcon } from '../icons';
 import { LocaleSwitch, useI18n } from '../i18n';
+import { TurnstileWidget } from './TurnstileWidget';
 
 type LoginScreenProps = {
   busy: boolean;
   ssoConfigured: boolean;
   error: string | null;
-  onConnect: () => void;
-  onGuest: () => void;
+  turnstileSiteKey: string | null;
+  onConnect: (turnstileToken?: string) => void;
+  onGuest: (turnstileToken?: string) => void;
 };
 
 export function LoginScreen({
   busy,
   ssoConfigured,
   error,
+  turnstileSiteKey,
   onConnect,
   onGuest,
 }: LoginScreenProps) {
   const { t } = useI18n();
   const [privacyOpen, setPrivacyOpen] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const routeImage = `${import.meta.env.BASE_URL}assets/orbit-route.png`;
 
   return (
@@ -40,16 +44,19 @@ export function LoginScreen({
           <p>{t('loginLead')}</p>
 
           <div className="login__actions">
+            {turnstileSiteKey ? (
+              <TurnstileWidget siteKey={turnstileSiteKey} onToken={setTurnstileToken} />
+            ) : null}
             <button
               className="button button--primary button--login"
               type="button"
-              onClick={onConnect}
-              disabled={busy || !ssoConfigured}
+              onClick={() => onConnect(turnstileToken ?? undefined)}
+              disabled={busy || !ssoConfigured || Boolean(turnstileSiteKey && !turnstileToken)}
             >
               <TargetIcon size={26} />
               {ssoConfigured ? t('loginEve') : t('ssoMissing')}
             </button>
-            <button className="text-action" type="button" onClick={onGuest} disabled={busy}>
+            <button className="text-action" type="button" onClick={() => onGuest(turnstileToken ?? undefined)} disabled={busy || Boolean(turnstileSiteKey && !turnstileToken)}>
               {t('guestContinue')}
             </button>
           </div>

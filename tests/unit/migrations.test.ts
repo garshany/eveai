@@ -16,6 +16,48 @@ afterEach(() => {
 });
 
 describe('runMigrations', () => {
+  it('upgrades the first async-request draft without failing on the later unique index', () => {
+    db.exec('DROP TABLE web_agent_requests');
+    db.exec(`
+      CREATE TABLE web_agent_requests (
+        request_id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        chat_id INTEGER NOT NULL,
+        thread_id TEXT NOT NULL,
+        message TEXT NOT NULL,
+        message_hash TEXT NOT NULL,
+        status TEXT NOT NULL,
+        activity_json TEXT NOT NULL DEFAULT '[]',
+        result_text TEXT,
+        error_code TEXT,
+        cancel_requested INTEGER NOT NULL DEFAULT 0,
+        created_at_ms INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at TEXT,
+        finished_at TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.prepare(`
+      INSERT INTO web_agent_requests (
+        request_id, user_id, chat_id, thread_id, message, message_hash, status, created_at_ms
+      ) VALUES ('draft-1', 1, -1, 'thread', 'message', 'hash', 'failed', 1)
+    `).run();
+
+    expect(() => runMigrations(db)).not.toThrow();
+    const columns = (db.prepare('PRAGMA table_info(web_agent_requests)').all() as Array<{ name: string }>)
+      .map((column) => column.name);
+    expect(columns).toEqual(expect.arrayContaining([
+      'idempotency_key',
+      'character_version',
+      'progress_sequence',
+      'lease_expires_at',
+    ]));
+    expect(db.prepare(`
+      SELECT idempotency_key FROM web_agent_requests WHERE request_id = 'draft-1'
+    `).get()).toEqual({ idempotency_key: 'draft-1' });
+  });
+
   it('does not auto-link the first global EVE account to unrelated Telegram sessions', () => {
     db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, ?)").run(10, 'u1');
     db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, ?)").run(11, 'u2');
@@ -67,6 +109,13 @@ describe('runMigrations', () => {
     const cols = (legacyDb.prepare('PRAGMA table_info(agent_threads)').all() as Array<{ name: string }>).map((c) => c.name);
     expect(cols).toContain('user_id');
     expect(cols).toContain('last_response_message_id');
+    const messageColumns = (legacyDb.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>)
+      .map((column) => column.name);
+    expect(messageColumns).toContain('web_request_id');
+    expect(legacyDb.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'index' AND name = 'idx_messages_web_request'
+    `).get()).toBeDefined();
     const eveAccountColumns = (legacyDb.prepare('PRAGMA table_info(eve_accounts)').all() as Array<{ name: string }>).map((column) => column.name);
     expect(eveAccountColumns).toEqual(expect.arrayContaining([
       'consent_version',

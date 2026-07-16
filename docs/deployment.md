@@ -48,15 +48,29 @@ AUTH_SECRET_KEY=...
 EVE_CALLBACK_URL=https://your-domain.example/auth/eve/callback
 WEB_BASE_URL=https://your-domain.example
 WEB_CHAT_ENABLED=true
-WEB_TRUST_PROXY=true
+WEB_TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128
 WEB_SESSION_TTL_HOURS=720
 WEB_SESSION_CREATION_WINDOW_SECONDS=600
 WEB_MAX_SESSION_CREATIONS_PER_WINDOW=30
+WEB_MAX_CONCURRENT_AGENT_REQUESTS=8
+WEB_MAX_QUEUED_AGENT_REQUESTS=64
+WEB_MAX_QUEUED_AGENT_REQUESTS_PER_USER=1
+WEB_REQUEST_WINDOW_SECONDS=60
+WEB_MAX_REQUESTS_PER_USER_WINDOW=6
+WEB_MAX_REQUESTS_GLOBAL_WINDOW=120
+WEB_MAX_REQUESTS_GLOBAL_DAY=10000
+WEB_MAX_COST_UNITS_PER_USER_WINDOW=24
+WEB_MAX_COST_UNITS_GLOBAL_WINDOW=480
+WEB_MAX_COST_UNITS_GLOBAL_DAY=40000
+WEB_AGENT_DEADLINE_MS=180000
+TURNSTILE_SITE_KEY=...
+TURNSTILE_SECRET_KEY=...
+TURNSTILE_EXPECTED_HOSTNAME=your-domain.example
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
-ESI_USER_AGENT=EVEAI/3.3 (+https://github.com/your-org/eveai; contact=you@example.com)
+ESI_USER_AGENT=EVEAI/4.0 (+https://github.com/your-org/eveai; contact=you@example.com)
 EVE_KILL_TIMEOUT_MS=8000
-EVE_KILL_USER_AGENT=EVEAI/3.3 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_USER_AGENT=EVEAI/4.0 (+https://github.com/your-org/eveai; contact=you@example.com)
 EVE_KILL_RETRY_MAX_ATTEMPTS=3
 EVE_KILL_BACKOFF_MAX_MS=10000
 ```
@@ -173,10 +187,17 @@ fixed MCP endpoint; it needs no additional token or deployment setting. See
 
 ## Reverse Proxy
 
-A reverse proxy is required for a public browser deployment and recommended for
-serving the EVE SSO callback over HTTPS. Set `WEB_TRUST_PROXY=true` only when
-Fastify is directly behind a proxy you control; otherwise an attacker could
-forge the address used by anonymous-session admission limits.
+A reverse proxy is required for a public browser deployment. Configure
+`WEB_TRUSTED_PROXY_CIDRS` with only the socket peers that can reach Fastify.
+The application ignores forwarded client-address headers from every other
+peer. Never use a trust-all proxy setting. Restrict origin ingress with the
+Google Cloud firewall or a Cloudflare Tunnel; application header validation is
+not a substitute for keeping the origin private.
+
+Browser chat is asynchronous: `POST /api/web/chat` returns `202` immediately,
+then the UI polls the durable SQLite request record. A proxy connection timeout
+therefore cannot discard a long agent turn. Do not cache `/api/web/*`, SSO, or
+Turnstile responses at Cloudflare.
 
 Generic Caddy example:
 
@@ -299,7 +320,7 @@ dedicated account (for example, `install -d -o eveai -g eveai -m 0700
 `package.json` non-writable by `eveai`. Adapt release-directory paths to your
 own supervisor without committing host-specific values here.
 
-## v3 Release Gate
+## v4 Release Gate
 
 Before publishing a public release or making a fork public, run these commands
 against the exact commit that will be released:

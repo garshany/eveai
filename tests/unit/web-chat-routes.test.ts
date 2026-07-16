@@ -14,6 +14,7 @@ vi.mock('../../src/chat/shared.js', async (importOriginal) => {
 import { registerWebChatRoutes } from '../../src/web/chat-routes.js';
 import { resetChatRequestGuardForTests } from '../../src/chat/shared.js';
 import { resetWebSessionCreationGuardForTests } from '../../src/web/web-session.js';
+import { cleanExpiredWebSessions } from '../../src/web/web-session.js';
 
 const ORIGIN = 'http://localhost:3000';
 
@@ -40,8 +41,11 @@ beforeEach(async () => {
     threadId: string,
     _ctx: unknown,
     text: string,
+    options?: { userMessagePersisted?: boolean },
   ) => {
-    database.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'user', text);
+    if (!options?.userMessagePersisted) {
+      database.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'user', text);
+    }
     const answer = `Ответ: ${text}`;
     database.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'assistant', answer);
     return answer;
@@ -230,8 +234,30 @@ describe('web chat routes', () => {
       headers: mutationHeaders(session),
       payload: { message: 'Сравни цены', threadId },
     });
-    expect(answer.statusCode).toBe(200);
-    expect(answer.json()).toMatchObject({ threadId, message: 'Ответ: Сравни цены' });
+    expect(answer.statusCode).toBe(202);
+    const accepted = answer.json() as { request: { requestId: string; threadId: string } };
+    expect(accepted.request).toMatchObject({ threadId });
+    let requestPayload: { request: { status: string; result: string | null } } | null = null;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const status = await app.inject({
+        method: 'GET',
+        url: `/api/web/chat/requests/${accepted.request.requestId}`,
+        headers: { cookie: session.cookie },
+      });
+      requestPayload = status.json() as typeof requestPayload;
+      if (requestPayload?.request.status === 'completed') break;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(requestPayload).toMatchObject({ request: { status: 'completed', result: 'Ответ: Сравни цены' } });
+    const events = await app.inject({
+      method: 'GET',
+      url: `/api/web/chat/requests/${accepted.request.requestId}/events`,
+      headers: { cookie: session.cookie },
+    });
+    expect(events.statusCode).toBe(200);
+    expect(events.headers['content-type']).toContain('text/event-stream');
+    expect(events.body).toContain('event: request');
+    expect(events.body).toContain('"status":"completed"');
     expect(runAgentTurnMock).toHaveBeenCalledTimes(1);
     expect(runAgentTurnMock.mock.calls[0]?.[2]).toMatchObject({ notificationCapability: 'web' });
 
@@ -266,6 +292,83 @@ describe('web chat routes', () => {
       headers: { cookie: intruder.cookie },
     });
     expect(response.statusCode).toBe(404);
+  });
+
+  it('does not delete a conversation while its durable request is active', async () => {
+    const session = await createBrowserSession();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/web/conversations',
+      headers: mutationHeaders(session),
+    });
+    const threadId = (created.json() as { threadId: string }).threadId;
+    db.prepare(`
+      INSERT INTO web_agent_requests (
+        request_id, user_id, chat_id, thread_id, character_id, character_version,
+        message, message_hash, idempotency_key, status, created_at_ms
+      ) VALUES ('queued-delete-test', ?, ?, ?, NULL, 0,
+        'queued', 'hash', 'delete_guard_key_01', 'queued', ?)
+    `).run(session.userId, session.chatId, threadId, Date.now());
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/api/web/conversations/${threadId}`,
+      headers: mutationHeaders(session),
+    });
+    expect(response.statusCode).toBe(409);
+    expect(db.prepare('SELECT 1 FROM agent_threads WHERE thread_id = ?').get(threadId)).toBeDefined();
+  });
+
+  it('makes enqueue idempotent and never authorizes request IDs across browser owners', async () => {
+    const owner = await createBrowserSession();
+    const intruder = await createBrowserSession();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/web/conversations',
+      headers: mutationHeaders(owner),
+    });
+    const threadId = (created.json() as { threadId: string }).threadId;
+    const payload = {
+      message: 'idempotent marker',
+      threadId,
+      idempotencyKey: 'request_retry_key_0001',
+    };
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/web/chat',
+      headers: mutationHeaders(owner),
+      payload,
+    });
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/web/chat',
+      headers: mutationHeaders(owner),
+      payload,
+    });
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(202);
+    const firstPayload = first.json() as { request: { requestId: string } };
+    expect(second.json()).toMatchObject({
+      existing: true,
+      request: { requestId: firstPayload.request.requestId },
+    });
+
+    const foreignPoll = await app.inject({
+      method: 'GET',
+      url: `/api/web/chat/requests/${firstPayload.request.requestId}`,
+      headers: { cookie: intruder.cookie },
+    });
+    const foreignCancel = await app.inject({
+      method: 'DELETE',
+      url: `/api/web/chat/requests/${firstPayload.request.requestId}`,
+      headers: mutationHeaders(intruder),
+    });
+    expect(foreignPoll.statusCode).toBe(404);
+    expect(foreignCancel.statusCode).toBe(404);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS n FROM messages WHERE thread_id = ? AND role = 'user'
+    `).get(threadId)).toEqual({ n: 1 });
+    expect(runAgentTurnMock).toHaveBeenCalledTimes(1);
   });
 
   it('reuses one empty conversation and caps durable conversation growth', async () => {
@@ -491,6 +594,7 @@ describe('web chat routes', () => {
       headers: { cookie: session.cookie },
     });
     expect(expired.json()).toMatchObject({ session: null });
+    await cleanExpiredWebSessions(db, { force: true });
     expect(db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(session.userId)).toBeUndefined();
     expect(db.prepare('SELECT 1 FROM telegram_sessions WHERE chat_id = ?').get(session.chatId)).toBeUndefined();
     expect(db.prepare('SELECT 1 FROM agent_threads WHERE thread_id = ?').get(threadId)).toBeUndefined();

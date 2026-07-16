@@ -96,6 +96,7 @@ export type PlanRouteResult = {
   routes: RouteVariant[];
   autopilot_set: boolean;
   autopilot_mode: AutopilotMode;
+  monitor_started: boolean;
   error: string | null;
   formatted_summary: string;
 };
@@ -109,7 +110,13 @@ export type PlanRouteArgs = {
 };
 
 
-export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): Promise<PlanRouteResult> {
+export async function planRoute(
+  db: Db,
+  args: PlanRouteArgs,
+  ctx: UserContext,
+  identityCurrent: () => boolean = () => true,
+  signal?: AbortSignal,
+): Promise<PlanRouteResult> {
   // 1. Resolve origin & destination — "current" uses live location
   const originInfo = await resolveOriginSystem(db, args.origin, ctx);
   const destInfo = resolveSystem(db, args.destination);
@@ -122,6 +129,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
       routes: [],
       autopilot_set: false,
       autopilot_mode: 'none',
+      monitor_started: false,
       error: `Unknown origin system: ${args.origin}`,
       formatted_summary: '',
     };
@@ -134,6 +142,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
       routes: [],
       autopilot_set: false,
       autopilot_mode: 'none',
+      monitor_started: false,
       error: `Unknown destination system: ${args.destination}`,
       formatted_summary: '',
     };
@@ -199,6 +208,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
       routes: [],
       autopilot_set: false,
       autopilot_mode: 'none',
+      monitor_started: false,
       error: 'No ESI route is available between the requested systems.',
       formatted_summary: 'Маршруты не найдены. Автопилот и мониторинг не запущены.',
     };
@@ -227,7 +237,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     rejectCaptureBarrier = reject;
   });
   const unsubscribeFeedCapture = routeMonitorSender
-    && args.set_autopilot !== false
+    && args.set_autopilot === true
     && ctx.chatId !== undefined
     && ctx.notificationCapability !== 'none'
     ? subscribeEveKillFeed(async (event) => {
@@ -271,6 +281,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
         routes: [],
         autopilot_set: false,
         autopilot_mode: 'none',
+        monitor_started: false,
         error: `EVE-KILL route baseline unavailable: ${reason}`,
         formatted_summary: [
           `<b>${escapeHtml(originInfo.name)} → ${escapeHtml(destInfo.name)}</b>`,
@@ -300,7 +311,9 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
   // 6. Set autopilot for the preferred route (skip for thera_shortcut — handled below)
   let autopilotSet = false;
   let autopilotMode: AutopilotMode = 'none';
-  if (args.set_autopilot !== false && effectivePrefer !== 'thera_shortcut' && routes.length > 0) {
+  let monitorStarted = false;
+  if (args.set_autopilot === true && effectivePrefer !== 'thera_shortcut' && routes.length > 0) {
+    if (!identityCurrent()) throw new Error('Turn identity changed before route mutation');
     const preferred = effectivePrefer
       ? routes.find((r) => r.flag === effectivePrefer) ?? routes[0]
       : routes.find((r) => r.flag === 'secure') ?? routes[0];
@@ -309,16 +322,21 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
     const prefIndex = flags.indexOf(preferred.flag);
     const prefSystemIds = routeResults[prefIndex];
     if (prefSystemIds && prefSystemIds.length > 0) {
-      const autopilot = await setAutopilotRoute(db, prefSystemIds, destInfo.id, ctx);
+      const autopilot = await setAutopilotRoute(
+        db, prefSystemIds, destInfo.id, ctx, identityCurrent, signal,
+      );
       autopilotSet = autopilot.ok;
       autopilotMode = autopilot.mode;
     }
   }
 
   // 7b. If prefer=thera_shortcut, set autopilot waypoints for the WH route
-  if (effectivePrefer === 'thera_shortcut' && args.set_autopilot !== false && theraShortcut) {
+  if (effectivePrefer === 'thera_shortcut' && args.set_autopilot === true && theraShortcut) {
+    if (!identityCurrent()) throw new Error('Turn identity changed before route mutation');
     const shortcutAutopilot = await setShortcutAutopilot(
       db, originInfo.id, theraShortcut.entry_system_id, theraShortcut.exit_system_id, destInfo.id, ctx,
+      identityCurrent,
+      signal,
     );
     autopilotSet = shortcutAutopilot.ok;
     autopilotMode = shortcutAutopilot.mode;
@@ -419,6 +437,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
         console.warn('[plan_route] skipping route monitor: no chat lane in context');
       } else {
         try {
+          if (!identityCurrent()) throw new Error('Turn identity changed before route monitor mutation');
           const handoffAccepted = await startRouteMonitor(
             db,
             chatId,
@@ -438,6 +457,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
           if (!handoffAccepted) {
             captureBarrierFailure = new Error('route monitor did not accept the captured feed handoff');
           } else {
+            monitorStarted = true;
             formattedSummary += ctx.notificationCapability === 'web'
               ? '\n\n🛰️ Онлайн-скан: включён — живой статус доступен в разделе «Онлайн-скан».'
               : '\n\n🛰️ Онлайн-скан: включён — маршрут отслеживается в фоне.';
@@ -457,6 +477,7 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
       routes,
       autopilot_set: autopilotSet,
       autopilot_mode: autopilotMode,
+      monitor_started: monitorStarted,
       error: null,
       formatted_summary: formattedSummary,
     };
@@ -777,6 +798,8 @@ async function setAutopilotRoute(
   systemIds: number[],
   destinationId: number,
   ctx: UserContext,
+  identityCurrent: () => boolean,
+  signal?: AbortSignal,
 ): Promise<{ ok: boolean; mode: AutopilotMode }> {
   const waypoints = systemIds.slice(1);
   if (waypoints.length === 0) {
@@ -784,7 +807,7 @@ async function setAutopilotRoute(
   }
   // Ctrl-C mid-tool (route/danger fetches above take seconds): an abandoned
   // turn must not change the player's in-game autopilot.
-  if (isTurnAborted()) return { ok: false, mode: 'none' };
+  if (isTurnAborted() || !identityCurrent()) return { ok: false, mode: 'none' };
 
   await getEveCapabilities(db, 'route_autopilot', ctx);
 
@@ -792,12 +815,12 @@ async function setAutopilotRoute(
     for (let index = 0; index < waypoints.length; index += 1) {
       // Abort can land between waypoint writes — stop mid-route rather than
       // keep changing the player's autopilot after Ctrl-C.
-      if (isTurnAborted()) return { ok: false, mode: 'none' };
+      if (isTurnAborted() || !identityCurrent()) return { ok: false, mode: 'none' };
       const result = await callEsiOperation(db, 'post_ui_autopilot_waypoint', {
         destination_id: waypoints[index],
         clear_other_waypoints: index === 0,
         add_to_beginning: false,
-      }, ctx);
+      }, ctx, { identityCurrent, signal });
       if (!result.ok) {
         throw new Error(result.error);
       }
@@ -807,12 +830,12 @@ async function setAutopilotRoute(
     console.log('[plan_route] exact autopilot ESI failed: %s', err instanceof Error ? err.message : String(err));
   }
 
-  if (isTurnAborted()) return { ok: false, mode: 'none' };
+  if (isTurnAborted() || !identityCurrent()) return { ok: false, mode: 'none' };
   const fallback = await callEsiOperation(db, 'post_ui_autopilot_waypoint', {
     destination_id: destinationId,
     clear_other_waypoints: true,
     add_to_beginning: false,
-  }, ctx);
+  }, ctx, { identityCurrent, signal });
   if (fallback.ok) {
     return { ok: true, mode: 'destination_only' };
   }
@@ -834,20 +857,22 @@ async function setShortcutAutopilot(
   exitSystemId: number,
   destinationId: number,
   ctx: UserContext,
+  identityCurrent: () => boolean,
+  signal?: AbortSignal,
 ): Promise<{ ok: boolean; mode: AutopilotMode }> {
   // Same abort guard as setAutopilotRoute: no in-game writes after Ctrl-C.
-  if (isTurnAborted()) return { ok: false, mode: 'none' };
+  if (isTurnAborted() || !identityCurrent()) return { ok: false, mode: 'none' };
   await getEveCapabilities(db, 'route_autopilot', ctx);
 
   const waypoints = [entrySystemId, exitSystemId, destinationId];
   try {
     for (let i = 0; i < waypoints.length; i++) {
-      if (isTurnAborted()) return { ok: false, mode: 'none' };
+      if (isTurnAborted() || !identityCurrent()) return { ok: false, mode: 'none' };
       const result = await callEsiOperation(db, 'post_ui_autopilot_waypoint', {
         destination_id: waypoints[i],
         clear_other_waypoints: i === 0,
         add_to_beginning: false,
-      }, ctx);
+      }, ctx, { identityCurrent, signal });
       if (!result.ok) {
         throw new Error(result.error);
       }

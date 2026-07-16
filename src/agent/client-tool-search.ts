@@ -4,10 +4,14 @@ import type {
   NativeTool,
   NativeToolSearchOutputItem,
 } from './native-responses.js';
+import type { ToolRegistryLoadDelta } from './tool-registry.js';
 
 const MAX_SEARCH_RESULTS = 8;
 const MAX_SEARCH_QUERY_CHARS = 256;
 const MAX_SEARCH_OUTPUT_CHARS = 48_000;
+export const MAX_CLIENT_DISCOVERED_FUNCTIONS = 80;
+export const MAX_CLIENT_DISCOVERED_NAMESPACES = 32;
+export const MAX_CLIENT_DISCOVERED_SCHEMA_BYTES = 96_000;
 const CLIENT_EAGER_FUNCTIONS = new Set([
   'web_search',
   'update_plan',
@@ -16,6 +20,7 @@ const CLIENT_EAGER_FUNCTIONS = new Set([
   'count_universe_objects',
   'sde_sql',
   'local_parallel_batch',
+  'delegate_read_subagents',
 ]);
 
 type SearchEntry = {
@@ -26,6 +31,21 @@ type SearchEntry = {
 };
 
 export type ClientToolSearchIndex = ReadonlyArray<SearchEntry>;
+
+export type ClientDiscoveryUsage = {
+  functions: number;
+  namespaces: number;
+  bytes: number;
+};
+
+export function canApplyClientDiscoveryDelta(
+  usage: ClientDiscoveryUsage,
+  delta: Pick<ToolRegistryLoadDelta, 'functions' | 'namespaces' | 'bytes'>,
+): boolean {
+  return usage.functions + delta.functions <= MAX_CLIENT_DISCOVERED_FUNCTIONS
+    && usage.namespaces + delta.namespaces <= MAX_CLIENT_DISCOVERED_NAMESPACES
+    && usage.bytes + delta.bytes <= MAX_CLIENT_DISCOVERED_SCHEMA_BYTES;
+}
 
 export function prepareClientToolSearch(tools: NativeTool[]): {
   requestTools: NativeTool[];
@@ -58,7 +78,7 @@ export function prepareClientToolSearch(tools: NativeTool[]): {
   requestTools.unshift({
     type: 'tool_search',
     execution: 'client',
-    description: 'Search locally for deferred EVE tools. Use a short English capability query. Returned trusted tool definitions become available on the next turn.',
+    description: 'Search locally for deferred EVE tools. Use one short English capability query containing every currently-ready need; request up to 8 results for multi-part work. This is capability discovery, not catalog browsing: after a search, execute every relevant returned tool (independent reads together) before searching again. Already loaded schemas are omitted.',
     parameters: {
       type: 'object',
       properties: {
@@ -80,9 +100,12 @@ export function searchClientTools(
   index: ClientToolSearchIndex,
   callId: string,
   rawArguments: unknown,
+  options: { excludeNames?: ReadonlySet<string> } = {},
 ): NativeToolSearchOutputItem {
-  const parsed = validateArguments(rawArguments);
-  const tools = parsed ? search(index, parsed.query, parsed.limit) : [];
+  const parsed = validateClientToolSearchArguments(rawArguments);
+  const tools = parsed
+    ? search(index, parsed.query, parsed.limit, options.excludeNames ?? new Set())
+    : [];
   return {
     type: 'tool_search_output',
     call_id: callId,
@@ -92,7 +115,9 @@ export function searchClientTools(
   };
 }
 
-function validateArguments(value: unknown): { query: string; limit: number } | null {
+export function validateClientToolSearchArguments(
+  value: unknown,
+): { query: string; limit: number } | null {
   let parsed = value;
   if (typeof value === 'string') {
     try {
@@ -114,10 +139,16 @@ function validateArguments(value: unknown): { query: string; limit: number } | n
   return { query, limit: Math.min(limit, MAX_SEARCH_RESULTS) };
 }
 
-function search(index: ClientToolSearchIndex, query: string, limit: number): NativeTool[] {
+function search(
+  index: ClientToolSearchIndex,
+  query: string,
+  limit: number,
+  excludeNames: ReadonlySet<string>,
+): NativeTool[] {
   const normalizedQuery = normalize(query);
   const queryTokens = new Set(tokenize(normalizedQuery));
   const matches = index
+    .filter((entry) => !excludeNames.has(entry.tool.name))
     .map((entry) => ({ entry, score: score(entry, normalizedQuery, queryTokens) }))
     .filter((match) => match.score > 0)
     .sort((left, right) => right.score - left.score || left.entry.path.localeCompare(right.entry.path))

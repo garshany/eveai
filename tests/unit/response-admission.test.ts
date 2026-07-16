@@ -44,4 +44,26 @@ describe('response admission', () => {
     release();
     expect(admission.snapshot()).toEqual({ active: 0, queued: 0 });
   });
+
+  it('removes an aborted queued waiter and immediately restores capacity', async () => {
+    const admission = new ResponseAdmissionController({
+      maxConcurrent: 1,
+      maxQueued: 2,
+      queueTimeoutMs: 1_000,
+      label: 'Subagent response',
+    });
+    const release = await admission.acquire();
+    const controller = new AbortController();
+    const queued = admission.acquire(controller.signal);
+    expect(admission.snapshot()).toEqual({ active: 1, queued: 1 });
+    controller.abort();
+    await expect(queued).rejects.toThrow('admission aborted');
+    expect(admission.snapshot()).toEqual({ active: 1, queued: 0 });
+    release();
+    expect(admission.snapshot()).toEqual({ active: 0, queued: 0 });
+
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort();
+    await expect(admission.acquire(alreadyAborted.signal)).rejects.toThrow('admission aborted');
+  });
 });

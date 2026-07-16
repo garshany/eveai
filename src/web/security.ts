@@ -4,6 +4,7 @@ const EVE_SSO_ORIGIN = 'https://login.eveonline.com';
 
 export interface SecurityHeadersOptions {
   baseUrl: string;
+  turnstileEnabled?: boolean;
 }
 
 export function registerSecurityHeaders(app: FastifyInstance, options: SecurityHeadersOptions): void {
@@ -35,7 +36,11 @@ export function buildSecurityHeaders(
   }
 
   const headers: Record<string, string> = {
-    'Content-Security-Policy': buildContentSecurityPolicy(formActionSources, connectSources),
+    'Content-Security-Policy': buildContentSecurityPolicy(
+      formActionSources,
+      connectSources,
+      options.turnstileEnabled === true,
+    ),
     'Permissions-Policy': [
       'accelerometer=()',
       'camera=()',
@@ -58,18 +63,23 @@ export function buildSecurityHeaders(
   return headers;
 }
 
-export function buildContentSecurityPolicy(formActionSources: string[], connectSources: string[]): string {
+export function buildContentSecurityPolicy(
+  formActionSources: string[],
+  connectSources: string[],
+  turnstileEnabled = false,
+): string {
+  const turnstileOrigin = 'https://challenges.cloudflare.com';
   return [
     "default-src 'self'",
     "base-uri 'none'",
     `form-action ${formActionSources.join(' ')}`,
     "frame-ancestors 'none'",
     "object-src 'none'",
-    "script-src 'self'",
+    `script-src 'self'${turnstileEnabled ? ` ${turnstileOrigin}` : ''}`,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
-    `connect-src ${connectSources.join(' ')}`,
-    "frame-src 'none'",
+    `connect-src ${connectSources.join(' ')}${turnstileEnabled ? ` ${turnstileOrigin}` : ''}`,
+    turnstileEnabled ? `frame-src ${turnstileOrigin}` : "frame-src 'none'",
     "font-src 'self'",
     "manifest-src 'self'",
     "media-src 'none'",

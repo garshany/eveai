@@ -9,7 +9,11 @@ import { config } from '../config.js';
 import { handleAgentMessage } from '../agent/executor.js';
 import { finalizeThreadMessage } from '../agent/finalizer.js';
 import { getLinkedCharacter } from '../eve/sso.js';
-import { readUserProfile, refreshUserProfile } from '../eve/user-profile.js';
+import {
+  isUserProfileStale,
+  readUserProfile,
+  refreshUserProfile,
+} from '../eve/user-profile.js';
 import { stopRouteMonitor } from '../eve-board/monitor.js';
 import type { UserContext } from '../auth/user-resolver.js';
 
@@ -222,9 +226,12 @@ export async function runAgentTurn(
   threadId: string,
   ctx: UserContext,
   text: string,
+  options: { userMessagePersisted?: boolean; backgroundProfileRefresh?: boolean } = {},
 ): Promise<string> {
-  db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'user', text);
-  void maybeRefreshUserProfile(db, ctx);
+  if (!options.userMessagePersisted) {
+    db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'user', text);
+  }
+  if (options.backgroundProfileRefresh !== false) void maybeRefreshUserProfile(db, ctx);
   const agentResult = await handleAgentMessage(db, threadId, ctx, text);
   return finalizeThreadMessage(db, threadId, agentResult.text);
 }
@@ -233,22 +240,7 @@ export async function maybeRefreshUserProfile(db: Db, ctx: UserContext): Promise
   const refreshSeconds = config.userProfile.refreshSeconds;
   if (!refreshSeconds || refreshSeconds <= 0) return;
   const profile = await readUserProfile(db, ctx);
-  if (!profile) {
-    void refreshUserProfile(db, ctx).catch(() => {});
-    return;
-  }
-  const match = /^Updated:\s*(.+)$/m.exec(profile);
-  if (!match) {
-    void refreshUserProfile(db, ctx).catch(() => {});
-    return;
-  }
-  const updatedAt = Date.parse(match[1]);
-  if (!Number.isFinite(updatedAt)) {
-    void refreshUserProfile(db, ctx).catch(() => {});
-    return;
-  }
-  const ageSeconds = (Date.now() - updatedAt) / 1000;
-  if (ageSeconds >= refreshSeconds) {
+  if (isUserProfileStale(profile, refreshSeconds)) {
     void refreshUserProfile(db, ctx).catch(() => {});
   }
 }
@@ -371,6 +363,10 @@ export function normalizeUiCommandError(error: string | null): string {
 
 export function normalizeAgentRuntimeError(err: unknown): string {
   const combined = collectErrorText(err).toLowerCase();
+
+  if (combined.includes('agent turn deadline exceeded')) {
+    return 'Запрос превысил безопасный лимит времени. Разбей задачу на несколько этапов и повтори.';
+  }
 
   if (
     combined.includes('unsupported state or unable to authenticate data')

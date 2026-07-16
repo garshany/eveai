@@ -1,4 +1,5 @@
 import type { Db } from '../db/sqlite.js';
+import { getActivitySink } from './activity.js';
 import { executeUniverseObjectCount } from './tools.js';
 import { createLogger } from '../observability/logger.js';
 
@@ -44,6 +45,15 @@ export function deriveLiveContextNeeds(goal: string): LiveContextNeeds {
 }
 
 export function isSimpleStaticAggregateCountGoal(goal: string): boolean {
+  const normalized = goal.trim().toLowerCase();
+  if (!/^(?:пожалуйста[,\s]+|please[,\s]+)?(?:сколько|посчитай|подсчитай|количеств[оа]|how many|count|number of)(?:\s|$)/u.test(normalized)) {
+    return false;
+  }
+  if (/\b(?:сравни|compare|маршрут|route|автопилот|autopilot|скан|scan)\b/u.test(normalized)) {
+    return false;
+  }
+  const targetFragment = normalized.split(/\s+(?:в|in)\s+/u).slice(1).join(' ');
+  if (/\s(?:и|and)\s/u.test(targetFragment)) return false;
   return detectStaticAggregateObjectKind(goal) !== null;
 }
 
@@ -128,6 +138,7 @@ export function parseStaticAggregateIntent(
   goal: string,
   locationContext: StaticAggregateLocationContext | null,
 ): StaticAggregateIntent | null {
+  if (!isSimpleStaticAggregateCountGoal(goal)) return null;
   const objectKind = detectStaticAggregateObjectKind(goal);
   if (!objectKind) return null;
 
@@ -205,6 +216,7 @@ export function tryBuildDeterministicCountAnswer(
   results: unknown[],
 ): string | null {
   if (!isSimpleStaticAggregateCountGoal(goal)) return null;
+  if (toolCalls.length !== 1) return null;
   if (toolCalls.length !== results.length) return null;
 
   for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
@@ -310,7 +322,10 @@ export function formatCountNoun(count: number, [one, few, many]: [string, string
 }
 
 function storeAssistantMessage(db: Db, threadId: string, content: string): void {
-  db.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'assistant', content);
+  db.prepare(`
+    INSERT INTO messages (thread_id, role, content, web_request_id)
+    VALUES (?, 'assistant', ?, ?)
+  `).run(threadId, content, getActivitySink()?.requestId ?? null);
 }
 
 function saveLastResponseId(db: Db, threadId: string, responseId: string | null): void {

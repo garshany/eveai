@@ -77,8 +77,9 @@ to users, stored in browser storage, included in HTML, or returned by an API.
   server-generated scope set; the callback rejects unacknowledged requests and
   any token that contains a scope outside that set.
 
-`WEB_TRUST_PROXY=true` is valid only behind a reverse proxy controlled by the
-operator. Otherwise forwarded client-address headers must remain untrusted.
+`WEB_TRUSTED_PROXY_CIDRS` is an explicit allowlist of proxy socket peers.
+Forwarded client-address headers from any other peer remain untrusted. A public
+deployment must also prevent direct origin access at the network boundary.
 
 ## Provider Boundary
 

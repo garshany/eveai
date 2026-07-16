@@ -168,7 +168,7 @@ export function linkCharacterToChat(db: Db, ctx: UserContext, characterId: numbe
   }
 
   if (ctx.userId) {
-    db.prepare("UPDATE users SET active_character_id = ?, updated_at = datetime('now') WHERE user_id = ?")
+    db.prepare("UPDATE users SET active_character_id = ?, active_character_version = active_character_version + 1, updated_at = datetime('now') WHERE user_id = ?")
       .run(characterId, ctx.userId);
     // Also set user_id on eve_accounts
     db.prepare('UPDATE eve_accounts SET user_id = ? WHERE character_id = ? AND user_id IS NULL')
@@ -197,7 +197,7 @@ export function setActiveCharacter(db: Db, ctx: UserContext, characterId: number
       .run(characterId, ctx.chatId);
   }
   if (ctx.userId) {
-    db.prepare("UPDATE users SET active_character_id = ?, updated_at = datetime('now') WHERE user_id = ?")
+    db.prepare("UPDATE users SET active_character_id = ?, active_character_version = active_character_version + 1, updated_at = datetime('now') WHERE user_id = ?")
       .run(characterId, ctx.userId);
   }
   return true;
@@ -231,7 +231,7 @@ export async function unlinkCharacter(db: Db, ctx: UserContext, characterId: num
         db.prepare('UPDATE telegram_sessions SET active_character_id = NULL WHERE chat_id = ?').run(ctx.chatId);
       }
       if (ctx.userId) {
-        db.prepare("UPDATE users SET active_character_id = NULL, updated_at = datetime('now') WHERE user_id = ?").run(ctx.userId);
+        db.prepare("UPDATE users SET active_character_id = NULL, active_character_version = active_character_version + 1, updated_at = datetime('now') WHERE user_id = ?").run(ctx.userId);
       }
     }
 
@@ -262,13 +262,13 @@ function resolveActiveCharacterId(db: Db, ctx: UserContext): number | null {
       if (ownsActiveLink || ownsActiveAccount) {
         return userRow.active_character_id;
       }
-      db.prepare("UPDATE users SET active_character_id = NULL, updated_at = datetime('now') WHERE user_id = ?").run(ctx.userId);
+      db.prepare("UPDATE users SET active_character_id = NULL, active_character_version = active_character_version + 1, updated_at = datetime('now') WHERE user_id = ?").run(ctx.userId);
     }
     const linked = db.prepare(
       'SELECT character_id FROM eve_character_links WHERE user_id = ? ORDER BY linked_at DESC LIMIT 1',
     ).get(ctx.userId) as { character_id: number } | undefined;
     if (linked?.character_id) {
-      db.prepare("UPDATE users SET active_character_id = ?, updated_at = datetime('now') WHERE user_id = ?")
+      db.prepare("UPDATE users SET active_character_id = ?, active_character_version = active_character_version + 1, updated_at = datetime('now') WHERE user_id = ?")
         .run(linked.character_id, ctx.userId);
       return linked.character_id;
     }

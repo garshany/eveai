@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
@@ -17,8 +17,9 @@ export const WEB_CSRF_COOKIE = 'eveai_csrf';
 const WEB_CHAT_ID_START = -2_000_000_000;
 const SESSION_PURPOSE = 'web_session';
 const CSRF_PURPOSE = 'web_csrf';
-const MAX_SESSION_GUARD_KEYS = 10_000;
-const sessionCreationAttempts = new Map<string, number[]>();
+const SESSION_CLEANUP_INTERVAL_MS = 60_000;
+let lastSessionCleanupAt = 0;
+let sessionCleanupInFlight: Promise<void> | null = null;
 
 export interface WebSession {
   userId: number;
@@ -37,35 +38,32 @@ export interface WebSessionCreationAllowance {
 }
 
 export function evaluateWebSessionCreationAllowance(
-  ip: string,
+  db: Db,
+  ipKey: string,
   now = Date.now(),
 ): WebSessionCreationAllowance {
   const windowMs = config.web.sessionCreationWindowSeconds * 1000;
-  const recent = (sessionCreationAttempts.get(ip) ?? [])
-    .filter((startedAt) => now - startedAt < windowMs);
-  if (recent.length >= config.web.maxSessionCreationsPerWindow) {
-    sessionCreationAttempts.set(ip, recent);
-    const oldest = recent[0] ?? now;
+  const rows = db.prepare(`
+    SELECT created_at_ms FROM web_admission_events
+    WHERE event_kind = 'session' AND ip_key = ? AND created_at_ms >= ?
+    ORDER BY created_at_ms ASC
+  `).all(ipKey, now - windowMs) as Array<{ created_at_ms: number }>;
+  if (rows.length >= config.web.maxSessionCreationsPerWindow) {
+    const oldest = rows[0]?.created_at_ms ?? now;
     return {
       ok: false,
       retryAfterSeconds: Math.max(1, Math.ceil((windowMs - (now - oldest)) / 1000)),
     };
   }
-
-  recent.push(now);
-  sessionCreationAttempts.set(ip, recent);
-  if (sessionCreationAttempts.size > MAX_SESSION_GUARD_KEYS) {
-    const oldestKey = sessionCreationAttempts.keys().next().value as string | undefined;
-    if (oldestKey) sessionCreationAttempts.delete(oldestKey);
-  }
   return { ok: true, retryAfterSeconds: 0 };
 }
 
 export function resetWebSessionCreationGuardForTests(): void {
-  sessionCreationAttempts.clear();
+  lastSessionCleanupAt = 0;
+  sessionCleanupInFlight = null;
 }
 
-export function createWebSession(db: Db): CreatedWebSession {
+export function createWebSession(db: Db, ipKey = buildWebClientIpKey('unknown')): CreatedWebSession {
   const sessionToken = randomBytes(32).toString('base64url');
   const csrfToken = randomBytes(24).toString('base64url');
 
@@ -96,6 +94,10 @@ export function createWebSession(db: Db): CreatedWebSession {
       chatId,
       config.web.sessionTtlHours,
     );
+    db.prepare(`
+      INSERT INTO web_admission_events (event_id, event_kind, user_id, ip_key, cost_units, created_at_ms)
+      VALUES (?, 'session', ?, ?, 0, ?)
+    `).run(randomUUID(), userId, ipKey, Date.now());
 
     return { userId, chatId, csrfHash, sessionToken, csrfToken };
   });
@@ -205,13 +207,33 @@ export function verifyWebSessionCreation(request: FastifyRequest): boolean {
   return Boolean(origin && configuredOrigin && origin === configuredOrigin);
 }
 
-export async function cleanExpiredWebSessions(db: Db): Promise<void> {
+export async function cleanExpiredWebSessions(
+  db: Db,
+  options: { force?: boolean } = {},
+): Promise<void> {
+  const now = Date.now();
+  if (sessionCleanupInFlight) return sessionCleanupInFlight;
+  if (!options.force && now - lastSessionCleanupAt < SESSION_CLEANUP_INTERVAL_MS) return;
+  lastSessionCleanupAt = now;
+  sessionCleanupInFlight = runExpiredWebSessionCleanup(db).finally(() => {
+    sessionCleanupInFlight = null;
+  });
+  return sessionCleanupInFlight;
+}
+
+async function runExpiredWebSessionCleanup(db: Db): Promise<void> {
   const expired = db.prepare(`
     SELECT user_id, chat_id
-    FROM web_sessions
+    FROM web_sessions session
     WHERE expires_at <= datetime('now')
+      AND NOT EXISTS (
+        SELECT 1 FROM web_agent_requests request
+        WHERE request.user_id = session.user_id
+          AND request.chat_id = session.chat_id
+          AND request.status IN ('queued', 'running')
+      )
     ORDER BY expires_at ASC
-    LIMIT 100
+    LIMIT 20
   `).all() as Array<{ user_id: number; chat_id: number }>;
   for (const row of expired) await purgeBrowserLane(db, row.chat_id);
 }
@@ -236,6 +258,7 @@ async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
           SELECT thread_id FROM agent_threads WHERE chat_id = ? AND user_id = ?
         `).all(chatId, userId) as Array<{ thread_id: string }>;
         for (const thread of threads) {
+          db.prepare('DELETE FROM web_agent_requests WHERE thread_id = ?').run(thread.thread_id);
           db.prepare('DELETE FROM thread_summaries WHERE thread_id = ?').run(thread.thread_id);
           db.prepare('DELETE FROM messages WHERE thread_id = ?').run(thread.thread_id);
           db.prepare('DELETE FROM thread_artifacts WHERE thread_id = ?').run(thread.thread_id);
@@ -282,6 +305,12 @@ async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
   });
 }
 
+export function buildWebClientIpKey(ip: string): string {
+  const normalized = normalizeClientIp(ip);
+  const secret = config.auth.secretKey.trim() || 'eveai-local-ip-key';
+  return `ip1:${createHmac('sha256', secret).update(normalized).digest('base64url')}`;
+}
+
 async function withCharacterAuthorizationLocks<T>(
   characterIds: number[],
   action: () => Promise<T>,
@@ -300,6 +329,15 @@ function normalizeOrigin(value: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+function normalizeClientIp(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed.startsWith('::ffff:') && /^::ffff:\d{1,3}(?:\.\d{1,3}){3}$/.test(trimmed)) {
+    return trimmed.slice(7);
+  }
+  if (/^[0-9a-f:.]{2,64}$/.test(trimmed)) return trimmed;
+  return 'invalid';
 }
 
 function webCookiesAreSecure(): boolean {

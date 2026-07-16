@@ -221,6 +221,35 @@ describe('parseSse + streamed outputs', () => {
   });
 });
 
+describe('Responses cancellation', () => {
+  it('propagates an external abort signal into the HTTP transport', async () => {
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const signal = init?.signal;
+      return await new Promise<Response>((_resolve, reject) => {
+        const abort = () => reject(new DOMException('aborted', 'AbortError'));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener('abort', abort, { once: true });
+      });
+    }));
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const controller = new AbortController();
+    const pending = createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(pending).rejects.toThrow('Responses request aborted');
+  });
+});
+
 describe('createNativeResponse request body', () => {
   it('never exposes a non-2xx provider body through the thrown error or logs', async () => {
     const sentinel = 'provider-private-payload-must-not-escape';

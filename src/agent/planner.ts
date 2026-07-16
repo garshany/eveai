@@ -16,6 +16,17 @@ export interface Plan {
   steps: PlanStep[];
 }
 
+export type PlanFailureCategory =
+  | 'provider_failure'
+  | 'tool_discovery_protocol'
+  | 'tool_discovery_budget'
+  | 'tool_state_failure'
+  | 'iteration_budget'
+  | 'deadline_exceeded'
+  | 'identity_changed'
+  | 'cancelled'
+  | 'orchestration_failure';
+
 /**
  * Tool handler for update_plan.
  * Creates or replaces the plan for a given request.
@@ -92,6 +103,84 @@ export function getPlan(db: Db, requestId: string): Plan | null {
       notes: r.notes,
     })),
   };
+}
+
+/**
+ * Atomically close a plan when its owning root turn can no longer continue.
+ * Completed work is preserved, the active step is failed, and work that never
+ * started is blocked. The fixed category is safe to persist and show in local
+ * diagnostics; raw provider/private payloads must never be passed here.
+ */
+export function finalizePlanFailure(
+  db: Db,
+  requestId: string,
+  category: PlanFailureCategory,
+): Plan | null {
+  const now = new Date().toISOString();
+  const note = `Turn stopped: ${category}`;
+  const cancelled = category === 'cancelled' || category === 'identity_changed';
+  const runningStatus = cancelled ? 'blocked' : 'failed';
+  const planStatus = cancelled ? 'cancelled' : 'failed';
+  const finalize = db.transaction(() => {
+    const plan = db.prepare('SELECT request_id FROM plans WHERE request_id = ?').get(requestId);
+    if (!plan) return false;
+    db.prepare(`
+      UPDATE plan_steps
+      SET status = ?,
+          notes = CASE WHEN notes = '' THEN ? ELSE notes || ' | ' || ? END
+      WHERE request_id = ? AND status = 'running'
+    `).run(runningStatus, note, note, requestId);
+    db.prepare(`
+      UPDATE plan_steps
+      SET status = 'blocked',
+          notes = CASE WHEN notes = '' THEN ? ELSE notes || ' | ' || ? END
+      WHERE request_id = ? AND status = 'pending'
+    `).run(note, note, requestId);
+    db.prepare(`
+      UPDATE plans SET status = ?, updated_at = ? WHERE request_id = ?
+    `).run(planStatus, now, requestId);
+    return true;
+  });
+  return finalize() ? getPlan(db, requestId) : null;
+}
+
+export function finalizePlanCompletion(db: Db, requestId: string): Plan | null {
+  const now = new Date().toISOString();
+  const note = 'Turn completed before this step was explicitly updated';
+  const finalize = db.transaction(() => {
+    const plan = db.prepare('SELECT request_id FROM plans WHERE request_id = ?').get(requestId);
+    if (!plan) return false;
+    db.prepare(`
+      UPDATE plan_steps SET status = 'done'
+      WHERE request_id = ? AND status = 'running'
+    `).run(requestId);
+    db.prepare(`
+      UPDATE plan_steps
+      SET status = 'blocked',
+          notes = CASE WHEN notes = '' THEN ? ELSE notes || ' | ' || ? END
+      WHERE request_id = ? AND status = 'pending'
+    `).run(note, note, requestId);
+    db.prepare(`
+      UPDATE plans SET status = 'completed', updated_at = ? WHERE request_id = ?
+    `).run(now, requestId);
+    return true;
+  });
+  return finalize() ? getPlan(db, requestId) : null;
+}
+
+/**
+ * Called once during process startup, before any channel accepts work. Every
+ * active plan then belongs to a previous process and cannot still have a live
+ * worker. Unknown side effects are never replayed.
+ */
+export function recoverInterruptedPlans(db: Db): number {
+  const requestIds = db.prepare(`
+    SELECT request_id FROM plans WHERE status = 'active'
+  `).all() as Array<{ request_id: string }>;
+  for (const row of requestIds) {
+    finalizePlanFailure(db, row.request_id, 'orchestration_failure');
+  }
+  return requestIds.length;
 }
 
 export function createRequestId(): string {

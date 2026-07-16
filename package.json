@@ -1,7 +1,7 @@
 {
   "name": "eveonline-ai",
-  "version": "3.3.1",
-  "description": "Self-hosted EVE Online AI assistant for Telegram, Discord, and the terminal, powered by EVE SSO, ESI, local SDE, and the OpenAI Responses API",
+  "version": "4.0.0",
+  "description": "Self-hosted EVE Online AI assistant for Telegram, Discord, and the terminal, powered by EVE SSO, ESI, local SDE, and Responses-compatible model providers",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -49,6 +49,8 @@
     "smoke": "tsx src/smoke.ts",
     "smoke:openai": "tsx scripts/openai-smoke.ts",
     "smoke:eve-tool": "tsx scripts/eve-tool-smoke.ts",
+    "eval:agent": "tsx scripts/agent-orchestration-eval.ts",
+    "eval:web-load": "tsx scripts/web-agent-load.ts",
     "update:check": "tsx src/update/check-cli.ts"
   },
   "dependencies": {

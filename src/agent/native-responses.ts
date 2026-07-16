@@ -188,6 +188,7 @@ export async function createNativeResponse(input: {
    * leave this false so their text never leaks into the CLI answer stream.
    */
   streamToActivity?: boolean;
+  signal?: AbortSignal;
 }): Promise<NativeResponseResult> {
   const baseUrl = normalizeBaseUrl(config.openai.baseUrl);
   const effectiveEffort = toApiReasoningEffort(input.reasoningEffort ?? config.openai.reasoningEffort);
@@ -236,13 +237,13 @@ export async function createNativeResponse(input: {
     baseUrl, bodyJson.length, input.tools.length, input.items.length,
     input.previousResponseId ?? 'none');
   const admissionStartedAt = Date.now();
-  const releaseResponseSlot = await getResponseAdmission().acquire();
+  const releaseResponseSlot = await getResponseAdmission().acquire(input.signal);
   const requestStartedAt = Date.now();
   let events: NativeSseEvent[];
   try {
     events = config.openai.responsesTransport === 'websocket'
-      ? await requestWebSocketEvents(baseUrl, bodyPayload, timeoutMs)
-      : await requestHttpSseEvents(baseUrl, bodyJson, timeoutMs);
+      ? await requestWebSocketEvents(baseUrl, bodyPayload, timeoutMs, input.signal)
+      : await requestHttpSseEvents(baseUrl, bodyJson, timeoutMs, input.signal);
   } finally {
     releaseResponseSlot();
   }
@@ -409,7 +410,9 @@ export function extractClientToolSearchCalls(
   return output
     .filter((item) => item.type === 'tool_search_call' && item.execution === 'client')
     .map((item) => ({
-      callId: typeof item.call_id === 'string' ? item.call_id.trim() : '',
+      callId: typeof item.call_id === 'string' && item.call_id === item.call_id.trim()
+        ? item.call_id
+        : '',
       arguments: item.arguments,
     }))
     .filter((item) => item.callId.length > 0);
@@ -433,8 +436,12 @@ async function requestHttpSseEvents(
   baseUrl: string,
   bodyJson: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<NativeSseEvent[]> {
   const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  signal?.addEventListener('abort', abortFromCaller, { once: true });
+  if (signal?.aborted) controller.abort();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   let rawText: string;
@@ -451,11 +458,13 @@ async function requestHttpSseEvents(
     rawText = await response.text();
   } catch (error) {
     if ((error as Error).name === 'AbortError' || (error as Error).name === 'TimeoutError') {
+      if (signal?.aborted) throw new Error('Responses request aborted');
       throw new Error(`Responses API timed out after ${Math.round(timeoutMs / 1000)}s`);
     }
     throw error;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
 
   if (!response.ok) {
@@ -469,10 +478,15 @@ async function requestWebSocketEvents(
   baseUrl: string,
   body: Record<string, unknown>,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<NativeSseEvent[]> {
   const url = responsesWebSocketUrl(baseUrl);
   const payload = JSON.stringify(buildWebSocketCreatePayload(body));
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('Responses request aborted'));
+      return;
+    }
     const events: NativeSseEvent[] = [];
     let pendingText = '';
     let settled = false;
@@ -485,13 +499,23 @@ async function requestWebSocketEvents(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener('abort', abortFromCaller);
       socket.terminate();
       reject(new Error(`Responses API timed out after ${Math.round(timeoutMs / 1000)}s`));
     }, timeoutMs);
+    const abortFromCaller = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.terminate();
+      reject(new Error('Responses request aborted'));
+    };
+    signal?.addEventListener('abort', abortFromCaller, { once: true });
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener('abort', abortFromCaller);
       if (error) reject(error);
       else resolve(events);
     };

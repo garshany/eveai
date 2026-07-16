@@ -84,8 +84,17 @@ already filtered for the current notification lane and configured integrations.
 The first request carries only always-on tools plus a strict client-search
 descriptor. A valid `tool_search_call` is answered with a linked
 `tool_search_output` using the exact `call_id` and at most eight full trusted
-specifications. Missing, duplicate, mixed, or over-budget search calls fail
-closed. OpenAI retains its hosted tool-search path unchanged.
+specifications. Discovery is bounded by newly exposed canonical work rather
+than a four-call cliff: at most 80 unique functions, 32 namespaces, and 96 KB
+of UTF-8 schema definitions may be added during one root turn. A provider
+response may contain at most four search calls, and the normal 40-iteration
+root ceiling still applies. Already exposed functions are removed before the
+linked output is built, so overlapping searches add only bounded call/output
+metadata instead of repeating full schemas. Registry validation and the three
+work ceilings are checked atomically before any definition is committed.
+Missing, duplicate, mixed, conflicting, malformed, or over-budget search
+responses fail closed with a sanitized diagnostic. OpenAI retains its hosted
+tool-search path unchanged.
 
 CheapVibeCode does not expose hosted Programmatic Tool Calling on the verified
 route. EVE therefore never sends `programmatic_tool_calling` to that provider,
@@ -97,6 +106,45 @@ stable result ordering. Private ESI, raw SQL, web search, writes, UI operations,
 monitors, recursion, dynamic code, `eval`, subprocesses, and result-directed
 follow-up are not representable. Per-tool schemas and size caps still apply;
 raw upstream failures are replaced by fixed local error contracts.
+
+Every root turn also owns an effective tool registry. It starts with exactly
+the function definitions sent in the current request and may grow only from
+canonical definitions returned by the trusted local client-tool-search index.
+All calls are JSON-Schema validated against that registry before policy lookup,
+admission, deduplication, or dispatch. Unloaded names, forged schemas, malformed
+JSON, duplicate call IDs, extra properties, and unsupported schema constructs
+fail closed without tool or network execution.
+
+When `CHEAPVIBE_READ_SUBAGENTS_ENABLED=true`, either provider profile can issue
+one `delegate_read_subagents` call containing two or three independent public
+research jobs. These are application-managed stateless Responses calls through
+the same selected provider adapter, not provider-native agents. Each worker gets
+only its objective and a private effective registry assembled from the exact
+allowlisted subset of the nine public facade tools. It gets no conversation
+history, profile, character identity, private ESI data, tokens, route tools,
+writes, UI actions, or delegation tool. Workers cannot recurse. Results use
+all-settled semantics and return in stable job order so a failed sibling cannot
+erase successful evidence; the root model alone writes the user-facing answer.
+CheapVibeCode enables this path by default; OpenAI keeps it default-off but uses
+the same application coordinator when explicitly enabled. Live verification in
+this change intentionally used CheapVibeCode only.
+
+The coordinator is intentionally narrow: use it for two or three independent,
+bounded public reads whose overlap saves latency. Simple chat, a single read,
+dependent lookups, private data, route mutation, autopilot, monitor control, and
+all other side effects remain in the root loop. One turn permits at most one
+delegated batch, three concurrent workers, six subagent model calls, 24 shared
+root/delegated read leaves, and four iterations per worker. Subagent evidence is
+schema-checked, size-bounded, and treated as untrusted data; instructions found
+inside tool output never gain authority.
+
+The root captures the user, thread/chat lane, active character, granted-scope
+fingerprint, locale, and deadline before preflight. It revalidates that durable
+identity before model stages and tool dispatch. A character switch, unlink, or
+scope change aborts stale work, clears continuation state, and asks the user to
+repeat the request for the newly active character. Provider admission and the
+new subagent path accept cancellation; queued work is removed and active HTTP
+or WebSocket provider work is closed where the transport supports it.
 
 ## Public multi-user load control
 
@@ -125,12 +173,19 @@ The `local_parallel_batch` container deliberately holds no permit while its one
 to four children wait for read permits, avoiding semaphore deadlock. Its leaf
 calls still count against the global read cap.
 
+Batch facades have a second source-level boundary: nested CCP ESI leaves share
+one process-wide pool (`12` active by default). Thus 16 simultaneously admitted
+`batch_market_prices` containers cannot expand into 480 simultaneous upstream
+requests. The container holds no ESI leaf permit while waiting for its children,
+and every acquired leaf permit is released in `finally`.
+
 Defaults are deliberately conservative for one Node.js process and SQLite:
 
 - `OPENAI_MAX_CONCURRENT_RESPONSES=8`
 - `OPENAI_MAX_QUEUED_RESPONSES=32`
 - `OPENAI_RESPONSE_QUEUE_TIMEOUT_MS=15000`
 - `AGENT_MAX_CONCURRENT_READ_TOOLS=16`
+- `AGENT_MAX_CONCURRENT_ESI_LEAVES=12`
 - `AGENT_MAX_QUEUED_TOOLS=64`
 - `AGENT_TOOL_QUEUE_TIMEOUT_MS=15000`
 - `TELEGRAM_MAX_ACTIVE_REQUESTS_GLOBAL=8` (shared chat guard despite the
@@ -139,7 +194,8 @@ Defaults are deliberately conservative for one Node.js process and SQLite:
 Tune these from measured provider latency, open sockets, event-loop delay,
 SQLite busy time, memory, and upstream ESI limits. Do not raise the chat ceiling
 without also considering that one accepted local batch can fan out to four
-bounded public reads. The current single-process runtime lock and SQLite design
+bounded public reads and a market facade can fan out only inside the separate
+ESI-leaf ceiling. The current single-process runtime lock and SQLite design
 mean horizontal multi-instance serving is out of scope until coordination and
 database architecture are changed explicitly.
 
@@ -229,6 +285,8 @@ OPENAI_MODEL=gpt-5.6-sol
 OPENAI_RESPONSE_STATE_MODE=stateless
 OPENAI_STORE_RESPONSES=false
 OPENAI_PROGRAMMATIC_TOOL_CALLING=false
+CHEAPVIBE_READ_SUBAGENTS_ENABLED=true
+CHEAPVIBE_READ_SUBAGENT_CONCURRENCY=2
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
@@ -237,6 +295,7 @@ OPENAI_MAX_CONCURRENT_RESPONSES=8
 OPENAI_MAX_QUEUED_RESPONSES=32
 OPENAI_RESPONSE_QUEUE_TIMEOUT_MS=15000
 AGENT_MAX_CONCURRENT_READ_TOOLS=16
+AGENT_MAX_CONCURRENT_ESI_LEAVES=12
 AGENT_MAX_QUEUED_TOOLS=64
 AGENT_TOOL_QUEUE_TIMEOUT_MS=15000
 OPENAI_RESPONSE_LANGUAGE=Russian
@@ -300,12 +359,13 @@ inputs, work units, family coherence, and serialized outputs again before
 dispatch or external egress. Provider schemas and prompt text are
 interoperability aids, not authorization.
 
-The OpenAI function-input schema sent on the wire intentionally omits
-`uniqueItems` for arrays such as market type IDs, wormhole identifiers, system
-IDs, and dynamic-item attribute IDs because the current Responses API rejects
-that keyword in function parameters. EVE still rejects duplicates strictly in
-application validation before any CCP ESI, EVE-Scout, or EVE-KILL egress; the
-constraint is not weakened or silently normalized.
+The function-input schema sent on the wire intentionally omits `uniqueItems`
+for arrays such as market type IDs, wormhole identifiers, system IDs,
+dynamic-item attribute IDs, and delegated tool hints because current Responses
+implementations reject or stall on that keyword in function parameters. EVE
+still rejects duplicates strictly in application validation before any CCP ESI,
+EVE-Scout, EVE-KILL, or delegated egress; the constraint is not weakened or
+silently normalized.
 
 One program can use only one exact tool name and one bounded comparison shape:
 

@@ -13,15 +13,36 @@ Self-hosted, chat-first AI assistant for EVE Online. Run it through the browser,
 
 The optional same-origin browser app uses the same backend agent and SQLite state. The project does not require Redis, Postgres, queues, workers, or webhooks.
 
-## v3.3.0 public release
+## v4.0.0 public release
 
-v3.3 introduced default-off Programmatic Tool Calling for five bounded
-public-read facades. The current runtime expands that exact allowlist to nine by
-adding compact market-history, system-metric, doctrine, and dynamic-item
-summaries. The application enforces caller linkage, homogeneous programs, work
-budgets, output schemas, and fail-closed exclusions for private ESI, SQL,
-writes, raw backing payloads, web, and every unlisted tool. The v3 self-hosting
-contract remains unchanged.
+v4 turns EVE AI Agent into a durable multi-user agent service while preserving
+the self-hosted single-process and SQLite architecture:
+
+- A root agent builds and maintains a dependency-aware plan, tracks required
+  outcomes, discovers deferred tools, and keeps working until the requested
+  result is completed or explicitly reported unavailable.
+- Independent public research can be delegated to bounded read subagents. They
+  receive only allowlisted public tool schemas and public numeric IDs—never chat
+  history, private ESI data, credentials, or write capabilities.
+- Direct tool calls, parallel public reads, local parallel batches, and optional
+  Programmatic Tool Calling share validation, admission, deadline, cancellation,
+  identity, and output-size boundaries.
+- The browser chat now uses a durable asynchronous SQLite queue with idempotent
+  submission, authenticated SSE plus polling recovery, explicit cancellation,
+  per-user lane serialization, and bounded global concurrency for public traffic.
+- Browser users can keep several EVE characters attached to one account, choose
+  the active character, and grant only the ESI scopes they want. Consent is
+  versioned and presented in Russian and English.
+- OpenAI remains the default provider path. The fixed CheapVibeCode Codex
+  WebSocket transport supports the same application-owned local tools and
+  defaults to the bounded public read-subagent path.
+- Public deployment controls now include Turnstile verification, trusted-proxy
+  CIDRs, HTTPS/hostname validation, request and compute-unit limits, durable
+  restart recovery, queue health, and sanitized terminal errors.
+
+The release evaluation covers complex multi-stage planning, tool discovery,
+parallel research, private/public data separation, cancellation, identity
+changes, terminal completeness, and a 100-user coordinator load scenario.
 
 For a public SSO callback, use HTTPS, set the callback URL exactly in the EVE Developer Portal, generate a strong `AUTH_SECRET_KEY`, give ESI a reachable operator contact, and keep `.env` plus `data/` on the host only. The detailed production checklist is in [docs/deployment.md](./docs/deployment.md).
 
@@ -29,6 +50,8 @@ For a public SSO callback, use HTTPS, set the callback URL exactly in the EVE De
 
 - Natural-language Telegram and Discord assistant for EVE Online questions and workflows.
 - Same-origin browser chat with anonymous sessions, conversation history, optional EVE SSO, and the same guarded agent/tool loop.
+- Durable multi-user browser execution with idempotent `202` acceptance, SSE/poll recovery, cancellation, per-user lanes, and bounded shared capacity.
+- Dependency-aware root-agent planning, effective tool discovery, goal-ledger completion checks, parallel public reads, and sandboxed read subagents.
 - EVE SSO linking for private character data, with scope-aware capability gating.
 - Local SDE SQLite lookups for static game data such as systems, items, dogma, blueprints, and routes.
 - Live ESI access for character, corporation, market, location, mail, skills, industry, assets, and related data when scopes are granted.
@@ -43,6 +66,11 @@ Telegram private chat ──> grammY long polling bot ─┐
 Discord DM ───────────────> discord.js gateway bot ├─> shared agent runtime
 Browser /app ─────────────> Fastify session API ───┘        │
                                                             v
+                                      durable request coordinator + root agent
+                                                             │
+                           plan / goal ledger / tool registry / read subagents
+                                                             │
+                                                             v
                                     OpenAI or CheapVibeCode Responses transport
                                                              │
                                                              v
@@ -117,8 +145,8 @@ AUTH_SECRET_KEY=replace-with-random-secret
 EVE_CALLBACK_URL=http://localhost:3000/auth/eve/callback
 DEFAULT_MARKET_REGION_ID=10000002
 DEFAULT_MARKET_REGION_NAME="The Forge"
-ESI_USER_AGENT=EVEAI/3.3 (+https://github.com/your-org/eveai; contact=you@example.com)
-EVE_KILL_USER_AGENT=EVEAI/3.3 (+https://github.com/your-org/eveai; contact=you@example.com)
+ESI_USER_AGENT=EVEAI/4.0 (+https://github.com/your-org/eveai; contact=you@example.com)
+EVE_KILL_USER_AGENT=EVEAI/4.0 (+https://github.com/your-org/eveai; contact=you@example.com)
 ```
 
 Generate `AUTH_SECRET_KEY` with:
@@ -183,7 +211,7 @@ npm run cli
 ```
 
 ```text
-┌─ EVE AI Agent v3.3.0 · CLI ────────────────────────┐
+┌─ EVE AI Agent v4.0.0 · CLI ────────────────────────┐
 │ Talk to the agent in your terminal. Commands:      │
 │   /login   link an EVE character (opens SSO)       │
 │   /whoami  show the active character               │
@@ -237,6 +265,8 @@ npm test               # vitest
 npm run smoke          # env, model endpoint, app health checks
 npm run smoke:openai   # authenticated provider-aware Responses probe
 npm run smoke:eve-tool # authenticated model + EVE SDE tool probe
+npm run eval:agent     # deterministic multi-stage orchestration evaluation
+npm run eval:web-load  # 100-user durable queue/isolation load harness
 npm run update:check   # read-only latest stable release check
 npm run db:migrate     # run SQLite migrations
 npm run setup          # download and load SDE data

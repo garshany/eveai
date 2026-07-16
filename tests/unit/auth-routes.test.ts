@@ -203,6 +203,29 @@ describe('auth routes', () => {
     await app.close();
   });
 
+  it('never reads or logs a failed EVE token endpoint body', async () => {
+    const app = Fastify();
+    registerAuthRoutes(app, db);
+    db.prepare("INSERT INTO users (user_id, display_name) VALUES (1, 'pilot')").run();
+    const state = createAuthRequestToken(db, 'eve_sso', 1, { ttlSeconds: 600 });
+    consentRequest(state, []);
+    const text = vi.fn(async () => 'access_token=super-secret&refresh_token=also-secret');
+    fetchMock.mockResolvedValue({ ok: false, status: 401, text });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/auth/eve/callback?code=authorization-secret&state=${encodeURIComponent(state)}`,
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(text).not.toHaveBeenCalled();
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('super-secret');
+    expect(response.body).not.toContain('super-secret');
+    errorSpy.mockRestore();
+    await app.close();
+  });
+
   it('GET /auth/eve/callback rejects legacy telegram_sessions oauth_state fallback', async () => {
     const app = Fastify();
     registerAuthRoutes(app, db);

@@ -1,4 +1,5 @@
 import { createLogger, printStartupBanner, type BannerRow } from './observability/logger.js';
+import { validatePublicWebProductionConfig } from './web/production-config.js';
 
 const log = createLogger('app');
 
@@ -29,6 +30,24 @@ async function main() {
       process.exit(1);
     }
     log.warn('AUTH_SECRET_KEY не задан — EVE-токены шифруются встроенным dev-ключом. Для продакшена: openssl rand -base64 32');
+  }
+
+  if (Boolean(config.web.turnstileSiteKey) !== Boolean(config.web.turnstileSecretKey)) {
+    log.error('TURNSTILE_SITE_KEY и TURNSTILE_SECRET_KEY должны быть заданы вместе.');
+    process.exit(1);
+  }
+
+  const publicWebErrors = validatePublicWebProductionConfig({
+    nodeEnv: process.env.NODE_ENV,
+    chatEnabled: config.web.chatEnabled,
+    baseUrl: config.web.baseUrl,
+    trustedProxyCidrs: config.web.trustedProxyCidrs,
+    turnstileSecretKey: config.web.turnstileSecretKey,
+    turnstileHostname: config.web.turnstileHostname,
+  });
+  if (publicWebErrors.length > 0) {
+    for (const error of publicWebErrors) log.error('%s', error);
+    process.exit(1);
   }
 
   if (config.esi.userAgent.includes('example')) {
@@ -70,7 +89,12 @@ async function main() {
   const runtimeLock = acquireRuntimeLock(config.db.path, 'bot service');
   const db = initDb(config.db.path);
   runMigrations(db);
-  if (config.web.chatEnabled) await cleanExpiredWebSessions(db);
+  const { recoverInterruptedPlans } = await import('./agent/planner.js');
+  const recoveredPlans = recoverInterruptedPlans(db);
+  if (recoveredPlans > 0) {
+    log.warn('Recovered %d interrupted agent plan(s) from the previous process.', recoveredPlans);
+  }
+  if (config.web.chatEnabled) await cleanExpiredWebSessions(db, { force: true });
   log.info('Database ready at %s', config.db.path);
 
   const sdeSystems = countSdeSystems(db);

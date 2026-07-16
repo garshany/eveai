@@ -108,6 +108,32 @@ describe('readUserProfile', () => {
     expect(existsSync(join(profileDir, 'USER_10_7001.md'))).toBe(false);
   });
 
+  it('propagates cancellation into ESI and never writes a cancelled profile', async () => {
+    let observedSignal: AbortSignal | undefined;
+    let started = (): void => {};
+    const esiStarted = new Promise<void>((resolve) => { started = resolve; });
+    callEsiOperationMock.mockImplementationOnce(async (
+      _db: unknown,
+      _operation: unknown,
+      _args: unknown,
+      _ctx: unknown,
+      guard: { signal?: AbortSignal },
+    ) => {
+      observedSignal = guard.signal;
+      started();
+      await new Promise<void>((resolve) => guard.signal?.addEventListener('abort', () => resolve(), { once: true }));
+      return { ok: false, status: 409, error: 'cancelled' };
+    });
+    const controller = new AbortController();
+    const refresh = refreshUserProfile(db, { userId: 0, chatId: 10 }, { signal: controller.signal });
+    await esiStarted;
+    controller.abort();
+
+    await expect(refresh).resolves.toEqual({ ok: false, error: 'Profile refresh cancelled.' });
+    expect(observedSignal?.aborted).toBe(true);
+    expect(existsSync(join(profileDir, 'USER_10_7001.md'))).toBe(false);
+  });
+
   it('keeps full gameplay detail in USER.md while sanitizing text fields', () => {
     const markdown = buildUserMarkdown({
       updatedAt: '2026-03-27T20:00:00.000Z',

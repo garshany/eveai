@@ -173,8 +173,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       }, config.eve.requestTimeoutMs);
 
       if (!tokenRes.ok) {
-        const errBody = await tokenRes.text();
-        log.error('Token exchange failed: %s', errBody);
+        log.error('Token exchange failed category=upstream_http status=%d', tokenRes.status);
         return reply.status(502).send({ error: 'Token exchange failed' });
       }
 
@@ -349,7 +348,7 @@ function reassignCharacterOwnership(db: Db, userId: number, characterId: number)
     db.prepare('UPDATE telegram_sessions SET active_character_id = NULL WHERE chat_id = ? AND active_character_id = ?')
       .run(link.chat_id, characterId);
     if (link.user_id) {
-      db.prepare('UPDATE users SET active_character_id = NULL WHERE user_id = ? AND active_character_id = ?')
+      db.prepare('UPDATE users SET active_character_id = NULL, active_character_version = active_character_version + 1, updated_at = datetime(\'now\') WHERE user_id = ? AND active_character_id = ?')
         .run(link.user_id, characterId);
     }
   }

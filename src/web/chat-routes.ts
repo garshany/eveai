@@ -5,17 +5,8 @@ import { config } from '../config.js';
 import { createAuthRequestToken } from '../auth/auth-request.js';
 import {
   MAX_INPUT_LENGTH,
-  activeRequestCount,
-  clearInFlightRequest,
-  evaluateChatRequestAllowance,
-  hasInFlightRequestForActor,
-  isDuplicateInFlightRequest,
-  normalizeAgentRuntimeError,
-  rememberInFlightRequest,
   resolveThreadForChat,
-  runAgentTurn,
 } from '../chat/shared.js';
-import { runWithActivitySink, type AgentActivityEvent } from '../agent/activity.js';
 import {
   getLinkedCharacter,
   listLinkedCharacters,
@@ -41,8 +32,11 @@ import {
   setWebSessionCookies,
   verifyWebMutation,
   verifyWebSessionCreation,
+  buildWebClientIpKey,
   type WebSession,
 } from './web-session.js';
+import { WebAgentRequestCoordinator } from './agent-requests.js';
+import { isTurnstileEnabled, verifyTurnstileToken } from './turnstile.js';
 
 type ConversationRow = {
   thread_id: string;
@@ -54,17 +48,32 @@ type ConversationRow = {
 type ChatBody = {
   message?: unknown;
   threadId?: unknown;
+  idempotencyKey?: unknown;
 };
 type EveLoginBody = { language?: unknown };
+type SessionBody = { turnstileToken?: unknown };
 
 type ThreadParams = { threadId: string };
 type CharacterParams = { characterId: string };
+type RequestParams = { requestId: string };
+type ActiveRequestQuery = { threadId?: string };
 const MAX_WEB_CONVERSATIONS = 40;
 
 export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
+  const agentRequests = new WebAgentRequestCoordinator(db);
+  agentRequests.start();
+  const sessionCleanupTimer = setInterval(() => {
+    void cleanExpiredWebSessions(db);
+  }, 60_000);
+  sessionCleanupTimer.unref?.();
+  app.addHook('onClose', async () => {
+    clearInterval(sessionCleanupTimer);
+    await agentRequests.close();
+  });
+
   app.addHook('onRequest', async (request, reply) => {
     if (request.url.startsWith('/api/web/')) {
-      await cleanExpiredWebSessions(db);
+      void cleanExpiredWebSessions(db);
       reply.header('Cache-Control', 'no-store');
     }
   });
@@ -74,13 +83,14 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
     if (!session) return {
       session: null,
       ssoConfigured: isEveSsoConfigured(),
+      turnstileSiteKey: isTurnstileEnabled() ? config.web.turnstileSiteKey : null,
     };
     const csrfToken = reuseOrRotateWebCsrf(db, request, session);
     setWebSessionCookies(reply, { csrfToken });
     return buildSessionPayload(db, session, csrfToken);
   });
 
-  app.post('/api/web/session', async (request, reply) => {
+  app.post<{ Body: SessionBody }>('/api/web/session', async (request, reply) => {
     if (!verifyWebSessionCreation(request)) {
       return reply.status(403).send({ error: 'Запрос с другого источника отклонён.' });
     }
@@ -90,12 +100,25 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
       setWebSessionCookies(reply, { csrfToken });
       return buildSessionPayload(db, existing, csrfToken);
     }
-    const allowance = evaluateWebSessionCreationAllowance(request.ip);
+    const turnstile = await verifyTurnstileToken(
+      request.body?.turnstileToken,
+      request.ip,
+      'session',
+    );
+    if (!turnstile.ok) {
+      return reply.status(turnstile.retryable ? 503 : 403).send({
+        error: turnstile.retryable
+          ? 'Проверка защиты временно недоступна. Попробуйте ещё раз.'
+          : 'Подтвердите, что вы не робот.',
+      });
+    }
+    const ipKey = buildWebClientIpKey(request.ip);
+    const allowance = evaluateWebSessionCreationAllowance(db, ipKey);
     if (!allowance.ok) {
       reply.header('Retry-After', String(allowance.retryAfterSeconds));
       return reply.status(429).send({ error: 'Слишком много новых сессий. Попробуйте позже.' });
     }
-    const created = createWebSession(db);
+    const created = createWebSession(db, ipKey);
     setWebSessionCookies(reply, created);
     return buildSessionPayload(db, created, created.csrfToken);
   });
@@ -103,6 +126,7 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
   app.delete('/api/web/session', async (request, reply) => {
     const session = requireMutationSession(db, request, reply);
     if (!session) return;
+    await agentRequests.cancelLaneAndWait({ userId: session.userId, chatId: session.chatId });
     await revokeWebSession(db, request);
     clearWebSessionCookies(reply);
     return reply.status(204).send();
@@ -178,6 +202,12 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
     if (!session) return;
     const thread = ownedThread(db, session, request.params.threadId);
     if (!thread) return reply.status(404).send({ error: 'Диалог не найден.' });
+    if (agentRequests.readActive(
+      { userId: session.userId, chatId: session.chatId },
+      thread.thread_id,
+    )) {
+      return reply.status(409).send({ error: 'Сначала дождитесь завершения или отмените активный запрос.' });
+    }
     const remove = db.transaction(() => {
       db.prepare('DELETE FROM thread_summaries WHERE thread_id = ?').run(thread.thread_id);
       db.prepare('DELETE FROM messages WHERE thread_id = ?').run(thread.thread_id);
@@ -267,6 +297,88 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
     return reply.status(204).send();
   });
 
+  app.get<{ Params: RequestParams }>('/api/web/chat/requests/:requestId', async (request, reply) => {
+    const session = requireSession(db, request, reply);
+    if (!session) return;
+    const result = agentRequests.readOwned(
+      { userId: session.userId, chatId: session.chatId },
+      request.params.requestId,
+    );
+    if (!result) return reply.status(404).send({ error: 'Запрос не найден.' });
+    return { request: result };
+  });
+
+  app.get<{ Params: RequestParams }>('/api/web/chat/requests/:requestId/events', async (request, reply) => {
+    const session = requireSession(db, request, reply);
+    if (!session) return;
+    const owner = { userId: session.userId, chatId: session.chatId };
+    const initial = agentRequests.readOwned(owner, request.params.requestId);
+    if (!initial) return reply.status(404).send({ error: 'Запрос не найден.' });
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    const rawLastEventId = request.headers['last-event-id'];
+    let lastSequence = typeof rawLastEventId === 'string' && /^\d+$/.test(rawLastEventId)
+      ? Number(rawLastEventId)
+      : -1;
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(snapshotTimer);
+      clearInterval(heartbeatTimer);
+      if (!reply.raw.writableEnded) reply.raw.end();
+    };
+    const sendSnapshot = () => {
+      const snapshot = agentRequests.readOwned(owner, request.params.requestId);
+      if (!snapshot) return close();
+      if (snapshot.progressSequence !== lastSequence || lastSequence < 0) {
+        lastSequence = snapshot.progressSequence;
+        reply.raw.write(`id: ${lastSequence}\nevent: request\ndata: ${JSON.stringify({ request: snapshot })}\n\n`);
+      }
+      if (snapshot.status !== 'queued' && snapshot.status !== 'running') close();
+    };
+    const snapshotTimer = setInterval(sendSnapshot, 1_000);
+    const heartbeatTimer = setInterval(() => {
+      if (!closed) reply.raw.write(': heartbeat\n\n');
+    }, 15_000);
+    snapshotTimer.unref?.();
+    heartbeatTimer.unref?.();
+    request.raw.once('close', close);
+    sendSnapshot();
+    return reply;
+  });
+
+  app.get<{ Querystring: ActiveRequestQuery }>('/api/web/chat/requests/active', async (request, reply) => {
+    const session = requireSession(db, request, reply);
+    if (!session) return;
+    const threadId = typeof request.query.threadId === 'string' && isThreadId(request.query.threadId)
+      ? request.query.threadId
+      : undefined;
+    return {
+      request: agentRequests.readActive(
+        { userId: session.userId, chatId: session.chatId },
+        threadId,
+      ),
+    };
+  });
+
+  app.delete<{ Params: RequestParams }>('/api/web/chat/requests/:requestId', async (request, reply) => {
+    const session = requireMutationSession(db, request, reply);
+    if (!session) return;
+    const result = agentRequests.cancel(
+      { userId: session.userId, chatId: session.chatId },
+      request.params.requestId,
+    );
+    if (!result) return reply.status(404).send({ error: 'Запрос не найден.' });
+    return { request: result };
+  });
+
   app.post<{ Body: ChatBody }>('/api/web/chat', async (request, reply) => {
     const session = requireMutationSession(db, request, reply);
     if (!session) return;
@@ -283,35 +395,40 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
       : resolveThreadForChat(db, session.chatId, ctx);
     if (!threadId) return reply.status(404).send({ error: 'Диалог не найден для активного персонажа.' });
 
-    const allowance = evaluateChatRequestAllowance({
-      chatId: session.chatId,
+    const idempotencyKey = typeof request.body?.idempotencyKey === 'string'
+      && /^[A-Za-z0-9_-]{16,96}$/.test(request.body.idempotencyKey)
+      ? request.body.idempotencyKey
+      : randomUUID();
+    const identity = db.prepare(`
+      SELECT active_character_id, active_character_version FROM users WHERE user_id = ?
+    `).get(session.userId) as {
+      active_character_id: number | null;
+      active_character_version: number;
+    };
+    const accepted = agentRequests.enqueue({
       userId: session.userId,
-      hasActiveRequest: hasInFlightRequestForActor(session.chatId, session.userId),
-      activeRequestCount: activeRequestCount(),
+      chatId: session.chatId,
+      threadId,
+      characterId: identity.active_character_id,
+      characterVersion: identity.active_character_version,
+      message,
+      idempotencyKey,
+      ipKey: buildWebClientIpKey(request.ip),
     });
-    if (!allowance.ok) return reply.status(429).send({ error: allowance.message ?? 'Запрос отклонён.' });
-    if (isDuplicateInFlightRequest(session.chatId, threadId, message)) {
-      return reply.status(409).send({ error: 'Такой же запрос уже обрабатывается.' });
+    if (!accepted.ok) {
+      if (accepted.retryAfterSeconds > 0) {
+        reply.header('Retry-After', String(accepted.retryAfterSeconds));
+      }
+      return reply.status(accepted.statusCode).send({ error: accepted.error });
     }
-
-    const requestToken = randomUUID();
-    rememberInFlightRequest(session.chatId, threadId, message, requestToken, Date.now(), session.userId);
-    const activity: Array<{ name: string; detail?: string }> = [];
-    try {
-      const answer = await runWithActivitySink({
-        reasoning: false,
-        emit: (event) => collectActivity(event, activity),
-      }, () => runAgentTurn(db, threadId, ctx, message));
-      return {
-        threadId,
-        message: answer,
-        activity,
-      };
-    } catch (error) {
-      return reply.status(500).send({ error: normalizeAgentRuntimeError(error) });
-    } finally {
-      clearInFlightRequest(session.chatId, requestToken);
-    }
+    const requestId = accepted.request.requestId;
+    return reply.status(202).send({
+      request: accepted.request,
+      existing: accepted.existing,
+      pollUrl: `/api/web/chat/requests/${encodeURIComponent(requestId)}`,
+      cancelUrl: `/api/web/chat/requests/${encodeURIComponent(requestId)}`,
+      eventsUrl: `/api/web/chat/requests/${encodeURIComponent(requestId)}/events`,
+    });
   });
 }
 
@@ -360,6 +477,7 @@ function buildSessionPayload(db: Db, session: WebSession, csrfToken: string) {
       characters,
     },
     ssoConfigured: isEveSsoConfigured(),
+    turnstileSiteKey: isTurnstileEnabled() ? config.web.turnstileSiteKey : null,
   };
 }
 
@@ -497,13 +615,4 @@ function parsePositiveInteger(value: string): number | null {
   if (!/^\d+$/.test(value)) return null;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function collectActivity(
-  event: AgentActivityEvent,
-  output: Array<{ name: string; detail?: string }>,
-): void {
-  if (event.type !== 'tool_start') return;
-  if (output.some((entry) => entry.name === event.name && entry.detail === event.detail)) return;
-  output.push({ name: event.name, ...(event.detail ? { detail: event.detail } : {}) });
 }

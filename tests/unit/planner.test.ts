@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
-import { updatePlan, getPlan, type PlanStep } from '../../src/agent/planner.js';
+import {
+  finalizePlanCompletion,
+  finalizePlanFailure,
+  updatePlan,
+  getPlan,
+  type PlanStep,
+} from '../../src/agent/planner.js';
 
 let db: Database.Database;
 
@@ -58,5 +64,45 @@ describe('planner', () => {
 
   it('returns null for non-existent plan', () => {
     expect(getPlan(db, 'nonexistent')).toBeNull();
+  });
+
+  it('atomically fails running work and blocks pending work', () => {
+    updatePlan(db, 'failed-turn', 'complex task', [
+      { id: 'done', title: 'Done', status: 'done', depends_on: [], notes: 'kept' },
+      { id: 'running', title: 'Running', status: 'running', depends_on: ['done'], notes: '' },
+      { id: 'pending', title: 'Pending', status: 'pending', depends_on: ['running'], notes: '' },
+    ]);
+
+    const plan = finalizePlanFailure(db, 'failed-turn', 'tool_discovery_budget');
+
+    expect(plan?.status).toBe('failed');
+    expect(plan?.steps.map((step) => step.status)).toEqual(['done', 'failed', 'blocked']);
+    expect(plan?.steps[1]?.notes).toContain('tool_discovery_budget');
+    const repeated = finalizePlanFailure(db, 'failed-turn', 'tool_discovery_budget');
+    expect(repeated?.steps).toEqual(plan?.steps);
+  });
+
+  it('marks cancelled turns without stale running steps', () => {
+    updatePlan(db, 'cancelled-turn', 'complex task', [
+      { id: 'running', title: 'Running', status: 'running', depends_on: [], notes: '' },
+      { id: 'pending', title: 'Pending', status: 'pending', depends_on: [], notes: '' },
+    ]);
+
+    const plan = finalizePlanFailure(db, 'cancelled-turn', 'cancelled');
+
+    expect(plan?.status).toBe('cancelled');
+    expect(plan?.steps.map((step) => step.status)).toEqual(['blocked', 'blocked']);
+  });
+
+  it('completes a plan and makes omitted pending steps explicit', () => {
+    updatePlan(db, 'completed-turn', 'complex task', [
+      { id: 'running', title: 'Running', status: 'running', depends_on: [], notes: '' },
+      { id: 'pending', title: 'Pending', status: 'pending', depends_on: [], notes: '' },
+    ]);
+
+    const plan = finalizePlanCompletion(db, 'completed-turn');
+
+    expect(plan?.status).toBe('completed');
+    expect(plan?.steps.map((step) => step.status)).toEqual(['done', 'blocked']);
   });
 });

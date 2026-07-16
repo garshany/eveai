@@ -480,6 +480,52 @@ describe('route planner', () => {
     expect(startRouteMonitorMock).not.toHaveBeenCalled();
   });
 
+  it('revalidates turn identity at the autopilot mutation sink', async () => {
+    const { planRoute, setRouteMonitorSender } = await import('../../src/eve/route-planner.js');
+    setRouteMonitorSender(async () => {});
+
+    await expect(planRoute(
+      db,
+      {
+        origin: 'current',
+        destination: 'Jita',
+        set_autopilot: true,
+        prefer: 'secure',
+      },
+      { userId: 1, chatId: 1 },
+      () => false,
+    )).rejects.toThrow('Turn identity changed before route mutation');
+
+    expect(callEsiOperationMock.mock.calls.some((call) => call[1] === 'post_ui_autopilot_waypoint')).toBe(false);
+    expect(startRouteMonitorMock).not.toHaveBeenCalled();
+  });
+
+  it('revalidates identity after capability refresh and before waypoint writes', async () => {
+    const { planRoute, setRouteMonitorSender } = await import('../../src/eve/route-planner.js');
+    setRouteMonitorSender(async () => {});
+    let checks = 0;
+
+    const result = await planRoute(
+      db,
+      {
+        origin: 'current',
+        destination: 'Jita',
+        set_autopilot: true,
+        prefer: 'secure',
+      },
+      { userId: 1, chatId: 1 },
+      () => {
+        checks += 1;
+        return checks < 3;
+      },
+    );
+
+    expect(result.autopilot_set).toBe(false);
+    expect(checks).toBeGreaterThanOrEqual(3);
+    expect(callEsiOperationMock.mock.calls.some((call) => call[1] === 'post_ui_autopilot_waypoint')).toBe(false);
+    expect(startRouteMonitorMock).not.toHaveBeenCalled();
+  });
+
   it('backpressures the durable feed instead of silently dropping a late handoff overflow', async () => {
     const originalEsiImplementation = callEsiOperationMock.getMockImplementation();
     let overflowRejected = false;
@@ -715,6 +761,7 @@ describe('route planner', () => {
         add_to_beginning: false,
       },
       { userId: 1, chatId: 1 },
+      { identityCurrent: expect.any(Function) },
     );
   });
 

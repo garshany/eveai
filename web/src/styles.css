@@ -237,6 +237,10 @@ button:disabled {
   gap: 23px;
 }
 
+.turnstile-widget {
+  min-height: 65px;
+}
+
 .button--login {
   display: inline-flex;
   width: 100%;
@@ -922,6 +926,21 @@ button:disabled {
 
 .message--thinking {
   align-items: center;
+}
+
+.thinking-cancel {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.thinking-cancel:hover {
+  color: var(--text);
 }
 
 .thinking-dots,

@@ -17,10 +17,15 @@ export async function createServer(db: Db) {
   const app = Fastify({
     logger: false,
     bodyLimit: 64 * 1024,
-    trustProxy: config.web.trustProxy,
+    trustProxy: config.web.trustedProxyCidrs.length > 0
+      ? [...config.web.trustedProxyCidrs]
+      : false,
   });
   await app.register(fastifyCookie);
-  registerSecurityHeaders(app, { baseUrl: config.web.baseUrl });
+  registerSecurityHeaders(app, {
+    baseUrl: config.web.baseUrl,
+    turnstileEnabled: Boolean(config.web.turnstileSiteKey && config.web.turnstileSecretKey),
+  });
 
   registerHealthRoute(app, { db });
   registerAuthRoutes(app, db);

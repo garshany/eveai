@@ -73,6 +73,28 @@ describe('OpenAI runtime configuration', () => {
     expect(config.openai.supportsLocalParallelBatch).toBe(true);
     expect(config.openai.supportsTruncation).toBe(false);
     expect(config.openai.supportsEncryptedReasoningReplay).toBe(false);
+    expect(config.openai.readSubagentsEnabled).toBe(true);
+    expect(config.openai.readSubagentConcurrency).toBe(2);
+    expect(config.openai.maxConcurrentEsiLeaves).toBe(12);
+  });
+
+  it('hard-bounds nested ESI leaf concurrency', async () => {
+    setRequiredEnv();
+    process.env.AGENT_MAX_CONCURRENT_ESI_LEAVES = '500';
+
+    expect((await import('../../src/config.js')).config.openai.maxConcurrentEsiLeaves).toBe(64);
+
+    vi.resetModules();
+    process.env.AGENT_MAX_CONCURRENT_ESI_LEAVES = '0';
+    await expect(import('../../src/config.js')).rejects.toThrow('AGENT_MAX_CONCURRENT_ESI_LEAVES');
+  });
+
+  it('allows application-managed read subagents on the OpenAI provider when explicitly enabled', async () => {
+    setRequiredEnv();
+    process.env.OPENAI_PROVIDER = 'openai';
+    process.env.CHEAPVIBE_READ_SUBAGENTS_ENABLED = 'true';
+
+    expect((await import('../../src/config.js')).config.openai.readSubagentsEnabled).toBe(true);
   });
 
   it('rejects unknown provider IDs instead of accepting arbitrary endpoints', async () => {
@@ -152,5 +174,17 @@ describe('OpenAI runtime configuration', () => {
     const { config } = await import('../../src/config.js');
     expect(config.openai.responseStateMode).toBe('server');
     expect(config.openai.storeResponses).toBe(true);
+  });
+
+  it('rejects trust-all proxy mode and parses only explicit trusted CIDRs', async () => {
+    setRequiredEnv();
+    process.env.WEB_TRUST_PROXY = 'true';
+    await expect(import('../../src/config.js')).rejects.toThrow('WEB_TRUSTED_PROXY_CIDRS');
+
+    vi.resetModules();
+    delete process.env.WEB_TRUST_PROXY;
+    process.env.WEB_TRUSTED_PROXY_CIDRS = '127.0.0.0/8, ::1/128';
+    expect((await import('../../src/config.js')).config.web.trustedProxyCidrs)
+      .toEqual(['127.0.0.0/8', '::1/128']);
   });
 });
