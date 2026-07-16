@@ -470,6 +470,22 @@ describe('auth routes', () => {
       ) VALUES ('h1:web-session', 'h1:csrf', 2, -2000000000, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
     `).run();
     db.prepare(`
+      INSERT INTO agent_threads (thread_id, chat_id, user_id)
+      VALUES ('web-thread', -2000000000, 2)
+    `).run();
+    db.prepare(`
+      INSERT INTO web_agent_requests (
+        request_id, user_id, chat_id, thread_id, character_version, message, message_hash,
+        idempotency_key, status, created_at_ms
+      ) VALUES
+        ('web-request-completed', 2, -2000000000, 'web-thread', 0, 'completed', 'hash-1', 'key-1', 'completed', 1),
+        ('web-request-queued', 2, -2000000000, 'web-thread', 0, 'queued', 'hash-2', 'key-2', 'queued', 2)
+    `).run();
+    db.prepare(`
+      INSERT INTO web_admission_events (event_id, event_kind, user_id, ip_key, cost_units, created_at_ms)
+      VALUES ('guest-chat-cost', 'chat', 2, 'ip:test', 1, 1)
+    `).run();
+    db.prepare(`
       INSERT INTO eve_accounts (
         character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id
       ) VALUES (95465501, 'Shared Pilot', 'enc:old-a', 'enc:old-r', datetime('now', '+1 hour'), '[]', 1)
@@ -510,6 +526,15 @@ describe('auth routes', () => {
     expect(response.headers.location).toBe('http://localhost:3000/app?auth=connected');
     expect(db.prepare('SELECT user_id FROM web_sessions WHERE chat_id = -2000000000').get())
       .toEqual({ user_id: 1 });
+    expect(db.prepare(`
+      SELECT request_id, user_id FROM web_agent_requests ORDER BY request_id
+    `).all()).toEqual([
+      { request_id: 'web-request-completed', user_id: 1 },
+      { request_id: 'web-request-queued', user_id: 1 },
+    ]);
+    expect(db.prepare(`
+      SELECT user_id FROM web_admission_events WHERE event_id = 'guest-chat-cost'
+    `).get()).toEqual({ user_id: 1 });
     expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeUndefined();
     expect(db.prepare(`
       SELECT chat_id, user_id FROM eve_character_links WHERE character_id = 95465501 ORDER BY chat_id
