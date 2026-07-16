@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { webApi } from './api';
 import { LoginScreen } from './components/LoginScreen';
-import { Sidebar } from './components/Sidebar';
+import { Sidebar, type AppView } from './components/Sidebar';
 import { ChatScreen } from './components/ChatScreen';
+import { PilotProfileScreen } from './components/PilotProfileScreen';
+import { LiveScanScreen } from './components/LiveScanScreen';
+import { useI18n } from './i18n';
 import type { ChatMessage, Conversation, SessionPayload } from './types';
 
 function authResultMessage(): string | null {
@@ -13,6 +16,7 @@ function authResultMessage(): string | null {
 }
 
 export default function App() {
+  const { locale, t } = useI18n();
   const [bootstrap, setBootstrap] = useState<SessionPayload | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -21,6 +25,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(authResultMessage);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeView, setActiveView] = useState<AppView>('chat');
   const activeIdRef = useRef<string | null>(null);
   const messageLoadGeneration = useRef(0);
 
@@ -85,7 +90,7 @@ export default function App() {
     setError(null);
     try {
       const activeSession = await ensureSession();
-      const { url } = await webApi.startEveLogin(activeSession.csrfToken);
+      const { url } = await webApi.startEveLogin(activeSession.csrfToken, locale);
       window.location.assign(url);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось начать вход через EVE.');
@@ -193,17 +198,12 @@ export default function App() {
       setBootstrap({
         session: null,
         ssoConfigured: bootstrap?.ssoConfigured ?? false,
-        runtime: bootstrap?.runtime ?? {
-          providerId: 'openai',
-          providerName: 'Provider',
-          model: 'unknown',
-          reasoningEffort: 'auto',
-        },
       });
       setConversations([]);
       setMessages([]);
       messageLoadGeneration.current += 1;
       setActiveConversation(null);
+      setActiveView('chat');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось завершить сессию.');
     } finally {
@@ -227,37 +227,28 @@ export default function App() {
     );
   }
 
-  const activeTitle = conversations.find((item) => item.id === activeId)?.title ?? 'Новый диалог';
+  const activeTitle = conversations.find((item) => item.id === activeId)?.title ?? t('newChat');
   return (
     <main className="chat-app">
       <Sidebar
         open={sidebarOpen}
+        activeView={activeView}
         conversations={conversations}
         activeId={activeId}
         busy={busy}
         character={session.character}
         characters={session.characters}
         onClose={() => setSidebarOpen(false)}
-        onNew={() => void createConversation()}
-        onSelect={(id) => void selectConversation(id)}
+        onView={(view) => { setActiveView(view); setSidebarOpen(false); }}
+        onNew={() => { setActiveView('chat'); void createConversation(); }}
+        onSelect={(id) => { setActiveView('chat'); void selectConversation(id); }}
         onConnect={() => void connectEve()}
         onActivate={(characterId) => void activateCharacter(characterId)}
         onLogout={() => void logout()}
       />
-      <ChatScreen
-        title={activeTitle}
-        messages={messages}
-        busy={busy}
-        error={error}
-        runtime={bootstrap?.runtime ?? {
-          providerId: 'openai',
-          providerName: 'Provider',
-          model: 'unknown',
-          reasoningEffort: 'auto',
-        }}
-        onMenu={() => setSidebarOpen(true)}
-        onSend={sendMessage}
-      />
+      {activeView === 'chat' ? <ChatScreen title={activeTitle} messages={messages} busy={busy} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} /> : null}
+      {activeView === 'profile' ? <PilotProfileScreen character={session.character} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} /> : null}
+      {activeView === 'scan' ? <LiveScanScreen csrfToken={session.csrfToken} onMenu={() => setSidebarOpen(true)} onPrompt={(prompt) => { setActiveView('chat'); void sendMessage(prompt); }} /> : null}
     </main>
   );
 }

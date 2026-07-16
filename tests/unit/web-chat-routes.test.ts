@@ -233,7 +233,7 @@ describe('web chat routes', () => {
     expect(answer.statusCode).toBe(200);
     expect(answer.json()).toMatchObject({ threadId, message: 'Ответ: Сравни цены' });
     expect(runAgentTurnMock).toHaveBeenCalledTimes(1);
-    expect(runAgentTurnMock.mock.calls[0]?.[2]).toMatchObject({ notificationCapability: 'none' });
+    expect(runAgentTurnMock.mock.calls[0]?.[2]).toMatchObject({ notificationCapability: 'web' });
 
     const list = await app.inject({
       method: 'GET',
@@ -319,6 +319,18 @@ describe('web chat routes', () => {
     `).run(session.chatId, 9102, session.userId);
     db.prepare('UPDATE users SET active_character_id = 9101 WHERE user_id = ?').run(session.userId);
     db.prepare('UPDATE telegram_sessions SET active_character_id = 9101 WHERE chat_id = ?').run(session.chatId);
+    db.prepare(`
+      INSERT INTO route_monitors (
+        chat_id, character_id, origin_id, destination_id, route_systems,
+        current_system_id, stats_json
+      ) VALUES (?, 9101, 30000142, 30002187, '[30000142,30002187]', 30000142, ?)
+    `).run(session.chatId, JSON.stringify({
+      killsSeen: 0,
+      jumpsCompleted: 0,
+      startTime: new Date().toISOString(),
+      systemTimes: {},
+      dangerEvents: [],
+    }));
 
     const first = await app.inject({
       method: 'POST',
@@ -340,6 +352,7 @@ describe('web chat routes', () => {
         ],
       },
     });
+    expect(db.prepare('SELECT 1 FROM route_monitors WHERE chat_id = ?').get(session.chatId)).toBeUndefined();
     const second = await app.inject({
       method: 'POST',
       url: '/api/web/conversations',
@@ -393,6 +406,58 @@ describe('web chat routes', () => {
     expect(messages).toHaveLength(200);
     expect(messages[0]?.content).toBe('message-6');
     expect(messages[199]?.content).toBe('message-205');
+  });
+
+  it('isolates live-scan state per browser lane and durably stops an inactive monitor', async () => {
+    const owner = await createBrowserSession();
+    const intruder = await createBrowserSession();
+    const stats = JSON.stringify({
+      killsSeen: 3,
+      jumpsCompleted: 1,
+      startTime: new Date().toISOString(),
+      systemTimes: {},
+      dangerEvents: [],
+    });
+    db.prepare(`
+      INSERT INTO route_monitors (
+        chat_id, character_id, origin_id, destination_id, route_systems,
+        current_system_id, ship_type_id, ship_name, ship_ehp, stats_json
+      ) VALUES (?, 9201, 30000142, 30002187, '[30000142,30002187]',
+        30000142, 17715, 'Gila', 13290, ?)
+    `).run(owner.chatId, stats);
+
+    const ownerScan = await app.inject({
+      method: 'GET',
+      url: '/api/web/scan',
+      headers: { cookie: owner.cookie },
+    });
+    expect(ownerScan.statusCode).toBe(200);
+    expect(ownerScan.json()).toMatchObject({
+      source: { transport: 'rest_poll' },
+      monitor: {
+        active: false,
+        characterId: 9201,
+        progress: { completed: 1, total: 1, remaining: 1 },
+        ship: { typeId: 17715, name: 'Gila', ehp: 13290 },
+        killsSeen: 3,
+      },
+    });
+
+    const intruderScan = await app.inject({
+      method: 'GET',
+      url: '/api/web/scan',
+      headers: { cookie: intruder.cookie },
+    });
+    expect(intruderScan.statusCode).toBe(200);
+    expect(intruderScan.json()).toMatchObject({ monitor: null });
+
+    const stopped = await app.inject({
+      method: 'POST',
+      url: '/api/web/scan/stop',
+      headers: mutationHeaders(owner),
+    });
+    expect(stopped.statusCode).toBe(204);
+    expect(db.prepare('SELECT 1 FROM route_monitors WHERE chat_id = ?').get(owner.chatId)).toBeUndefined();
   });
 
   it('purges browser-only durable data when its session expires', async () => {

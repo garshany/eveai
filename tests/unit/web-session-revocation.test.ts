@@ -26,7 +26,7 @@ import {
   resolveUserProfilePath,
   withUserProfileAuthorizationLock,
 } from '../../src/eve/user-profile-storage.js';
-import { revokeWebSession } from '../../src/web/web-session.js';
+import { cleanExpiredWebSessions, revokeWebSession } from '../../src/web/web-session.js';
 import { getLinkedCharacter } from '../../src/eve/sso.js';
 import { withWebLaneAuthorizationLock } from '../../src/web/web-lane-lock.js';
 
@@ -46,6 +46,27 @@ afterEach(() => {
 });
 
 describe('browser session revocation', () => {
+  it('purges an expired browser monitor before startup restoration can resume it', async () => {
+    const userId = 10;
+    const chatId = -2_000_000_010;
+    db.prepare("INSERT INTO users (user_id, display_name) VALUES (?, 'Expired capsuleer')").run(userId);
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, 'web')").run(chatId);
+    db.prepare(`
+      INSERT INTO web_sessions (session_hash, csrf_hash, user_id, chat_id, expires_at)
+      VALUES ('h1:expired-session', 'h1:expired-csrf', ?, ?, datetime('now', '-1 second'))
+    `).run(userId, chatId);
+    db.prepare(`
+      INSERT INTO route_monitors (chat_id, character_id, origin_id, destination_id, route_systems)
+      VALUES (?, 7002, 30000142, 30002187, '[30000142,30002187]')
+    `).run(chatId);
+
+    await cleanExpiredWebSessions(db);
+
+    expect(db.prepare('SELECT 1 FROM web_sessions WHERE chat_id = ?').get(chatId)).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM route_monitors WHERE chat_id = ?').get(chatId)).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(userId)).toBeUndefined();
+  });
+
   it('waits for an in-flight profile writer and then removes every browser-only artifact', async () => {
     const token = 'browser-session-token';
     const userId = 1;

@@ -7,7 +7,7 @@ type Block =
   | { kind: 'code'; language: string; value: string };
 
 export function MarkdownMessage({ content }: { content: string }) {
-  const blocks = parseBlocks(content);
+  const blocks = parseBlocks(normalizeLegacyFormatting(content));
   return blocks.map((block, blockIndex) => {
     const key = `${block.kind}-${blockIndex}`;
     if (block.kind === 'code') {
@@ -25,7 +25,7 @@ export function MarkdownMessage({ content }: { content: string }) {
     }
     return <p key={key}>{block.lines.map((line, index) => (
       <Fragment key={`${key}-${index}`}>
-        {index > 0 ? ' ' : null}
+        {index > 0 ? <br /> : null}
         {parseInline(line, `${key}-${index}`)}
       </Fragment>
     ))}</p>;
@@ -114,11 +114,37 @@ function parseInline(value: string, keyPrefix: string): ReactNode[] {
   return result;
 }
 
-function safeLink(value: string): string | null {
+export function safeLink(value: string): string | null {
   try {
+    if (/[\u0000-\u001f\u007f]/.test(value)) return null;
     const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
+    return url.toString();
   } catch {
     return null;
   }
+}
+
+export function normalizeLegacyFormatting(content: string): string {
+  let value = decodeHtmlEntities(content.replaceAll('\r\n', '\n'));
+  value = value.replace(/<code>([\s\S]*?)<\/code>/gi, (_match, body: string) => {
+    const clean = body.replace(/^\s+|\s+$/g, '');
+    return clean.includes('\n') ? `\n\n\`\`\`\n${clean}\n\`\`\`\n\n` : `\`${clean.replaceAll('`', '′')}\``;
+  });
+  value = value.replace(/<(b|strong)>([\s\S]*?)<\/\1>/gi, (_match, _tag: string, body: string) => `**${body}**`);
+  value = value.replace(/<a\s+href=(['"])(.*?)\1\s*>([\s\S]*?)<\/a>/gi, (_match, _quote: string, href: string, label: string) => {
+    const safe = safeLink(href);
+    return safe ? `[${label.replace(/[\[\]]/g, '')}](${safe})` : label;
+  });
+  return value;
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|#39);/gi, (entity, code: string) => {
+    const named: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#39': "'" };
+    const lower = code.toLowerCase();
+    if (named[lower] !== undefined) return named[lower];
+    const numeric = lower.startsWith('#x') ? Number.parseInt(lower.slice(2), 16) : Number.parseInt(lower.slice(1), 10);
+    return Number.isFinite(numeric) && numeric >= 0 && numeric <= 0x10ffff ? String.fromCodePoint(numeric) : entity;
+  });
 }

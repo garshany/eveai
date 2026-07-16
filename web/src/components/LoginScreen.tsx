@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Brand } from './Brand';
 import { ShieldIcon, TargetIcon } from '../icons';
+import { LocaleSwitch, useI18n } from '../i18n';
 
 type LoginScreenProps = {
   busy: boolean;
@@ -18,6 +19,7 @@ export function LoginScreen({
   onConnect,
   onGuest,
 }: LoginScreenProps) {
+  const { t } = useI18n();
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const routeImage = `${import.meta.env.BASE_URL}assets/orbit-route.png`;
 
@@ -27,17 +29,15 @@ export function LoginScreen({
         <Brand />
         <a className="service-state" href="/health" target="_blank" rel="noreferrer">
           <span className="service-state__dot" />
-          Системы доступны
+          {t('serviceReady')}
         </a>
+        <LocaleSwitch />
       </header>
 
       <section className="login__content" aria-labelledby="login-title">
         <div className="login__copy">
-          <h1 id="login-title"><span>Разведка</span><span>начинается с вопроса</span></h1>
-          <p>
-            Подключите персонажа, чтобы получать ответы с учётом ваших маршрутов,
-            активов и ситуации в Новом Эдеме.
-          </p>
+          <h1 id="login-title"><span>{t('loginLine1')}</span><span>{t('loginLine2')}</span></h1>
+          <p>{t('loginLead')}</p>
 
           <div className="login__actions">
             <button
@@ -47,10 +47,10 @@ export function LoginScreen({
               disabled={busy || !ssoConfigured}
             >
               <TargetIcon size={26} />
-              {ssoConfigured ? 'Войти через EVE Online' : 'EVE SSO не настроен'}
+              {ssoConfigured ? t('loginEve') : t('ssoMissing')}
             </button>
             <button className="text-action" type="button" onClick={onGuest} disabled={busy}>
-              Продолжить без подключения
+              {t('guestContinue')}
             </button>
           </div>
 
@@ -58,17 +58,17 @@ export function LoginScreen({
 
           <div className="trust-note">
             <ShieldIcon size={24} />
-            <span>Доступ можно отозвать в любой момент</span>
+            <span>{t('revocable')}</span>
           </div>
         </div>
       </section>
 
       <footer className="login__footer">
         <button type="button" onClick={() => setPrivacyOpen(true)}>
-          <ShieldIcon size={19} /> Конфиденциальность
+          <ShieldIcon size={19} /> {t('privacy')}
         </button>
         <span className="login__footer-divider" />
-        <a href="/health" target="_blank" rel="noreferrer">Статус сервиса</a>
+        <a href="/health" target="_blank" rel="noreferrer">{t('serviceStatus')}</a>
       </footer>
 
       {privacyOpen ? (
@@ -80,13 +80,10 @@ export function LoginScreen({
             aria-labelledby="privacy-title"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <h2 id="privacy-title">Конфиденциальность</h2>
-            <p>
-              Токены EVE хранятся только на сервере в зашифрованном виде. Браузер
-              получает HttpOnly-сессию и никогда не видит ключи провайдера или ESI.
-            </p>
+            <h2 id="privacy-title">{t('privacy')}</h2>
+            <p>{t('privacyText')}</p>
             <button className="button button--primary" type="button" onClick={() => setPrivacyOpen(false)}>
-              Понятно
+              {t('understood')}
             </button>
           </section>
         </div>

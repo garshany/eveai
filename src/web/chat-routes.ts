@@ -22,6 +22,14 @@ import {
   setActiveCharacter,
 } from '../eve/sso.js';
 import { isEveSsoConfigured } from '../eve/eve-login.js';
+import { fetchWithTimeout } from '../eve/http.js';
+import {
+  discardRouteMonitor,
+  getRouteMonitorRuntimeStatus,
+  stopRouteMonitor,
+} from '../eve-board/monitor.js';
+import { getEveKillFeedRuntimeStatus } from '../eve-kill/feed-poll.js';
+import { loadWebPilotProfile } from './pilot-profile.js';
 import {
   clearWebSessionCookies,
   cleanExpiredWebSessions,
@@ -47,6 +55,7 @@ type ChatBody = {
   message?: unknown;
   threadId?: unknown;
 };
+type EveLoginBody = { language?: unknown };
 
 type ThreadParams = { threadId: string };
 type CharacterParams = { characterId: string };
@@ -65,7 +74,6 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
     if (!session) return {
       session: null,
       ssoConfigured: isEveSsoConfigured(),
-      runtime: webRuntimePayload(),
     };
     const csrfToken = reuseOrRotateWebCsrf(db, request, session);
     setWebSessionCookies(reply, { csrfToken });
@@ -100,7 +108,7 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
     return reply.status(204).send();
   });
 
-  app.post('/api/web/eve/login', async (request, reply) => {
+  app.post<{ Body: EveLoginBody }>('/api/web/eve/login', async (request, reply) => {
     const session = requireMutationSession(db, request, reply);
     if (!session) return;
     if (!isEveSsoConfigured()) {
@@ -112,7 +120,8 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
       ttlSeconds: 600,
     });
     const base = config.web.baseUrl.replace(/\/+$/, '');
-    return { url: `${base}/auth/eve/login?state=${encodeURIComponent(state)}` };
+    const language = request.body?.language === 'en' ? 'en' : 'ru';
+    return { url: `${base}/auth/eve/login?state=${encodeURIComponent(state)}&language=${language}` };
   });
 
   app.get('/api/web/conversations', async (request, reply) => {
@@ -192,7 +201,70 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
     if (!characterId || !setActiveCharacter(db, sessionContext(session), characterId)) {
       return reply.status(404).send({ error: 'Персонаж не найден.' });
     }
+    const monitor = getRouteMonitorRuntimeStatus(db, session.chatId).monitor;
+    if (monitor && monitor.characterId !== characterId) {
+      discardRouteMonitor(session.chatId, db);
+    }
     return buildSessionPayload(db, session, request.headers['x-csrf-token'] as string);
+  });
+
+  app.get('/api/web/profile', async (request, reply) => {
+    const session = requireSession(db, request, reply);
+    if (!session) return;
+    const startedAt = Date.now();
+    try {
+      let result = await loadWebPilotProfile(db, sessionContext(session));
+      if (result.stale) result = await loadWebPilotProfile(db, sessionContext(session));
+      console.log('[web-profile] DONE duration_ms=%d status=%s', Date.now() - startedAt, result.stale ? 'stale' : 'ok');
+      if (result.stale) return reply.status(409).send({ error: 'Активный персонаж изменился. Повторите запрос.' });
+      return { profile: result.profile };
+    } catch (error) {
+      console.error('[web-profile] FAILED duration_ms=%d error=%s', Date.now() - startedAt, error instanceof Error ? error.message : 'unknown');
+      return reply.status(502).send({ error: 'Не удалось загрузить профиль EVE. Попробуйте ещё раз.' });
+    }
+  });
+
+  app.get('/api/web/profile/portrait', async (request, reply) => {
+    const session = requireSession(db, request, reply);
+    if (!session) return;
+    const character = getLinkedCharacter(db, sessionContext(session));
+    if (!character) return reply.status(404).send({ error: 'Персонаж не подключён.' });
+    try {
+      const response = await fetchWithTimeout(
+        `https://images.evetech.net/characters/${character.characterId}/portrait?tenant=tranquility&size=512`,
+        { headers: { accept: 'image/avif,image/webp,image/png,image/jpeg' } },
+        config.esi.requestTimeoutMs,
+      );
+      const contentType = response.headers.get('content-type') ?? '';
+      if (!response.ok || !contentType.startsWith('image/')) {
+        return reply.status(502).send({ error: 'Портрет EVE временно недоступен.' });
+      }
+      const contentLength = Number(response.headers.get('content-length') ?? 0);
+      if (contentLength > 5_000_000) return reply.status(502).send({ error: 'Портрет EVE слишком большой.' });
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > 5_000_000) return reply.status(502).send({ error: 'Портрет EVE слишком большой.' });
+      return reply
+        .header('Cache-Control', 'private, max-age=300')
+        .type(contentType)
+        .send(bytes);
+    } catch {
+      return reply.status(502).send({ error: 'Портрет EVE временно недоступен.' });
+    }
+  });
+
+  app.get('/api/web/scan', async (request, reply) => {
+    const session = requireSession(db, request, reply);
+    if (!session) return;
+    return buildWebScanPayload(db, session);
+  });
+
+  app.post('/api/web/scan/stop', async (request, reply) => {
+    const session = requireMutationSession(db, request, reply);
+    if (!session) return;
+    const status = getRouteMonitorRuntimeStatus(db, session.chatId);
+    if (status.active) stopRouteMonitor(session.chatId, 'manual');
+    else if (status.monitor) discardRouteMonitor(session.chatId, db);
+    return reply.status(204).send();
   });
 
   app.post<{ Body: ChatBody }>('/api/web/chat', async (request, reply) => {
@@ -227,6 +299,7 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
     const activity: Array<{ name: string; detail?: string }> = [];
     try {
       const answer = await runWithActivitySink({
+        reasoning: false,
         emit: (event) => collectActivity(event, activity),
       }, () => runAgentTurn(db, threadId, ctx, message));
       return {
@@ -287,21 +360,56 @@ function buildSessionPayload(db: Db, session: WebSession, csrfToken: string) {
       characters,
     },
     ssoConfigured: isEveSsoConfigured(),
-    runtime: webRuntimePayload(),
-  };
-}
-
-function webRuntimePayload() {
-  return {
-    providerId: config.openai.providerId,
-    providerName: config.openai.providerName,
-    model: config.openai.model,
-    reasoningEffort: config.openai.reasoningEffort,
   };
 }
 
 function sessionContext(session: WebSession) {
-  return { userId: session.userId, chatId: session.chatId, notificationCapability: 'none' as const };
+  return { userId: session.userId, chatId: session.chatId, notificationCapability: 'web' as const };
+}
+
+function buildWebScanPayload(db: Db, session: WebSession) {
+  const runtime = getRouteMonitorRuntimeStatus(db, session.chatId);
+  const feed = getEveKillFeedRuntimeStatus();
+  const monitor = runtime.monitor;
+  if (!monitor) {
+    return {
+      source: { transport: 'rest_poll' as const, ...feed },
+      monitor: null,
+    };
+  }
+  const names = new Map<number, string>();
+  const rows = db.prepare(`
+    SELECT system_id, name FROM sde_systems
+    WHERE system_id IN (${monitor.routeSystems.map(() => '?').join(',')})
+  `).all(...monitor.routeSystems) as Array<{ system_id: number; name: string }>;
+  for (const row of rows) names.set(row.system_id, row.name);
+  const currentIndex = monitor.routeSystems.indexOf(monitor.currentSystemId);
+  return {
+    source: { transport: 'rest_poll' as const, ...feed },
+    monitor: {
+      active: runtime.active,
+      baselineReady: runtime.baselineReady,
+      threatLevel: runtime.threatLevel,
+      locationFailures: runtime.locationFailures,
+      characterId: monitor.characterId,
+      characterMatchesActive: getLinkedCharacter(db, sessionContext(session))?.characterId === monitor.characterId,
+      origin: { id: monitor.originId, name: names.get(monitor.originId) ?? `System ${monitor.originId}` },
+      destination: { id: monitor.destinationId, name: names.get(monitor.destinationId) ?? `System ${monitor.destinationId}` },
+      current: { id: monitor.currentSystemId, name: names.get(monitor.currentSystemId) ?? `System ${monitor.currentSystemId}` },
+      routeSystems: monitor.routeSystems.map((id) => ({ id, name: names.get(id) ?? `System ${id}` })),
+      progress: {
+        completed: monitor.stats.jumpsCompleted,
+        total: Math.max(0, monitor.routeSystems.length - 1),
+        remaining: currentIndex < 0 ? null : Math.max(0, monitor.routeSystems.length - 1 - currentIndex),
+      },
+      ship: { typeId: monitor.shipTypeId, name: monitor.shipName, ehp: monitor.shipEhp },
+      startedAt: monitor.startedAt,
+      lastLocationCheck: monitor.lastLocationCheck,
+      lastOnlineCheck: monitor.lastOnlineCheck,
+      killsSeen: monitor.stats.killsSeen,
+      dangerEvents: monitor.stats.dangerEvents.slice(-20),
+    },
+  };
 }
 
 function listConversations(db: Db, session: WebSession) {

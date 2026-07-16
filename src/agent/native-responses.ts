@@ -199,8 +199,9 @@ export async function createNativeResponse(input: {
   // activity sink attached (the interactive CLI) so it can show a "thinking" line.
   // Bots (no sink) and internal calls (compaction/OSINT/advisor, streamToActivity
   // false) get an unchanged request — no extra summary tokens, no leaked text.
-  const streamThisCall = input.streamToActivity === true && getActivitySink() !== undefined;
-  const wantReasoningSummary = streamThisCall;
+  const activitySink = getActivitySink();
+  const streamThisCall = input.streamToActivity === true && activitySink !== undefined;
+  const wantReasoningSummary = streamThisCall && activitySink.reasoning !== false;
   const reasoningPayload: Record<string, unknown> = { effort: effectiveEffort };
   if (effectiveMode === 'pro') reasoningPayload.mode = 'pro';
   if (wantReasoningSummary) reasoningPayload.summary = 'auto';
@@ -234,7 +235,9 @@ export async function createNativeResponse(input: {
   console.log('[api] POST %s/responses — payload %d chars, %d tools, %d input items, prevId=%s',
     baseUrl, bodyJson.length, input.tools.length, input.items.length,
     input.previousResponseId ?? 'none');
+  const admissionStartedAt = Date.now();
   const releaseResponseSlot = await getResponseAdmission().acquire();
+  const requestStartedAt = Date.now();
   let events: NativeSseEvent[];
   try {
     events = config.openai.responsesTransport === 'websocket'
@@ -244,6 +247,15 @@ export async function createNativeResponse(input: {
     releaseResponseSlot();
   }
   const completedPayload = findCompletedPayload(events);
+  console.log(
+    '[api] DONE transport=%s queue_ms=%d request_ms=%d total_ms=%d events=%d status=%s',
+    config.openai.responsesTransport,
+    requestStartedAt - admissionStartedAt,
+    Date.now() - requestStartedAt,
+    Date.now() - admissionStartedAt,
+    events.length,
+    completedPayload?.status ?? 'unknown',
+  );
   const doneItems = collectDoneItems(events);
   const completedOutput = Array.isArray(completedPayload?.output)
     ? completedPayload.output

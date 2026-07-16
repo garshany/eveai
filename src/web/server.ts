@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
 import { registerAuthRoutes } from './auth-routes.js';
+import { buildCanonicalLoopbackUrl } from './canonical-origin.js';
 import { registerWebChatRoutes } from './chat-routes.js';
 import { registerHealthRoute } from './health.js';
 import { registerSecurityHeaders } from './security.js';
@@ -41,8 +42,16 @@ async function registerWebApp(app: FastifyInstance): Promise<void> {
     wildcard: false,
   });
   const html = await readFile(resolve(distRoot, 'index.html'), 'utf8');
-  const sendApp = async (_request: FastifyRequest, reply: FastifyReply) =>
-    reply.type('text/html; charset=utf-8').send(html);
+  const sendApp = async (request: FastifyRequest, reply: FastifyReply) => {
+    const canonicalUrl = buildCanonicalLoopbackUrl(
+      config.web.baseUrl,
+      request.url,
+      request.protocol,
+      request.headers.host,
+    );
+    if (canonicalUrl) return reply.redirect(canonicalUrl);
+    return reply.type('text/html; charset=utf-8').send(html);
+  };
   app.get('/', async (_request, reply) => reply.redirect('/app'));
   app.get('/app', sendApp);
   app.get('/app/*', sendApp);

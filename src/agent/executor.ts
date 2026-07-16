@@ -325,6 +325,13 @@ export async function handleAgentMessage(
   ensureThreadOwnership(db, threadId, ctx);
 
   const linked = getLinkedCharacter(db, ctx);
+  // Prime the per-lane capability snapshot before the model can call a private
+  // ESI tool. Without this, a direct wallet/skills/location call returns 428
+  // and costs several extra model round-trips just to discover and run the
+  // capability tool after the fact.
+  if (linked) {
+    await getEveCapabilities(db, 'agent_turn_preflight', ctx);
+  }
   let userProfile = await readUserProfile(db, ctx);
 
   // Guard: if character is linked but profile file is missing, try to refresh it
@@ -1864,6 +1871,8 @@ async function executeToolCallUnadmitted(
   const notificationCapability = ctx.notificationCapability ?? 'all';
   const notificationBlocked = notificationCapability === 'none'
     ? name === 'kill_watch' || isHeartbeatConfigTool(name) || isRouteMonitorTool(name)
+    : notificationCapability === 'web'
+      ? name === 'kill_watch' || isHeartbeatConfigTool(name)
     : notificationCapability === 'feed' && isHeartbeatConfigTool(name);
   if (notificationBlocked) {
     return {
@@ -1871,6 +1880,8 @@ async function executeToolCallUnadmitted(
       blocked: true,
       error: notificationCapability === 'feed'
         ? 'Heartbeat scheduling is unavailable in the terminal CLI. Route monitoring and EVE-KILL watches remain available while the CLI is running.'
+        : notificationCapability === 'web'
+          ? 'Push watches and heartbeat scheduling are unavailable in the browser. Route monitoring is available in the Online Scan screen.'
         : 'Durable background notifications are unavailable in this transient chat lane. Use Telegram, Discord, or the interactive CLI.',
     };
   }

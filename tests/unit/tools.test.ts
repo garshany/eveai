@@ -211,6 +211,18 @@ describe('agent tools', () => {
     expect(cliFunctions).not.toContain('heartbeat_config');
     expect(cliEveKill?.tools.map((tool) => tool.name)).toContain('kill_watch');
 
+    const webTools = await buildNativeAgentTools('full', { notificationCapability: 'web' });
+    const webFunctions = webTools
+      .filter((tool): tool is Extract<(typeof webTools)[number], { type: 'function' }> => tool.type === 'function')
+      .map((tool) => tool.name);
+    const webEveKill = webTools.find(
+      (tool): tool is Extract<(typeof webTools)[number], { type: 'namespace' }> =>
+        tool.type === 'namespace' && tool.name === 'eve_kill',
+    );
+    expect(webFunctions).toContain('route_monitor');
+    expect(webFunctions).not.toContain('heartbeat_config');
+    expect(webEveKill?.tools.map((tool) => tool.name)).not.toContain('kill_watch');
+
     const eveScoutNamespace = namespaces.find((tool) => tool.name === 'eve_scout');
     expect(eveScoutNamespace).toBeDefined();
     expect(eveScoutNamespace?.description).toContain('wormhole');

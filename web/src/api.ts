@@ -1,4 +1,5 @@
-import type { ActivityStep, ChatMessage, Conversation, SessionPayload } from './types';
+import type { ActivityStep, ChatMessage, Conversation, PilotProfile, ScanPayload, SessionPayload } from './types';
+import type { Locale } from './i18n';
 
 type ErrorPayload = { error?: string };
 
@@ -27,9 +28,9 @@ export const webApi = {
   getSession: () => request<SessionPayload>('/api/web/session'),
   createSession: () => request<SessionPayload>('/api/web/session', { method: 'POST' }),
   logout: (csrfToken: string) => request<void>('/api/web/session', { method: 'DELETE' }, csrfToken),
-  startEveLogin: (csrfToken: string) => request<{ url: string }>(
+  startEveLogin: (csrfToken: string, locale: Locale) => request<{ url: string }>(
     '/api/web/eve/login',
-    { method: 'POST' },
+    { method: 'POST', body: JSON.stringify({ language: locale }) },
     csrfToken,
   ),
   activateCharacter: (characterId: number, csrfToken: string) => request<SessionPayload>(
@@ -59,4 +60,7 @@ export const webApi = {
     method: 'POST',
     body: JSON.stringify({ message, threadId }),
   }, csrfToken),
+  getProfile: () => request<{ profile: PilotProfile | null }>('/api/web/profile'),
+  getScan: () => request<ScanPayload>('/api/web/scan'),
+  stopScan: (csrfToken: string) => request<void>('/api/web/scan/stop', { method: 'POST' }, csrfToken),
 };

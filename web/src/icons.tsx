@@ -56,6 +56,14 @@ export function TargetIcon(props: IconProps) {
   return <IconBase {...props}><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="3" /><path d="M12 1v5M12 18v5M1 12h5M18 12h5" /></IconBase>;
 }
 
+export function PilotIcon(props: IconProps) {
+  return <IconBase {...props}><circle cx="12" cy="8" r="3.5" /><path d="M5 21c.7-4 3.1-6 7-6s6.3 2 7 6" /><path d="M4 12a8 8 0 0 1 16 0" /></IconBase>;
+}
+
+export function RadarIcon(props: IconProps) {
+  return <IconBase {...props}><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><path d="M12 12 18.5 5.5M12 3v2M21 12h-2M12 21v-2M3 12h2" /><circle cx="16.5" cy="8" r="1" /></IconBase>;
+}
+
 export function PaperclipIcon(props: IconProps) {
   return <IconBase {...props}><path d="m9.5 12.8 5.7-5.7a3 3 0 1 1 4.2 4.2l-8.5 8.5a5 5 0 1 1-7.1-7.1l8.1-8.1" /></IconBase>;
 }

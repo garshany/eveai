@@ -20,10 +20,10 @@ import { buildEveAuthorizeUrl } from '../eve/eve-login.js';
 import { fetchWithTimeout } from '../eve/http.js';
 import { createLogger } from '../observability/logger.js';
 import {
-  buildEveConsentPage,
   EVE_CONSENT_VERSION,
   parseEveConsentForm,
 } from './eve-consent.js';
+import { buildLocalizedEveConsentPage, type ConsentLocale } from './localized-eve-consent-page.js';
 import { withWebLaneAuthorizationLock } from './web-lane-lock.js';
 
 const log = createLogger('auth');
@@ -58,11 +58,12 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     );
   }
 
-  // Every platform gets the same bilingual disclosure. The full EVE SSO URL
+  // Every platform gets the same disclosure in one explicitly selected language. The full EVE SSO URL
   // is created only after the player selects an allowlisted least-privilege
   // scope set and explicitly acknowledges how the data is used.
-  app.get<{ Querystring: { state?: string } }>('/auth/eve/login', async (req, reply) => {
+  app.get<{ Querystring: { state?: string; language?: string } }>('/auth/eve/login', async (req, reply) => {
     const state = typeof req.query.state === 'string' ? req.query.state : '';
+    const locale: ConsentLocale = req.query.language === 'en' ? 'en' : 'ru';
     if (!state) {
       return reply.status(400).type('text/html').send(buildNoticePage('Missing login token.'));
     }
@@ -76,7 +77,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       return reply
         .header('Cache-Control', 'no-store')
         .type('text/html; charset=utf-8')
-        .send(buildEveConsentPage(state));
+        .send(buildLocalizedEveConsentPage(state, locale));
     }
     return reply
       .header('Cache-Control', 'no-store')
@@ -86,6 +87,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
   app.post<{ Body: unknown }>('/auth/eve/consent', async (req, reply) => {
     const values = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
     const state = typeof values.state === 'string' ? values.state : '';
+    const locale: ConsentLocale = values.language === 'en' ? 'en' : 'ru';
     const pending = state ? findPendingAuthRequest(db, 'eve_sso', state) : null;
     if (!pending) {
       return reply.status(403).type('text/html').send(buildNoticePage('This login link has expired or was already used.'));
@@ -96,9 +98,12 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
         .status(400)
         .header('Cache-Control', 'no-store')
         .type('text/html; charset=utf-8')
-        .send(buildEveConsentPage(
+        .send(buildLocalizedEveConsentPage(
           state,
-          'Подтвердите согласие, выберите язык и используйте только доступные категории. / Confirm consent, choose a language, and use only the available categories.',
+          locale,
+          locale === 'ru'
+            ? 'Подтвердите согласие и используйте только доступные категории.'
+            : 'Confirm consent and use only the available categories.',
         ));
     }
     const recorded = recordAuthRequestConsent(db, 'eve_sso', state, {
@@ -124,7 +129,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       if (deniedRequest && state) {
         markAuthRequestUsed(db, 'eve_sso', state);
         const redirect = safeAppRedirect(deniedRequest.redirect_url);
-        if (redirect) return reply.redirect(`${redirect}?auth=denied`);
+        if (redirect) return reply.redirect(buildAppAuthRedirect(redirect, 'denied'));
       }
       return reply.status(400).send({ error: `SSO error: ${error_description ?? error}` });
     }
@@ -252,11 +257,11 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
 
       log.info('Character linked: %s (%d), %d scopes, user_id=%d', payload.name, characterId, scopes.length, ctx.userId);
 
-      if (appRedirect) return reply.redirect(`${appRedirect}?auth=connected`);
+      if (appRedirect) return reply.redirect(buildAppAuthRedirect(appRedirect, 'connected'));
       return reply.type('text/html').send(buildSuccessPage(payload.name, scopes.length));
     } catch (err) {
       log.error('Callback error: %s', err instanceof Error ? err.message : String(err));
-      if (appRedirect) return reply.redirect(`${appRedirect}?auth=error`);
+      if (appRedirect) return reply.redirect(buildAppAuthRedirect(appRedirect, 'error'));
       return reply.status(500).send({ error: 'Authentication failed. Please try /eve_login again.' });
     }
   });
@@ -276,6 +281,12 @@ function safeAppRedirect(value: string | null): string | null {
   if (!value) return null;
   if (value === '/app' || value.startsWith('/app/')) return value;
   return null;
+}
+
+function buildAppAuthRedirect(path: string, result: 'connected' | 'denied' | 'error'): string {
+  const url = new URL(path, config.web.baseUrl);
+  url.searchParams.set('auth', result);
+  return url.toString();
 }
 
 function buildSuccessPage(characterName: string, scopeCount: number): string {

@@ -1,12 +1,13 @@
 import type { Db } from '../db/sqlite.js';
 import { isDiscordOutboundRegistered, isTelegramOutboundRegistered } from '../messaging/outbound.js';
+import { getWebSessionLaneState } from '../web/web-session-state.js';
 
-export type NotificationCapability = 'all' | 'feed' | 'none';
+export type NotificationCapability = 'all' | 'feed' | 'web' | 'none';
 
 export type UserContext = {
   userId: number;
   chatId?: number;
-  /** Defaults to all. CLI uses feed; explicitly transient lanes use none. */
+  /** Defaults to all. CLI uses feed; browser lanes use durable web status. */
   notificationCapability?: NotificationCapability;
 };
 
@@ -17,6 +18,9 @@ export function resolveUserContextForChat(db: Db, chatId: number): UserContext |
     return row ? { userId: row.user_id, chatId, notificationCapability: 'feed' } : null;
   }
   if (chatId < 0) {
+    const web = getWebSessionLaneState(db, chatId);
+    if (web?.active) return { userId: web.userId, chatId, notificationCapability: 'web' };
+    if (web) return null;
     const row = db.prepare('SELECT user_id FROM discord_sessions WHERE chat_key = ?')
       .get(chatId) as { user_id: number } | undefined;
     return row ? { userId: row.user_id, chatId } : null;

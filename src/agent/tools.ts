@@ -472,7 +472,7 @@ export function isSetActiveFitTool(name: string): boolean {
 
 export async function buildNativeAgentTools(
   mode: 'full' | 'static_aggregate' = 'full',
-  options: { notificationCapability?: 'all' | 'feed' | 'none' } = {},
+  options: { notificationCapability?: 'all' | 'feed' | 'web' | 'none' } = {},
 ): Promise<NativeTool[]> {
   if (mode === 'static_aggregate') {
     return withProgrammaticPilot(ALWAYS_ON_FUNCTION_TOOLS.flatMap((tool) => {
@@ -493,13 +493,14 @@ export async function buildNativeAgentTools(
     : ALWAYS_ON_FUNCTION_TOOLS.filter((tool) => tool.name !== WEB_SEARCH_TOOL_NAME);
 
   const notificationCapability = options.notificationCapability ?? 'all';
-  const includeFeedNotifications = notificationCapability !== 'none';
+  const includeRouteMonitor = notificationCapability !== 'none';
+  const includeFeedNotifications = notificationCapability === 'all' || notificationCapability === 'feed';
   const includeHeartbeat = notificationCapability === 'all';
   return withProgrammaticPilot([
     { type: 'tool_search' },
     ...alwaysOn,
     ...(config.openai.supportsLocalParallelBatch ? [LOCAL_PARALLEL_BATCH_TOOL] : []),
-    ...(includeFeedNotifications ? [ROUTE_MONITOR_TOOL] : []),
+    ...(includeRouteMonitor ? [ROUTE_MONITOR_TOOL] : []),
     ...(includeHeartbeat ? [HEARTBEAT_CONFIG_TOOL] : []),
     BATCH_MARKET_TOOL,
     KILL_ACTIVITY_SUMMARY_TOOL,

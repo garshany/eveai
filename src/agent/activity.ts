@@ -24,6 +24,8 @@ export type AgentActivityEvent =
 
 export interface AgentActivitySink {
   emit: (event: AgentActivityEvent) => void;
+  /** Set false for UIs that only display tool activity and do not consume model reasoning. */
+  reasoning?: boolean;
   /**
    * Optional cooperative-cancellation probe (the CLI's Ctrl-C). When it
    * returns true, the agent loop stops before the next model call or tool

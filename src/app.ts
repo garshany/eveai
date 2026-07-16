@@ -56,6 +56,8 @@ async function main() {
   const { startEveKillFeedPoller, stopEveKillFeedPoller } = await import('./eve-kill/feed-poll.js');
   const { setRouteMonitorSender } = await import('./eve/route-planner.js');
   const { restoreMonitors, shutdownRouteMonitors } = await import('./eve-board/monitor.js');
+  const { cleanExpiredWebSessions } = await import('./web/web-session.js');
+  const { isActiveWebSessionLane } = await import('./web/web-session-state.js');
   const { pickTelegramParseMode } = await import('./telegram/formatting.js');
   const {
     registerTelegramOutbound,
@@ -68,6 +70,7 @@ async function main() {
   const runtimeLock = acquireRuntimeLock(config.db.path, 'bot service');
   const db = initDb(config.db.path);
   runMigrations(db);
+  if (config.web.chatEnabled) await cleanExpiredWebSessions(db);
   log.info('Database ready at %s', config.db.path);
 
   const sdeSystems = countSdeSystems(db);
@@ -172,21 +175,28 @@ async function main() {
       });
   }
 
-  // 5. Notification producers need a live push-capable platform. The browser
-  // chat currently uses request/response delivery, so web-only mode must not
-  // poll feeds or start background notifications that have nowhere to go.
+  // 5. Route monitoring is durable for browser lanes as well as push lanes.
+  // Browser status is read from the persisted monitor; human-readable push
+  // messages remain exclusive to Telegram/Discord.
   const hasOutboundPlatform = Boolean(config.telegram.botToken || config.discord.botToken);
-  if (hasOutboundPlatform) {
-    setRouteMonitorSender(deliverOutbound);
-    startHeartbeat(db);
+  const feedEnabled = hasOutboundPlatform || config.web.chatEnabled;
+  const isWebLane = (chatId: number) => isActiveWebSessionLane(db, chatId);
+  const routeMonitorSender = async (chatId: number, text: string) => {
+    if (isWebLane(chatId)) return;
+    await deliverOutbound(chatId, text);
+  };
+  const canRestoreRouteMonitor = (chatId: number) => isWebLane(chatId) || isOutboundAvailable(chatId);
+  if (feedEnabled) {
+    setRouteMonitorSender(routeMonitorSender);
     // The poller establishes a missing cursor first, then synchronously restores
     // route listeners before processing any later event. Existing cursors restore
     // listeners before the first resumed poll. This closes the baseline/head gap.
     startEveKillFeedPoller(db, deliverOutbound, {
       canDeliver: isOutboundAvailable,
-      onReady: () => restoreMonitors(db, deliverOutbound, isOutboundAvailable),
+      onReady: () => restoreMonitors(db, routeMonitorSender, canRestoreRouteMonitor),
     });
   }
+  if (hasOutboundPlatform) startHeartbeat(db);
 
   const version = getAppVersion();
   const rows: BannerRow[] = [
@@ -218,7 +228,7 @@ async function main() {
       state: 'ok',
     },
     { label: 'Heartbeat', value: hasOutboundPlatform ? 'every 5 min' : 'disabled (no push platform)', state: hasOutboundPlatform ? 'ok' : 'off' },
-    { label: 'EVE-KILL feed', value: hasOutboundPlatform ? 'durable poll' : 'disabled (no push platform)', state: hasOutboundPlatform ? 'ok' : 'off' },
+    { label: 'EVE-KILL feed', value: feedEnabled ? 'durable REST poll' : 'disabled', state: feedEnabled ? 'ok' : 'off' },
   ];
   printStartupBanner(`EVE AI Agent v${version}`, rows);
 

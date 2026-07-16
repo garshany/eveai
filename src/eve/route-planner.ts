@@ -437,6 +437,10 @@ export async function planRoute(db: Db, args: PlanRouteArgs, ctx: UserContext): 
           );
           if (!handoffAccepted) {
             captureBarrierFailure = new Error('route monitor did not accept the captured feed handoff');
+          } else {
+            formattedSummary += ctx.notificationCapability === 'web'
+              ? '\n\n🛰️ Онлайн-скан: включён — живой статус доступен в разделе «Онлайн-скан».'
+              : '\n\n🛰️ Онлайн-скан: включён — маршрут отслеживается в фоне.';
           }
         } catch (error) {
           captureBarrierFailure = error instanceof Error ? error : new Error(String(error));

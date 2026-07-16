@@ -178,7 +178,7 @@ describe('route planner', () => {
         set_autopilot: true,
         prefer: 'secure',
       },
-      { userId: 1, chatId: 1 },
+      { userId: 1, chatId: 1, notificationCapability: 'web' },
     );
 
     expect(result.ok).toBe(true);
@@ -189,6 +189,8 @@ describe('route planner', () => {
       baseline: sharedBaseline,
       initialEvents: [capturedEvent],
     });
+    expect(result.formatted_summary).toContain('Онлайн-скан: включён');
+    expect(result.formatted_summary).toContain('разделе «Онлайн-скан»');
     await expect(capturedAcknowledgement).resolves.toBeUndefined();
     expect(captureAcknowledged).toBe(true);
     expect(feedCaptureHarness.unsubscribe).toHaveBeenCalledTimes(1);

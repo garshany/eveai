@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 
+const EVE_SSO_ORIGIN = 'https://login.eveonline.com';
+
 export interface SecurityHeadersOptions {
   baseUrl: string;
 }
@@ -22,7 +24,9 @@ export function buildSecurityHeaders(
   requestHeaders?: Record<string, string | string[] | undefined>,
 ): Record<string, string> {
   const baseOrigin = getOrigin(options.baseUrl);
-  const formActionSources = ["'self'"];
+  // The consent form posts to this app, then redirects through the official
+  // EVE SSO origin. Browsers enforce form-action across that redirect chain.
+  const formActionSources = ["'self'", EVE_SSO_ORIGIN];
   const connectSources = ["'self'"];
 
   if (baseOrigin) {

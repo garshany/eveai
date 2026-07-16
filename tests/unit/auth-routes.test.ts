@@ -112,7 +112,7 @@ describe('auth routes', () => {
     await app.close();
   });
 
-  it('requires bilingual consent and redirects with only the selected EVE scopes', async () => {
+  it('requires localized consent and redirects with only the selected EVE scopes', async () => {
     const { createEveLoginLink } = await import('../../src/eve/eve-login.js');
     db.prepare("INSERT INTO users (user_id, display_name, created_at, updated_at) VALUES (1, 'pilot', datetime('now'), datetime('now'))").run();
 
@@ -128,7 +128,10 @@ describe('auth routes', () => {
     const consentPage = await app.inject({ method: 'GET', url: `/auth/eve/login?state=${encodeURIComponent(state)}` });
     expect(consentPage.statusCode).toBe(200);
     expect(consentPage.body).toContain('Вы решаете, что видит агент.');
-    expect(consentPage.body).toContain('You decide what the agent can see.');
+    expect(consentPage.body).not.toContain('You decide what the agent can see.');
+    const englishPage = await app.inject({ method: 'GET', url: `/auth/eve/login?state=${encodeURIComponent(state)}&language=en` });
+    expect(englishPage.body).toContain('You decide what the agent can see.');
+    expect(englishPage.body).not.toContain('Вы решаете, что видит агент.');
 
     const missingAcknowledgement = await app.inject({
       method: 'POST',
@@ -481,7 +484,7 @@ describe('auth routes', () => {
       url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
     });
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe('/app?auth=connected');
+    expect(response.headers.location).toBe('http://localhost:3000/app?auth=connected');
     expect(db.prepare('SELECT user_id FROM web_sessions WHERE chat_id = -2000000000').get())
       .toEqual({ user_id: 1 });
     expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeUndefined();
@@ -583,7 +586,7 @@ describe('auth routes', () => {
     const response = await responsePromise;
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe('/app?auth=error');
+    expect(response.headers.location).toBe('http://localhost:3000/app?auth=error');
     for (const path of ownerPaths) expect(existsSync(path)).toBe(true);
     expect(db.prepare('SELECT scopes_json, user_id FROM eve_accounts WHERE character_id = ?').get(characterId))
       .toEqual({ scopes_json: '["esi-wallet.read_character_wallet.v1"]', user_id: 1 });
