@@ -434,6 +434,10 @@ function applyBrowserSsoOwnerPlan(db: Db, plan: BrowserSsoOwnerPlan): number {
     .run(plan.existingUserId, plan.requestedUserId, plan.chatId);
   db.prepare('UPDATE agent_threads SET user_id = ? WHERE user_id = ? AND chat_id = ?')
     .run(plan.existingUserId, plan.requestedUserId, plan.chatId);
+  db.prepare('UPDATE web_agent_requests SET user_id = ? WHERE user_id = ? AND chat_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId, plan.chatId);
+  db.prepare('UPDATE web_admission_events SET user_id = ? WHERE user_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId);
   db.prepare('UPDATE intel_notes SET user_id = ? WHERE user_id = ?')
     .run(plan.existingUserId, plan.requestedUserId);
   db.prepare('UPDATE auth_requests SET user_id = ? WHERE user_id = ? AND chat_id = ?')
