@@ -130,6 +130,10 @@ export function createDiscordBot(db: Db): Client {
   });
 
   client.on(Events.MessageCreate, (message) => {
+    // Before anything else: a reply sent by a draining turn comes back as a
+    // MessageCreate of our own, and answering it would loop notices until the
+    // gateway dies.
+    if (message.author.bot) return;
     if (ingressClosed) {
       // Discord never replays gateway events to the next process, so a silent
       // drop loses the message outright. Say so instead: the user retypes,

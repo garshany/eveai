@@ -17,10 +17,6 @@ export async function createServer(db: Db) {
   const app = Fastify({
     logger: false,
     bodyLimit: 64 * 1024,
-    // A chat client keeps an SSE stream open for as long as it is watching a
-    // request. Without this, close() waits for that socket and the shutdown
-    // drain overruns into SIGKILL.
-    forceCloseConnections: true,
     trustProxy: config.web.trustedProxyCidrs.length > 0
       ? [...config.web.trustedProxyCidrs]
       : false,
