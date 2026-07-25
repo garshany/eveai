@@ -29,11 +29,21 @@ describe('markdownToTelegramHtml', () => {
       .toBe('Таблица:\n<pre>Rifter  500k\nPunisher 700k</pre>\nВывод.');
   });
 
-  it('keeps text around same-line backticks instead of eating it as a language tag', () => {
-    const out = markdownToTelegramHtml('до ```код``` после');
-    expect(out).toContain('код');
-    expect(out).toContain('после');
-    expect(out).not.toContain('<pre></pre>');
+  it('renders a same-line ```span``` as inline code and keeps the text around it', () => {
+    expect(markdownToTelegramHtml('до ```код``` после'))
+      .toBe('до <code>код</code> после');
+  });
+
+  it('does not let a same-line span swallow the following line', () => {
+    // An unanchored fence rule retried at the closing delimiter, read " после"
+    // as a language tag and wrapped the next line in <pre>, deleting the text.
+    expect(markdownToTelegramHtml('до ```код``` после\nследующая строка'))
+      .toBe('до <code>код</code> после\nследующая строка');
+  });
+
+  it('still treats a fence at a line start as a block', () => {
+    expect(markdownToTelegramHtml('```js\nconst a = 1;\n```\nхвост'))
+      .toBe('<pre>const a = 1;</pre>\nхвост');
   });
 
   it('closes an unterminated fence instead of leaking backticks', () => {
@@ -41,9 +51,15 @@ describe('markdownToTelegramHtml', () => {
       .toBe('<pre>[Rifter, fit]\nDamage Control II</pre>');
   });
 
-  it('escapes HTML outside and inside code', () => {
+  it('keeps Telegram tags, escapes everything else, and escapes inside code', () => {
+    // Telegram's own tag set survives so a mixed HTML+Markdown answer renders;
+    // anything outside that set is still escaped, and code stays literal.
     expect(markdownToTelegramHtml('сравни <b>жирный</b> и `a < b & c`'))
-      .toBe('сравни &lt;b&gt;жирный&lt;/b&gt; и <code>a &lt; b &amp; c</code>');
+      .toBe('сравни <b>жирный</b> и <code>a &lt; b &amp; c</code>');
+    expect(markdownToTelegramHtml('<script>alert(1)</script> и **жирный**'))
+      .toBe('&lt;script&gt;alert(1)&lt;/script&gt; и <b>жирный</b>');
+    expect(markdownToTelegramHtml('шаблон <div class="x">блок</div>'))
+      .toBe('шаблон &lt;div class="x"&gt;блок&lt;/div&gt;');
   });
 
   it('does not treat code content as markdown', () => {
@@ -77,6 +93,25 @@ describe('markdownToTelegramHtml', () => {
 });
 
 describe('formatForTelegram', () => {
+  it('converts Markdown that arrives alongside existing Telegram HTML', () => {
+    // plan_route summaries ship HTML; the agent wraps its own Markdown around
+    // them. Treating one tag as proof the whole message is formatted left
+    // **bold** on screen literally.
+    const out = formatForTelegram('<b>Маршрут</b>: Jita → Amarr\n\n**Рекомендация**: бери Rifter');
+    expect(out.parseMode).toBe('HTML');
+    expect(out.text).toBe('<b>Маршрут</b>: Jita → Amarr\n\n<b>Рекомендация</b>: бери Rifter');
+  });
+
+  it('does not double-escape entities in a mixed message', () => {
+    expect(markdownToTelegramHtml('<b>Jita</b> &amp; Amarr — **важно**'))
+      .toBe('<b>Jita</b> &amp; Amarr — <b>важно</b>');
+  });
+
+  it('keeps HTML inside a code block literal', () => {
+    expect(markdownToTelegramHtml('```\n<b>внутри кода</b>\n```'))
+      .toBe('<pre>&lt;b&gt;внутри кода&lt;/b&gt;</pre>');
+  });
+
   it('passes existing telegram HTML through unchanged', () => {
     const html = '<b>Маршрут</b>: Jita → Amarr';
     expect(formatForTelegram(html)).toEqual({ text: html, parseMode: 'HTML' });

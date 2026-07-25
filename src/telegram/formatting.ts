@@ -12,6 +12,8 @@
  * Callers keep their existing plain-text fallback for parse errors.
  */
 const HTML_MARKUP_RE = /<(?:b|strong|i|em|u|ins|s|strike|del|tg-spoiler|code|pre|a)(?:\s|>)/i;
+const TELEGRAM_HTML_TAG_RE = /<\/?(?:b|strong|i|em|u|ins|s|strike|del|tg-spoiler|code|pre|a)(?:\s[^<>]*)?>/gi;
+const HTML_ENTITY_RE = /&(?:amp|lt|gt|quot|#\d{1,6});/g;
 
 // Bold/italic require non-space content edges so arithmetic like "5 * 3 * 2"
 // or "2 ** 3 ** 4" is never mistaken for markup (matches the converter below).
@@ -44,13 +46,23 @@ export function markdownToTelegramHtml(text: string): string {
 
   let out = text
     // Fenced blocks: ```lang\n...``` (language tag dropped; unterminated -> EOF).
-    // The newline after the optional tag is required: without it, "a ```b``` c"
-    // would swallow the whole line as a language tag and emit an empty <pre>,
-    // losing the text. Same-line backticks fall through to the inline rule.
-    .replace(/```([^\n`]*)\n([\s\S]*?)(?:```|$)/g, (_m, _lang: string, body: string) =>
-      stash(`<pre>${escapeHtml(body.replace(/\n$/, ''))}</pre>`))
+    // Anchored to a line start, and the newline after the optional tag is
+    // required. Without both, "до ```код``` после\nследующая строка" retries at
+    // the closing delimiter, eats " после" as a language tag and wraps the next
+    // line in <pre>. Same-line backticks fall through to the inline rule.
+    .replace(/(^|\n)```([^\n`]*)\n([\s\S]*?)(?:```|$)/g, (_m, lead: string, _lang: string, body: string) =>
+      lead + stash(`<pre>${escapeHtml(body.replace(/\n$/, ''))}</pre>`))
+    // Same-line ```span```: not a block (no newline), so it renders as inline
+    // code rather than leaving stray backticks around it.
+    .replace(/```([^`\n]+)```/g, (_m, body: string) => stash(`<code>${escapeHtml(body)}</code>`))
     // Inline code.
-    .replace(/`([^`\n]+)`/g, (_m, body: string) => stash(`<code>${escapeHtml(body)}</code>`));
+    .replace(/`([^`\n]+)`/g, (_m, body: string) => stash(`<code>${escapeHtml(body)}</code>`))
+    // Telegram HTML that arrived with the text (plan_route summaries, EVE mail)
+    // must survive the escape step below — a mixed answer carries both that and
+    // the agent's Markdown, and escaping the tags would show them literally.
+    // Runs after code so tags inside a code block stay literal, as intended.
+    .replace(TELEGRAM_HTML_TAG_RE, (tag: string) => stash(tag))
+    .replace(HTML_ENTITY_RE, (entity: string) => stash(entity));
 
   out = escapeHtml(out);
 
@@ -74,7 +86,11 @@ export function markdownToTelegramHtml(text: string): string {
 
 /** Pick the wire format for one outgoing Telegram message. */
 export function formatForTelegram(text: string): { text: string; parseMode: 'HTML' | undefined } {
-  if (HTML_MARKUP_RE.test(text)) return { text, parseMode: 'HTML' };
+  // Markdown decides first: a mixed answer (route summary in Telegram HTML plus
+  // the agent's chat-Markdown around it) is a normal flow, and treating one tag
+  // as proof the whole message is formatted left **bold** on screen literally.
+  // The converter preserves the HTML it finds.
   if (MARKDOWN_SIGIL_RE.test(text)) return { text: markdownToTelegramHtml(text), parseMode: 'HTML' };
+  if (HTML_MARKUP_RE.test(text)) return { text, parseMode: 'HTML' };
   return { text, parseMode: undefined };
 }
