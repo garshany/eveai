@@ -91,6 +91,7 @@ async function main() {
     setWebAgentCloseGraceMs,
   } = await import('./web/agent-requests.js');
   const { stopDiscordIngress } = await import('./discord/bot.js');
+  const { stopTelegramIngress } = await import('./telegram/bot.js');
 
   // 2. Enforce the single-process feed/SQLite invariant, then initialize DB.
   const runtimeLock = acquireRuntimeLock(config.db.path, 'bot service');
@@ -143,28 +144,23 @@ async function main() {
     const drainMs = config.shutdown.drainMs;
     const deadline = Date.now() + drainMs;
 
-    // Order matters. Producers stop first so nothing new is queued, then every
-    // ingress closes, then running turns are given what is left of the window to
-    // finish and answer. Discord's gateway is torn down only after that: killing
-    // it earlier would strand the reply of a turn that is still writing, and the
-    // database stays open until the drain ends for the same reason.
-    //
-    // Stopping the feed poller only cancels its sleep — if SIGTERM lands while a
-    // poll is inside a network call, awaiting it unbounded would eat the entire
-    // window before the drain even starts.
+    // Close every ingress first, and synchronously: a message accepted after the
+    // deadline starts gets a turn with no time to finish and is aborted anyway.
+    // This must precede any await — stopping the feed poller can itself block on
+    // a network call for the whole window. Discord keeps its gateway connected
+    // (running replies still need to send) but stops dispatching new messages.
+    stopDiscordIngress();
+    stopWebAgentIngress();
+    stopTelegramIngress();
+
+    // Producers next, so nothing new is queued while turns drain. Stopping the
+    // feed poller only cancels its sleep, so bound it like every other step.
     await withDeadline(stopEveKillFeedPoller(), deadline);
     shutdownRouteMonitors();
     stopHeartbeat();
 
-    // Close every ingress before waiting, or a DM arriving mid-shutdown starts a
-    // turn that shares the already-running deadline and gets cut off anyway.
-    // Discord keeps its connection (running replies still need to send) but
-    // stops dispatching new messages.
-    stopDiscordIngress();
-    stopWebAgentIngress();
-    // grammy's stop() waits for the current long poll and its handlers, which is
-    // an unbounded wait on a stalled network — cap it with the drain budget so a
-    // hung poller cannot swallow the whole window and reach SIGKILL instead.
+    // Ingress is already closed above; this only unwinds the poller, and grammY
+    // waits for the current long poll, which is unbounded on a stalled network.
     await withDeadline(telegramBot?.stop(), deadline);
 
     if (drainMs > 0) {
@@ -187,7 +183,9 @@ async function main() {
     // server.close() aborts whatever outlived the drain; hold it to what is left
     // of the same budget so the real stop never exceeds SHUTDOWN_DRAIN_MS.
     setWebAgentCloseGraceMs(Math.max(0, deadline - Date.now()));
-    await server.close();
+    // Bounded too: a client watching an SSE stream would otherwise hold close()
+    // open past the deadline. process.exit below drops whatever is left.
+    await withDeadline(server.close(), deadline);
     db.close();
     runtimeLock.release();
     process.exit(exitCode);
