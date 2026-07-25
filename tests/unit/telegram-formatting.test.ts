@@ -107,6 +107,16 @@ describe('formatForTelegram', () => {
       .toBe('<b>Jita</b> &amp; Amarr — <b>важно</b>');
   });
 
+  it('leaves Markdown inside an existing code element alone', () => {
+    // Telegram forbids formatting entities inside a code entity: converting the
+    // sigils there produces a payload it rejects, and the plain-text retry then
+    // strips the formatting from the whole message.
+    expect(markdownToTelegramHtml('<code>**literal**</code>\n**Рекомендация**'))
+      .toBe('<code>**literal**</code>\n<b>Рекомендация</b>');
+    expect(markdownToTelegramHtml('<pre><code class="language-js">const a = **1**;</code></pre>\n**итог**'))
+      .toBe('<pre><code class="language-js">const a = **1**;</code></pre>\n<b>итог</b>');
+  });
+
   it('keeps HTML inside a code block literal', () => {
     expect(markdownToTelegramHtml('```\n<b>внутри кода</b>\n```'))
       .toBe('<pre>&lt;b&gt;внутри кода&lt;/b&gt;</pre>');

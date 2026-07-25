@@ -57,6 +57,14 @@ export function markdownToTelegramHtml(text: string): string {
     .replace(/```([^`\n]+)```/g, (_m, body: string) => stash(`<code>${escapeHtml(body)}</code>`))
     // Inline code.
     .replace(/`([^`\n]+)`/g, (_m, body: string) => stash(`<code>${escapeHtml(body)}</code>`))
+    // Whole <pre>/<code> elements that arrived as HTML are stashed with their
+    // contents: Telegram forbids formatting entities inside a code entity, so
+    // converting Markdown found in there ("<code>**literal**</code>") produces
+    // a payload Telegram rejects, and the sender's plain-text retry then leaves
+    // the whole message unformatted. <pre> goes first — Telegram nests
+    // <pre><code class="language-x"> and the outer element must win.
+    .replace(/<pre\b[^>]*>[\s\S]*?<\/pre>/gi, (block: string) => stash(block))
+    .replace(/<code\b[^>]*>[\s\S]*?<\/code>/gi, (block: string) => stash(block))
     // Telegram HTML that arrived with the text (plan_route summaries, EVE mail)
     // must survive the escape step below — a mixed answer carries both that and
     // the agent's Markdown, and escaping the tags would show them literally.

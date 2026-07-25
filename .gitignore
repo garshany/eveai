@@ -9,6 +9,8 @@ data/
 .agent/tasks/*
 !.agent/tasks/opensource-readiness-20260525/
 !.agent/tasks/opensource-readiness-20260525/**
+!.agent/tasks/telegram-restart-and-shutdown-drain/
+!.agent/tasks/telegram-restart-and-shutdown-drain/**
 .agents/
 .claude/
 hooks/
