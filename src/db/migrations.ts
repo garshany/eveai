@@ -45,6 +45,7 @@ export function runMigrations(db: Db): void {
     addColumnIfMissing(db, 'auth_requests', 'consent_language', 'TEXT');
     addColumnIfMissing(db, 'auth_requests', 'consented_at', 'TEXT');
     ensureConsentLanguageGuards(db);
+    ensureProcessedUpdates(db);
   });
 
   migrate();
@@ -389,6 +390,23 @@ function ensureIntelNotes(db: Db): void {
     db.exec('CREATE INDEX idx_intel_notes_user ON intel_notes(user_id)');
     db.exec('CREATE INDEX idx_intel_notes_system ON intel_notes(user_id, system_id)');
     db.exec('CREATE INDEX idx_intel_notes_region ON intel_notes(user_id, region_id)');
+  }
+}
+
+function ensureProcessedUpdates(db: Db): void {
+  const exists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='telegram_processed_updates'",
+  ).get();
+  if (!exists) {
+    // Claimed before dispatch so a redelivered update (the process died before
+    // long polling confirmed the offset) is not handled twice.
+    db.exec(`
+      CREATE TABLE telegram_processed_updates (
+        update_id    INTEGER PRIMARY KEY,
+        processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.exec('CREATE INDEX idx_telegram_processed_updates_at ON telegram_processed_updates(processed_at)');
   }
 }
 
