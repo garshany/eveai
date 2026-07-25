@@ -7,7 +7,11 @@ import {
   TURN_ABORTED_MESSAGE,
   TURN_DEADLINE_MESSAGE,
 } from '../../src/agent/activity.js';
-import { WebAgentRequestCoordinator } from '../../src/web/agent-requests.js';
+import {
+  activeWebAgentRequestCount,
+  stopWebAgentIngress,
+  WebAgentRequestCoordinator,
+} from '../../src/web/agent-requests.js';
 
 let db: Database.Database;
 
@@ -294,6 +298,35 @@ describe('durable web agent request coordinator', () => {
     });
     expect(db.prepare('SELECT COUNT(*) AS count FROM web_agent_requests').get()).toEqual({ count: 0 });
     await coordinator.close();
+  });
+
+  it('refuses new turns once shutdown closes ingress, without touching running ones', async () => {
+    let release = () => {};
+    const started = new Promise<void>((resolve) => { release = resolve; });
+    let running = 0;
+    const coordinator = new WebAgentRequestCoordinator(db, async () => {
+      running += 1;
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return { reply: 'ok' } as never;
+    });
+    coordinator.start();
+
+    coordinator.enqueue(input('drain_key_00000001'));
+    await started;
+    // Shutdown observes this count and waits on it — a web turn is not
+    // invisible just because it lives outside the chat in-flight map.
+    expect(activeWebAgentRequestCount()).toBe(1);
+
+    stopWebAgentIngress();
+    const refused = coordinator.enqueue(input('drain_key_00000002'));
+    expect(refused).toMatchObject({ ok: false, statusCode: 503 });
+    // The turn already running is untouched by closing ingress.
+    expect(running).toBe(1);
+    expect(activeWebAgentRequestCount()).toBe(1);
+
+    await coordinator.close();
+    expect(activeWebAgentRequestCount()).toBe(0);
   });
 });
 

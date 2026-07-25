@@ -85,7 +85,11 @@ async function main() {
     isOutboundAvailable,
   } = await import('./messaging/outbound.js');
   const { waitForInFlightRequests, activeRequestCount } = await import('./chat/shared.js');
-  const { activeWebAgentRequestCount } = await import('./web/agent-requests.js');
+  const {
+    activeWebAgentRequestCount,
+    stopWebAgentIngress,
+    setWebAgentCloseGraceMs,
+  } = await import('./web/agent-requests.js');
   const { stopDiscordIngress } = await import('./discord/bot.js');
 
   // 2. Enforce the single-process feed/SQLite invariant, then initialize DB.
@@ -151,6 +155,7 @@ async function main() {
     // Discord keeps its connection (running replies still need to send) but
     // stops dispatching new messages.
     stopDiscordIngress();
+    stopWebAgentIngress();
     // grammy's stop() waits for the current long poll and its handlers, which is
     // an unbounded wait on a stalled network — cap it with the drain budget so a
     // hung poller cannot swallow the whole window and reach SIGKILL instead.
@@ -173,6 +178,9 @@ async function main() {
     if (discordClient) {
       await discordClient.destroy().catch(() => {});
     }
+    // server.close() aborts whatever outlived the drain; hold it to what is left
+    // of the same budget so the real stop never exceeds SHUTDOWN_DRAIN_MS.
+    setWebAgentCloseGraceMs(Math.max(0, deadline - Date.now()));
     await server.close();
     db.close();
     runtimeLock.release();
