@@ -77,6 +77,19 @@ const MAX_ACTIVITY_ITEMS = 32;
 const MAX_ACTIVITY_DETAIL_CHARS = 160;
 const REQUEST_COST_UNITS = 4;
 
+/**
+ * The coordinator is created inside the web routes, but shutdown lives in the
+ * entrypoint and must see web turns too: they never enter the chat lanes'
+ * in-flight map, and `server.close()` aborts them. Without this the drain
+ * returns immediately on a web-only turn and abandons exactly the answer it
+ * exists to protect.
+ */
+let activeCoordinator: WebAgentRequestCoordinator | null = null;
+
+export function activeWebAgentRequestCount(): number {
+  return activeCoordinator?.runningCount() ?? 0;
+}
+
 export class WebAgentRequestCoordinator {
   private readonly running = new Map<string, AbortController>();
   private draining = false;
@@ -89,7 +102,13 @@ export class WebAgentRequestCoordinator {
 
   start(): void {
     this.recoverAfterRestart();
+    activeCoordinator = this;
     this.scheduleDrain();
+  }
+
+  /** Web turns currently executing — shutdown drains on this, not just chat lanes. */
+  runningCount(): number {
+    return this.running.size;
   }
 
   enqueue(input: EnqueueWebAgentRequestInput, now = Date.now()): EnqueueResult {
@@ -300,6 +319,7 @@ export class WebAgentRequestCoordinator {
 
   async close(): Promise<void> {
     this.closed = true;
+    if (activeCoordinator === this) activeCoordinator = null;
     for (const controller of this.running.values()) controller.abort();
     const deadline = Date.now() + 5_000;
     while (this.running.size > 0 && Date.now() < deadline) {

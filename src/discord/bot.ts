@@ -94,6 +94,17 @@ type SessionContext = {
   chatKey: number;
 };
 
+/**
+ * Shutdown closes ingress before draining: the gateway stays connected so a
+ * running turn can still deliver its reply, but a DM arriving mid-shutdown must
+ * not start a turn that shares the already-running deadline and gets cut off.
+ */
+let ingressClosed = false;
+
+export function stopDiscordIngress(): void {
+  ingressClosed = true;
+}
+
 export function createDiscordBot(db: Db): Client {
   const client = new Client({
     // DM-only bot: no guild message intents, and the privileged MessageContent
@@ -107,6 +118,8 @@ export function createDiscordBot(db: Db): Client {
     partials: [Partials.Channel, Partials.Message],
   });
 
+  ingressClosed = false;
+
   client.once(Events.ClientReady, (ready) => {
     log.info('logged in as %s', ready.user.tag);
     ready.application.commands.set(DISCORD_SLASH_COMMANDS.map((cmd) => cmd.toJSON())).catch((err) => {
@@ -115,12 +128,14 @@ export function createDiscordBot(db: Db): Client {
   });
 
   client.on(Events.MessageCreate, (message) => {
+    if (ingressClosed) return;
     void handleMessage(db, message).catch((err) => {
       log.error('message handler error: %s', err instanceof Error ? err.message : String(err));
     });
   });
 
   client.on(Events.InteractionCreate, (interaction) => {
+    if (ingressClosed) return;
     void handleInteraction(db, interaction).catch((err) => {
       log.error('interaction handler error: %s', err instanceof Error ? err.message : String(err));
     });

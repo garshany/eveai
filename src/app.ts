@@ -84,7 +84,9 @@ async function main() {
     deliverOutbound,
     isOutboundAvailable,
   } = await import('./messaging/outbound.js');
-  const { waitForInFlightRequests } = await import('./chat/shared.js');
+  const { waitForInFlightRequests, activeRequestCount } = await import('./chat/shared.js');
+  const { activeWebAgentRequestCount } = await import('./web/agent-requests.js');
+  const { stopDiscordIngress } = await import('./discord/bot.js');
 
   // 2. Enforce the single-process feed/SQLite invariant, then initialize DB.
   const runtimeLock = acquireRuntimeLock(config.db.path, 'bot service');
@@ -140,11 +142,27 @@ async function main() {
     await stopEveKillFeedPoller();
     shutdownRouteMonitors();
     stopHeartbeat();
-    await telegramBot?.stop().catch(() => {});
 
     const drainMs = config.shutdown.drainMs;
+    const deadline = Date.now() + drainMs;
+
+    // Close every ingress before waiting, or a DM arriving mid-shutdown starts a
+    // turn that shares the already-running deadline and gets cut off anyway.
+    // Discord keeps its connection (running replies still need to send) but
+    // stops dispatching new messages.
+    stopDiscordIngress();
+    // grammy's stop() waits for the current long poll and its handlers, which is
+    // an unbounded wait on a stalled network — cap it with the drain budget so a
+    // hung poller cannot swallow the whole window and reach SIGKILL instead.
+    await withDeadline(telegramBot?.stop(), deadline);
+
     if (drainMs > 0) {
-      const stillRunning = await waitForInFlightRequests(drainMs, config.shutdown.drainPollMs);
+      const remaining = Math.max(0, deadline - Date.now());
+      const stillRunning = await waitForInFlightRequests(
+        remaining,
+        config.shutdown.drainPollMs,
+        () => activeRequestCount() + activeWebAgentRequestCount(),
+      );
       if (stillRunning > 0) {
         log.warn('Shutdown drain: %d turn(s) still running after %dms — exiting anyway', stillRunning, drainMs);
       } else {
@@ -294,6 +312,26 @@ async function main() {
     log.error('Uncaught exception: %s', err.stack ?? err.message);
     void shutdown(1);
   });
+}
+
+/**
+ * Await a promise but never past `deadlineMs`. A stalled shutdown step must not
+ * eat the whole drain window and leave the supervisor to SIGKILL instead.
+ */
+async function withDeadline(promise: Promise<unknown> | undefined, deadlineMs: number): Promise<void> {
+  if (!promise) return;
+  const remaining = Math.max(0, deadlineMs - Date.now());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise.catch(() => {}),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, remaining);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function countSdeSystems(db: import('./db/sqlite.js').Db): number {

@@ -113,17 +113,21 @@ export function activeRequestCount(): number {
  * running when the wait ended, so the caller can say so out loud instead of
  * exiting silently. A non-positive timeout skips the wait entirely.
  */
-export async function waitForInFlightRequests(timeoutMs: number, pollMs = 250): Promise<number> {
-  if (timeoutMs <= 0) return activeRequestCount();
+export async function waitForInFlightRequests(
+  timeoutMs: number,
+  pollMs = 250,
+  count: () => number = activeRequestCount,
+): Promise<number> {
+  if (timeoutMs <= 0) return count();
 
   const deadline = Date.now() + timeoutMs;
-  while (activeRequestCount() > 0) {
+  while (count() > 0) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
   }
 
-  return activeRequestCount();
+  return count();
 }
 
 export function isDuplicateInFlightRequest(chatId: number, threadId: string, text: string, now = Date.now()): boolean {

@@ -51,6 +51,20 @@ describe('waitForInFlightRequests', () => {
     expect(elapsed).toBeLessThan(1_500);
   });
 
+  it('drains on an injected counter so other lanes are not invisible', async () => {
+    // Web turns live in their own coordinator, not in the chat in-flight map.
+    // Shutdown passes a combined counter; the wait must honour it.
+    let webTurns = 2;
+    setTimeout(() => { webTurns = 0; }, 60);
+
+    await expect(waitForInFlightRequests(5_000, 10, () => activeRequestCount() + webTurns))
+      .resolves.toBe(0);
+  });
+
+  it('reports lane work left over at the deadline', async () => {
+    await expect(waitForInFlightRequests(60, 10, () => 3)).resolves.toBe(3);
+  });
+
   it('skips the wait entirely when the drain is disabled', async () => {
     rememberInFlightRequest(42, 'thread-1', 'вопрос', 'token-1');
 
