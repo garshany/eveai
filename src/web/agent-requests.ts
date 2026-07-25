@@ -77,6 +77,35 @@ const MAX_ACTIVITY_ITEMS = 32;
 const MAX_ACTIVITY_DETAIL_CHARS = 160;
 const REQUEST_COST_UNITS = 4;
 
+/**
+ * The coordinator is created inside the web routes, but shutdown lives in the
+ * entrypoint and must see web turns too: they never enter the chat lanes'
+ * in-flight map, and `server.close()` aborts them. Without this the drain
+ * returns immediately on a web-only turn and abandons exactly the answer it
+ * exists to protect.
+ */
+let activeCoordinator: WebAgentRequestCoordinator | null = null;
+
+export function activeWebAgentRequestCount(): number {
+  return activeCoordinator?.runningCount() ?? 0;
+}
+
+/** Refuse new web turns while shutdown drains the running ones. */
+export function stopWebAgentIngress(): void {
+  activeCoordinator?.closeIngress();
+}
+
+/**
+ * Budget left for aborting whatever survived the drain. `server.close()` runs
+ * after the drain and would otherwise spend another fixed grace period on top
+ * of SHUTDOWN_DRAIN_MS, pushing the real stop past the supervisor's window.
+ */
+let closeGraceMs = 5_000;
+
+export function setWebAgentCloseGraceMs(ms: number): void {
+  closeGraceMs = Math.max(0, ms);
+}
+
 export class WebAgentRequestCoordinator {
   private readonly running = new Map<string, AbortController>();
   private draining = false;
@@ -89,10 +118,23 @@ export class WebAgentRequestCoordinator {
 
   start(): void {
     this.recoverAfterRestart();
+    activeCoordinator = this;
     this.scheduleDrain();
   }
 
+  /** Web turns currently executing — shutdown drains on this, not just chat lanes. */
+  runningCount(): number {
+    return this.running.size;
+  }
+
   enqueue(input: EnqueueWebAgentRequestInput, now = Date.now()): EnqueueResult {
+    // Shutdown closes ingress before draining. Accepting here would start a turn
+    // with only the shrinking remainder of the deadline and abort it moments
+    // later; a 503 lets the caller retry against the next process instead.
+    if (this.closed) {
+      return rejection(503, 'Сервис перезапускается. Повторите запрос через несколько секунд.', 5);
+    }
+
     const messageHash = hashMessage(input.threadId, input.message);
     const transaction = this.db.transaction((): EnqueueResult => {
       const existing = this.db.prepare(`
@@ -298,10 +340,16 @@ export class WebAgentRequestCoordinator {
     })();
   }
 
+  /** Stop accepting work without touching turns that are already running. */
+  closeIngress(): void {
+    this.closed = true;
+  }
+
   async close(): Promise<void> {
     this.closed = true;
+    if (activeCoordinator === this) activeCoordinator = null;
     for (const controller of this.running.values()) controller.abort();
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + closeGraceMs;
     while (this.running.size > 0 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }

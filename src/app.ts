@@ -84,6 +84,13 @@ async function main() {
     deliverOutbound,
     isOutboundAvailable,
   } = await import('./messaging/outbound.js');
+  const { waitForInFlightRequests, activeRequestCount } = await import('./chat/shared.js');
+  const {
+    activeWebAgentRequestCount,
+    stopWebAgentIngress,
+    setWebAgentCloseGraceMs,
+  } = await import('./web/agent-requests.js');
+  const { stopDiscordIngress } = await import('./discord/bot.js');
 
   // 2. Enforce the single-process feed/SQLite invariant, then initialize DB.
   const runtimeLock = acquireRuntimeLock(config.db.path, 'bot service');
@@ -130,14 +137,58 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info('Shutting down...');
-    await stopEveKillFeedPoller();
+    // The budget starts here, before the first await: every step below shares
+    // one deadline, so the whole stop stays inside SHUTDOWN_DRAIN_MS and the
+    // supervisor never has to SIGKILL us mid-drain.
+    const drainMs = config.shutdown.drainMs;
+    const deadline = Date.now() + drainMs;
+
+    // Close every ingress first, and synchronously: a message accepted after the
+    // deadline starts gets a turn with no time to finish and is aborted anyway.
+    // This must precede any await — stopping the feed poller can itself block on
+    // a network call for the whole window. Discord keeps its gateway connected
+    // (running replies still need to send) but stops dispatching new messages.
+    stopDiscordIngress();
+    stopWebAgentIngress();
+
+    // Telegram closes next and comes before every other await, because it is the
+    // one ingress that cannot be closed with a flag: dropping an update in
+    // middleware still lets grammY confirm its offset, and Telegram would never
+    // redeliver it. stop() ends polling without confirming what it did not
+    // process — but it waits for the current long poll, so it is bounded.
+    await withDeadline(telegramBot?.stop(), deadline);
+
+    // Producers next, so nothing new is queued while turns drain. Stopping the
+    // feed poller only cancels its sleep, so bound it like every other step.
+    await withDeadline(stopEveKillFeedPoller(), deadline);
     shutdownRouteMonitors();
     stopHeartbeat();
-    telegramBot?.stop();
-    if (discordClient) {
-      await discordClient.destroy().catch(() => {});
+
+    if (drainMs > 0) {
+      const remaining = Math.max(0, deadline - Date.now());
+      const stillRunning = await waitForInFlightRequests(
+        remaining,
+        config.shutdown.drainPollMs,
+        () => activeRequestCount() + activeWebAgentRequestCount(),
+      );
+      if (stillRunning > 0) {
+        log.warn('Shutdown drain: %d turn(s) still running after %dms — exiting anyway', stillRunning, drainMs);
+      } else {
+        log.info('Shutdown drain: all turns finished');
+      }
     }
-    await server.close();
+
+    if (discordClient) {
+      // destroy() waits for the gateway's close event and can hang on a stalled
+      // socket; process.exit below drops whatever the deadline leaves behind.
+      await withDeadline(discordClient.destroy(), deadline);
+    }
+    // server.close() aborts whatever outlived the drain; hold it to what is left
+    // of the same budget so the real stop never exceeds SHUTDOWN_DRAIN_MS.
+    setWebAgentCloseGraceMs(Math.max(0, deadline - Date.now()));
+    // Bounded too: a client watching an SSE stream would otherwise hold close()
+    // open past the deadline. process.exit below drops whatever is left.
+    await withDeadline(server.close(), deadline);
     db.close();
     runtimeLock.release();
     process.exit(exitCode);
@@ -276,6 +327,26 @@ async function main() {
     log.error('Uncaught exception: %s', err.stack ?? err.message);
     void shutdown(1);
   });
+}
+
+/**
+ * Await a promise but never past `deadlineMs`. A stalled shutdown step must not
+ * eat the whole drain window and leave the supervisor to SIGKILL instead.
+ */
+async function withDeadline(promise: Promise<unknown> | undefined, deadlineMs: number): Promise<void> {
+  if (!promise) return;
+  const remaining = Math.max(0, deadlineMs - Date.now());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise.catch(() => {}),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, remaining);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function countSdeSystems(db: import('./db/sqlite.js').Db): number {

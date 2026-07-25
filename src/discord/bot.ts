@@ -94,6 +94,19 @@ type SessionContext = {
   chatKey: number;
 };
 
+/**
+ * Shutdown closes ingress before draining: the gateway stays connected so a
+ * running turn can still deliver its reply, but a DM arriving mid-shutdown must
+ * not start a turn that shares the already-running deadline and gets cut off.
+ */
+let ingressClosed = false;
+
+const RESTARTING_NOTICE = 'Бот перезапускается — повтори сообщение через несколько секунд.';
+
+export function stopDiscordIngress(): void {
+  ingressClosed = true;
+}
+
 export function createDiscordBot(db: Db): Client {
   const client = new Client({
     // DM-only bot: no guild message intents, and the privileged MessageContent
@@ -107,6 +120,8 @@ export function createDiscordBot(db: Db): Client {
     partials: [Partials.Channel, Partials.Message],
   });
 
+  ingressClosed = false;
+
   client.once(Events.ClientReady, (ready) => {
     log.info('logged in as %s', ready.user.tag);
     ready.application.commands.set(DISCORD_SLASH_COMMANDS.map((cmd) => cmd.toJSON())).catch((err) => {
@@ -115,12 +130,30 @@ export function createDiscordBot(db: Db): Client {
   });
 
   client.on(Events.MessageCreate, (message) => {
+    // Before anything else: a reply sent by a draining turn comes back as a
+    // MessageCreate of our own, and answering it would loop notices until the
+    // gateway dies.
+    if (message.author.bot) return;
+    if (ingressClosed) {
+      // Discord never replays gateway events to the next process, so a silent
+      // drop loses the message outright. Say so instead: the user retypes,
+      // rather than waiting on an answer that will never come.
+      void message.reply(RESTARTING_NOTICE).catch(() => {});
+      return;
+    }
     void handleMessage(db, message).catch((err) => {
       log.error('message handler error: %s', err instanceof Error ? err.message : String(err));
     });
   });
 
   client.on(Events.InteractionCreate, (interaction) => {
+    if (ingressClosed) {
+      // An unacknowledged interaction shows "the application did not respond".
+      if (interaction.isRepliable()) {
+        void interaction.reply({ content: RESTARTING_NOTICE, ephemeral: true }).catch(() => {});
+      }
+      return;
+    }
     void handleInteraction(db, interaction).catch((err) => {
       log.error('interaction handler error: %s', err instanceof Error ? err.message : String(err));
     });

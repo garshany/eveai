@@ -105,6 +105,31 @@ export function activeRequestCount(): number {
   return inFlightRequests.size;
 }
 
+/**
+ * Wait for running turns to finish, bounded by `timeoutMs`.
+ *
+ * Used by shutdown: killing the process mid-turn loses the answer the user is
+ * waiting for and can cut a write short. Returns how many turns were still
+ * running when the wait ended, so the caller can say so out loud instead of
+ * exiting silently. A non-positive timeout skips the wait entirely.
+ */
+export async function waitForInFlightRequests(
+  timeoutMs: number,
+  pollMs = 250,
+  count: () => number = activeRequestCount,
+): Promise<number> {
+  if (timeoutMs <= 0) return count();
+
+  const deadline = Date.now() + timeoutMs;
+  while (count() > 0) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
+  }
+
+  return count();
+}
+
 export function isDuplicateInFlightRequest(chatId: number, threadId: string, text: string, now = Date.now()): boolean {
   const current = inFlightRequests.get(chatId);
   if (!current) return false;

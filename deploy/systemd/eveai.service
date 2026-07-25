@@ -14,6 +14,10 @@ Environment=NODE_ENV=production
 ExecStart=/usr/bin/node /srv/eveai/dist/app.js
 Restart=always
 RestartSec=5
+# Must stay above SHUTDOWN_DRAIN_MS (default 30s) — otherwise systemd SIGKILLs
+# the process mid-drain and the in-flight answers are lost anyway. Raise both
+# together; the supported drain ceiling is 600s.
+TimeoutStopSec=60
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
