@@ -101,6 +101,8 @@ type SessionContext = {
  */
 let ingressClosed = false;
 
+const RESTARTING_NOTICE = 'Бот перезапускается — повтори сообщение через несколько секунд.';
+
 export function stopDiscordIngress(): void {
   ingressClosed = true;
 }
@@ -128,14 +130,26 @@ export function createDiscordBot(db: Db): Client {
   });
 
   client.on(Events.MessageCreate, (message) => {
-    if (ingressClosed) return;
+    if (ingressClosed) {
+      // Discord never replays gateway events to the next process, so a silent
+      // drop loses the message outright. Say so instead: the user retypes,
+      // rather than waiting on an answer that will never come.
+      void message.reply(RESTARTING_NOTICE).catch(() => {});
+      return;
+    }
     void handleMessage(db, message).catch((err) => {
       log.error('message handler error: %s', err instanceof Error ? err.message : String(err));
     });
   });
 
   client.on(Events.InteractionCreate, (interaction) => {
-    if (ingressClosed) return;
+    if (ingressClosed) {
+      // An unacknowledged interaction shows "the application did not respond".
+      if (interaction.isRepliable()) {
+        void interaction.reply({ content: RESTARTING_NOTICE, ephemeral: true }).catch(() => {});
+      }
+      return;
+    }
     void handleInteraction(db, interaction).catch((err) => {
       log.error('interaction handler error: %s', err instanceof Error ? err.message : String(err));
     });

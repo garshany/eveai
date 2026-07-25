@@ -20,13 +20,6 @@ export const TELEGRAM_COMMANDS = [
   { command: 'clear', description: 'Очистить диалог' },
 ];
 
-let ingressClosed = false;
-
-/** Stop dispatching updates without waiting for grammY's poller to unwind. */
-export function stopTelegramIngress(): void {
-  ingressClosed = true;
-}
-
 export function createBot(db: Db): Bot<Context> {
   const timeoutSeconds = parseTimeoutSeconds(process.env.TELEGRAM_TIMEOUT_SECONDS);
   const proxyUrl = process.env.TELEGRAM_PROXY || null;
@@ -46,15 +39,6 @@ export function createBot(db: Db): Bot<Context> {
   }
 
   const bot = new Bot(config.telegram.botToken, { client });
-  ingressClosed = false;
-
-  // Shutdown closes ingress synchronously before any awaited step, so an update
-  // delivered mid-stop does not start a turn on an already-expiring deadline.
-  // The update stays unclaimed and Telegram redelivers it to the next process.
-  bot.use(async (ctx, next) => {
-    if (ingressClosed) return;
-    await next();
-  });
 
   // Private chat only -- reject group chats to prevent data leaks
   bot.use(async (ctx, next) => {

@@ -91,7 +91,6 @@ async function main() {
     setWebAgentCloseGraceMs,
   } = await import('./web/agent-requests.js');
   const { stopDiscordIngress } = await import('./discord/bot.js');
-  const { stopTelegramIngress } = await import('./telegram/bot.js');
 
   // 2. Enforce the single-process feed/SQLite invariant, then initialize DB.
   const runtimeLock = acquireRuntimeLock(config.db.path, 'bot service');
@@ -151,17 +150,19 @@ async function main() {
     // (running replies still need to send) but stops dispatching new messages.
     stopDiscordIngress();
     stopWebAgentIngress();
-    stopTelegramIngress();
+
+    // Telegram closes next and comes before every other await, because it is the
+    // one ingress that cannot be closed with a flag: dropping an update in
+    // middleware still lets grammY confirm its offset, and Telegram would never
+    // redeliver it. stop() ends polling without confirming what it did not
+    // process — but it waits for the current long poll, so it is bounded.
+    await withDeadline(telegramBot?.stop(), deadline);
 
     // Producers next, so nothing new is queued while turns drain. Stopping the
     // feed poller only cancels its sleep, so bound it like every other step.
     await withDeadline(stopEveKillFeedPoller(), deadline);
     shutdownRouteMonitors();
     stopHeartbeat();
-
-    // Ingress is already closed above; this only unwinds the poller, and grammY
-    // waits for the current long poll, which is unbounded on a stalled network.
-    await withDeadline(telegramBot?.stop(), deadline);
 
     if (drainMs > 0) {
       const remaining = Math.max(0, deadline - Date.now());
@@ -178,7 +179,9 @@ async function main() {
     }
 
     if (discordClient) {
-      await discordClient.destroy().catch(() => {});
+      // destroy() waits for the gateway's close event and can hang on a stalled
+      // socket; process.exit below drops whatever the deadline leaves behind.
+      await withDeadline(discordClient.destroy(), deadline);
     }
     // server.close() aborts whatever outlived the drain; hold it to what is left
     // of the same budget so the real stop never exceeds SHUTDOWN_DRAIN_MS.
