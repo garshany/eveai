@@ -107,6 +107,28 @@ describe('formatForTelegram', () => {
       .toBe('<b>Jita</b> &amp; Amarr — <b>важно</b>');
   });
 
+  it('escapes unmatched tags instead of shipping HTML Telegram will reject', () => {
+    // A stray "</b>" made Telegram reject the payload, and the plain-text retry
+    // then stripped formatting from the whole message.
+    expect(markdownToTelegramHtml('Покажи </b>, но **это важно**'))
+      .toBe('Покажи &lt;/b&gt;, но <b>это важно</b>');
+    // Same for an opener the model never closed.
+    expect(markdownToTelegramHtml('<b>забыл закрыть и **важно**'))
+      .toBe('&lt;b&gt;забыл закрыть и <b>важно</b>');
+    // A balanced pair still survives, nested pairs included.
+    expect(markdownToTelegramHtml('<b>Маршрут <i>Jita</i></b> и **итог**'))
+      .toBe('<b>Маршрут <i>Jita</i></b> и <b>итог</b>');
+    // Only the unclosed tag is demoted: the inner pair is well-formed on its
+    // own, so keeping it preserves formatting Telegram accepts.
+    expect(markdownToTelegramHtml('<b>висит <i>курсив</i>'))
+      .toBe('&lt;b&gt;висит <i>курсив</i>');
+  });
+
+  it('keeps entities inside a preserved tag intact', () => {
+    expect(markdownToTelegramHtml('<a href="https://x.test/?a=1&amp;b=2">ссылка</a> и **итог**'))
+      .toBe('<a href="https://x.test/?a=1&amp;b=2">ссылка</a> и <b>итог</b>');
+  });
+
   it('does not leak stash placeholders out of a nested construct', () => {
     // Literal backticks inside an existing <code> used to be stashed by the
     // inline rule and then re-captured by the element rule, so the single
