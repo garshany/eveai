@@ -232,4 +232,12 @@ export const config = {
   compact: {
     maxInputChars: optionalInt('COMPACT_MAX_INPUT_CHARS', 20000),
   },
+  shutdown: {
+    // How long a stop waits for in-flight turns to finish before exiting. The
+    // ceiling matches the agent turn deadline so a drain can outlast the
+    // longest legitimate turn instead of cutting an answer in half. 0 exits
+    // immediately (previous behaviour).
+    drainMs: Math.max(0, Math.min(600_000, optionalInt('SHUTDOWN_DRAIN_MS', 30_000))),
+    drainPollMs: boundedPositiveInt('SHUTDOWN_DRAIN_POLL_MS', 250, 10, 5_000),
+  },
 } as const;

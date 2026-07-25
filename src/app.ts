@@ -84,6 +84,7 @@ async function main() {
     deliverOutbound,
     isOutboundAvailable,
   } = await import('./messaging/outbound.js');
+  const { waitForInFlightRequests } = await import('./chat/shared.js');
 
   // 2. Enforce the single-process feed/SQLite invariant, then initialize DB.
   const runtimeLock = acquireRuntimeLock(config.db.path, 'bot service');
@@ -130,10 +131,27 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info('Shutting down...');
+    // Order matters. Producers stop first so nothing new is queued, then the
+    // Telegram poller stops accepting updates, then running turns are given a
+    // bounded window to finish and answer. Discord's gateway is torn down only
+    // after that window: destroying it earlier would strand the reply of a turn
+    // that is still writing, and the database stays open until the drain ends
+    // for the same reason.
     await stopEveKillFeedPoller();
     shutdownRouteMonitors();
     stopHeartbeat();
-    telegramBot?.stop();
+    await telegramBot?.stop().catch(() => {});
+
+    const drainMs = config.shutdown.drainMs;
+    if (drainMs > 0) {
+      const stillRunning = await waitForInFlightRequests(drainMs, config.shutdown.drainPollMs);
+      if (stillRunning > 0) {
+        log.warn('Shutdown drain: %d turn(s) still running after %dms — exiting anyway', stillRunning, drainMs);
+      } else {
+        log.info('Shutdown drain: all turns finished');
+      }
+    }
+
     if (discordClient) {
       await discordClient.destroy().catch(() => {});
     }

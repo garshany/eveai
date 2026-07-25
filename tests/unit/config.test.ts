@@ -176,6 +176,36 @@ describe('OpenAI runtime configuration', () => {
     expect(config.openai.storeResponses).toBe(true);
   });
 
+  it('wires the shutdown drain knobs and clamps them to a usable range', async () => {
+    setRequiredEnv();
+    delete process.env.SHUTDOWN_DRAIN_MS;
+    delete process.env.SHUTDOWN_DRAIN_POLL_MS;
+    const defaults = (await import('../../src/config.js')).config.shutdown;
+    expect(defaults.drainMs).toBe(30_000);
+    expect(defaults.drainPollMs).toBe(250);
+
+    vi.resetModules();
+    process.env.SHUTDOWN_DRAIN_MS = '5000';
+    process.env.SHUTDOWN_DRAIN_POLL_MS = '100';
+    const custom = (await import('../../src/config.js')).config.shutdown;
+    expect(custom.drainMs).toBe(5_000);
+    expect(custom.drainPollMs).toBe(100);
+
+    vi.resetModules();
+    process.env.SHUTDOWN_DRAIN_MS = '0'; // documented as "exit immediately"
+    expect((await import('../../src/config.js')).config.shutdown.drainMs).toBe(0);
+
+    vi.resetModules();
+    // A negative window must not read as a wait at all, and an absurd one must
+    // not hold a deploy hostage.
+    process.env.SHUTDOWN_DRAIN_MS = '-1';
+    expect((await import('../../src/config.js')).config.shutdown.drainMs).toBe(0);
+
+    vi.resetModules();
+    process.env.SHUTDOWN_DRAIN_MS = '99999999';
+    expect((await import('../../src/config.js')).config.shutdown.drainMs).toBe(600_000);
+  });
+
   it('rejects trust-all proxy mode and parses only explicit trusted CIDRs', async () => {
     setRequiredEnv();
     process.env.WEB_TRUST_PROXY = 'true';
