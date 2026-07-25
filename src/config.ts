@@ -89,6 +89,14 @@ export const config = {
     requestWindowMs: optionalInt('TELEGRAM_REQUEST_WINDOW_MS', 60000),
     maxRequestsPerWindow: optionalInt('TELEGRAM_MAX_REQUESTS_PER_WINDOW', 6),
     maxActiveRequestsGlobal: optionalInt('TELEGRAM_MAX_ACTIVE_REQUESTS_GLOBAL', 8),
+    // Drop queued Telegram updates on boot. Default false: messages sent while
+    // the bot was down (deploy/restart) are redelivered instead of silently lost.
+    dropPendingUpdates: optionalBoolean('TELEGRAM_DROP_PENDING_UPDATES', false),
+    // Redelivered updates older than this are skipped, so a long outage does not
+    // replay a day-old backlog or a stale destructive command (/clear). Clamped
+    // at 0 (the documented "disabled"): a negative value would read as disabled
+    // too, which is the opposite of what lowering the number intends.
+    maxUpdateAgeMinutes: Math.max(0, optionalInt('TELEGRAM_MAX_UPDATE_AGE_MINUTES', 15)),
   },
   discord: {
     botToken: optional('DISCORD_BOT_TOKEN', ''),

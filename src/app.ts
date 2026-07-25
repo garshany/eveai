@@ -77,7 +77,7 @@ async function main() {
   const { restoreMonitors, shutdownRouteMonitors } = await import('./eve-board/monitor.js');
   const { cleanExpiredWebSessions } = await import('./web/web-session.js');
   const { isActiveWebSessionLane } = await import('./web/web-session-state.js');
-  const { pickTelegramParseMode } = await import('./telegram/formatting.js');
+  const { formatForTelegram } = await import('./telegram/formatting.js');
   const {
     registerTelegramOutbound,
     registerDiscordOutbound,
@@ -148,7 +148,10 @@ async function main() {
     telegramBot = createBot(db);
 
     try {
-      await telegramBot.api.deleteWebhook({ drop_pending_updates: true });
+      // Default false: updates queued while the bot was down (deploy/restart)
+      // are redelivered instead of silently lost. The staleness middleware in
+      // bot.ts skips anything older than TELEGRAM_MAX_UPDATE_AGE_MINUTES.
+      await telegramBot.api.deleteWebhook({ drop_pending_updates: config.telegram.dropPendingUpdates });
     } catch (err) {
       log.warn('Telegram deleteWebhook failed: %s', err instanceof Error ? err.message : String(err));
     }
@@ -158,7 +161,8 @@ async function main() {
     registerTelegramOutbound(async (chatId, text) => {
       for (const chunk of splitForTelegram(text)) {
         try {
-          await bot.api.sendMessage(chatId, chunk, { parse_mode: pickTelegramParseMode(chunk) });
+          const formatted = formatForTelegram(chunk);
+          await bot.api.sendMessage(chatId, formatted.text, { parse_mode: formatted.parseMode });
         } catch {
           // EVE mail bodies may contain HTML Telegram rejects — retry as plain text.
           await bot.api.sendMessage(chatId, chunk);

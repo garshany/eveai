@@ -25,7 +25,7 @@ import {
   resolveThreadForChat,
   runAgentTurn,
 } from '../chat/shared.js';
-import { pickTelegramParseMode } from './formatting.js';
+import { formatForTelegram } from './formatting.js';
 import { createLogger } from '../observability/logger.js';
 import { checkForProjectUpdate } from '../update/check.js';
 import { formatUpdateStatus } from '../update/format.js';
@@ -384,9 +384,10 @@ async function replyChunks(ctx: Context, text: string): Promise<void> {
 
 async function replyFormatted(ctx: Context, text: string): Promise<void> {
   try {
-    const parseMode = pickTelegramParseMode(text);
-    await ctx.reply(text, { parse_mode: parseMode });
+    const formatted = formatForTelegram(text);
+    await ctx.reply(formatted.text, { parse_mode: formatted.parseMode });
   } catch {
+    // Telegram rejected the entity markup — degrade to the original plain text.
     await ctx.reply(text);
   }
 }
