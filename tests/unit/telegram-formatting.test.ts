@@ -107,6 +107,20 @@ describe('formatForTelegram', () => {
       .toBe('<b>Jita</b> &amp; Amarr — <b>важно</b>');
   });
 
+  it('does not leak stash placeholders out of a nested construct', () => {
+    // Literal backticks inside an existing <code> used to be stashed by the
+    // inline rule and then re-captured by the element rule, so the single
+    // restore left raw delimiters in the payload and Telegram rejected it.
+    const out = markdownToTelegramHtml('<code>`literal`</code>\n**Рекомендация**');
+    expect(out).not.toContain(String.fromCharCode(0));
+    expect(out).toBe('<code>`literal`</code>\n<b>Рекомендация</b>');
+  });
+
+  it('keeps HTML inside a Markdown fence escaped, whichever comes first', () => {
+    expect(markdownToTelegramHtml('```\n<code>x</code>\n```'))
+      .toBe('<pre>&lt;code&gt;x&lt;/code&gt;</pre>');
+  });
+
   it('leaves Markdown inside an existing code element alone', () => {
     // Telegram forbids formatting entities inside a code entity: converting the
     // sigils there produces a payload it rejects, and the plain-text retry then

@@ -15,6 +15,21 @@ const HTML_MARKUP_RE = /<(?:b|strong|i|em|u|ins|s|strike|del|tg-spoiler|code|pre
 const TELEGRAM_HTML_TAG_RE = /<\/?(?:b|strong|i|em|u|ins|s|strike|del|tg-spoiler|code|pre|a)(?:\s[^<>]*)?>/gi;
 const HTML_ENTITY_RE = /&(?:amp|lt|gt|quot|#\d{1,6});/g;
 
+/**
+ * Everything whose contents must not be treated as Markdown, matched in a
+ * single left-to-right scan: fenced blocks (line-anchored), same-line spans,
+ * inline code, and whole <pre>/<code> elements that arrived as HTML. <pre>
+ * precedes <code> so Telegram's <pre><code class="language-x"> nesting is taken
+ * as one element.
+ */
+const VERBATIM_RE = new RegExp([
+  '(^|\\n)```([^\\n`]*)\\n([\\s\\S]*?)(?:```|$)',
+  '```([^`\\n]+)```',
+  '`([^`\\n]+)`',
+  '<pre\\b[^>]*>[\\s\\S]*?</pre>',
+  '<code\\b[^>]*>[\\s\\S]*?</code>',
+].join('|'), 'gi');
+
 // Bold/italic require non-space content edges so arithmetic like "5 * 3 * 2"
 // or "2 ** 3 ** 4" is never mistaken for markup (matches the converter below).
 const MARKDOWN_SIGIL_RE = /\*\*[^*\s](?:[^*\n]*[^*\s])?\*\*|\*[^*\s](?:[^*\n]*[^*\s])?\*|```|`[^`\n]+`|\[[^\]\n]+\]\(https?:\/\//;
@@ -44,31 +59,36 @@ export function markdownToTelegramHtml(text: string): string {
     return `\u0000${stashed.length - 1}\u0000`;
   };
 
-  let out = text
-    // Fenced blocks: ```lang\n...``` (language tag dropped; unterminated -> EOF).
-    // Anchored to a line start, and the newline after the optional tag is
-    // required. Without both, "до ```код``` после\nследующая строка" retries at
-    // the closing delimiter, eats " после" as a language tag and wraps the next
-    // line in <pre>. Same-line backticks fall through to the inline rule.
-    .replace(/(^|\n)```([^\n`]*)\n([\s\S]*?)(?:```|$)/g, (_m, lead: string, _lang: string, body: string) =>
-      lead + stash(`<pre>${escapeHtml(body.replace(/\n$/, ''))}</pre>`))
-    // Same-line ```span```: not a block (no newline), so it renders as inline
-    // code rather than leaving stray backticks around it.
-    .replace(/```([^`\n]+)```/g, (_m, body: string) => stash(`<code>${escapeHtml(body)}</code>`))
-    // Inline code.
-    .replace(/`([^`\n]+)`/g, (_m, body: string) => stash(`<code>${escapeHtml(body)}</code>`))
-    // Whole <pre>/<code> elements that arrived as HTML are stashed with their
-    // contents: Telegram forbids formatting entities inside a code entity, so
-    // converting Markdown found in there ("<code>**literal**</code>") produces
-    // a payload Telegram rejects, and the sender's plain-text retry then leaves
-    // the whole message unformatted. <pre> goes first — Telegram nests
-    // <pre><code class="language-x"> and the outer element must win.
-    .replace(/<pre\b[^>]*>[\s\S]*?<\/pre>/gi, (block: string) => stash(block))
-    .replace(/<code\b[^>]*>[\s\S]*?<\/code>/gi, (block: string) => stash(block))
+  // One pass, so the construct that appears first in the text wins and no
+  // placeholder can be nested inside another: as separate passes, an inline-code
+  // stash inside an existing <code> element was re-captured by the element
+  // stash, and the single restore left raw delimiters in the payload.
+  let out = text.replace(
+    VERBATIM_RE,
+    (
+      match: string,
+      lead: string | undefined,
+      _lang: string | undefined,
+      blockBody: string | undefined,
+      spanBody: string | undefined,
+      inlineBody: string | undefined,
+    ) => {
+      // Fenced block at a line start: language tag dropped, unterminated -> EOF.
+      if (blockBody !== undefined) {
+        return (lead ?? '') + stash(`<pre>${escapeHtml(blockBody.replace(/\n$/, ''))}</pre>`);
+      }
+      // ```span``` on one line is inline code, not a block.
+      if (spanBody !== undefined) return stash(`<code>${escapeHtml(spanBody)}</code>`);
+      if (inlineBody !== undefined) return stash(`<code>${escapeHtml(inlineBody)}</code>`);
+      // An existing <pre>/<code> element is kept verbatim, contents included:
+      // Telegram forbids formatting entities inside a code entity, so Markdown
+      // found in there must not be converted.
+      return stash(match);
+    },
+  )
     // Telegram HTML that arrived with the text (plan_route summaries, EVE mail)
     // must survive the escape step below — a mixed answer carries both that and
     // the agent's Markdown, and escaping the tags would show them literally.
-    // Runs after code so tags inside a code block stay literal, as intended.
     .replace(TELEGRAM_HTML_TAG_RE, (tag: string) => stash(tag))
     .replace(HTML_ENTITY_RE, (entity: string) => stash(entity));
 
