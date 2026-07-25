@@ -137,18 +137,24 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info('Shutting down...');
-    // Order matters. Producers stop first so nothing new is queued, then the
-    // Telegram poller stops accepting updates, then running turns are given a
-    // bounded window to finish and answer. Discord's gateway is torn down only
-    // after that window: destroying it earlier would strand the reply of a turn
-    // that is still writing, and the database stays open until the drain ends
-    // for the same reason.
-    await stopEveKillFeedPoller();
-    shutdownRouteMonitors();
-    stopHeartbeat();
-
+    // The budget starts here, before the first await: every step below shares
+    // one deadline, so the whole stop stays inside SHUTDOWN_DRAIN_MS and the
+    // supervisor never has to SIGKILL us mid-drain.
     const drainMs = config.shutdown.drainMs;
     const deadline = Date.now() + drainMs;
+
+    // Order matters. Producers stop first so nothing new is queued, then every
+    // ingress closes, then running turns are given what is left of the window to
+    // finish and answer. Discord's gateway is torn down only after that: killing
+    // it earlier would strand the reply of a turn that is still writing, and the
+    // database stays open until the drain ends for the same reason.
+    //
+    // Stopping the feed poller only cancels its sleep — if SIGTERM lands while a
+    // poll is inside a network call, awaiting it unbounded would eat the entire
+    // window before the drain even starts.
+    await withDeadline(stopEveKillFeedPoller(), deadline);
+    shutdownRouteMonitors();
+    stopHeartbeat();
 
     // Close every ingress before waiting, or a DM arriving mid-shutdown starts a
     // turn that shares the already-running deadline and gets cut off anyway.
