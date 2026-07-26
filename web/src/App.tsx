@@ -359,7 +359,7 @@ export default function App() {
         onActivate={(characterId) => void activateCharacter(characterId)}
         onLogout={() => void logout()}
       />
-      {activeView === 'chat' ? <ChatScreen title={activeTitle} messages={messages} busy={busy} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} /> : null}
+      {activeView === 'chat' ? <ChatScreen title={activeTitle} messages={messages} busy={busy} request={activeRequest} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} onDismissError={() => setError(null)} /> : null}
       {activeView === 'profile' ? <PilotProfileScreen character={session.character} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} /> : null}
       {activeView === 'scan' ? <LiveScanScreen csrfToken={session.csrfToken} onMenu={() => setSidebarOpen(true)} onPrompt={(prompt) => { setActiveView('chat'); void sendMessage(prompt); }} /> : null}
     </main>

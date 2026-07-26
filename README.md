@@ -33,9 +33,9 @@ the self-hosted single-process and SQLite architecture:
 - Browser users can keep several EVE characters attached to one account, choose
   the active character, and grant only the ESI scopes they want. Consent is
   versioned and presented in Russian and English.
-- OpenAI remains the default provider path. The fixed CheapVibeCode Codex
-  WebSocket transport supports the same application-owned local tools and
-  defaults to the bounded public read-subagent path.
+- OpenAI remains the default provider path. The fixed ModelHub
+  OpenAI-compatible endpoint supports the same application-owned local tools
+  and defaults to the bounded public read-subagent path.
 - Public deployment controls now include Turnstile verification, trusted-proxy
   CIDRs, HTTPS/hostname validation, request and compute-unit limits, durable
   restart recovery, queue health, and sanitized terminal errors.
@@ -71,7 +71,7 @@ Browser /app ─────────────> Fastify session API ──
                            plan / goal ledger / tool registry / read subagents
                                                              │
                                                              v
-                                    OpenAI or CheapVibeCode Responses transport
+                                    OpenAI or ModelHub Responses transport
                                                              │
                                                              v
                                 ESI / local SDE / EVE-KILL REST+feed ──> SQLite
@@ -97,7 +97,7 @@ Hard constraints:
   - Telegram bot token from [@BotFather](https://t.me/BotFather), and/or
   - Discord bot token from <https://discord.com/developers/applications> (no privileged intents needed; the bot works in DMs).
 - EVE Developer application from <https://developers.eveonline.com/>.
-- A provider API key for the selected `OPENAI_PROVIDER` (`openai` or `cheapvibecode`).
+- A provider API key for the selected `OPENAI_PROVIDER` (`openai` or `modelhub`).
 
 ## Quick Start
 
@@ -157,7 +157,7 @@ openssl rand -base64 32
 
 Model defaults:
 
-- `OPENAI_PROVIDER=openai` uses the official OpenAI HTTP/SSE endpoint. `cheapvibecode` selects the fixed CheapVibeCode Codex Responses WebSocket endpoint; arbitrary `OPENAI_BASE_URL` overrides remain disabled.
+- `OPENAI_PROVIDER=openai` uses the official OpenAI HTTP/SSE endpoint. `modelhub` selects the fixed ModelHub OpenAI-compatible HTTP/SSE endpoint (`https://modelhub.my/v1`); arbitrary `OPENAI_BASE_URL` overrides remain disabled.
 - The selected provider and its API key are process-wide operator settings. Browser users never provide or receive this key; each user gets an isolated opaque session and chat lane while requests share the configured concurrency and rate limits.
 - `OPENAI_MODEL=gpt-5.6-sol` is the quality-first default. Use `gpt-5.6-terra` for a capability/cost balance or `gpt-5.6-luna` for latency-sensitive, high-volume deployments. The `gpt-5.6` alias routes to Sol.
 - `OPENAI_PROGRAMMATIC_TOOL_CALLING=false` keeps the default direct-tool path. Setting it to `true` opts into provider-entitled hosted programs for exactly nine bounded public-read tools: static counts, batch market prices, wormhole-type comparisons, Scout system searches, compact kill-activity summaries, market-history summaries, system-metric snapshots, doctrine summaries, and dynamic-item summaries. Restart after changing it. See [OpenAI integration](./docs/openai-integration.md) for schemas, budgets, exclusions, real smoke matrices, and rollback.

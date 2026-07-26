@@ -16,6 +16,7 @@ data/
 hooks/
 .playwright-mcp/
 output/
+.tools/
 *.log
 *.png
 *.jpg

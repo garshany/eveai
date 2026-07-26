@@ -7,8 +7,30 @@ export class AmbiguousApiRequestError extends Error {
   readonly ambiguous = true;
 }
 
+export class ApiRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export function isAmbiguousApiRequestError(error: unknown): error is AmbiguousApiRequestError {
   return error instanceof AmbiguousApiRequestError;
+}
+
+function httpErrorMessage(status: number, serverMessage?: string): string {
+  if (status === 401 || status === 403) {
+    return serverMessage || 'Сессия истекла. Обновите страницу и войдите снова.';
+  }
+  if (status === 429) {
+    return serverMessage || 'Слишком много запросов. Подождите немного и повторите.';
+  }
+  if (status >= 500) {
+    return serverMessage || 'Сервер временно недоступен. Попробуйте позже.';
+  }
+  return serverMessage || 'Не удалось выполнить запрос.';
 }
 
 async function request<T>(
@@ -31,7 +53,7 @@ async function request<T>(
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as ErrorPayload;
-    throw new Error(payload.error || 'Не удалось выполнить запрос.');
+    throw new ApiRequestError(response.status, httpErrorMessage(response.status, payload.error));
   }
   if (response.status === 204) return undefined as T;
   try {

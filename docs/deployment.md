@@ -118,14 +118,13 @@ OPENAI_STORE_RESPONSES=false
 ```
 
 `OPENAI_PROVIDER=openai` targets `https://api.openai.com/v1`.
-`OPENAI_PROVIDER=cheapvibecode` targets the one-shot WebSocket route
-`wss://cheapvibecode.ru/backend-api/codex/responses` and requires stateless
-response mode. The explicit allowlist prevents an accidental
+`OPENAI_PROVIDER=modelhub` targets the OpenAI-compatible HTTP/SSE route
+`https://modelhub.my/v1/responses` and requires stateless response mode.
+The explicit allowlist prevents an accidental
 base-URL typo from redirecting API credentials and chat/tool data. The
-CheapVibeCode profile omits the optional `truncation:"auto"` field because live
-tool-call probes showed that the gateway otherwise took the slow text-only path;
-it also omits encrypted reasoning replay because that option likewise changed a
-tool call into plain text on the gateway. Stateless continuation replays the
+ModelHub profile omits the optional `truncation:"auto"` field and encrypted
+reasoning replay because neither is confirmed on the proxy. Stateless
+continuation replays the
 function calls and outputs while filtering provider reasoning items. The
 application's bounded SQLite context and compaction remain active.
 
@@ -226,6 +225,67 @@ server {
 }
 ```
 
+## Cloudflare Zone Automation
+
+When the app is fronted by Cloudflare Tunnel (`your-domain.example` →
+`http://localhost:3000`), apply post-deploy zone hardening with the scripts in
+`scripts/cloudflare/`. They call the Cloudflare API v4 with `curl` and `jq` and
+are idempotent: managed rules are matched by a description marker and updated
+in place, so re-running after a manual dashboard change converges the zone
+instead of duplicating rules. Run them from a local operator shell, not from
+the server process.
+
+What `setup-zone.sh` applies:
+
+- SSL/TLS mode `Full (strict)`, `Always Use HTTPS` on, security level `medium`
+- Bot Fight Mode enabled via `PUT /zones/{id}/bot_management` (field
+  `fight_mode`; available on the Free plan). If the token cannot read or
+  change it, the script prints a warning — enable it manually under
+  Security → Bots → Bot Fight Mode; this is not treated as a failure.
+- Cache Rules: bypass cache for `/api/web/*` and `/auth/*` (see
+  "Reverse Proxy" above — these responses must never be cached)
+- Rate Limiting: 20 requests per 10 s per IP on `/auth/*`, action
+  `managed_challenge` (override with `CF_RATE_LIMIT_ACTION=block`), mitigation
+  timeout 10 s — the only timeout the Free plan is entitled to, so the
+  challenge window is 10 s rather than the 60 s that would be preferable
+
+Rule expressions use the `starts_with()` function, not the regex `matches`
+operator: `matches` requires a Business or Enterprise plan and is rejected by
+the API on Free ("not entitled"). Prefix matching with `starts_with()` has the
+same semantics for the fixed path prefixes above and works on every plan.
+
+Free plan limits are respected: 10 cache rules, 1 rate limiting rule, 5 custom
+WAF rules. The script refuses to add a rule that would exceed a limit and
+never touches unrelated existing rules.
+
+### API token with minimal permissions
+
+1. Cloudflare dashboard → My Profile → API Tokens → Create Token → Custom token.
+2. Permissions, all zone-level:
+   - Zone → Zone → Read (resolves the zone id from `CF_ZONE_NAME`)
+   - Zone → Zone Settings → Edit (SSL mode, security level, Always Use HTTPS)
+   - Zone → Cache Rules → Edit
+   - Zone → Rate Limiting → Edit
+   - Zone → Bot Management → Edit (Bot Fight Mode on/off)
+3. Zone Resources → Include → Specific zone → your zone only.
+4. Store the token in your local environment or a secret manager; never commit
+   it. If a call still returns 403, add the permission group named in the API
+   error and re-run.
+
+### Run
+
+```bash
+export CF_API_TOKEN=...
+export CF_ZONE_NAME=your-domain.example   # or: export CF_ZONE_ID=<zone id>
+
+bash scripts/cloudflare/setup-zone.sh    # apply / converge the zone
+bash scripts/cloudflare/verify-zone.sh   # read-only audit, exits 1 on drift
+```
+
+Requires `curl` and `jq` (`brew install jq` on macOS, `apt-get install jq` on
+Debian/Ubuntu). `verify-zone.sh` prints the current value next to the expected
+one for every managed setting and rule.
+
 ## systemd Example
 
 Copy and adapt the generic unit at `deploy/systemd/eveai.service` if you deploy on a Linux host with systemd.
@@ -261,6 +321,135 @@ startup check, which also requires `AUTH_SECRET_KEY`.
 - Back up `data/` if you need to preserve local users, sessions, EVE links, feed cursors/dedup, route monitors, cache, and notes.
 - Rotate `AUTH_SECRET_KEY` only with an explicit session/token migration plan; it derives storage keys for protected local secrets.
 - Never publish tokens, SSH details, IP addresses, real domains, private reverse-proxy paths, or production runbooks in this repository.
+
+## Off-Host Backups to Cloudflare R2
+
+`scripts/backup-data-r2.sh` creates a consistent backup of the `data/`
+directory and uploads it to a Cloudflare R2 bucket over the S3 API. The app
+keeps SQLite in WAL mode, so the script copies the database with the SQLite
+online backup API (`sqlite3 .backup`) and verifies it with
+`PRAGMA integrity_check` — the service keeps running and does not need a stop
+window. The live DB, WAL, SHM, and runtime lock files are excluded from the
+file-level copy; the SDE tree (~650 MB) is excluded by default because it can
+be rebuilt with `npm run setup` (set `INCLUDE_SDE=true` to include it).
+Uploads land under date prefixes, and old objects are pruned after
+`RETENTION_DAYS` (default 14, `0` disables pruning).
+
+### R2 setup
+
+1. Cloudflare dashboard → R2 → Create bucket (for example `eveai-backups`).
+   Note the account ID shown on the R2 overview page.
+2. R2 → Manage R2 API Tokens → Create API token: permission **Object Read &
+   Write**, scoped to that one bucket. Store the access key ID and secret in a
+   password manager; the secret is shown once.
+3. Optional (recommended even with script pruning): bucket Settings → Object
+   lifecycle rules → delete objects after N days as a server-side safety net.
+
+### VM packages
+
+```bash
+sudo apt-get install -y sqlite3
+curl -fsSL https://rclone.org/install.sh | sudo bash   # or: sudo apt-get install -y rclone
+```
+
+The script talks to R2 through rclone configured purely from environment
+variables — no rclone config file, no secrets in argv or logs.
+
+### Credentials file
+
+Keep the R2 credentials in a root-only environment file, never in the repo or
+the app `.env`:
+
+```bash
+sudo install -d -m 0700 /etc/eveai
+sudo tee /etc/eveai/r2-backup.env >/dev/null <<'EOF'
+R2_ACCOUNT_ID=your-account-id
+R2_ACCESS_KEY_ID=your-access-key-id
+R2_SECRET_ACCESS_KEY=your-secret-access-key
+R2_BUCKET=eveai-backups
+# RETENTION_DAYS=14
+# INCLUDE_SDE=false
+EOF
+sudo chmod 0600 /etc/eveai/r2-backup.env
+```
+
+### Schedule with a systemd timer
+
+The script only reads `data/`, so it can run as root; no write access to the
+app directory is needed. Create two units:
+
+```bash
+sudo tee /etc/systemd/system/eveai-backup.service >/dev/null <<'EOF'
+[Unit]
+Description=eveai data backup to Cloudflare R2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/eveai/r2-backup.env
+Environment=DATA_DIR=/srv/eveai/data
+ExecStart=/srv/eveai/scripts/backup-data-r2.sh
+EOF
+
+sudo tee /etc/systemd/system/eveai-backup.timer >/dev/null <<'EOF'
+[Unit]
+Description=Daily eveai data backup to Cloudflare R2
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now eveai-backup.timer
+```
+
+A cron entry works too (`0 4 * * * root set -a; . /etc/eveai/r2-backup.env; set +a; DATA_DIR=/srv/eveai/data /srv/eveai/scripts/backup-data-r2.sh`), but the timer gives you `journalctl -u eveai-backup.service` for history.
+
+### Verify
+
+```bash
+sudo systemctl start eveai-backup.service        # run once by hand
+sudo journalctl -u eveai-backup.service -n 30 --no-pager
+systemctl list-timers eveai-backup.timer
+```
+
+The log must end with `done: r2:<bucket>/backups/<YYYY>/<MM>/eveai-data-<timestamp>.tar.gz`.
+
+### Restore
+
+```bash
+# 1. List and download the archive (uses the same env-configured rclone remote):
+set -a; . /etc/eveai/r2-backup.env; set +a
+export RCLONE_CONFIG_R2_TYPE=s3 RCLONE_CONFIG_R2_PROVIDER=Cloudflare \
+  RCLONE_CONFIG_R2_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID \
+  RCLONE_CONFIG_R2_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY \
+  RCLONE_CONFIG_R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+rclone lsf "r2:$R2_BUCKET/backups/" --recursive
+rclone copyto "r2:$R2_BUCKET/backups/2026/07/eveai-data-<timestamp>.tar.gz" /tmp/eveai-restore.tar.gz
+
+# 2. Stop the app, swap data, verify, start:
+sudo systemctl stop eveai
+sudo mv /srv/eveai/data /srv/eveai/data.old
+sudo install -d -o eveai -g eveai -m 0700 /srv/eveai/data
+sudo tar -xzf /tmp/eveai-restore.tar.gz -C /srv/eveai/data --strip-components=1 data
+sudo chown -R eveai:eveai /srv/eveai/data
+sqlite3 /srv/eveai/data/eve-agent.db 'PRAGMA integrity_check;'   # must print: ok
+sudo systemctl start eveai
+curl -fsS http://127.0.0.1:3000/health
+```
+
+If the archive was taken with the default `INCLUDE_SDE=false`, rebuild the SDE
+after the restore (`sudo -u eveai npm run setup` in the release directory, or
+copy `sde/` from `data.old` if it is still on disk). Keep `data.old` until the
+restored instance has served real traffic. Note that restoring rolls users,
+sessions, EVE links, and feed cursors back to the backup timestamp; the
+EVE-KILL feed resumes from its stored cursor and does not replay events missed
+after it.
 
 ## Updating
 

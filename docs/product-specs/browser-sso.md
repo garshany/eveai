@@ -4,7 +4,7 @@ Status: active
 
 The optional browser app is a same-origin adapter over the same SQLite-backed
 agent runtime used by Telegram, Discord, and the CLI. It does not call OpenAI,
-CheapVibeCode, ESI, or any tool directly from the browser.
+ModelHub, ESI, or any tool directly from the browser.
 
 ## Product Flow
 
@@ -16,7 +16,7 @@ CheapVibeCode, ESI, or any tool directly from the browser.
 4. The browser loads and creates conversations owned by that session.
 5. `POST /api/web/chat` applies the shared in-flight, actor rate, and global
    concurrency guards before invoking the shared agent loop.
-6. The configured process-wide provider (`openai` or `cheapvibecode`) handles
+6. The configured process-wide provider (`openai` or `modelhub`) handles
    the model turn. The browser receives only the final answer and a bounded
    activity summary.
 7. The same browser identity may repeat EVE SSO for multiple characters. The
@@ -84,8 +84,8 @@ deployment must also prevent direct origin access at the network boundary.
 ## Provider Boundary
 
 `OPENAI_PROVIDER=openai` preserves the official OpenAI HTTP/SSE path.
-`OPENAI_PROVIDER=cheapvibecode` selects the fixed CheapVibeCode Codex Responses
-WebSocket transport, client-side tool search, and bounded local parallel read
+`OPENAI_PROVIDER=modelhub` selects the fixed ModelHub OpenAI-compatible
+HTTP/SSE endpoint, client-side tool search, and bounded local parallel read
 batches. Both modes enter through the same application-controlled tool
 executor, private-data checks, persistence, and rate limits. Provider selection
 is not a per-user browser option.

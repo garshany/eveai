@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 beforeEach(() => {
   vi.resetModules();
-  delete process.env.OPENAI_PROVIDER;
+  // Pin the default provider explicitly: an operator .env may name a provider
+  // this test does not exercise, and dotenv would otherwise re-populate it.
+  process.env.OPENAI_PROVIDER = 'openai';
   process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1';
   process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
   process.env.OPENAI_STORE_RESPONSES = 'false';
@@ -66,38 +68,6 @@ describe('extractToolSearchPaths', () => {
 });
 
 describe('parseSse + streamed outputs', () => {
-  it('normalizes JSON, NDJSON, and SSE payloads carried in one WebSocket message', async () => {
-    const { __test__ } = await import('../../src/agent/native-responses.js');
-    expect(__test__.parseWebSocketMessage('{"type":"response.created"}')).toHaveLength(1);
-    expect(__test__.parseWebSocketMessage('[{"type":"response.created"},{"type":"codex.rate_limits"}]'))
-      .toHaveLength(2);
-    expect(__test__.parseWebSocketMessage('0')).toEqual([]);
-    expect(__test__.consumeWebSocketBuffer('{')).toEqual({ frames: [], rest: '{' });
-    const consumed = __test__.consumeWebSocketBuffer([
-      '{"type":"response.created","note":"brace } in string"}',
-      '{"type":"response.completed","response":{"status":"completed"}}',
-      '{"type":"response.output_text.delta"',
-    ].join(''));
-    expect(consumed.frames.map((event) => event.event)).toEqual([
-      'response.created',
-      'response.completed',
-    ]);
-    expect(consumed.rest).toBe('{"type":"response.output_text.delta"');
-    expect(__test__.parseWebSocketMessage([
-      '{"type":"response.output_text.delta","delta":"ok"}',
-      '{"type":"response.completed","response":{"status":"completed"}}',
-    ].join('\n')).map((event) => event.event)).toEqual([
-      'response.output_text.delta',
-      'response.completed',
-    ]);
-    expect(__test__.parseWebSocketMessage([
-      'event: response.completed',
-      'data: {"type":"response.completed","response":{"status":"completed"}}',
-      '',
-    ].join('\n'))[0]?.event).toBe('response.completed');
-    expect(() => __test__.parseWebSocketMessage('not-json')).toThrow();
-  });
-
   it('parses SSE stream, extracts deltas, done items, and terminal payload', async () => {
     process.env.ALLOWED_TELEGRAM_USER_ID = '1';
     process.env.TELEGRAM_BOT_TOKEN = 'test';
@@ -374,34 +344,6 @@ describe('createNativeResponse request body', () => {
 
     expect(body?.store).toBe(true);
     expect(body?.previous_response_id).toBeUndefined();
-  });
-
-  it('uses the fixed CheapVibeCode WebSocket endpoint and omits stream', async () => {
-    process.env.OPENAI_API_KEY = 'test';
-    process.env.EVE_CLIENT_ID = 'test';
-    process.env.EVE_CLIENT_SECRET = 'test';
-    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
-    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
-
-    const { __test__ } = await import('../../src/agent/native-responses.js');
-    const requestBody = __test__.buildWebSocketCreatePayload({
-      model: 'gpt-5.6-sol',
-      input: [],
-      tools: [],
-      stream: true,
-      background: false,
-    });
-    const requestHeaders = __test__.buildWebSocketHeaders('test', '00000000-0000-4000-8000-000000000000');
-
-    expect(__test__.responsesWebSocketUrl('https://cheapvibecode.ru/backend-api/codex'))
-      .toBe('wss://cheapvibecode.ru/backend-api/codex/responses');
-    expect(requestBody).toMatchObject({ type: 'response.create', model: 'gpt-5.6-sol' });
-    expect(requestBody).not.toHaveProperty('stream');
-    expect(requestBody).not.toHaveProperty('background');
-    expect(requestHeaders.authorization).toBe('Bearer test');
-    expect(requestHeaders['OpenAI-Beta']).toBe('responses_websockets=2026-02-06');
-    expect(requestHeaders['x-client-request-id']).toBe('00000000-0000-4000-8000-000000000000');
   });
 
   it('keeps automatic truncation on the default OpenAI provider', async () => {

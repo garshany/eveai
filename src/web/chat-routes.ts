@@ -106,6 +106,7 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
       'session',
     );
     if (!turnstile.ok) {
+      if (turnstile.retryable) reply.header('Retry-After', '3');
       return reply.status(turnstile.retryable ? 503 : 403).send({
         error: turnstile.retryable
           ? 'Проверка защиты временно недоступна. Попробуйте ещё раз.'

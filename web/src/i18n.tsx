@@ -19,6 +19,10 @@ const RU = {
   corporation: 'Корпорация', alliance: 'Альянс', location: 'Местоположение', ship: 'Корабль', skills: 'Навыки', wallet: 'Кошелёк', security: 'Безопасность', born: 'Создан', online: 'В сети', offline: 'Не в сети', unavailable: 'Недоступно', missingScope: 'Нет разрешения', queued: 'в очереди', skillPoints: 'SP', balance: 'Баланс', refresh: 'Обновить',
   scanTitle: 'Онлайн-скан', scanLead: 'Живой монитор маршрута по ESI и EVE-KILL', feedLive: 'EVE-KILL REST feed работает', feedDown: 'EVE-KILL feed недоступен', noScan: 'Активного маршрута нет.', noScanLead: 'Попросите агента построить маршрут, включить автопилот и онлайн-скан.', startPrompt: 'Построй маршрут до Jita, включи автопилот и онлайн-скан', stopScan: 'Остановить скан', currentSystem: 'Текущая система', destination: 'Цель', progress: 'Прогресс', jumpsLeft: 'прыжков осталось', killsSeen: 'Сигналы на маршруте', dangerEvents: 'Последние угрозы', noThreats: 'Новых угроз не зафиксировано.', sourceRest: 'Один общий REST poller; браузер обновляет этот экран каждые 5 секунд.',
   loading: 'Загрузка', requestFailed: 'Не удалось выполнить запрос.',
+  requestQueued: 'Запрос в очереди', requestRunning: 'Агент формирует ответ', toolCalls: 'Вызовы инструментов',
+  copyCode: 'Копировать код', copied: 'Скопировано', dismissError: 'Скрыть ошибку', scrollToLatest: 'К новым сообщениям',
+  composerHint: 'Enter — отправить, Shift+Enter — новая строка', turnstileLoading: 'Загрузка проверки защиты…',
+  turnstileFailed: 'Проверка не прошла.', retry: 'Повторить',
 } as const;
 
 const EN: Record<keyof typeof RU, string> = {
@@ -38,6 +42,10 @@ const EN: Record<keyof typeof RU, string> = {
   corporation: 'Corporation', alliance: 'Alliance', location: 'Location', ship: 'Ship', skills: 'Skills', wallet: 'Wallet', security: 'Security', born: 'Created', online: 'Online', offline: 'Offline', unavailable: 'Unavailable', missingScope: 'Permission not granted', queued: 'queued', skillPoints: 'SP', balance: 'Balance', refresh: 'Refresh',
   scanTitle: 'Live scan', scanLead: 'Live route monitor using ESI and EVE-KILL', feedLive: 'EVE-KILL REST feed is live', feedDown: 'EVE-KILL feed unavailable', noScan: 'No active route.', noScanLead: 'Ask the agent to build a route, set autopilot, and enable live scan.', startPrompt: 'Build a route to Jita, set autopilot, and enable live scan', stopScan: 'Stop scan', currentSystem: 'Current system', destination: 'Destination', progress: 'Progress', jumpsLeft: 'jumps remaining', killsSeen: 'Route signals', dangerEvents: 'Recent threats', noThreats: 'No new threats detected.', sourceRest: 'One shared REST poller; the browser refreshes this screen every 5 seconds.',
   loading: 'Loading', requestFailed: 'Request failed.',
+  requestQueued: 'Request queued', requestRunning: 'The agent is composing an answer', toolCalls: 'Tool calls',
+  copyCode: 'Copy code', copied: 'Copied', dismissError: 'Dismiss error', scrollToLatest: 'Jump to latest messages',
+  composerHint: 'Enter to send, Shift+Enter for a new line', turnstileLoading: 'Loading bot protection…',
+  turnstileFailed: 'Verification failed.', retry: 'Retry',
 };
 
 type I18nValue = { locale: Locale; setLocale: (locale: Locale) => void; t: (key: keyof typeof RU) => string };

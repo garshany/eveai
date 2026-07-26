@@ -57,17 +57,17 @@ describe('OpenAI runtime configuration', () => {
     expect(config.openai.supportsEncryptedReasoningReplay).toBe(true);
   });
 
-  it('selects the fixed CheapVibeCode Responses endpoint by provider ID', async () => {
+  it('selects the fixed ModelHub Responses endpoint by provider ID', async () => {
     setRequiredEnv();
-    process.env.OPENAI_PROVIDER = ' cheapvibecode ';
+    process.env.OPENAI_PROVIDER = ' modelhub ';
     process.env.OPENAI_BASE_URL = 'https://untrusted.example/v1';
 
     const { config } = await import('../../src/config.js');
 
-    expect(config.openai.providerId).toBe('cheapvibecode');
-    expect(config.openai.providerName).toBe('CheapVibeCode');
-    expect(config.openai.baseUrl).toBe('https://cheapvibecode.ru/backend-api/codex');
-    expect(config.openai.responsesTransport).toBe('websocket');
+    expect(config.openai.providerId).toBe('modelhub');
+    expect(config.openai.providerName).toBe('ModelHub');
+    expect(config.openai.baseUrl).toBe('https://modelhub.my/v1');
+    expect(config.openai.responsesTransport).toBe('http_sse');
     expect(config.openai.toolSearchExecution).toBe('client');
     expect(config.openai.supportsHostedProgrammaticToolCalling).toBe(false);
     expect(config.openai.supportsLocalParallelBatch).toBe(true);
@@ -102,18 +102,18 @@ describe('OpenAI runtime configuration', () => {
     process.env.OPENAI_PROVIDER = 'custom-gateway';
 
     await expect(import('../../src/config.js')).rejects.toThrow(
-      'OPENAI_PROVIDER must be one of: openai, cheapvibecode',
+      'OPENAI_PROVIDER must be one of: openai, modelhub',
     );
   });
 
-  it('rejects server response state for one-shot CheapVibeCode WebSockets', async () => {
+  it('rejects server response state on the ModelHub provider', async () => {
     setRequiredEnv();
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+    process.env.OPENAI_PROVIDER = 'modelhub';
     process.env.OPENAI_RESPONSE_STATE_MODE = 'server';
     process.env.OPENAI_STORE_RESPONSES = 'true';
 
     await expect(import('../../src/config.js')).rejects.toThrow(
-      'CheapVibeCode WebSocket transport requires OPENAI_RESPONSE_STATE_MODE=stateless',
+      'ModelHub does not support server-side response state; set OPENAI_RESPONSE_STATE_MODE=stateless',
     );
   });
 

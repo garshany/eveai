@@ -88,7 +88,9 @@ beforeEach(() => {
   process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
   process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
   process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'false';
-  delete process.env.OPENAI_PROVIDER;
+  // Pin the default provider explicitly: an operator .env may name a provider
+  // this test does not exercise, and dotenv would otherwise re-populate it.
+  process.env.OPENAI_PROVIDER = 'openai';
   process.env.OPENAI_REASONING_EFFORT = 'auto';
   process.env.OPENAI_REASONING_MODE = 'standard';
   process.env.AUTH_SECRET_KEY = 'test-secret';
@@ -182,13 +184,13 @@ describe('client tool search loop', () => {
     };
   }
 
-  function useCheapVibeCode(): void {
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+  function useModelHub(): void {
+    process.env.OPENAI_PROVIDER = 'modelhub';
     vi.resetModules();
   }
 
   it('replays a valid client search call and its exact call-id output before continuing', async () => {
-    useCheapVibeCode();
+    useModelHub();
     createNativeResponseMock
       .mockResolvedValueOnce(outputResponse([toolSearchCall('search_1')]))
       .mockResolvedValueOnce(textResponse('нашёл подходящий tool'));
@@ -250,7 +252,7 @@ describe('client tool search loop', () => {
       ],
     },
   ])('fails closed on $label before any tool dispatch', async ({ output }) => {
-    useCheapVibeCode();
+    useModelHub();
     createNativeResponseMock.mockResolvedValueOnce(outputResponse(output));
 
     const result = await runLoop();
@@ -260,7 +262,7 @@ describe('client tool search loop', () => {
   });
 
   it('allows ten sequential useful searches without repeating loaded schemas', async () => {
-    useCheapVibeCode();
+    useModelHub();
     const queries = [
       'market_history_summary',
       'system_metric_snapshot',
@@ -305,7 +307,7 @@ describe('client tool search loop', () => {
   });
 
   it('terminalizes an active plan when discovery protocol fails', async () => {
-    useCheapVibeCode();
+    useModelHub();
     createNativeResponseMock
       .mockResolvedValueOnce(outputResponse([{
         type: 'function_call',
@@ -339,7 +341,7 @@ describe('client tool search loop', () => {
   });
 
   it('terminalizes a created plan after a successful final response', async () => {
-    useCheapVibeCode();
+    useModelHub();
     createNativeResponseMock
       .mockResolvedValueOnce(outputResponse([{
         type: 'function_call',
@@ -367,9 +369,9 @@ describe('client tool search loop', () => {
   });
 });
 
-describe('CheapVibe read subagent integration', () => {
+describe('ModelHub read subagent integration', () => {
   it('runs two isolated public workers and returns one bounded aggregate to the root', async () => {
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+    process.env.OPENAI_PROVIDER = 'modelhub';
     process.env.CHEAPVIBE_READ_SUBAGENTS_ENABLED = 'true';
     vi.resetModules();
     db.prepare('INSERT INTO sde_regions (region_id, name, data_json) VALUES (?, ?, ?), (?, ?, ?)').run(

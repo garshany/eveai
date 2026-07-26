@@ -91,3 +91,15 @@ export function LogOutIcon(props: IconProps) {
 export function CloseIcon(props: IconProps) {
   return <IconBase {...props}><path d="m6 6 12 12M18 6 6 18" /></IconBase>;
 }
+
+export function CopyIcon(props: IconProps) {
+  return <IconBase {...props}><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></IconBase>;
+}
+
+export function ArrowDownIcon(props: IconProps) {
+  return <IconBase {...props}><path d="M12 4v16m0 0 6-6m-6 6-6-6" /></IconBase>;
+}
+
+export function AlertIcon(props: IconProps) {
+  return <IconBase {...props}><path d="M12 3 2.5 20h19L12 3Z" /><path d="M12 10v4.5" /><circle cx="12" cy="17.2" r="0.4" fill="currentColor" /></IconBase>;
+}

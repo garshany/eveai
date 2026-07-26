@@ -5,7 +5,7 @@ process.env.EVE_CLIENT_ID = 'eval-placeholder';
 process.env.EVE_CLIENT_SECRET = 'eval-placeholder';
 process.env.DEFAULT_MARKET_REGION_ID = '10000002';
 process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
-process.env.OPENAI_PROVIDER = 'cheapvibecode';
+process.env.OPENAI_PROVIDER = 'modelhub';
 process.env.CHEAPVIBE_READ_SUBAGENTS_ENABLED = 'true';
 
 type EvalResult = {
@@ -148,7 +148,7 @@ const passed = results.filter((result) => result.passed).length;
 const report = {
   schema_version: 1,
   mode: 'deterministic-fixture',
-  provider_profile: 'cheapvibecode',
+  provider_profile: 'modelhub',
   model: 'fixture-replay',
   total: results.length,
   passed,

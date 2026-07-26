@@ -347,8 +347,8 @@ describe('agent tools', () => {
     expect(tools.some((tool) => tool.type === 'mcp')).toBe(false);
   });
 
-  it('gates hosted PTC off and exposes only the local batch on CheapVibeCode', async () => {
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+  it('gates hosted PTC off and exposes only the local batch on ModelHub', async () => {
+    process.env.OPENAI_PROVIDER = 'modelhub';
     process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
     vi.resetModules();
     try {

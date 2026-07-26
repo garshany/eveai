@@ -7,7 +7,7 @@ afterEach(() => {
 
 describe('local parallel batch', () => {
   it('validates atomically and executes bounded public calls concurrently in stable order', async () => {
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+    process.env.OPENAI_PROVIDER = 'modelhub';
     process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
     process.env.OPENAI_STORE_RESPONSES = 'false';
     vi.resetModules();
@@ -50,7 +50,7 @@ describe('local parallel batch', () => {
   });
 
   it('rejects a forbidden tool and extra fields before dispatch', async () => {
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+    process.env.OPENAI_PROVIDER = 'modelhub';
     vi.resetModules();
     const { __test__ } = await import('../../src/agent/executor.js');
     const dispatch = vi.fn(async () => ({ ok: true }));

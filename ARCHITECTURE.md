@@ -9,7 +9,7 @@ Discord DM -> discord.js gateway bot ┤            │
 Terminal CLI -> local chat_id 0 ─────┤            │
 Browser /app -> Fastify session API ─┘            │
                                                   v
-                       selected Responses transport (OpenAI or CheapVibeCode)
+                       selected Responses transport (OpenAI or ModelHub)
                                                   │
                                                   v
              tool_search + deferred local ESI/SDE/EVE-KILL tools

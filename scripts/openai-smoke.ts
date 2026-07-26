@@ -76,9 +76,7 @@ try {
   console.log(JSON.stringify({
     ok: true,
     provider: provider.id,
-    endpoint: provider.responsesTransport === 'websocket'
-      ? `${baseUrl.replace(/^https:/, 'wss:')}/responses`
-      : `${baseUrl}/responses`,
+    endpoint: `${baseUrl}/responses`,
     transport: provider.responsesTransport,
     model: validated.model ?? model,
     reasoning_effort: reasoningEffort,

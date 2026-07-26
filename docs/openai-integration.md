@@ -5,12 +5,10 @@ This project uses the OpenAI Responses API for a tool-heavy EVE Online agent loo
 ## Default Target
 
 - Model: `gpt-5.6-sol`
-- Provider: `openai` (default) or `cheapvibecode`
-- Transport: OpenAI uses streamed HTTP `POST /v1/responses`; CheapVibeCode uses
-  one-shot Responses WebSockets at
-  `wss://cheapvibecode.ru/backend-api/codex/responses`
+- Provider: `openai` (default) or `modelhub`
+- Transport: both providers use streamed HTTP `POST /v1/responses`
 - Base URL: fixed by provider ID (`https://api.openai.com/v1` or
-  `https://cheapvibecode.ru/backend-api/codex`)
+  `https://modelhub.my/v1`)
 - Reasoning effort: `auto` (local goal classifier, with `medium` for internal calls)
 - Reasoning mode: `standard`
 - Text verbosity: `low`
@@ -25,22 +23,18 @@ These defaults follow the current [GPT-5.6 guidance](https://developers.openai.c
 runtime, authenticated smoke, and aggregate smoke resolve the same fixed
 endpoint. Unknown IDs fail at startup, and `OPENAI_BASE_URL` remains ignored so
 an operator typo cannot redirect credentials or private chat/tool data.
-CheapVibeCode has no HTTP fallback. Live probes showed that its Codex-shaped
-HTTP/SSE routes stalled or disconnected, while the Codex WebSocket route
-completed normal and parallel function-calling requests. WebSocket requests
-omit `stream`, `background`, and the optional `truncation:"auto"` field. Local bounded context,
+ModelHub is an OpenAI-compatible proxy reached over the same streamed HTTP
+`POST /v1/responses` transport as OpenAI. Its provider profile omits the
+optional `truncation:"auto"` field and `reasoning.encrypted_content` because
+neither is confirmed on the proxy. Local bounded context,
 pre-turn compaction, and mid-turn compaction still enforce the context budget.
-Its client `tool_search` descriptor must match the Codex wire shape exactly:
-`type`, `execution`, `description`, and `parameters`; adding function-tool-only
-fields such as `strict` caused the provider to hang instead of returning a
-validation error. The WebSocket proxy may split one JSON event across several
-application messages, so the client incrementally assembles bounded JSON while
-respecting quoted strings and nesting before normal event reduction.
-The provider profile also omits `reasoning.encrypted_content`: live probes
-showed that requesting it changed the same EVE prompt from a function call to a
-plain-text answer. CheapVibeCode stateless continuation therefore replays
+Its client `tool_search` descriptor must match the expected wire shape exactly:
+`type`, `execution`, `description`, and `parameters`.
+ModelHub stateless continuation therefore replays
 function calls and outputs but filters reasoning items. The default OpenAI
 profile keeps exact encrypted-reasoning replay unchanged.
+Both registered providers use the same HTTP/SSE Responses transport; the
+codebase carries no second transport.
 
 ## Model And Reasoning Choice
 
@@ -71,14 +65,13 @@ same SQLite transaction as the exact assistant-message id it represents. The id
 is reused only when that assistant is still the latest assistant, exactly one
 new user message follows it, and the anchor is no older than 55 minutes. Every
 other case cold-starts from SQLite. Missing provider state also cold-replays the
-exact active turn. CheapVibeCode uses one socket per response and therefore
-requires `stateless`; startup rejects the server-state combination. Ordinary
-transport failures retry the unchanged request on a new WebSocket and never
-fall back to HTTP.
+exact active turn. ModelHub is an OpenAI-compatible proxy without server-side
+response state and therefore requires `stateless`; startup rejects the
+server-state combination.
 
-## CheapVibeCode client tool search and local parallel batch
+## ModelHub client tool search and local parallel batch
 
-CheapVibeCode advertises client-executed `tool_search`. Deferred tool schemas
+ModelHub advertises client-executed `tool_search`. Deferred tool schemas
 remain in an immutable per-turn local index built from the exact inventory
 already filtered for the current notification lane and configured integrations.
 The first request carries only always-on tools plus a strict client-search
@@ -96,8 +89,8 @@ Missing, duplicate, mixed, conflicting, malformed, or over-budget search
 responses fail closed with a sanitized diagnostic. OpenAI retains its hosted
 tool-search path unchanged.
 
-CheapVibeCode does not expose hosted Programmatic Tool Calling on the verified
-route. EVE therefore never sends `programmatic_tool_calling` to that provider,
+ModelHub does not expose hosted Programmatic Tool Calling. EVE therefore never
+sends `programmatic_tool_calling` to that provider,
 even if the hosted feature flag is set. Its local `local_parallel_batch` is a
 declarative bounded substitute, not a JavaScript runtime: it accepts one to four
 unique calls from the existing nine public-read facade names, validates the
@@ -125,9 +118,8 @@ history, profile, character identity, private ESI data, tokens, route tools,
 writes, UI actions, or delegation tool. Workers cannot recurse. Results use
 all-settled semantics and return in stable job order so a failed sibling cannot
 erase successful evidence; the root model alone writes the user-facing answer.
-CheapVibeCode enables this path by default; OpenAI keeps it default-off but uses
-the same application coordinator when explicitly enabled. Live verification in
-this change intentionally used CheapVibeCode only.
+ModelHub enables this path by default; OpenAI keeps it default-off but uses
+the same application coordinator when explicitly enabled.
 
 The coordinator is intentionally narrow: use it for two or three independent,
 bounded public reads whose overlap saves latency. Simple chat, a single read,
@@ -143,8 +135,8 @@ fingerprint, locale, and deadline before preflight. It revalidates that durable
 identity before model stages and tool dispatch. A character switch, unlink, or
 scope change aborts stale work, clears continuation state, and asks the user to
 repeat the request for the newly active character. Provider admission and the
-new subagent path accept cancellation; queued work is removed and active HTTP
-or WebSocket provider work is closed where the transport supports it.
+new subagent path accept cancellation; queued work is removed and the active
+HTTP/SSE provider request is aborted.
 
 ## Public multi-user load control
 
@@ -159,7 +151,7 @@ cleanup path rather than invoking the executor directly.
 
 Provider sampling has a second, process-wide admission layer because internal
 compaction/profile calls also consume model capacity. It admits a bounded number
-of simultaneous HTTP/WebSocket Responses, queues excess work FIFO up to a fixed
+of simultaneous HTTP/SSE Responses, queues excess work FIFO up to a fixed
 ceiling, rejects a full queue, and removes timed-out waiters. A release is
 idempotent and happens in `finally`, including transport failure. This protects
 the event loop, provider connection count, and memory while the existing chat
@@ -204,7 +196,7 @@ GPT-5.6 `reasoning.context=all_turns` is intentionally not exposed. With `store=
 Within one active tool loop, the default OpenAI profile requests
 `reasoning.encrypted_content` and replays each opaque reasoning item in provider
 output order with the corresponding function calls and outputs. These items are
-never persisted in SQLite. The CheapVibeCode profile is the explicit exception:
+never persisted in SQLite. The ModelHub profile is the explicit exception:
 it does not request encrypted reasoning and filters reasoning items while
 replaying function calls and outputs. With the default
 `OPENAI_STORE_RESPONSES=false`, the application does not create a stored
@@ -232,14 +224,9 @@ not remove prior-chain input from billing. Top-level instructions are still sent
 on every request. Prompt caching may reduce repeated-prefix processing, but it is
 not conversation memory and usage counters remain authoritative.
 
-CheapVibeCode live cache probes confirmed prefix caching but not synchronous
-cache population. A 9,625-input-token stable-prefix request initially reported
-zero cached tokens; after the provider populated its cache, repeated requests
-reported 8,960 cached tokens. The real three-round EVE tool-search smoke reached
-4,864 cached tokens on its final round. Very short 29-token probes remained at
-zero, and this provider reported `cache_write_tokens=0` even when later reads
-were cached. Treat `cached_tokens` as the runtime billing/latency evidence;
-do not infer a cache write from the absent counter. The app keeps its opaque
+ModelHub prefix caching is not yet probe-verified.
+Treat `cached_tokens` as the runtime billing/latency evidence;
+do not infer a cache write from an absent `cache_write_tokens` counter. The app keeps its opaque
 `prompt_cache_key` derived per user and never sends a raw user/chat/database ID.
 
 ## EVE-KILL MCP Analytics
@@ -330,7 +317,7 @@ npm run smoke:eve-tool
 
 `npm run check` validates type safety, unit/integration tests, linting, and Responses payload regressions. `npm run smoke` checks required environment variables, the model `/responses` endpoint, and app health.
 
-The authenticated smoke script sends a minimal request through the selected provider transport: HTTP/SSE for OpenAI or the fixed Codex Responses WebSocket route for CheapVibeCode. It prints only sanitized response metadata.
+The authenticated smoke script sends a minimal request through the selected provider transport: HTTP/SSE for both OpenAI and ModelHub. It prints only sanitized response metadata.
 
 `npm run smoke:eve-tool` runs the real agent loop on a copied SQLite database and requires the model to call an EVE SDE tool before returning a final answer. Use `EVE_TOOL_SMOKE_MODE=direct` to validate only the DB-backed tool path without a model call.
 
@@ -404,7 +391,7 @@ operations:
   ordered attribute IDs, then returns only those numeric values plus optional
   local-SDE base/delta evidence.
 
-OpenAI's hosted runtime executes generated programs. EVE never evaluates generated JavaScript and executes only returned client-owned function calls. On the OpenAI profile, every provider output item (including opaque reasoning, `program`, `program_output`, fingerprints, messages, and callers) is retained in memory for the active turn and replayed in exact provider order, followed by local function outputs in call order. The CheapVibeCode profile filters reasoning items as described above; its local compatibility profile keeps Programmatic Tool Calling disabled. EVE does not persist program code, fingerprints, encrypted reasoning, or replay payloads in SQLite. When `OPENAI_STORE_RESPONSES=true`, OpenAI may retain those request and response items in its stored Response logs. Mid-turn SQLite compaction is skipped while a program is active because it cannot reconstruct this chain.
+OpenAI's hosted runtime executes generated programs. EVE never evaluates generated JavaScript and executes only returned client-owned function calls. On the OpenAI profile, every provider output item (including opaque reasoning, `program`, `program_output`, fingerprints, messages, and callers) is retained in memory for the active turn and replayed in exact provider order, followed by local function outputs in call order. The ModelHub profile filters reasoning items as described above; its local compatibility profile keeps Programmatic Tool Calling disabled. EVE does not persist program code, fingerprints, encrypted reasoning, or replay payloads in SQLite. When `OPENAI_STORE_RESPONSES=true`, OpenAI may retain those request and response items in its stored Response logs. Mid-turn SQLite compaction is skipped while a program is active because it cannot reconstruct this chain.
 
 The application permits at most four programmatic calls per response batch,
 user turn, and program ID. Family work ceilings are 40 region/type pairs for

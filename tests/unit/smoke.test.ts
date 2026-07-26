@@ -98,20 +98,20 @@ describe('runSmokeChecks', () => {
     expect(result.checks.find((check) => check.name === 'app_health')?.status).toBe('fail');
   });
 
-  it('checks the selected CheapVibeCode Responses endpoint', async () => {
+  it('checks the selected ModelHub Responses endpoint', async () => {
     process.env.TELEGRAM_BOT_TOKEN = 'x';
     process.env.OPENAI_API_KEY = 'x';
     process.env.EVE_CLIENT_ID = 'x';
     process.env.EVE_CLIENT_SECRET = 'x';
     process.env.DEFAULT_MARKET_REGION_ID = '10000002';
     process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+    process.env.OPENAI_PROVIDER = 'modelhub';
     process.env.WEB_BASE_URL = 'http://127.0.0.1:3000';
 
-    createNativeResponseMock.mockResolvedValueOnce({
-      id: 'resp_cvc', output: [], outputText: 'pong', error: null, status: 'completed',
-    });
     const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://modelhub.my/v1/responses') {
+        return new Response('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_mh","output_text":"pong"}}\n\n', { status: 200 });
+      }
       if (url === 'http://127.0.0.1:3000/health') {
         return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
       }
@@ -122,8 +122,7 @@ describe('runSmokeChecks', () => {
     const result = await runSmokeChecks();
 
     expect(result.ok).toBe(true);
-    expect(createNativeResponseMock).toHaveBeenCalledOnce();
-    expect(fetchMock).not.toHaveBeenCalledWith(
-      expect.stringContaining('cheapvibecode.ru'), expect.anything());
+    expect(result.checks.find((check) => check.name === 'model_responses')?.status).toBe('ok');
+    expect(createNativeResponseMock).not.toHaveBeenCalled();
   });
 });

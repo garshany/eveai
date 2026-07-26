@@ -1,7 +1,11 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { CheckIcon, CopyIcon } from '../icons';
+import { useI18n } from '../i18n';
 
 type Block =
   | { kind: 'paragraph'; lines: string[] }
+  | { kind: 'heading'; level: number; text: string }
+  | { kind: 'quote'; lines: string[] }
   | { kind: 'unordered-list'; items: string[] }
   | { kind: 'ordered-list'; items: string[] }
   | { kind: 'code'; language: string; value: string };
@@ -11,7 +15,19 @@ export function MarkdownMessage({ content }: { content: string }) {
   return blocks.map((block, blockIndex) => {
     const key = `${block.kind}-${blockIndex}`;
     if (block.kind === 'code') {
-      return <pre key={key} data-language={block.language || undefined}><code>{block.value}</code></pre>;
+      return <CodeBlock key={key} language={block.language} value={block.value} />;
+    }
+    if (block.kind === 'heading') {
+      const Tag = (`h${Math.min(Math.max(block.level + 2, 3), 6)}`) as 'h3' | 'h4' | 'h5' | 'h6';
+      return <Tag key={key}>{parseInline(block.text, key)}</Tag>;
+    }
+    if (block.kind === 'quote') {
+      return <blockquote key={key}>{block.lines.map((line, index) => (
+        <Fragment key={`${key}-${index}`}>
+          {index > 0 ? <br /> : null}
+          {parseInline(line, `${key}-${index}`)}
+        </Fragment>
+      ))}</blockquote>;
     }
     if (block.kind === 'unordered-list') {
       return <ul key={key}>{block.items.map((item, index) => (
@@ -30,6 +46,58 @@ export function MarkdownMessage({ content }: { content: string }) {
       </Fragment>
     ))}</p>;
   });
+}
+
+function CodeBlock({ language, value }: { language: string; value: string }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+  }, []);
+
+  const copy = async () => {
+    try {
+      await copyText(value);
+      setCopied(true);
+      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+      resetTimer.current = window.setTimeout(() => setCopied(false), 1_600);
+    } catch {
+      // Clipboard unavailable (permissions policy) — leave the button inert.
+    }
+  };
+
+  return (
+    <figure className="code-block">
+      <figcaption className="code-block__bar">
+        <span className="code-block__language">{language || 'code'}</span>
+        <button className="code-block__copy" type="button" onClick={() => void copy()} aria-label={t('copyCode')}>
+          {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+          <span>{copied ? t('copied') : t('copyCode')}</span>
+        </button>
+      </figcaption>
+      <pre data-language={language || undefined}><code>{value}</code></pre>
+    </figure>
+  );
+}
+
+async function copyText(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand('copy');
+  } finally {
+    textarea.remove();
+  }
 }
 
 function parseBlocks(content: string): Block[] {
@@ -52,6 +120,21 @@ function parseBlocks(content: string): Block[] {
       }
       if (index < lines.length) index += 1;
       blocks.push({ kind: 'code', language: fence[1] ?? '', value: code.join('\n') });
+      continue;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      blocks.push({ kind: 'heading', level: heading[1]?.length ?? 1, text: heading[2] ?? '' });
+      index += 1;
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      const quote: string[] = [];
+      while (index < lines.length && /^\s*>\s?/.test(lines[index] ?? '')) {
+        quote.push((lines[index] ?? '').replace(/^\s*>\s?/, ''));
+        index += 1;
+      }
+      blocks.push({ kind: 'quote', lines: quote });
       continue;
     }
     if (/^\s*[-*]\s+/.test(line)) {
@@ -77,6 +160,8 @@ function parseBlocks(content: string): Block[] {
       index < lines.length
       && (lines[index] ?? '').trim()
       && !/^```/.test(lines[index] ?? '')
+      && !/^(#{1,4})\s+/.test(lines[index] ?? '')
+      && !/^\s*>\s?/.test(lines[index] ?? '')
       && !/^\s*[-*]\s+/.test(lines[index] ?? '')
       && !/^\s*\d+\.\s+/.test(lines[index] ?? '')
     ) {

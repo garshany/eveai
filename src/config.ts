@@ -70,10 +70,10 @@ const openAiProvider = resolveOpenAiProvider();
 const responseStateMode = parseResponseStateMode(storeResponses);
 const readSubagentsEnabled = optionalBoolean(
   'CHEAPVIBE_READ_SUBAGENTS_ENABLED',
-  openAiProvider.id === 'cheapvibecode',
+  openAiProvider.id === 'modelhub',
 );
-if (openAiProvider.responsesTransport === 'websocket' && responseStateMode === 'server') {
-  throw new Error('CheapVibeCode WebSocket transport requires OPENAI_RESPONSE_STATE_MODE=stateless');
+if (openAiProvider.id === 'modelhub' && responseStateMode === 'server') {
+  throw new Error('ModelHub does not support server-side response state; set OPENAI_RESPONSE_STATE_MODE=stateless');
 }
 if (process.env.WEB_TRUST_PROXY?.trim().toLowerCase() === 'true') {
   throw new Error('WEB_TRUST_PROXY=true is unsafe; configure explicit WEB_TRUSTED_PROXY_CIDRS instead');
