@@ -35,10 +35,13 @@ export function ChatScreen({ title, messages, busy, request, error, onMenu, onSe
     { text: t('suggestionLosses'), Icon: TargetIcon },
   ];
   const progressSequence = request?.progressSequence ?? 0;
+  const streamText = request && (request.status === 'queued' || request.status === 'running')
+    ? request.streamText
+    : '';
 
   useEffect(() => {
     if (pinnedToBottom) endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, busy, progressSequence, pinnedToBottom]);
+  }, [messages.length, busy, progressSequence, streamText.length, pinnedToBottom]);
 
   const handleScroll = () => {
     const container = scrollRef.current;
@@ -73,7 +76,9 @@ export function ChatScreen({ title, messages, busy, request, error, onMenu, onSe
   const thread = (
     <div className="message-thread" role="log" aria-busy={busy}>
       {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
-      {busy ? <ThinkingMessage request={request} onCancel={onCancel} /> : null}
+      {busy ? (streamText
+        ? <StreamingMessage text={streamText} onCancel={onCancel} />
+        : <ThinkingMessage request={request} onCancel={onCancel} />) : null}
       <div ref={endRef} />
     </div>
   );
@@ -111,13 +116,40 @@ export function ChatScreen({ title, messages, busy, request, error, onMenu, onSe
 }
 
 const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMessage }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const isUser = message.role === 'user';
-  return <article className={`message message--${message.role}`}>{!isUser ? <div className="assistant-mark"><CompassMark size={24} /></div> : null}<div className="message__body"><div className="message__content"><MarkdownMessage content={message.content} /></div>{message.activity?.length ? <details className="activity-trace"><summary>{t('checkedSources')}: {message.activity.length}</summary><div className="activity-trace__steps">{message.activity.map((step, index) => <div key={`${step.name}-${index}`}><CheckIcon size={18} /><span>{humanizeToolName(step.name)}</span><small>{step.detail || t('completed')}</small></div>)}</div></details> : null}</div></article>;
+  const timestamp = formatMessageTime(message.created_at, locale);
+  return <article className={`message message--${message.role}`}>{!isUser ? <div className="assistant-mark"><CompassMark size={24} /></div> : null}<div className="message__body"><div className="message__content"><MarkdownMessage content={message.content} /></div>{message.activity?.length ? <details className="activity-trace"><summary>{t('checkedSources')}: {message.activity.length}</summary><div className="activity-trace__steps">{message.activity.map((step, index) => <div key={`${step.name}-${index}`}><CheckIcon size={18} /><span>{humanizeToolName(step.name)}</span><small>{step.detail || t('completed')}</small></div>)}</div></details> : null}{timestamp ? <time className="message__time" dateTime={timestamp.iso}>{timestamp.label}</time> : null}</div></article>;
 });
 
-function ThinkingMessage({ request, onCancel }: { request: WebAgentRequest | null; onCancel: () => void }) {
+function formatMessageTime(value: string, locale: 'ru' | 'en'): { iso: string; label: string } | null {
+  // SQLite хранит datetime('now') как «YYYY-MM-DD HH:MM:SS» в UTC.
+  const normalized = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return null;
+  return {
+    iso: date.toISOString(),
+    label: date.toLocaleTimeString(locale === 'ru' ? 'ru-RU' : 'en-US', { hour: '2-digit', minute: '2-digit' }),
+  };
+}
+
+function StreamingMessage({ text, onCancel }: { text: string; onCancel: () => void }) {
   const { t } = useI18n();
+  return (
+    <article className="message message--assistant message--streaming">
+      <div className="assistant-mark"><CompassMark size={24} /></div>
+      <div className="message__body">
+        <div className="message__content" aria-live="polite" aria-atomic="false" aria-label={t('agentComposing')}>
+          <MarkdownMessage content={text} />
+          <span className="stream-cursor" aria-hidden="true" />
+        </div>
+        <button className="thinking-cancel" type="button" onClick={onCancel}>{t('cancelRequest')}</button>
+      </div>
+    </article>
+  );
+}
+
+function ThinkingMessage({ request, onCancel }: { request: WebAgentRequest | null; onCancel: () => void }) {  const { t } = useI18n();
   const [now, setNow] = useState(() => Date.now());
   const createdAt = request ? Date.parse(request.createdAt) : Number.NaN;
 

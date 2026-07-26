@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { createElement } from 'react';
+import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MarkdownMessage, normalizeLegacyFormatting, safeLink } from '../../web/src/components/MarkdownMessage.js';
+import { I18nProvider } from '../../web/src/i18n.js';
+
+vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined });
 
 describe('web message formatting', () => {
   it('normalizes Telegram HTML and escaped entities into supported Markdown', () => {
@@ -27,5 +31,75 @@ describe('web message formatting', () => {
     expect(html).toContain('href="https://eve-kill.com/kill/1"');
     expect(html).toContain('<br/>');
     expect(html).not.toContain('&lt;b&gt;');
+  });
+
+  it('renders an unclosed fenced code block as code until the end of the text', () => {
+    const html = renderToStaticMarkup(createElement(I18nProvider, null,
+      createElement(MarkdownMessage, { content: 'Смотри конфиг:\n```json\n{"region": "The Forge"\n' })));
+    expect(html).toContain('<figure class="code-block">');
+    expect(html).toContain('{&quot;region&quot;: &quot;The Forge&quot;');
+    expect(html).not.toContain('```');
+  });
+
+  it('still splits a closed code block from the following paragraph', () => {
+    const html = renderToStaticMarkup(createElement(I18nProvider, null,
+      createElement(MarkdownMessage, { content: '```ts\nconst a = 1;\n```\nпояснение после блока' })));
+    expect(html).toContain('<code>const a = 1;</code>');
+    expect(html).toContain('<p>пояснение после блока</p>');
+  });
+
+  it('keeps unpaired inline markers as literal text', () => {
+    const html = renderToStaticMarkup(MarkdownMessage({
+      content: 'Цена **не завершена и `тоже не завершено',
+    }));
+    expect(html).not.toContain('<strong>');
+    expect(html).not.toContain('<code>');
+    expect(html).toContain('Цена **не завершена и `тоже не завершено');
+  });
+
+  it('renders a GFM-style table with header, alignment and numeric cells', () => {
+    const html = renderToStaticMarkup(MarkdownMessage({
+      content: '| Система | Прыжки | Цена |\n|:--------|-------:|-----:|\n| Jita | 0 | 1 250 000 |\n| Amarr | 12 | 1 180 500 |',
+    }));
+    expect(html).toContain('<div class="md-table">');
+    expect(html).toContain('<th>Система</th>');
+    expect(html).toContain('<th class="md-align-right">Прыжки</th>');
+    expect(html).toContain('<td class="md-align-right md-num">1 250 000</td>');
+    expect(html).toContain('<td>Amarr</td>');
+    expect(html).not.toContain('---');
+  });
+
+  it('accepts table rows without leading and trailing pipes', () => {
+    const html = renderToStaticMarkup(MarkdownMessage({
+      content: 'Регион | Объём\n--- | ---\nThe Forge | 420',
+    }));
+    expect(html).toContain('<th>Регион</th>');
+    expect(html).toContain('<td>The Forge</td>');
+    expect(html).toContain('<td class="md-num">420</td>');
+  });
+
+  it('splits a table from the following paragraph', () => {
+    const html = renderToStaticMarkup(MarkdownMessage({
+      content: '| a | b |\n|---|---|\n| 1 | 2 |\nпояснение после таблицы',
+    }));
+    expect(html).toContain('</table>');
+    expect(html).toContain('<p>пояснение после таблицы</p>');
+  });
+
+  it('keeps pipe text without a separator row as a plain paragraph', () => {
+    const html = renderToStaticMarkup(MarkdownMessage({
+      content: 'вариант A | вариант B\nпродолжение той же мысли',
+    }));
+    expect(html).not.toContain('<table>');
+    expect(html).toContain('вариант A | вариант B');
+  });
+
+  it('pads short table rows and truncates extra cells to the header width', () => {
+    const html = renderToStaticMarkup(MarkdownMessage({
+      content: '| a | b |\n|---|---|\n| 1 |\n| 1 | 2 | 3 |',
+    }));
+    const cells = html.match(/<td/g) ?? [];
+    expect(cells).toHaveLength(4);
+    expect(html).not.toContain('>3</td>');
   });
 });

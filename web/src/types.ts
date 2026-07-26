@@ -29,20 +29,6 @@ export type PilotProfile = {
   availability: Record<'public' | 'online' | 'location' | 'ship' | 'skills' | 'wallet', ProfileAvailability>;
 };
 
-export type ScanPayload = {
-  source: { transport: 'rest_poll'; running: boolean; lastPollAt: string | null; lastSuccessAt: string | null; lastError: string | null };
-  monitor: null | {
-    active: boolean; baselineReady: boolean; threatLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | null; locationFailures: number;
-    characterId: number; characterMatchesActive: boolean;
-    origin: { id: number; name: string }; destination: { id: number; name: string }; current: { id: number; name: string };
-    routeSystems: Array<{ id: number; name: string }>;
-    progress: { completed: number; total: number; remaining: number | null };
-    ship: { typeId: number; name: string; ehp: number };
-    startedAt: string; lastLocationCheck: string; lastOnlineCheck: string; killsSeen: number;
-    dangerEvents: Array<{ systemId: number; systemName: string; time: string; threatLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'; description: string }>;
-  };
-};
-
 export type Conversation = {
   id: string;
   title: string;
@@ -61,6 +47,7 @@ export type WebAgentRequest = {
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   activity: ActivityStep[];
   progressSequence: number;
+  streamText: string;
   result: string | null;
   error: string | null;
   createdAt: string;

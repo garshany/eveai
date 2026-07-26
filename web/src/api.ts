@@ -1,4 +1,4 @@
-import type { ChatMessage, Conversation, PilotProfile, ScanPayload, SessionPayload, WebAgentRequest } from './types';
+import type { ChatMessage, Conversation, PilotProfile, SessionPayload, WebAgentRequest } from './types';
 import type { Locale } from './i18n';
 
 type ErrorPayload = { error?: string };
@@ -121,6 +121,4 @@ export const webApi = {
     csrfToken,
   ),
   getProfile: () => request<{ profile: PilotProfile | null }>('/api/web/profile'),
-  getScan: () => request<ScanPayload>('/api/web/scan'),
-  stopScan: (csrfToken: string) => request<void>('/api/web/scan/stop', { method: 'POST' }, csrfToken),
 };

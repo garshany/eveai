@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS web_agent_requests (
   status           TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
   activity_json    TEXT NOT NULL DEFAULT '[]',
   progress_sequence INTEGER NOT NULL DEFAULT 0,
+  stream_text      TEXT NOT NULL DEFAULT '',
   result_text      TEXT,
   assistant_message_id INTEGER,
   error_code       TEXT,

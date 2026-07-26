@@ -31,6 +31,21 @@ export async function submitWithAmbiguousRetry<T>(submit: () => Promise<T>): Pro
   }
 }
 
+export type StreamDeltaFrame = {
+  requestId: string;
+  text: string;
+  sequence: number;
+};
+
+export function mergeStreamDelta(
+  current: WebAgentRequest | null,
+  frame: StreamDeltaFrame,
+): WebAgentRequest | null {
+  if (!current || current.requestId !== frame.requestId) return current;
+  if (frame.sequence <= current.progressSequence) return current;
+  return { ...current, streamText: frame.text, progressSequence: frame.sequence };
+}
+
 export function mergeRequestSnapshot(
   current: WebAgentRequest | null,
   incoming: WebAgentRequest,

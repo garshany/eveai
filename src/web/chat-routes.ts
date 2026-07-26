@@ -340,6 +340,15 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
       if (!snapshot) return close();
       if (snapshot.progressSequence !== lastSequence || lastSequence < 0) {
         lastSequence = snapshot.progressSequence;
+        // Full accumulated text, not an increment: dedup on the client is
+        // trivial and a Last-Event-ID reconnect cannot produce duplicates.
+        if (snapshot.streamText) {
+          reply.raw.write(`id: ${lastSequence}\nevent: delta\ndata: ${JSON.stringify({
+            requestId: snapshot.requestId,
+            text: snapshot.streamText,
+            sequence: lastSequence,
+          })}\n\n`);
+        }
         reply.raw.write(`id: ${lastSequence}\nevent: request\ndata: ${JSON.stringify({ request: snapshot })}\n\n`);
       }
       if (snapshot.status !== 'queued' && snapshot.status !== 'running') close();
