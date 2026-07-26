@@ -1,16 +1,24 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Brand } from './Brand';
-import { ChatIcon, ChevronIcon, CloseIcon, LogOutIcon, PilotIcon, PlusIcon, RadarIcon } from '../icons';
+import { ChatIcon, ChevronIcon, CloseIcon, LogOutIcon, PilotIcon, PlusIcon } from '../icons';
 import { useI18n } from '../i18n';
 import type { Character, Conversation } from '../types';
 
-export type AppView = 'chat' | 'profile' | 'scan';
+export type AppView = 'chat' | 'profile';
 type Props = { open: boolean; activeView: AppView; conversations: Conversation[]; activeId: string | null; busy: boolean; character: Character | null; characters: Character[]; onClose: () => void; onView: (view: AppView) => void; onNew: () => void; onSelect: (id: string) => void; onConnect: () => void; onActivate: (characterId: number) => void; onLogout: () => void };
 
 export function Sidebar({ open, activeView, conversations, activeId, busy, character, characters, onClose, onView, onNew, onSelect, onConnect, onActivate, onLogout }: Props) {
   const { t } = useI18n();
   const [characterMenuOpen, setCharacterMenuOpen] = useState(false);
-  const nav = [{ id: 'chat' as const, label: t('chat'), Icon: ChatIcon }, { id: 'profile' as const, label: t('profile'), Icon: PilotIcon }, { id: 'scan' as const, label: t('scan'), Icon: RadarIcon }];
+  const nav = [{ id: 'chat' as const, label: t('chat'), Icon: ChatIcon }, { id: 'profile' as const, label: t('profile'), Icon: PilotIcon }];
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
   return <><button className={`sidebar-scrim${open ? ' sidebar-scrim--open' : ''}`} type="button" aria-label={t('closeMenu')} onClick={onClose} /><aside className={`sidebar${open ? ' sidebar--open' : ''}`} aria-label={t('conversations')}>
     <div className="sidebar__brand-row"><Brand compact /><button className="icon-button sidebar__close" type="button" onClick={onClose} aria-label={t('closeMenu')}><CloseIcon size={21} /></button></div>
     <nav className="sidebar-nav" aria-label="Workspace">{nav.map(({ id, label, Icon }) => <button className={activeView === id ? 'sidebar-nav__item sidebar-nav__item--active' : 'sidebar-nav__item'} type="button" key={id} onClick={() => onView(id)}><Icon size={20} /><span>{label}</span></button>)}</nav>

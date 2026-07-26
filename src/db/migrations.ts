@@ -451,6 +451,7 @@ function ensureWebAgentRequests(db: Db): void {
       status           TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
       activity_json    TEXT NOT NULL DEFAULT '[]',
       progress_sequence INTEGER NOT NULL DEFAULT 0,
+      stream_text      TEXT NOT NULL DEFAULT '',
       result_text      TEXT,
       assistant_message_id INTEGER,
       error_code       TEXT,
@@ -475,6 +476,7 @@ function ensureWebAgentRequests(db: Db): void {
   addColumnIfMissing(db, 'web_agent_requests', 'cost_actual', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'web_agent_requests', 'heartbeat_at', 'TEXT');
   addColumnIfMissing(db, 'web_agent_requests', 'lease_expires_at', 'TEXT');
+  addColumnIfMissing(db, 'web_agent_requests', 'stream_text', "TEXT NOT NULL DEFAULT ''");
   db.prepare(`
     UPDATE web_agent_requests SET idempotency_key = request_id WHERE idempotency_key = ''
   `).run();

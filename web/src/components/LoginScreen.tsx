@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Brand } from './Brand';
 import { ShieldIcon, TargetIcon } from '../icons';
@@ -26,6 +26,15 @@ export function LoginScreen({
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const routeImage = `${import.meta.env.BASE_URL}assets/orbit-route.png`;
+
+  useEffect(() => {
+    if (!privacyOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPrivacyOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [privacyOpen]);
 
   return (
     <main className="login" style={{ '--route-image': `url(${routeImage})` } as CSSProperties}>

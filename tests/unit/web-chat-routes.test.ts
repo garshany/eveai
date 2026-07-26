@@ -276,6 +276,78 @@ describe('web chat routes', () => {
     expect((history.json() as { messages: unknown[] }).messages).toHaveLength(2);
   });
 
+  it('streams accumulated answer text via SSE delta frames, polling DTO, and never duplicates on reconnect', async () => {
+    runAgentTurnMock.mockImplementation(async (
+      database: Database.Database,
+      threadId: string,
+      _ctx: unknown,
+      text: string,
+    ) => {
+      const { reportActivity } = await import('../../src/agent/activity.js');
+      reportActivity({ type: 'text_delta', text: '', reset: true });
+      reportActivity({ type: 'text_delta', text: 'Ответ: ' });
+      reportActivity({ type: 'text_delta', text });
+      const answer = `Ответ: ${text}`;
+      database.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'assistant', answer);
+      return answer;
+    });
+    const session = await createBrowserSession();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/web/conversations',
+      headers: mutationHeaders(session),
+    });
+    const threadId = (created.json() as { threadId: string }).threadId;
+    const answer = await app.inject({
+      method: 'POST',
+      url: '/api/web/chat',
+      headers: mutationHeaders(session),
+      payload: { message: 'Привет', threadId },
+    });
+    expect(answer.statusCode).toBe(202);
+    const accepted = answer.json() as { request: { requestId: string } };
+
+    let requestPayload: { request: { status: string; streamText?: string } } | null = null;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const status = await app.inject({
+        method: 'GET',
+        url: `/api/web/chat/requests/${accepted.request.requestId}`,
+        headers: { cookie: session.cookie },
+      });
+      requestPayload = status.json() as typeof requestPayload;
+      if (requestPayload?.request.status === 'completed') break;
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    // The polling fallback sees the same accumulated text as the SSE stream.
+    expect(requestPayload?.request.streamText).toBe('Ответ: Привет');
+
+    const events = await app.inject({
+      method: 'GET',
+      url: `/api/web/chat/requests/${accepted.request.requestId}/events`,
+      headers: { cookie: session.cookie },
+    });
+    expect(events.statusCode).toBe(200);
+    expect(events.body).toContain('event: delta');
+    expect(events.body).toContain('"text":"Ответ: Привет"');
+    expect(events.body).toContain('"requestId":"' + accepted.request.requestId + '"');
+    // The snapshot frame still arrives, after the delta frame.
+    expect(events.body).toContain('event: request');
+    expect(events.body.indexOf('event: delta')).toBeLessThan(events.body.indexOf('event: request'));
+    expect(events.body).toContain('"status":"completed"');
+
+    // A reconnect at the last seen sequence must not replay any frames.
+    const lastId = [...events.body.matchAll(/^id: (\d+)$/gm)].pop()?.[1];
+    expect(lastId).toBeDefined();
+    const replay = await app.inject({
+      method: 'GET',
+      url: `/api/web/chat/requests/${accepted.request.requestId}/events`,
+      headers: { cookie: session.cookie, 'last-event-id': lastId as string },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.body).not.toContain('event: delta');
+    expect(replay.body).not.toContain('event: request');
+  });
+
   it('does not allow one browser session to read another session conversation', async () => {
     const owner = await createBrowserSession();
     const intruder = await createBrowserSession();

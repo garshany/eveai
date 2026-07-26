@@ -2,15 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { isAmbiguousApiRequestError, webApi } from './api';
 import {
   mergeRequestSnapshot,
+  mergeStreamDelta,
   preparePendingSubmission,
   submitWithAmbiguousRetry,
   type PendingSubmission,
+  type StreamDeltaFrame,
 } from './agent-request-client';
 import { LoginScreen } from './components/LoginScreen';
 import { Sidebar, type AppView } from './components/Sidebar';
 import { ChatScreen } from './components/ChatScreen';
 import { PilotProfileScreen } from './components/PilotProfileScreen';
-import { LiveScanScreen } from './components/LiveScanScreen';
 import { useI18n } from './i18n';
 import type { ChatMessage, Conversation, SessionPayload, WebAgentRequest } from './types';
 
@@ -118,6 +119,17 @@ export default function App() {
       try {
         const payload = JSON.parse(event.data) as { request?: WebAgentRequest };
         if (payload.request?.requestId === observedRequestId) applySnapshot(payload.request);
+      } catch {
+        // Polling below remains authoritative when an SSE frame is malformed.
+      }
+    });
+    source?.addEventListener('delta', (event) => {
+      if (cancelled || !(event instanceof MessageEvent)) return;
+      try {
+        const frame = JSON.parse(event.data) as StreamDeltaFrame;
+        if (frame.requestId === observedRequestId) {
+          setActiveRequest((current) => mergeStreamDelta(current, frame));
+        }
       } catch {
         // Polling below remains authoritative when an SSE frame is malformed.
       }
@@ -359,9 +371,8 @@ export default function App() {
         onActivate={(characterId) => void activateCharacter(characterId)}
         onLogout={() => void logout()}
       />
-      {activeView === 'chat' ? <ChatScreen title={activeTitle} messages={messages} busy={busy} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} /> : null}
+      {activeView === 'chat' ? <ChatScreen title={activeTitle} messages={messages} busy={busy} request={activeRequest} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} onDismissError={() => setError(null)} /> : null}
       {activeView === 'profile' ? <PilotProfileScreen character={session.character} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} /> : null}
-      {activeView === 'scan' ? <LiveScanScreen csrfToken={session.csrfToken} onMenu={() => setSidebarOpen(true)} onPrompt={(prompt) => { setActiveView('chat'); void sendMessage(prompt); }} /> : null}
     </main>
   );
 }

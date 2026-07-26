@@ -1,8 +1,10 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useI18n } from '../i18n';
 
 type TurnstileApi = {
   render: (container: HTMLElement, options: Record<string, unknown>) => string;
   remove: (widgetId: string) => void;
+  reset: (widgetId: string) => void;
 };
 
 declare global {
@@ -20,21 +22,25 @@ export function TurnstileWidget({
   siteKey: string;
   onToken: (token: string | null) => void;
 }) {
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
+  const widgetIdRef = useRef<string | null>(null);
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let disposed = false;
-    let widgetId: string | null = null;
     const render = () => {
-      if (disposed || !containerRef.current || !window.turnstile || widgetId) return;
-      widgetId = window.turnstile.render(containerRef.current, {
+      if (disposed || !containerRef.current || !window.turnstile || widgetIdRef.current) return;
+      widgetIdRef.current = window.turnstile.render(containerRef.current, {
         sitekey: siteKey,
         action: 'session',
         theme: 'dark',
-        callback: (token: string) => onToken(token),
+        callback: (token: string) => { setFailed(false); onToken(token); },
         'expired-callback': () => onToken(null),
-        'error-callback': () => onToken(null),
+        'error-callback': () => { setFailed(true); onToken(null); },
       });
+      setReady(true);
     };
 
     const existing = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
@@ -53,9 +59,29 @@ export function TurnstileWidget({
 
     return () => {
       disposed = true;
-      if (widgetId && window.turnstile) window.turnstile.remove(widgetId);
+      if (widgetIdRef.current && window.turnstile) {
+        window.turnstile.remove(widgetIdRef.current);
+        widgetIdRef.current = null;
+      }
     };
   }, [onToken, siteKey]);
 
-  return <div className="turnstile-widget" ref={containerRef} aria-label="Bot protection" />;
+  const retry = () => {
+    if (!widgetIdRef.current || !window.turnstile) return;
+    setFailed(false);
+    window.turnstile.reset(widgetIdRef.current);
+  };
+
+  return (
+    <div className="turnstile-shell">
+      {ready ? null : <div className="turnstile-shell__placeholder" aria-hidden="true"><span className="turnstile-shell__pulse" />{t('turnstileLoading')}</div>}
+      <div className="turnstile-widget" ref={containerRef} aria-label="Bot protection" />
+      {failed ? (
+        <div className="turnstile-shell__error" role="alert">
+          <span>{t('turnstileFailed')}</span>
+          <button type="button" onClick={retry}>{t('retry')}</button>
+        </div>
+      ) : null}
+    </div>
+  );
 }

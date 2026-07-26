@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 export type Locale = 'ru' | 'en';
 
 const RU = {
-  chat: 'Чат', profile: 'Профиль пилота', scan: 'Онлайн-скан', newChat: 'Новый диалог', conversations: 'Диалоги',
+  chat: 'Чат', profile: 'Профиль пилота', newChat: 'Новый диалог', conversations: 'Диалоги',
   noConversations: 'Первый диалог появится после вашего вопроса.', closeMenu: 'Закрыть меню', openMenu: 'Открыть меню',
   guest: 'Гостевой режим', connectPilot: 'Подключить персонажа', pilotConnected: 'Персонаж подключён', pilots: 'Капсулёры', active: 'активен', addPilot: 'Добавить капсулёра', logout: 'Выйти',
   serviceReady: 'Системы доступны', loginLine1: 'Разведка', loginLine2: 'начинается с вопроса',
@@ -17,12 +17,15 @@ const RU = {
   checkedSources: 'Проверено источников', completed: 'Завершено',
   profileTitle: 'Профиль пилота', profileLead: 'Активный капсулёр и доступные данные ESI', noPilot: 'Подключите персонажа, чтобы открыть профиль.',
   corporation: 'Корпорация', alliance: 'Альянс', location: 'Местоположение', ship: 'Корабль', skills: 'Навыки', wallet: 'Кошелёк', security: 'Безопасность', born: 'Создан', online: 'В сети', offline: 'Не в сети', unavailable: 'Недоступно', missingScope: 'Нет разрешения', queued: 'в очереди', skillPoints: 'SP', balance: 'Баланс', refresh: 'Обновить',
-  scanTitle: 'Онлайн-скан', scanLead: 'Живой монитор маршрута по ESI и EVE-KILL', feedLive: 'EVE-KILL REST feed работает', feedDown: 'EVE-KILL feed недоступен', noScan: 'Активного маршрута нет.', noScanLead: 'Попросите агента построить маршрут, включить автопилот и онлайн-скан.', startPrompt: 'Построй маршрут до Jita, включи автопилот и онлайн-скан', stopScan: 'Остановить скан', currentSystem: 'Текущая система', destination: 'Цель', progress: 'Прогресс', jumpsLeft: 'прыжков осталось', killsSeen: 'Сигналы на маршруте', dangerEvents: 'Последние угрозы', noThreats: 'Новых угроз не зафиксировано.', sourceRest: 'Один общий REST poller; браузер обновляет этот экран каждые 5 секунд.',
   loading: 'Загрузка', requestFailed: 'Не удалось выполнить запрос.',
+  requestQueued: 'Запрос в очереди', requestRunning: 'Агент формирует ответ', toolCalls: 'Вызовы инструментов', agentComposing: 'Агент печатает ответ',
+  copyCode: 'Копировать код', copied: 'Скопировано', dismissError: 'Скрыть ошибку', scrollToLatest: 'К новым сообщениям',
+  composerHint: 'Enter — отправить, Shift+Enter — новая строка', turnstileLoading: 'Загрузка проверки защиты…',
+  turnstileFailed: 'Проверка не прошла.', retry: 'Повторить',
 } as const;
 
 const EN: Record<keyof typeof RU, string> = {
-  chat: 'Chat', profile: 'Pilot profile', scan: 'Live scan', newChat: 'New chat', conversations: 'Conversations',
+  chat: 'Chat', profile: 'Pilot profile', newChat: 'New chat', conversations: 'Conversations',
   noConversations: 'Your first conversation appears after a question.', closeMenu: 'Close menu', openMenu: 'Open menu',
   guest: 'Guest mode', connectPilot: 'Connect character', pilotConnected: 'Character connected', pilots: 'Capsuleers', active: 'active', addPilot: 'Add capsuleer', logout: 'Log out',
   serviceReady: 'Systems online', loginLine1: 'Intelligence', loginLine2: 'starts with a question',
@@ -36,8 +39,11 @@ const EN: Record<keyof typeof RU, string> = {
   checkedSources: 'Sources checked', completed: 'Completed',
   profileTitle: 'Pilot profile', profileLead: 'Active capsuleer and available ESI data', noPilot: 'Connect a character to open the profile.',
   corporation: 'Corporation', alliance: 'Alliance', location: 'Location', ship: 'Ship', skills: 'Skills', wallet: 'Wallet', security: 'Security', born: 'Created', online: 'Online', offline: 'Offline', unavailable: 'Unavailable', missingScope: 'Permission not granted', queued: 'queued', skillPoints: 'SP', balance: 'Balance', refresh: 'Refresh',
-  scanTitle: 'Live scan', scanLead: 'Live route monitor using ESI and EVE-KILL', feedLive: 'EVE-KILL REST feed is live', feedDown: 'EVE-KILL feed unavailable', noScan: 'No active route.', noScanLead: 'Ask the agent to build a route, set autopilot, and enable live scan.', startPrompt: 'Build a route to Jita, set autopilot, and enable live scan', stopScan: 'Stop scan', currentSystem: 'Current system', destination: 'Destination', progress: 'Progress', jumpsLeft: 'jumps remaining', killsSeen: 'Route signals', dangerEvents: 'Recent threats', noThreats: 'No new threats detected.', sourceRest: 'One shared REST poller; the browser refreshes this screen every 5 seconds.',
   loading: 'Loading', requestFailed: 'Request failed.',
+  requestQueued: 'Request queued', requestRunning: 'The agent is composing an answer', toolCalls: 'Tool calls', agentComposing: 'Agent is composing a reply',
+  copyCode: 'Copy code', copied: 'Copied', dismissError: 'Dismiss error', scrollToLatest: 'Jump to latest messages',
+  composerHint: 'Enter to send, Shift+Enter for a new line', turnstileLoading: 'Loading bot protection…',
+  turnstileFailed: 'Verification failed.', retry: 'Retry',
 };
 
 type I18nValue = { locale: Locale; setLocale: (locale: Locale) => void; t: (key: keyof typeof RU) => string };
