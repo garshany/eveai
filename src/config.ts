@@ -203,6 +203,7 @@ export const config = {
     compatibilityDate: optional('ESI_COMPATIBILITY_DATE', '2026-03-15'),
     userAgent: optional('ESI_USER_AGENT', 'EVEAI/4.0 (+https://github.com/example/eveai; contact=operator@example.com)'),
     maxPages: Math.max(1, optionalInt('ESI_MAX_PAGES', 5)),
+    assetsMaxPages: Math.max(1, optionalInt('ESI_ASSETS_MAX_PAGES', 25)),
     backoffMaxSeconds: Math.max(1, optionalInt('ESI_BACKOFF_MAX_SECONDS', 10)),
     requestTimeoutMs: optionalInt('ESI_REQUEST_TIMEOUT_MS', 8000),
     retryMaxAttempts: Math.max(1, optionalInt('ESI_RETRY_MAX_ATTEMPTS', 3)),

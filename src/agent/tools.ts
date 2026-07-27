@@ -19,6 +19,8 @@ import {
   DYNAMIC_ITEM_SUMMARY_TOOL,
   isDynamicItemSummaryTool,
 } from '../eve/dynamic-item-summary.js';
+import { ASSETS_SUMMARY_TOOL, isAssetsSummaryTool } from '../eve/assets-summary.js';
+import { CHARACTER_ORDERS_SUMMARY_TOOL, isCharacterOrdersSummaryTool } from '../eve/orders-summary.js';
 import {
   DOCTRINE_SUMMARY_TOOL,
   isDoctrineSummaryTool,
@@ -541,6 +543,8 @@ export async function buildNativeAgentTools(
     ...(includeRouteMonitor ? [ROUTE_MONITOR_TOOL] : []),
     ...(includeHeartbeat ? [HEARTBEAT_CONFIG_TOOL] : []),
     BATCH_MARKET_TOOL,
+    ASSETS_SUMMARY_TOOL,
+    CHARACTER_ORDERS_SUMMARY_TOOL,
     KILL_ACTIVITY_SUMMARY_TOOL,
     MARKET_HISTORY_SUMMARY_TOOL,
     SYSTEM_METRIC_SNAPSHOT_TOOL,
@@ -617,8 +621,8 @@ export function isSdeSqlTool(name: string): boolean {
 export function isDeferredLookupToolName(name: string): boolean {
   return isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name)
     || isBatchMarketTool(name) || isMarketHistorySummaryTool(name) || isSystemMetricSnapshotTool(name)
-    || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name) || isOsintInferTool(name)
-    || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
+    || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name) || isAssetsSummaryTool(name)
+    || isCharacterOrdersSummaryTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
 }
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
@@ -656,6 +660,7 @@ export async function getToolPolicy(
     || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name)
     || isMarketHistorySummaryTool(name) || isSystemMetricSnapshotTool(name)
     || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name)
+    || isAssetsSummaryTool(name) || isCharacterOrdersSummaryTool(name)
     || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
     return 'read';
   }
