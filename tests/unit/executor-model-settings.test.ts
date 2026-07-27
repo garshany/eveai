@@ -70,7 +70,9 @@ async function runTurn(userId: number) {
     'developer prompt',
     () => 'developer prompt',
   );
-  return createNativeResponseMock.mock.calls[0]![0] as Record<string, unknown>;
+  // Always the LAST call: a previous runTurn in the same test already
+  // populated calls[0], and reading it would assert the wrong user's payload.
+  return createNativeResponseMock.mock.calls.at(-1)![0] as Record<string, unknown>;
 }
 
 describe('executor: per-user model settings', () => {
