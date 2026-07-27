@@ -20,11 +20,22 @@ type ChatScreenProps = {
   onSend: (message: string) => Promise<void>;
   onCancel: () => void;
   onDismissError: () => void;
+  /** Seeds the composer once (e.g. "try in chat" from the examples screen). */
+  initialDraft?: string | null;
+  onInitialDraftConsumed?: () => void;
 };
 
-export function ChatScreen({ title, conversationId, messages, busy, request, error, onMenu, onSend, onCancel, onDismissError }: ChatScreenProps) {
+export function ChatScreen({ title, conversationId, messages, busy, request, error, onMenu, onSend, onCancel, onDismissError, initialDraft, onInitialDraftConsumed }: ChatScreenProps) {
   const { t } = useI18n();
   const [draft, setDraft] = useState('');
+  useEffect(() => {
+    if (initialDraft) {
+      setDraft(initialDraft);
+      onInitialDraftConsumed?.();
+      composerRef.current?.focus();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDraft]);
   const [pinnedToBottom, setPinnedToBottom] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);

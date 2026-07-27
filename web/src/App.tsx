@@ -11,6 +11,7 @@ import {
 import { LoginScreen } from './components/LoginScreen';
 import { Sidebar, type AppView } from './components/Sidebar';
 import { ChatScreen } from './components/ChatScreen';
+import { ExamplesScreen } from './components/ExamplesScreen';
 import { MarketScreen } from './components/MarketScreen';
 import { PilotProfileScreen } from './components/PilotProfileScreen';
 import { SettingsScreen } from './components/SettingsScreen';
@@ -36,6 +37,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(authResultMessage);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [pendingDraft, setPendingDraft] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [activeRequest, setActiveRequest] = useState<WebAgentRequest | null>(null);
   const activeIdRef = useRef<string | null>(null);
@@ -413,10 +415,11 @@ export default function App() {
         onActivate={(characterId) => void activateCharacter(characterId)}
         onLogout={() => void logout()}
       />
-      {activeView === 'chat' ? <ChatScreen title={activeTitle} conversationId={activeId} messages={messages} busy={busy} request={activeRequest} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} onDismissError={() => setError(null)} /> : null}
+      {activeView === 'chat' ? <ChatScreen title={activeTitle} conversationId={activeId} messages={messages} busy={busy} request={activeRequest} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} onDismissError={() => setError(null)} initialDraft={pendingDraft} onInitialDraftConsumed={() => setPendingDraft(null)} /> : null}
       {activeView === 'market' ? <MarketScreen onMenu={() => setSidebarOpen(true)} csrfToken={session.csrfToken} /> : null}
       {activeView === 'profile' ? <PilotProfileScreen character={session.character} csrfToken={session.csrfToken} busy={busy} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} onUnlink={unlinkCharacter} /> : null}
       {activeView === 'settings' ? <SettingsScreen csrfToken={session.csrfToken} onMenu={() => setSidebarOpen(true)} /> : null}
+      {activeView === 'examples' ? <ExamplesScreen onMenu={() => setSidebarOpen(true)} onTryInChat={(question) => { setPendingDraft(question); setActiveView('chat'); }} /> : null}
       {activeView === 'support' ? <SupportScreen hasSession onMenu={() => setSidebarOpen(true)} /> : null}
     </main>
   );

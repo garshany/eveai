@@ -3810,3 +3810,67 @@ a {
     transition: none;
   }
 }
+
+/* --- W8 · Примеры: витрина живых ответов --------------------------------- */
+.examples-group {
+  margin-bottom: var(--space-8);
+}
+
+.examples-group__title {
+  margin: 0 0 var(--space-4);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.example-card {
+  margin-bottom: var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.example-card--open {
+  border-color: var(--accent-line);
+}
+
+.example-card__question {
+  display: flex;
+  width: 100%;
+  padding: var(--space-4) var(--space-5);
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-base);
+  text-align: left;
+  cursor: pointer;
+}
+
+.example-card__question small {
+  flex: none;
+  color: var(--link);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.example-card__answer {
+  padding: 0 var(--space-5) var(--space-5);
+  border-top: var(--border-width) solid var(--border);
+  padding-top: var(--space-4);
+  line-height: var(--leading-relaxed);
+}
+
+.example-card__tools {
+  margin: var(--space-4) 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}

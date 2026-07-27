@@ -499,3 +499,11 @@ export type ModelSettingsPayload = {
   /** False for anonymous guests: the picker is visible but locked. */
   canCustomize: boolean;
 };
+
+export type ShowcaseExample = {
+  id: string;
+  category: string;
+  question: string;
+  answer: string;
+  tools: string[];
+};

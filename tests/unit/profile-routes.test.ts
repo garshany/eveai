@@ -179,7 +179,12 @@ function seedForgeSellOrders(): void {
 }
 
 function daysAgoIso(days: number, hourOffset = 0): string {
-  return new Date(Date.now() - days * 86_400_000 + hourOffset * 3_600_000).toISOString();
+  // Anchored at UTC noon of the target day: near-midnight test runs must not
+  // let a ±1h offset cross a UTC day boundary and split a same-day fixture
+  // into two daily buckets.
+  const now = new Date();
+  const base = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12);
+  return new Date(base - days * 86_400_000 + hourOffset * 3_600_000).toISOString();
 }
 
 function jsonResponse(payload: unknown, headers: Record<string, string> = {}): Response {

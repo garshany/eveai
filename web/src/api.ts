@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  ShowcaseExample,
   Conversation,
   MarketAiSearchResult,
   MarketAlert,
@@ -260,6 +261,7 @@ export const webApi = {
       events: () => request<{ events: MarketAlertEvent[] }>('/api/web/market/alerts/events'),
     },
   },
+  getExamples: () => request<{ examples: ShowcaseExample[] }>('/api/web/examples'),
   getTransparency: () => request<TransparencyPayload>('/api/web/transparency'),
   getMyTransparency: () => request<MyTransparency>('/api/web/transparency/me'),
   getModelSettings: () => request<ModelSettingsPayload>('/api/web/settings/model'),

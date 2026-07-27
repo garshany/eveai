@@ -9,6 +9,7 @@ import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
 import { createLogger } from '../observability/logger.js';
 import { registerAuthRoutes } from './auth-routes.js';
+import { registerExamplesRoutes } from './examples-routes.js';
 import { buildCanonicalLoopbackUrl } from './canonical-origin.js';
 import { registerWebChatRoutes } from './chat-routes.js';
 import { registerHealthRoute } from './health.js';
@@ -43,6 +44,7 @@ export async function createServer(db: Db) {
     registerMarketAlertRoutes(app, db);
     registerSettingsRoutes(app, db);
     registerProfileRoutes(app, db);
+    registerExamplesRoutes(app);
     await registerWebApp(app);
   }
 

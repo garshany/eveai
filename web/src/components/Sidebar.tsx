@@ -5,7 +5,7 @@ import { ChartIcon, ChatIcon, ChevronIcon, CloseIcon, GearIcon, LogOutIcon, Mark
 import { useI18n } from '../i18n';
 import type { Character, Conversation } from '../types';
 
-export type AppView = 'chat' | 'profile' | 'market' | 'settings' | 'support';
+export type AppView = 'chat' | 'profile' | 'market' | 'settings' | 'support' | 'examples';
 type Props = { open: boolean; activeView: AppView; conversations: Conversation[]; activeId: string | null; busy: boolean; character: Character | null; characters: Character[]; onClose: () => void; onView: (view: AppView) => void; onNew: () => void; onSelect: (id: string) => void; onDelete: (id: string) => Promise<void>; onConnect: () => void; onActivate: (characterId: number) => void; onLogout: () => void };
 
 export function Sidebar({ open, activeView, conversations, activeId, busy, character, characters, onClose, onView, onNew, onSelect, onDelete, onConnect, onActivate, onLogout }: Props) {
@@ -19,6 +19,7 @@ export function Sidebar({ open, activeView, conversations, activeId, busy, chara
     { id: 'profile' as const, label: t('profile'), Icon: PilotIcon },
     { id: 'settings' as const, label: t('settings'), Icon: GearIcon },
     { id: 'support' as const, label: t('support'), Icon: ChartIcon },
+    { id: 'examples' as const, label: t('examples'), Icon: ChatIcon },
   ];
   useEffect(() => {
     if (!open) return;
