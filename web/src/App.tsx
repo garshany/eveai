@@ -379,7 +379,7 @@ export default function App() {
       />
       {activeView === 'chat' ? <ChatScreen title={activeTitle} messages={messages} busy={busy} request={activeRequest} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} onDismissError={() => setError(null)} /> : null}
       {activeView === 'market' ? <MarketScreen onMenu={() => setSidebarOpen(true)} csrfToken={session.csrfToken} /> : null}
-      {activeView === 'profile' ? <PilotProfileScreen character={session.character} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} /> : null}
+      {activeView === 'profile' ? <PilotProfileScreen character={session.character} csrfToken={session.csrfToken} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} /> : null}
       {activeView === 'support' ? <SupportScreen hasSession onMenu={() => setSidebarOpen(true)} /> : null}
     </main>
   );

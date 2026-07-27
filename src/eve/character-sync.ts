@@ -682,6 +682,19 @@ export function getCharacterDatasetStatuses(
   return datasets.map((dataset) => readDatasetState(db, characterId, dataset));
 }
 
+/** Public view of the dataset registry for the web access tab. */
+export function characterDatasetRequirements(): Array<{
+  id: CharacterDatasetId;
+  requiredScopes: string[];
+  scopeMode: 'all' | 'any';
+}> {
+  return CHARACTER_DATASETS.map((dataset) => ({
+    id: dataset.id,
+    requiredScopes: [...dataset.requiredScopes],
+    scopeMode: dataset.scopeMode,
+  }));
+}
+
 /**
  * Refreshes the requested datasets for the caller's ACTIVE linked character
  * when their freshness window elapsed. Never throws: every dataset ends in
@@ -694,6 +707,42 @@ export async function ensureCharacterDatasetsFresh(
   datasets: readonly CharacterDatasetId[],
   guard: EsiExecutionGuard = {},
 ): Promise<CharacterDatasetStatus[]> {
+  return syncCharacterDatasets(db, ctx, datasets, guard, (dataset, state, scopes) => {
+    // A recent failure backs off instead of re-hitting ESI on every query.
+    if (state.status === 'error' && isFutureSqlUtc(state.expires_at)) return false;
+    if (state.status === 'no_scope' && !hasRequiredScopes(dataset, scopes)) {
+      return false;
+    }
+    return !isFutureSqlUtc(state.expires_at);
+  });
+}
+
+/**
+ * Force-refresh variant of ensureCharacterDatasetsFresh behind the manual web
+ * "sync now" button: ignores the TTL (fresh rows are refetched too) and the
+ * error backoff. Scope checks still apply — a dataset without its scopes is
+ * recorded as no_scope without touching ESI. Never throws.
+ */
+export async function refreshCharacterDatasets(
+  db: Db,
+  ctx: UserContext,
+  datasets: readonly CharacterDatasetId[],
+  guard: EsiExecutionGuard = {},
+): Promise<CharacterDatasetStatus[]> {
+  return syncCharacterDatasets(db, ctx, datasets, guard, () => true);
+}
+
+async function syncCharacterDatasets(
+  db: Db,
+  ctx: UserContext,
+  datasets: readonly CharacterDatasetId[],
+  guard: EsiExecutionGuard,
+  shouldSync: (
+    dataset: CharacterDataset,
+    state: CharacterDatasetStatus,
+    scopes: readonly string[],
+  ) => boolean,
+): Promise<CharacterDatasetStatus[]> {
   const linked = getLinkedCharacter(db, ctx);
   if (!linked) return [];
   const characterId = linked.characterId;
@@ -701,13 +750,7 @@ export async function ensureCharacterDatasetsFresh(
   const pending = datasets.filter((datasetId) => {
     const dataset = DATASETS_BY_ID.get(datasetId);
     if (!dataset) return false;
-    const state = readDatasetState(db, characterId, datasetId);
-    // A recent failure backs off instead of re-hitting ESI on every query.
-    if (state.status === 'error' && isFutureSqlUtc(state.expires_at)) return false;
-    if (state.status === 'no_scope' && !hasRequiredScopes(dataset, linked.scopes)) {
-      return false;
-    }
-    return !isFutureSqlUtc(state.expires_at);
+    return shouldSync(dataset, readDatasetState(db, characterId, datasetId), linked.scopes);
   });
 
   if (pending.length > 0) {

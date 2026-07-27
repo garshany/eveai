@@ -150,6 +150,7 @@ Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integratio
 - `chat-routes.ts`: isolated browser conversations, characters, and shared agent-loop adapter
 - `market-routes.ts`: `/api/web/market/` read APIs (status, search, groups, regions, overview, orders, history) plus watchlist CRUD
 - `market-alert-routes.ts`: `/api/web/market/alerts*` price-alert CRUD and fired-event feed
+- `profile-routes.ts` + `profile-data.ts`: `/api/web/profile/` living-profile reads over the character_* datastore (SQL-side asset rollup, regional valuation, price-book age) plus the CSRF-protected manual sync with an overall deadline
 - `transparency.ts`: public aggregate spend/infrastructure snapshot and session-gated personal spend
 - `auth-routes.ts`: one-time EVE SSO login redirect, OAuth callback, and `/callback` alias
 - `health.ts`: runtime/dependency health endpoint for both bot platforms

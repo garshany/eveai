@@ -16,6 +16,15 @@ import type {
   MarketWatchlistItem,
   MyTransparency,
   PilotProfile,
+  ProfileAccessResponse,
+  ProfileAssetItemsResponse,
+  ProfileAssetsResponse,
+  ProfileClonesResponse,
+  ProfileDatasetId,
+  ProfileOrdersResponse,
+  ProfileSkillsResponse,
+  ProfileSyncStatus,
+  ProfileWalletResponse,
   SessionPayload,
   TransparencyPayload,
   WebAgentRequest,
@@ -142,6 +151,26 @@ export const webApi = {
     csrfToken,
   ),
   getProfile: () => request<{ profile: PilotProfile | null }>('/api/web/profile'),
+  profile: {
+    assets: (offset?: number, limit?: number) => request<ProfileAssetsResponse>(
+      `/api/web/profile/assets${offset === undefined ? '' : `?offset=${offset}`}${limit === undefined ? '' : `${offset === undefined ? '?' : '&'}limit=${limit}`}`,
+    ),
+    assetItems: (locationId: number, offset?: number, limit?: number) => request<ProfileAssetItemsResponse>(
+      `/api/web/profile/assets/items?location_id=${encodeURIComponent(locationId)}${offset === undefined ? '' : `&offset=${offset}`}${limit === undefined ? '' : `&limit=${limit}`}`,
+    ),
+    orders: (offset?: number, limit?: number) => request<ProfileOrdersResponse>(
+      `/api/web/profile/orders${offset === undefined ? '' : `?offset=${offset}`}${limit === undefined ? '' : `${offset === undefined ? '?' : '&'}limit=${limit}`}`,
+    ),
+    wallet: () => request<ProfileWalletResponse>('/api/web/profile/wallet'),
+    clones: () => request<ProfileClonesResponse>('/api/web/profile/clones'),
+    skills: () => request<ProfileSkillsResponse>('/api/web/profile/skills'),
+    access: () => request<ProfileAccessResponse>('/api/web/profile/access'),
+    sync: (datasets: ProfileDatasetId[] | undefined, csrfToken: string) => request<{ statuses: ProfileSyncStatus[] }>(
+      '/api/web/profile/sync',
+      { method: 'POST', body: JSON.stringify(datasets === undefined ? {} : { datasets }) },
+      csrfToken,
+    ),
+  },
   market: {
     status: () => request<{ snapshot: MarketSnapshotMeta }>('/api/web/market/status'),
     regions: () => request<{ regions: MarketRegion[] }>('/api/web/market/regions'),
