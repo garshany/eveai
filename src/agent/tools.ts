@@ -35,6 +35,7 @@ import {
 import { SDE_SCHEMA, STATIC_AGGREGATE_SDE_SCHEMA } from './tools/sde-schema.js';
 
 const SDE_SQL_TOOL_NAME = 'sde_sql';
+const CHARACTER_SQL_TOOL_NAME = 'character_sql';
 const WEB_SEARCH_TOOL_NAME = 'web_search';
 const LOCAL_PARALLEL_BATCH_TOOL_NAME = 'local_parallel_batch';
 const READ_SUBAGENT_BATCH_TOOL_NAME = 'delegate_read_subagents';
@@ -246,6 +247,20 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
       type: 'object',
       properties: {
         sql: { type: 'string', description: 'Read-only SQL query. Use json_extract() for data_json fields, json_each() for arrays. Max 50 rows returned.' },
+      },
+      required: ['sql'],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: 'function',
+    name: CHARACTER_SQL_TOOL_NAME,
+    description: 'Query the linked character\'s private profile via SQL over local synced tables: assets (full unfiltered list), wallet balance and journal, market orders, contracts, skills, skill queue, clones/implants, standings, location/ship/online. Best for aggregates, rankings, filters, and joins across your own data (e.g. most valuable items, total hangar value, skill totals) — one query instead of many raw ESI calls. Rows are scoped to your active character server-side. Joins with SDE tables (sde_types etc.) are allowed for names/stats. See <character_schema> for tables and examples. Requires a linked character; tables refresh lazily from ESI and data_status reports per-dataset freshness.',
+    strict: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        sql: { type: 'string', description: 'Read-only SQL over character_* tables (and sde_* for joins). Do not filter by character_id — scoping is enforced. Max 50 rows returned.' },
       },
       required: ['sql'],
       additionalProperties: false,
@@ -618,6 +633,10 @@ export function isSdeSqlTool(name: string): boolean {
   return name === SDE_SQL_TOOL_NAME;
 }
 
+export function isCharacterSqlTool(name: string): boolean {
+  return name === CHARACTER_SQL_TOOL_NAME;
+}
+
 export function isDeferredLookupToolName(name: string): boolean {
   return isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name)
     || isBatchMarketTool(name) || isMarketHistorySummaryTool(name) || isSystemMetricSnapshotTool(name)
@@ -631,6 +650,8 @@ export { isEveScoutToolName } from '../eve/eve-scout-tools.js';
 
 export { executeSdeSql, executeUniverseObjectCount } from './tools/sde-execution.js';
 export type { UniverseCountResult } from './tools/sde-execution.js';
+export { runCharacterSqlTool } from './tools/character-sql-tool.js';
+export { CHARACTER_SCHEMA } from './tools/character-schema.js';
 
 export { planRoute } from '../eve/route-planner.js';
 export type { PlanRouteArgs } from '../eve/route-planner.js';

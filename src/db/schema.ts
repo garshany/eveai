@@ -506,4 +506,189 @@ CREATE TABLE IF NOT EXISTS eve_kill_migrations (
   migration_key TEXT PRIMARY KEY,
   applied_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Character datastore: materialized private ESI profile, one row set per
+-- character. Every table carries character_id and synced_at. The character_sql
+-- agent tool only ever sees rows of the currently active character through
+-- per-query TEMP views (see src/agent/tools/character-execution.ts). Rows are
+-- replaced or upserted by src/eve/character-sync.ts and deleted on unlink/purge.
+
+CREATE TABLE IF NOT EXISTS character_assets (
+  character_id      INTEGER NOT NULL,
+  item_id           INTEGER NOT NULL,
+  type_id           INTEGER NOT NULL,
+  location_id       INTEGER NOT NULL,
+  location_type     TEXT,
+  location_flag     TEXT,
+  quantity          INTEGER,
+  is_singleton      INTEGER NOT NULL DEFAULT 0,
+  is_blueprint_copy INTEGER,
+  data_json         TEXT NOT NULL,
+  synced_at         TEXT NOT NULL,
+  PRIMARY KEY (character_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_character_assets_type ON character_assets(character_id, type_id);
+CREATE INDEX IF NOT EXISTS idx_character_assets_location ON character_assets(character_id, location_id);
+
+CREATE TABLE IF NOT EXISTS character_wallet (
+  character_id INTEGER PRIMARY KEY,
+  balance      REAL NOT NULL DEFAULT 0,
+  synced_at    TEXT NOT NULL
+);
+
+-- Append-only: journal rows accumulate via INSERT OR REPLACE (ids are stable),
+-- so history predating the sync page cap is preserved across refreshes.
+CREATE TABLE IF NOT EXISTS character_wallet_journal (
+  character_id    INTEGER NOT NULL,
+  journal_id      INTEGER NOT NULL,
+  date            TEXT,
+  ref_type        TEXT,
+  amount          REAL,
+  balance         REAL,
+  first_party_id  INTEGER,
+  second_party_id INTEGER,
+  description     TEXT,
+  context_id      INTEGER,
+  context_id_type TEXT,
+  data_json       TEXT NOT NULL,
+  synced_at       TEXT NOT NULL,
+  PRIMARY KEY (character_id, journal_id)
+);
+CREATE INDEX IF NOT EXISTS idx_character_wallet_journal_date
+  ON character_wallet_journal(character_id, date);
+
+CREATE TABLE IF NOT EXISTS character_orders (
+  character_id  INTEGER NOT NULL,
+  order_id      INTEGER NOT NULL,
+  type_id       INTEGER NOT NULL,
+  region_id     INTEGER,
+  location_id   INTEGER,
+  price         REAL,
+  volume_total  INTEGER,
+  volume_remain INTEGER,
+  min_volume    INTEGER,
+  is_buy_order  INTEGER NOT NULL DEFAULT 0,
+  range         TEXT,
+  duration      INTEGER,
+  issued        TEXT,
+  escrow        REAL,
+  data_json     TEXT NOT NULL,
+  synced_at     TEXT NOT NULL,
+  PRIMARY KEY (character_id, order_id)
+);
+CREATE INDEX IF NOT EXISTS idx_character_orders_type ON character_orders(character_id, type_id);
+
+CREATE TABLE IF NOT EXISTS character_contracts (
+  character_id      INTEGER NOT NULL,
+  contract_id       INTEGER NOT NULL,
+  type              TEXT,
+  status            TEXT,
+  availability      TEXT,
+  price             REAL,
+  reward            REAL,
+  collateral        REAL,
+  volume            REAL,
+  title             TEXT,
+  date_issued       TEXT,
+  date_expired      TEXT,
+  date_accepted     TEXT,
+  date_completed    TEXT,
+  issuer_id         INTEGER,
+  assignee_id       INTEGER,
+  acceptor_id       INTEGER,
+  start_location_id INTEGER,
+  end_location_id   INTEGER,
+  for_corporation   INTEGER,
+  data_json         TEXT NOT NULL,
+  synced_at         TEXT NOT NULL,
+  PRIMARY KEY (character_id, contract_id)
+);
+CREATE INDEX IF NOT EXISTS idx_character_contracts_status
+  ON character_contracts(character_id, status);
+
+CREATE TABLE IF NOT EXISTS character_skills (
+  character_id         INTEGER NOT NULL,
+  skill_id             INTEGER NOT NULL,
+  trained_skill_level  INTEGER,
+  active_skill_level   INTEGER,
+  skillpoints_in_skill INTEGER,
+  data_json            TEXT NOT NULL,
+  synced_at            TEXT NOT NULL,
+  PRIMARY KEY (character_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS character_skillqueue (
+  character_id      INTEGER NOT NULL,
+  queue_position    INTEGER NOT NULL,
+  skill_id          INTEGER,
+  finished_level    INTEGER,
+  start_date        TEXT,
+  finish_date       TEXT,
+  training_start_sp INTEGER,
+  level_start_sp    INTEGER,
+  level_end_sp      INTEGER,
+  data_json         TEXT NOT NULL,
+  synced_at         TEXT NOT NULL,
+  PRIMARY KEY (character_id, queue_position)
+);
+
+CREATE TABLE IF NOT EXISTS character_clones (
+  character_id  INTEGER NOT NULL,
+  jump_clone_id INTEGER NOT NULL,
+  location_id   INTEGER,
+  location_type TEXT,
+  name          TEXT,
+  implants_json TEXT NOT NULL DEFAULT '[]',
+  data_json     TEXT NOT NULL,
+  synced_at     TEXT NOT NULL,
+  PRIMARY KEY (character_id, jump_clone_id)
+);
+
+CREATE TABLE IF NOT EXISTS character_standings (
+  character_id INTEGER NOT NULL,
+  from_id      INTEGER NOT NULL,
+  from_type    TEXT NOT NULL,
+  standing     REAL,
+  data_json    TEXT NOT NULL,
+  synced_at    TEXT NOT NULL,
+  PRIMARY KEY (character_id, from_type, from_id)
+);
+
+-- Location + ship + online merged into one row per character.
+CREATE TABLE IF NOT EXISTS character_presence (
+  character_id     INTEGER PRIMARY KEY,
+  solar_system_id  INTEGER,
+  station_id       INTEGER,
+  structure_id     INTEGER,
+  ship_type_id     INTEGER,
+  ship_name        TEXT,
+  ship_item_id     INTEGER,
+  online           INTEGER,
+  last_login       TEXT,
+  last_logout      TEXT,
+  synced_at        TEXT NOT NULL
+);
+
+-- Singleton rollups that do not fit the per-row datasets above.
+CREATE TABLE IF NOT EXISTS character_profile (
+  character_id             INTEGER PRIMARY KEY,
+  character_name           TEXT,
+  total_skill_points       INTEGER,
+  unallocated_skill_points INTEGER,
+  implants_json            TEXT NOT NULL DEFAULT '[]',
+  home_location_json       TEXT,
+  synced_at                TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS character_sync_state (
+  character_id INTEGER NOT NULL,
+  dataset      TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'ok', 'error', 'no_scope')),
+  rows_synced  INTEGER NOT NULL DEFAULT 0,
+  synced_at    TEXT,
+  expires_at   TEXT,
+  error        TEXT,
+  PRIMARY KEY (character_id, dataset)
+);
 `;

@@ -3,6 +3,7 @@ import { rmSync } from 'node:fs';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
+import { deleteCharacterData } from '../db/character-datastore.js';
 import { matchesOpaqueToken, protectOpaqueToken } from '../auth/secret-storage.js';
 import {
   resolveUserProfilePath,
@@ -290,7 +291,18 @@ async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
         db.prepare('DELETE FROM users WHERE user_id = ?').run(userId);
         return true;
       });
+
       const removedUser = purge.immediate();
+
+      // Materialized private profile rows go with the account: delete them for
+      // every character that has no surviving link or account after the purge.
+      db.transaction(() => {
+        for (const characterId of characterIds) {
+          const survives = db.prepare('SELECT 1 FROM eve_character_links WHERE character_id = ? LIMIT 1').get(characterId)
+            ?? db.prepare('SELECT 1 FROM eve_accounts WHERE character_id = ? LIMIT 1').get(characterId);
+          if (!survives) deleteCharacterData(db, characterId);
+        }
+      })();
 
       for (const characterId of characterIds) {
         try {

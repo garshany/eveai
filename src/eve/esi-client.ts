@@ -31,7 +31,11 @@ type EsiCacheRow = {
 export type EsiExecutionGuard = {
   signal?: AbortSignal;
   identityCurrent?: () => boolean;
-  /** Per-call pagination budget override (pages). Defaults to config.esi.maxPages. */
+  /**
+   * Page ceiling override for x-pages operations. Internal trusted callers
+   * only (character datastore sync, local aggregators); model-driven calls
+   * use config.esi.maxPages.
+   */
   maxPages?: number;
 };
 
@@ -306,8 +310,8 @@ async function fetchEsi<T>(
     }
 
     pageData.push(...payload);
+    const maxPages = Math.max(1, Math.floor(guard.maxPages ?? config.esi.maxPages));
     const totalPages = Number(value.headers.get('x-pages') ?? '1');
-    const maxPages = Math.max(1, guard.maxPages ?? config.esi.maxPages);
     if (Number.isFinite(totalPages) && totalPages > maxPages) {
       const budgetSource = guard.maxPages !== undefined ? 'per-call page budget' : 'ESI_MAX_PAGES';
       return {

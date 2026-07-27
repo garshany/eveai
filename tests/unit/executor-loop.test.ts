@@ -114,6 +114,7 @@ afterEach(() => {
   delete process.env.OPENAI_PROVIDER;
   delete process.env.CHEAPVIBE_READ_SUBAGENTS_ENABLED;
   delete process.env.AGENT_MAX_TOOL_OUTPUT_CHARS;
+  delete process.env.AGENT_SMART_AGGREGATE_THRESHOLD;
   delete process.env.AGENT_MAX_TOOL_ITERATIONS;
   delete process.env.AGENT_MAX_TRANSIENT_RETRIES;
   delete process.env.AGENT_MAX_EVE_KILL_CALLS_PER_TURN;
@@ -194,6 +195,8 @@ describe('tool output truncation', () => {
   });
 
   it('ranks top rows by the largest price values, descending', async () => {
+    process.env.AGENT_MAX_TOOL_OUTPUT_CHARS = '12000';
+    process.env.AGENT_SMART_AGGREGATE_THRESHOLD = '10';
     const { __test__ } = await import('../../src/agent/executor.js');
     const rows = Array.from({ length: 30 }, (_, index) => ({
       type_id: 100 + index,
@@ -233,6 +236,7 @@ describe('tool output truncation', () => {
   });
 
   it('keeps a real data sample for nested structures instead of dropping all rows', async () => {
+    process.env.AGENT_MAX_TOOL_OUTPUT_CHARS = '12000';
     const { __test__ } = await import('../../src/agent/executor.js');
     const output = JSON.stringify({
       ok: true,

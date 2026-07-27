@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { rmSync } from 'node:fs';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
+import { deleteCharacterData } from '../db/character-datastore.js';
 import {
   resolveUserProfilePath,
   withUserProfileAuthorizationLock,
@@ -356,6 +357,10 @@ function reassignCharacterOwnership(db: Db, userId: number, characterId: number)
   db.prepare('DELETE FROM eve_character_links WHERE character_id = ? AND COALESCE(user_id, 0) != ?')
     .run(characterId, userId);
   db.prepare('UPDATE eve_accounts SET user_id = ? WHERE character_id = ?').run(userId, characterId);
+  // Ownership changed hands: drop the materialized private profile so rows
+  // synced under the previous owner's consent are not inherited; the new
+  // owner re-syncs on first use under their own scopes.
+  deleteCharacterData(db, characterId);
 }
 
 function deleteCharacterProfileArtifacts(db: Db, characterId: number): void {

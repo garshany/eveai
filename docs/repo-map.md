@@ -29,6 +29,8 @@ Use it when you need to find the right file or folder before reading implementat
 - `prompts.ts`: prompt-policy boundary
 - `finalizer.ts`: response shaping and final output path
 - `tools.ts`: model-visible tool schema surface
+- `tools/sde-execution.ts`, `tools/sde-schema.ts`: read-only SDE SQL validation/execution and prompt schema
+- `tools/character-execution.ts`, `tools/character-sql-tool.ts`, `tools/character-schema.ts`: character_sql — read-only SQL over the synced private profile, isolated per active character through per-query TEMP views
 - `market-context.ts`, `model.ts`: supporting runtime context
 
 ### `src/auth/`
@@ -50,6 +52,7 @@ Use it when you need to find the right file or folder before reading implementat
 - `schema.ts`: SQLite source of truth
 - `migrations.ts`: in-place schema upgrades
 - `sqlite.ts`: DB open/setup helpers
+- `character-datastore.ts`: character_* table registry and lifecycle deletion (unlink/purge/ownership change)
 - `diagnose-links.ts`: identity-link diagnostics
 
 ### `src/eve/`
@@ -65,6 +68,7 @@ Use it when you need to find the right file or folder before reading implementat
 - `system-metric-snapshot.ts`: same-order projection of fixed public ESI system kill/jump/industry/sovereignty metrics
 - `dynamic-item-summary.ts`: requested dynamic-dogma attributes plus optional local-SDE base/delta evidence without creator/effect leakage
 - `user-profile.ts`: generated user snapshot/profile flow
+- `character-sync.ts`: lazy TTL-based mirror of the private ESI profile (assets, wallet/journal, orders, contracts, skills, clones, standings, presence) into character_* tables
 - `scopes.ts`, `eve-links.ts`, `http.ts`: support modules
 
 ### `src/eve-osint/`
