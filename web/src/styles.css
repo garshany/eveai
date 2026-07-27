@@ -3707,3 +3707,106 @@ button:disabled {
   .watchlist__item,
   .watchlist__head-grid { grid-template-columns: minmax(0, 1fr) 6.5em 6.5em; gap: var(--space-2); }
 }
+
+/* ==========================================================================
+   W6 · «Терминал снаружи — разговор внутри».
+   Хром остаётся угловатым бортовым терминалом (радиусы 0–2px, рамки 1px),
+   но сама беседа смягчается: ответы ассистента — открытый текст без короба,
+   реплики пользователя — мягкие стальные капсулы. Отдельный радиус только
+   для разговорной поверхности; остальной интерфейс его не наследует.
+   ========================================================================== */
+:root {
+  --radius-chat: 14px;
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Ответ ассистента: без рамки и фона — открытая типографика на холсте,
+   как разворот, а не как карточка. Метка-компас остаётся якорем строки. */
+.message--assistant .message__content {
+  padding: var(--space-1) 0 0;
+  border: 0;
+  background: transparent;
+}
+
+.message--assistant .message__body {
+  max-width: min(72ch, 100%);
+}
+
+/* Реплика пользователя: мягкая капсула. Нижний правый угол срезан до
+   терминального радиуса — капсула «указывает» на композер, из которого
+   пришла. */
+.message--user .message__content {
+  padding: var(--space-3) var(--space-5);
+  border-color: transparent;
+  border-radius: var(--radius-chat) var(--radius-chat) var(--radius-md) var(--radius-chat);
+  background: var(--surface-hover);
+}
+
+/* Появление сообщения: чуть длиннее и с мягкой кривой — «всплывает», а не
+   «вставляется». content-visibility остаётся как было. */
+.message {
+  animation: message-in 320ms var(--ease-out-soft);
+}
+
+@keyframes message-in {
+  from { opacity: 0; transform: translateY(10px); }
+}
+
+/* Композер: разговорный радиус и дыхание фокуса. Кольцо — янтарное, в цвет
+   ключевых акцентов терминала. */
+.composer {
+  border-radius: var(--radius-chat);
+  transition: border-color 180ms ease, box-shadow 220ms var(--ease-out-soft);
+}
+
+.composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(217 164 65 / 0.14), 0 8px 30px rgb(0 0 0 / 0.35);
+}
+
+/* Смена экрана: короткое перекрёстное проявление вместо жёсткой подмены. */
+.workspace-screen,
+.chat-canvas {
+  animation: screen-in 240ms var(--ease-out-soft);
+}
+
+@keyframes screen-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+/* Единый отклик интерактива: цвет/рамка/фон дышат одинаково по всему
+   приложению. transform не трогаем — армия таблиц должна стоять смирно. */
+button,
+.sidebar-nav__item,
+.market-tabs__tab,
+.conversation-row__main,
+a {
+  transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease, opacity 140ms ease;
+}
+
+/* Стриминговый ответ: живой маркер набора в конце текста. */
+.message--streaming .message__content::after {
+  content: '▍';
+  margin-left: 2px;
+  color: var(--accent);
+  animation: caret-pulse 1s steps(2, start) infinite;
+}
+
+@keyframes caret-pulse {
+  50% { opacity: 0; }
+}
+
+/* Доступность: вся хореография этого блока подчиняется системной настройке. */
+@media (prefers-reduced-motion: reduce) {
+  .message,
+  .workspace-screen,
+  .chat-canvas {
+    animation: none;
+  }
+  .message--streaming .message__content::after {
+    animation: none;
+  }
+  .composer {
+    transition: none;
+  }
+}

@@ -82,6 +82,12 @@ async function registerWebApp(app: FastifyInstance): Promise<void> {
     root: distRoot,
     prefix: '/web-assets/',
     wildcard: false,
+    // Vite emits content-hashed filenames under assets/ — safe to cache
+    // forever; a new build changes the URL, never the content behind it.
+    // Fonts are versioned by path the same way. index.html is NOT served
+    // from here (see sendApp), so nothing mutable gets the long TTL.
+    maxAge: '30d',
+    immutable: true,
   });
   const html = await readFile(resolve(distRoot, 'index.html'), 'utf8');
   const sendApp = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -92,7 +98,12 @@ async function registerWebApp(app: FastifyInstance): Promise<void> {
       request.headers.host,
     );
     if (canonicalUrl) return reply.redirect(canonicalUrl);
-    return reply.type('text/html; charset=utf-8').send(html);
+    // The shell must revalidate on every load, or a deploy strands users on
+    // an old bundle graph until the browser cache expires.
+    return reply
+      .type('text/html; charset=utf-8')
+      .header('Cache-Control', 'no-cache')
+      .send(html);
   };
   app.get('/', async (_request, reply) => reply.redirect('/app'));
   app.get('/app', sendApp);
