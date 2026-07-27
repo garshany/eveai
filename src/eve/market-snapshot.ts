@@ -60,6 +60,7 @@ function defaultDeps(db: Db): MarketSnapshotTickDeps {
     majorMinPages: config.marketSnapshot.majorMinPages,
     majorIntervalMinutes: config.marketSnapshot.majorIntervalMinutes,
     minorIntervalMinutes: config.marketSnapshot.minorIntervalMinutes,
+    pageConcurrency: config.marketSnapshot.pageConcurrency,
   };
 }
 

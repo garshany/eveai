@@ -22,7 +22,7 @@ RestartSec=5
 #                        otherwise systemd SIGKILLs the process mid-drain and
 #                        the in-flight answers are lost anyway.
 # Keep: turn deadline <= drain < TimeoutStopSec. The 60s headroom here covers
-# post-drain connection and SQLite teardown. Raising AGENT_TURN_DEADLINE_MS
+# the post-drain market-sweep stop (up to 30s), connection and SQLite teardown. Raising AGENT_TURN_DEADLINE_MS
 # past 600s without raising the other two reintroduces the mid-turn kill.
 TimeoutStopSec=660
 NoNewPrivileges=true

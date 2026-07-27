@@ -356,7 +356,10 @@ export const config = {
     // pages /markets/{region_id}/orders/ for every k-space trade region. No
     // third-party dump dependency.
     enabled: optionalBoolean('MARKET_SNAPSHOT_ENABLED', true),
-    // One missed major sweep is still tolerable, two is not.
+    // Grace allowance past a region's OWN tier interval before its rows read
+    // as stale (see getMarketSnapshotMeta): a healthy minor-tier book is
+    // legitimately hours old, so a flat age threshold would mark it stale
+    // most of the time. One missed sweep past the interval stays tolerable.
     staleMinutes: boundedPositiveInt('MARKET_SNAPSHOT_STALE_MINUTES', 75, 15, 1_440),
     // 2000 measured on the production VM: ~135 MB peak RSS — safe next to the
     // agent on a 2 GB box (20k rows/batch spiked to 306 MB).
@@ -370,6 +373,15 @@ export const config = {
     // Never below ESI's own 5-minute order-book cache.
     majorIntervalMinutes: boundedPositiveInt('MARKET_SNAPSHOT_MAJOR_INTERVAL_MINUTES', 30, 5, 1_440),
     minorIntervalMinutes: boundedPositiveInt('MARKET_SNAPSHOT_MINOR_INTERVAL_MINUTES', 360, 5, 10_080),
+    // Page fan-out inside ONE region's walk. A large book must finish far
+    // inside ESI's 5-minute cache window or last-modified flips mid-walk:
+    // 409 pages at 150-250 ms sequentially is 5+ minutes (the cold sweep
+    // could never commit — measured in production 2026-07-27); a pool of 8
+    // is ~10-15 s, a 20-30x margin. Not "the more the better": this walker
+    // bypasses the agent's ESI-leaf admission controller, so the pool stays
+    // small on purpose — interactive calls share the same IP rate/error
+    // budget, and throttleIfNeeded still paces every response.
+    pageConcurrency: boundedPositiveInt('MARKET_SNAPSHOT_PAGE_CONCURRENCY', 8, 1, 32),
   },
   marketHistory: {
     // Local per-type daily price history, refreshed from ESI

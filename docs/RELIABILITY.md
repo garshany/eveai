@@ -3,7 +3,7 @@
 ## Current Mechanisms
 
 - `/health` reports Telegram and Discord startup state plus SQLite database readiness.
-- both runtime entrypoints atomically own a DB-adjacent process lock; PID plus process-start identity rejects a live second owner without letting a recycled PID pin stale state, and a crashed owner's lock is reclaimed atomically.
+- every runtime entrypoint (bot service, interactive CLI, manual market-snapshot load) atomically owns a DB-adjacent process lock; PID plus process-start identity rejects a live second owner without letting a recycled PID pin stale state, and a crashed owner's lock is reclaimed atomically.
 - `npm run smoke` verifies required env vars, the configured model `/responses` endpoint, and app health.
 - normal agent turns honor fixed `OPENAI_REASONING_EFFORT` values; `auto` alone invokes the local low/medium/high goal classifier.
 - `OPENAI_REASONING_EFFORT_INTERMEDIATE`/`OPENAI_REASONING_EFFORT_FINAL` are opt-in per-iteration effort tiers; both default to `auto`, which inherits the base effort and changes nothing.

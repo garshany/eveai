@@ -4,12 +4,18 @@
  *
  *   GET /markets/{region_id}/orders/?order_type=all&page=N   (x-pages header)
  *
- * No third-party dump, no bulk file: pages are fetched one at a time through
- * the shared ESI retry/backoff helpers (fetchEsiWithRetry, throttleIfNeeded),
- * validated row by row, inserted in bounded batches (default 2000; measured
- * peak RSS ~135 MB — 20k rows/batch spiked to 306 MB on the 2 GB VM) and
- * released. A page is never retained after its batch flushes, and nothing is
- * written to esi_cache (The Forge alone would be a ~97 MB string there).
+ * No third-party dump, no bulk file: page 1 of a region goes first (its
+ * x-pages sizes the walk, its Last-Modified anchors the snapshot), the rest
+ * of the pages run through a bounded pool (mapPool, pageConcurrency — default
+ * 8) over the shared ESI retry/backoff helpers (fetchEsiWithRetry,
+ * throttleIfNeeded). A large region must finish far inside ESI's 5-minute
+ * cache window: a sequential walk of The Forge's ~410 pages outlives the
+ * window, the book flips mid-walk, and a cold sweep could never commit. Rows
+ * are validated page by page and inserted in bounded batches (default 2000;
+ * measured peak RSS ~135 MB — 20k rows/batch spiked to 306 MB on the 2 GB VM)
+ * straight from the page handler, so peak memory tracks pool size times one
+ * page, never the region's page count. Nothing is written to esi_cache (The
+ * Forge alone would be a ~97 MB string there).
  *
  * Two-tier freshness: regions whose last sweep needed >= majorMinPages pages
  * refetch on the major interval, the rest on the minor one (intervals via env,
@@ -19,10 +25,13 @@
  * market_snapshot_regions; ESI's own 5-minute Expires is honored there — a
  * region is never refetched before its cache entry expired.
  *
- * Failure semantics: a region that fails mid-sweep falls back to its previous
- * rows (recorded in market_snapshot_regions.last_error, stays due next tick);
- * a region with no prior rows aborts the whole sweep. Any abort drops the
- * staging table and leaves the previous snapshot serving.
+ * Failure semantics: a mid-walk Last-Modified flip (ESI's routine 5-minute
+ * cache rotation) triggers ONE re-walk of the region — cheap now that a walk
+ * is seconds, and the re-walk lands inside a single snapshot; only a second
+ * consecutive flip fails the region. A region that fails mid-sweep falls back
+ * to its previous rows (recorded in market_snapshot_regions.last_error, stays
+ * due next tick); a region with no prior rows aborts the whole sweep. Any
+ * abort drops the staging table and leaves the previous snapshot serving.
  *
  * The swap is atomic: DROP old + RENAME staging in one transaction. The three
  * indexes are built on the staging table beforehand under per-pass names
@@ -43,6 +52,7 @@
 import { pathToFileURL } from 'node:url';
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
+import { acquireRuntimeLock, type RuntimeLock } from '../runtime/process-lock.js';
 import {
   buildEsiUrl,
   buildPublicEsiHeaders,
@@ -51,6 +61,7 @@ import {
   type EsiExecutionGuard,
 } from './esi-client.js';
 import { parseHeaderInt } from './http.js';
+import { mapPool } from './market-wide-summary.js';
 
 /**
  * Data-quality failures (the ESI payload itself looks corrupt) abort the whole
@@ -59,6 +70,14 @@ import { parseHeaderInt } from './http.js';
  * region-level and fall back to the region's previous rows.
  */
 class SnapshotDataQualityError extends Error {}
+
+/**
+ * A page disagreed with the walk's first page on Last-Modified: ESI's cached
+ * book flipped to the next 5-minute snapshot mid-walk. Not fatal by itself —
+ * fetchRegion re-walks the region once; only a SECOND consecutive flip fails
+ * the region (SnapshotDataQualityError's transport-level sibling).
+ */
+class SnapshotBookDriftError extends Error {}
 
 export const MARKET_ORDERS_TABLE = 'market_orders';
 export const MARKET_ORDERS_STAGING_TABLE = 'market_orders_next';
@@ -69,6 +88,15 @@ export const DEFAULT_MAX_MALFORMED_ROWS = 100;
 export const DEFAULT_MAJOR_MIN_PAGES = 100;
 export const DEFAULT_MAJOR_INTERVAL_MINUTES = 30;
 export const DEFAULT_MINOR_INTERVAL_MINUTES = 360;
+export const DEFAULT_PAGE_CONCURRENCY = 8;
+/**
+ * Sanity ceiling on x-pages growth mid-walk (The Forge is ~410 pages today).
+ * A runaway x-pages would otherwise spin the pool forever on a corrupt or
+ * hostile upstream.
+ */
+const MAX_REGION_PAGES = 1_000;
+/** One initial walk plus one re-walk after a mid-walk cache flip. */
+const MAX_REGION_WALK_ATTEMPTS = 2;
 
 /** Provenance marker recorded into market_snapshot_state.snapshot_url. */
 const SNAPSHOT_SOURCE = 'esi:/markets/{region_id}/orders';
@@ -174,6 +202,14 @@ export type LoadMarketSnapshotOptions = {
   majorMinPages?: number;
   majorIntervalMinutes?: number;
   minorIntervalMinutes?: number;
+  /**
+   * Page fan-out inside ONE region's walk (page 1 still goes first, alone, to
+   * size the walk). 8 walks The Forge's ~410 pages in ~10-15 s — far inside
+   * ESI's 5-minute cache window — while staying polite toward interactive ESI
+   * calls, which share the same IP rate/error budget (this walker bypasses
+   * the agent's ESI-leaf admission controller by design).
+   */
+  pageConcurrency?: number;
   /** Clock override for tests. */
   now?: Date;
 };
@@ -205,6 +241,7 @@ export async function loadMarketSnapshotFromEsi(
   const majorMinPages = options.majorMinPages ?? DEFAULT_MAJOR_MIN_PAGES;
   const majorMs = (options.majorIntervalMinutes ?? DEFAULT_MAJOR_INTERVAL_MINUTES) * 60_000;
   const minorMs = (options.minorIntervalMinutes ?? DEFAULT_MINOR_INTERVAL_MINUTES) * 60_000;
+  const pageConcurrency = Math.max(1, Math.floor(options.pageConcurrency ?? DEFAULT_PAGE_CONCURRENCY));
   const now = options.now ?? new Date();
 
   const states = readRegionStates(db);
@@ -241,24 +278,27 @@ export async function loadMarketSnapshotFromEsi(
   const effectiveFetchedAt = new Map<number, string | null>();
   const nowIso = now.toISOString();
 
-  const fetchRegion = async (region: SnapshotRegion): Promise<RegionFetchRecord> => {
+  // One region's page walk, attempt-scoped. Page 1 goes first, alone: its
+  // x-pages sizes the walk and its Last-Modified is the snapshot reference
+  // every later page must agree with. The remaining pages run through a
+  // bounded pool (mapPool, fail-fast). A page reporting MORE x-pages extends
+  // the walk with another pooled pass (capped): with Last-Modified absent the
+  // book can still grow mid-walk, and the growth should resize the walk, not
+  // strand the extra pages.
+  const walkRegion = async (region: SnapshotRegion): Promise<RegionFetchRecord> => {
     let regionRows = 0;
-    let batch: unknown[][] = [];
-    let totalPages = 1;
-    let firstLastModified: string | null = null;
-    let expiresAt: string | null = null;
+    let pending: unknown[][] = [];
 
-    for (let page = 1; page <= totalPages; page += 1) {
-      const result = await options.fetchPage(region.region_id, page);
-      // Re-read x-pages on every page: the book can grow/shrink at a cache
-      // boundary, and the drift should resize the walk, not 404 it.
-      totalPages = Math.max(1, Math.floor(result.pages));
-      if (page === 1) {
-        firstLastModified = result.lastModified;
-        expiresAt = toIsoTimestamp(result.expires);
-      } else if (firstLastModified && result.lastModified && result.lastModified !== firstLastModified) {
-        throw new Error(`order book changed mid-sweep (last-modified ${firstLastModified} -> ${result.lastModified})`);
-      }
+    // Parsed rows flush into staging straight from the page handler, so a
+    // page is never retained after its batch flushes: peak memory is bounded
+    // by pool size times one page, not by the region's page count.
+    const flush = (): void => {
+      if (pending.length === 0) return;
+      insertBatch(pending);
+      regionRows += pending.length;
+      pending = [];
+    };
+    const stageRows = (result: EsiMarketOrdersPage, page: number): void => {
       if (!Array.isArray(result.orders)) {
         throw new Error(`page ${page}: orders payload is not an array`);
       }
@@ -271,19 +311,68 @@ export async function loadMarketSnapshotFromEsi(
           }
           continue;
         }
-        batch.push(row);
-        if (batch.length >= batchSize) {
-          insertBatch(batch);
-          regionRows += batch.length;
-          batch = [];
-        }
+        pending.push(row);
+      }
+      if (pending.length >= batchSize) flush();
+    };
+    const readPageCount = (value: number): number => {
+      const pages = Math.max(1, Math.floor(value));
+      if (pages > MAX_REGION_PAGES) {
+        throw new SnapshotDataQualityError(
+          `x-pages ${pages} exceeds the sanity cap ${MAX_REGION_PAGES}; aborting snapshot load`,
+        );
+      }
+      return pages;
+    };
+
+    const first = await options.fetchPage(region.region_id, 1);
+    const firstLastModified = first.lastModified;
+    const expiresAt = toIsoTimestamp(first.expires);
+    let totalPages = readPageCount(first.pages);
+    stageRows(first, 1);
+
+    const fetchAndStage = async (page: number): Promise<number> => {
+      const result = await options.fetchPage(region.region_id, page);
+      if (firstLastModified && result.lastModified && result.lastModified !== firstLastModified) {
+        throw new SnapshotBookDriftError(
+          `order book changed mid-sweep (last-modified ${firstLastModified} -> ${result.lastModified})`,
+        );
+      }
+      stageRows(result, page);
+      return readPageCount(result.pages);
+    };
+
+    let nextPage = 2;
+    while (nextPage <= totalPages) {
+      const pageNumbers: number[] = [];
+      for (let page = nextPage; page <= totalPages; page += 1) pageNumbers.push(page);
+      const reported = await mapPool(pageNumbers, pageConcurrency, fetchAndStage);
+      const maxSeen = Math.max(totalPages, ...reported);
+      nextPage = totalPages + 1;
+      totalPages = maxSeen;
+    }
+    flush();
+    return { regionId: region.region_id, pages: totalPages, rowsLoaded: regionRows, expiresAt };
+  };
+
+  const fetchRegion = async (region: SnapshotRegion): Promise<RegionFetchRecord> => {
+    // ESI's order-book cache flips every 5 minutes; a walk that straddles the
+    // flip sees a new Last-Modified mid-region. That flip is routine, not
+    // corruption: re-walk the region once. The re-walk starts right after the
+    // flip and, being far shorter than the window (the pool sees to that),
+    // lands inside a single snapshot. Only a SECOND consecutive flip fails
+    // the region — the upstream is then genuinely unstable, and the existing
+    // warm-fallback / cold-abort semantics take over.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await walkRegion(region);
+      } catch (err) {
+        if (!(err instanceof SnapshotBookDriftError) || attempt >= MAX_REGION_WALK_ATTEMPTS) throw err;
+        // Drop the straddled mix staged so far before re-walking under the
+        // new snapshot (unflushed page rows die with the attempt scope).
+        dropRegionRows.run(region.region_id);
       }
     }
-    if (batch.length > 0) {
-      insertBatch(batch);
-      regionRows += batch.length;
-    }
-    return { regionId: region.region_id, pages: totalPages, rowsLoaded: regionRows, expiresAt };
   };
 
   try {
@@ -295,6 +384,11 @@ export async function loadMarketSnapshotFromEsi(
           rowsLoaded += carried;
           regionsCarriedOver += 1;
           effectiveFetchedAt.set(region.region_id, states.get(region.region_id)?.fetched_at ?? null);
+          // Each carry-over is a synchronous INSERT SELECT (~40 ms on an
+          // average region; the whole minor tier measured ~2.6 s) and the
+          // loop runs them back to back. Yield between regions so a tick
+          // never becomes one multi-second event-loop block.
+          await yieldToEventLoop();
           continue;
         }
         // Freshness state promised rows the serving table no longer has;
@@ -311,19 +405,24 @@ export async function loadMarketSnapshotFromEsi(
         const message = err instanceof Error ? err.message : String(err);
         dropRegionRows.run(region.region_id);
         const carried = carryOverRegion.run(region.region_id).changes;
-        if (carried === 0) {
+        // Abort only when the region PROMISED rows the serving table can no
+        // longer back: a region that legitimately committed zero rows carries
+        // zero rows over, and reading that as "cold" would abort every sweep
+        // until its ESI endpoint recovered.
+        const state = states.get(region.region_id);
+        if (carried === 0 && (state === undefined || (state.rows_loaded ?? 0) > 0)) {
           throw new Error(`region ${region.region_id} (${region.name}) failed with no prior rows to keep: ${message}`);
         }
         rowsLoaded += carried;
         regionsCarriedOver += 1;
         regionErrors.push({ regionId: region.region_id, error: message });
-        effectiveFetchedAt.set(region.region_id, states.get(region.region_id)?.fetched_at ?? null);
+        effectiveFetchedAt.set(region.region_id, state?.fetched_at ?? null);
       }
     }
     if (rowsLoaded < minRows) {
       throw new Error(`Snapshot row count ${rowsLoaded} below the sanity floor ${minRows}; refusing to swap`);
     }
-    deriveStationIds(db);
+    await deriveStationIds(db, rowsLoaded);
     await buildStagingIndexes(db);
     swapStagingIntoPlace(db);
   } catch (err) {
@@ -420,15 +519,36 @@ function toIsoTimestamp(value: string | null): string | null {
 
 /**
  * A location_id that resolves in sde_stations is an NPC station; player
- * structures (>= 1e12 ids) and anything unknown stay NULL. One indexed pass
- * over the staging table instead of a per-row lookup.
+ * structures (>= 1e12 ids) and anything unknown stay NULL. Chunked into
+ * bounded order_id ranges (the primary key, so every range is an indexed
+ * scan) with an event-loop yield between chunks: one monolithic UPDATE
+ * measured ~0.3 s on 1.6M rows and ran back to back with the carry-over
+ * block and the first CREATE INDEX. rowEstimate sizes the chunk count so one
+ * chunk stays in the tens of milliseconds.
  */
-function deriveStationIds(db: Db): void {
-  db.exec(`
+const STATION_ID_CHUNK_ROWS = 100_000;
+const MAX_STATION_ID_CHUNKS = 64;
+
+async function deriveStationIds(db: Db, rowEstimate: number): Promise<void> {
+  const bounds = db.prepare(
+    `SELECT MIN(order_id) AS lo, MAX(order_id) AS hi FROM ${MARKET_ORDERS_STAGING_TABLE}`,
+  ).get() as { lo: number | null; hi: number | null };
+  if (bounds.lo === null || bounds.hi === null) return;
+  const chunks = Math.min(
+    MAX_STATION_ID_CHUNKS,
+    Math.max(1, Math.ceil(rowEstimate / STATION_ID_CHUNK_ROWS)),
+  );
+  const step = Math.ceil((bounds.hi - bounds.lo + 1) / chunks);
+  const update = db.prepare(`
     UPDATE ${MARKET_ORDERS_STAGING_TABLE}
     SET station_id = location_id
-    WHERE location_id IN (SELECT station_id FROM sde_stations)
+    WHERE order_id >= ? AND order_id < ?
+      AND location_id IN (SELECT station_id FROM sde_stations)
   `);
+  for (let i = 0; i < chunks; i += 1) {
+    if (i > 0) await yieldToEventLoop();
+    update.run(bounds.lo + i * step, bounds.lo + (i + 1) * step);
+  }
 }
 
 function resetStagingTable(db: Db): void {
@@ -453,9 +573,14 @@ const STAGING_INDEXES: Array<{ base: string; columns: string }> = [
 
 let indexPassCounter = 0;
 
+/** Hand the event loop a macrotask turn between back-to-back synchronous SQLite blocks. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => { setImmediate(resolve); });
+}
+
 /**
  * Build the indexes on the filled staging table, one statement at a time with
- * an event-loop yield between them. Measured on 1.6M rows (see
+ * an event-loop yield before each. Measured on 1.6M rows (see
  * .agent/tasks/market-snapshot-20260727/REVIEW-FIXES-RESULT.md): bulk insert +
  * rebuild here costs ~2.3s total while maintaining the indexes during the
  * insert costs ~38s — ~17x more CPU, rejected. Each statement is a synchronous
@@ -466,8 +591,8 @@ let indexPassCounter = 0;
 async function buildStagingIndexes(db: Db): Promise<void> {
   indexPassCounter += 1;
   const suffix = `${Date.now().toString(36)}_${indexPassCounter.toString(36)}`;
-  for (const [i, { base, columns }] of STAGING_INDEXES.entries()) {
-    if (i > 0) await new Promise((resolve) => { setImmediate(resolve); });
+  for (const { base, columns } of STAGING_INDEXES) {
+    await yieldToEventLoop();
     db.exec(`CREATE INDEX ${base}_${suffix} ON ${MARKET_ORDERS_STAGING_TABLE}(${columns})`);
   }
 }
@@ -636,38 +761,69 @@ function ageMinutesOf(iso: string | null, nowMs: number): number | null {
 }
 
 /**
+ * Tier schedule the freshness view works against. staleMinutes is a GRACE
+ * allowance past a region's own tier interval, not a flat age threshold: a
+ * healthy minor-tier book is legitimately hours old, and a flat threshold
+ * below the minor interval would read it as permanently stale — a consumer
+ * falling back to live ESI on `stale` would bypass the snapshot forever.
+ */
+export type MarketSnapshotFreshness = {
+  staleMinutes: number;
+  majorMinPages: number;
+  majorIntervalMinutes: number;
+  minorIntervalMinutes: number;
+};
+
+function isRegionStale(
+  row: MarketSnapshotRegionRow,
+  nowMs: number,
+  freshness: MarketSnapshotFreshness,
+): boolean {
+  const fetchedMs = row.fetched_at !== null ? Date.parse(row.fetched_at) : NaN;
+  if (!Number.isFinite(fetchedMs)) return true; // unknown age reads as stale
+  const intervalMinutes = (row.pages ?? 0) >= freshness.majorMinPages
+    ? freshness.majorIntervalMinutes
+    : freshness.minorIntervalMinutes;
+  return nowMs > fetchedMs + (intervalMinutes + freshness.staleMinutes) * 60_000;
+}
+
+/**
  * Freshness view attached to every market-snapshot tool response so the agent
  * physically cannot answer without seeing the data age. snapshot_time is the
  * OLDEST region's fetched_at in the serving book — the swapped table mixes
  * rows of different ages (tier intervals, mid-sweep failures), so the tick
  * time would lie. Per-region ages ride along so the agent can cite the exact
- * region's age instead of the book-wide worst case.
+ * region's age instead of the book-wide worst case. A region is stale only
+ * once it is past its own tier interval plus the staleMinutes grace; the book
+ * is stale when any region is or its age is unknown.
  */
-export function getMarketSnapshotMeta(db: Db, staleMinutes: number, now: Date = new Date()): MarketSnapshotMeta {
+export function getMarketSnapshotMeta(
+  db: Db,
+  freshness: MarketSnapshotFreshness,
+  now: Date = new Date(),
+): MarketSnapshotMeta {
   const state = getMarketSnapshotState(db);
   const hasRows = db.prepare('SELECT 1 FROM market_orders LIMIT 1').get() !== undefined;
   const nowMs = now.getTime();
   const snapshotTime = state?.snapshot_time ?? null;
   const ageMinutes = ageMinutesOf(snapshotTime, nowMs);
+  const regions = getMarketSnapshotRegionStates(db).map((row) => ({
+    region_id: row.region_id,
+    fetched_at: row.fetched_at,
+    age_minutes: ageMinutesOf(row.fetched_at, nowMs),
+    stale: isRegionStale(row, nowMs, freshness),
+    last_error: row.last_error,
+  }));
   return {
     loaded: hasRows,
     status: state?.status ?? 'idle',
     snapshot_time: snapshotTime,
     age_minutes: ageMinutes,
     // Without a timestamp the age is unknown; treat it as stale rather than fresh.
-    stale: ageMinutes === null ? true : ageMinutes > staleMinutes,
+    stale: ageMinutes === null ? true : regions.some((region) => region.stale),
     rows_loaded: state?.rows_loaded ?? null,
     last_error: state?.last_error ?? null,
-    regions: getMarketSnapshotRegionStates(db).map((row) => {
-      const regionAge = ageMinutesOf(row.fetched_at, nowMs);
-      return {
-        region_id: row.region_id,
-        fetched_at: row.fetched_at,
-        age_minutes: regionAge,
-        stale: regionAge === null ? true : regionAge > staleMinutes,
-        last_error: row.last_error,
-      };
-    }),
+    regions,
   };
 }
 
@@ -675,14 +831,26 @@ export function getMarketSnapshotMeta(db: Db, staleMinutes: number, now: Date = 
 // Manual CLI entry: npx tsx src/eve/market-snapshot-loader.ts
 // ---------------------------------------------------------------------------
 
+/**
+ * The manual run shares the bot's single-process invariant: both rebuild
+ * market_orders_next, and two writers would drop and refill the staging table
+ * under each other ("no such table" mid-sweep). Same lock path as the bot
+ * service, a distinct runtime name so a busy lock says exactly who owns it.
+ */
+export function acquireMarketSnapshotLoaderLock(dbPath: string): RuntimeLock {
+  return acquireRuntimeLock(dbPath, 'market snapshot loader');
+}
+
 async function main(): Promise<void> {
   const { initDb } = await import('../db/sqlite.js');
   const { runMigrations } = await import('../db/migrations.js');
   const { loadTradeRegions } = await import('./market-wide-summary.js');
 
+  // Refuses with the owner's identity when the bot service already holds it.
+  const lock = acquireMarketSnapshotLoaderLock(config.db.path);
   const db = initDb(config.db.path);
-  runMigrations(db);
   try {
+    runMigrations(db);
     const regions = loadTradeRegions(db);
     if (regions.length === 0) {
       throw new Error('Local SDE has no stargate geography; cannot determine k-space trade regions.');
@@ -696,6 +864,7 @@ async function main(): Promise<void> {
       majorMinPages: config.marketSnapshot.majorMinPages,
       majorIntervalMinutes: config.marketSnapshot.majorIntervalMinutes,
       minorIntervalMinutes: config.marketSnapshot.minorIntervalMinutes,
+      pageConcurrency: config.marketSnapshot.pageConcurrency,
     });
     const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
     console.log(
@@ -705,6 +874,7 @@ async function main(): Promise<void> {
     );
   } finally {
     db.close();
+    lock.release();
   }
 }
 

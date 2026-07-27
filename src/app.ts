@@ -87,7 +87,8 @@ async function main() {
     deliverOutbound,
     isOutboundAvailable,
   } = await import('./messaging/outbound.js');
-  const { waitForInFlightRequests, activeRequestCount } = await import('./chat/shared.js');
+  const { activeRequestCount } = await import('./chat/shared.js');
+  const { drainConversationsThenStopSweep, withDeadline } = await import('./app-shutdown.js');
   const {
     activeWebAgentRequestCount,
     stopWebAgentIngress,
@@ -173,27 +174,30 @@ async function main() {
     // Synchronous and instant: both only clear timers.
     stopUsageRollupScheduler();
     stopGcpBilling();
-    // Drains the in-flight market sweep so a commit seconds away is not thrown
-    // away; the shared deadline caps the wait, and a mid-sweep exit is safe
-    // (the swap is atomic, staging is dropped by the next sweep).
-    await withDeadline(stopMarketSnapshotWorker(), deadline);
-    // Same drain contract as the snapshot sweep; history pairs commit
-    // independently, so a mid-tick exit only leaves the rest of the due list
-    // for the next process.
+    // History pairs commit independently, so a mid-tick exit only leaves the
+    // rest of the due list for the next process.
     await withDeadline(stopMarketHistoryWorker(), deadline);
     // Alerts are one-shot rows committed per firing; stopping mid-tick only
     // delays pushes (delivered_at stays NULL), never loses an event.
     await withDeadline(stopMarketAlertsWorker(), deadline);
+    // The snapshot sweep is NOT stopped here: it drains after the turn drain
+    // below, on its own small budget — see drainConversationsThenStopSweep.
 
-    if (drainMs > 0) {
-      const remaining = Math.max(0, deadline - Date.now());
-      const stillRunning = await waitForInFlightRequests(
-        remaining,
-        config.shutdown.drainPollMs,
-        () => activeRequestCount() + activeWebAgentRequestCount(),
-      );
-      if (stillRunning > 0) {
-        log.warn('Shutdown drain: %d turn(s) still running after %dms — exiting anyway', stillRunning, drainMs);
+    // Conversations drain FIRST, the in-flight market sweep stops AFTER, under
+    // its own small budget: waiting for the sweep out of the shared budget
+    // would cut live turns off without their drain, and an aborted sweep is
+    // safe (the swap is atomic, staging is dropped by the next sweep). See
+    // src/app-shutdown.ts.
+    const drainResult = await drainConversationsThenStopSweep({
+      drainMs,
+      drainPollMs: config.shutdown.drainPollMs,
+      drainDeadlineMs: deadline,
+      countInFlightTurns: () => activeRequestCount() + activeWebAgentRequestCount(),
+      stopMarketSweep: stopMarketSnapshotWorker,
+    });
+    if (drainResult.turnsLeftAfterDrain !== null) {
+      if (drainResult.turnsLeftAfterDrain > 0) {
+        log.warn('Shutdown drain: %d turn(s) still running after %dms — exiting anyway', drainResult.turnsLeftAfterDrain, drainMs);
       } else {
         log.info('Shutdown drain: all turns finished');
       }
@@ -358,26 +362,6 @@ async function main() {
     log.error('Uncaught exception: %s', err.stack ?? err.message);
     void shutdown(1);
   });
-}
-
-/**
- * Await a promise but never past `deadlineMs`. A stalled shutdown step must not
- * eat the whole drain window and leave the supervisor to SIGKILL instead.
- */
-async function withDeadline(promise: Promise<unknown> | undefined, deadlineMs: number): Promise<void> {
-  if (!promise) return;
-  const remaining = Math.max(0, deadlineMs - Date.now());
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      promise.catch(() => {}),
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, remaining);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 function countSdeSystems(db: import('./db/sqlite.js').Db): number {

@@ -371,22 +371,40 @@ function extractGlobalReference(
   return { reference: null, error: null };
 }
 
-async function mapPool<T, R>(
+/**
+ * Bounded worker pool over a list: `concurrency` workers pull items in order
+ * and results keep input positions. Shared by the market_wide_summary region
+ * fan-out and the market snapshot loader's per-region page fan-out. Fail-fast:
+ * the first rejection stops workers from pulling further items (in-flight ones
+ * settle) and rejects the pool — walking on after a hard failure would just
+ * burn the ESI error budget on pages whose region is already lost.
+ */
+export async function mapPool<T, R>(
   items: readonly T[],
   concurrency: number,
   fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
   const results: R[] = new Array<R>(items.length);
   let nextIndex = 0;
+  let failed = false;
+  let firstError: unknown = null;
   const workerCount = Math.max(1, Math.min(concurrency, items.length));
   const workers = Array.from({ length: workerCount }, async () => {
-    while (nextIndex < items.length) {
+    while (!failed && nextIndex < items.length) {
       const index = nextIndex;
       nextIndex += 1;
-      results[index] = await fn(items[index]);
+      try {
+        results[index] = await fn(items[index]);
+      } catch (err) {
+        if (!failed) {
+          failed = true;
+          firstError = err;
+        }
+      }
     }
   });
   await Promise.all(workers);
+  if (failed) throw firstError;
   return results;
 }
 

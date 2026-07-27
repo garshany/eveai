@@ -35,7 +35,18 @@ export function registerMarketRoutes(app: FastifyInstance, db: Db): void {
   app.get('/api/web/market/status', async (request, reply) => {
     const session = requireSession(db, request, reply);
     if (!session) return;
-    return { ok: true, snapshot: getMarketSnapshotMeta(db, config.marketSnapshot.staleMinutes) };
+    // Tier-aware freshness: a region is stale past its own refresh interval
+    // plus the tolerance, not past a flat age cutoff (a healthy minor region
+    // legitimately lives up to minorIntervalMinutes).
+    return {
+      ok: true,
+      snapshot: getMarketSnapshotMeta(db, {
+        staleMinutes: config.marketSnapshot.staleMinutes,
+        majorMinPages: config.marketSnapshot.majorMinPages,
+        majorIntervalMinutes: config.marketSnapshot.majorIntervalMinutes,
+        minorIntervalMinutes: config.marketSnapshot.minorIntervalMinutes,
+      }),
+    };
   });
 
   app.get('/api/web/market/regions', async (request, reply) => {
