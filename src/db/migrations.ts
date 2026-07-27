@@ -53,6 +53,10 @@ export function runMigrations(db: Db): void {
     db.exec('DROP INDEX IF EXISTS idx_market_alerts_active');
     createIndexIfMissing(db, 'idx_market_price_alerts_user_status', 'market_price_alerts', 'user_id, status');
     ensureUsageTables(db);
+    // Вариации карточки предмета фильтруют по group_id: без индекса каждый
+    // просмотр вкладки «О предмете» сканировал всю таблицу sde_types (~51k строк).
+    createIndexIfMissing(db, 'idx_sde_types_group_id', 'sde_types', 'group_id');
+    ensureWebAdmissionEventKinds(db);
   });
 
   migrate();
@@ -161,6 +165,37 @@ function createIndexIfMissing(db: Db, index: string, table: string, columns: str
   ).get(index) as { name: string } | undefined;
   if (row?.name) return;
   db.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(${columns})`);
+}
+
+/**
+ * SQLite не умеет ALTER CHECK, поэтому допуск 'ai-search' в web_admission_events
+ * приезжает пересборкой таблицы. Свежие БД уже созданы SCHEMA_SQL с новым
+ * CHECK — тогда пересборка пропускается по тексту DDL.
+ */
+function ensureWebAdmissionEventKinds(db: Db): void {
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'web_admission_events'",
+  ).get() as { sql: string } | undefined;
+  if (!row || row.sql.includes("'ai-search'")) return;
+  db.exec(`
+    CREATE TABLE web_admission_events_migrated (
+      event_id       TEXT PRIMARY KEY,
+      event_kind     TEXT NOT NULL CHECK (event_kind IN ('session', 'chat', 'ai-search')),
+      user_id        INTEGER,
+      ip_key         TEXT NOT NULL,
+      cost_units     INTEGER NOT NULL DEFAULT 0,
+      created_at_ms  INTEGER NOT NULL
+    );
+    INSERT INTO web_admission_events_migrated
+      SELECT event_id, event_kind, user_id, ip_key, cost_units, created_at_ms
+      FROM web_admission_events;
+    DROP TABLE web_admission_events;
+    ALTER TABLE web_admission_events_migrated RENAME TO web_admission_events;
+  `);
+  // Индексы умерли вместе со старой таблицей — пересоздаём.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_web_admission_events_kind_time ON web_admission_events(event_kind, created_at_ms)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_web_admission_events_ip_time ON web_admission_events(ip_key, created_at_ms)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_web_admission_events_user_time ON web_admission_events(user_id, created_at_ms)');
 }
 
 function ensureConsentLanguageGuards(db: Db): void {

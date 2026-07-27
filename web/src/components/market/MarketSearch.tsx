@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { webApi } from '../../api';
 import { useI18n } from '../../i18n';
 import type { MarketTypeSearchRow } from '../../types';
+import { cachedMarketStatic } from './static-cache';
 
 const SEARCH_DEBOUNCE_MS = 250;
 // Совпадает с SEARCH_MIN_QUERY_LENGTH на сервере (src/web/market-routes.ts).
@@ -45,7 +46,9 @@ export function MarketSearch({ onSelect, disabled }: Props) {
     const current = ++generation.current;
     setSearching(true);
     const timer = window.setTimeout(() => {
-      webApi.market.search(needle)
+      // Повторные запросы (стирание/возврат к строке) обслуживаются из
+      // кэша вкладки — справочник типов в рамках сессии неизменен.
+      cachedMarketStatic(`search:${needle.toLowerCase()}`, () => webApi.market.search(needle))
         .then((payload) => {
           if (current !== generation.current) return;
           setResults(payload.results);

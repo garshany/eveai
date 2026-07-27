@@ -9,6 +9,7 @@ import {
 } from '../agent/activity.js';
 import { normalizeAgentRuntimeError, runAgentTurn } from '../chat/shared.js';
 import type { UserContext } from '../auth/user-resolver.js';
+import { admitWebEvent } from './web-admission.js';
 
 export type WebAgentRequestStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -178,57 +179,17 @@ export class WebAgentRequestCoordinator {
         return rejection(503, 'Очередь сервиса заполнена. Попробуйте позже.', 15);
       }
 
-      const windowStart = now - config.web.requestWindowSeconds * 1000;
-      const userRecent = count(this.db, `
-        SELECT COUNT(*) AS count FROM web_agent_requests
-        WHERE user_id = ? AND created_at_ms >= ?
-      `, input.userId, windowStart);
-      if (userRecent >= config.web.maxRequestsPerUserWindow) {
-        return rejection(429, 'Слишком много запросов. Попробуйте позже.', config.web.requestWindowSeconds);
-      }
-
-      const globalRecent = count(this.db, `
-        SELECT COUNT(*) AS count FROM web_agent_requests WHERE created_at_ms >= ?
-      `, windowStart);
-      const globalDay = count(this.db, `
-        SELECT COUNT(*) AS count FROM web_agent_requests WHERE created_at_ms >= ?
-      `, now - 86_400_000);
-      if (
-        globalRecent >= config.web.maxRequestsGlobalWindow
-        || globalDay >= config.web.maxRequestsGlobalDay
-      ) {
-        return rejection(503, 'Сервис достиг безопасного лимита нагрузки. Попробуйте позже.', 60);
-      }
-
-      const userCost = sum(this.db, `
-        SELECT COALESCE(SUM(cost_units), 0) AS total FROM web_admission_events
-        WHERE event_kind = 'chat' AND user_id = ? AND created_at_ms >= ?
-      `, input.userId, windowStart);
-      const globalCost = sum(this.db, `
-        SELECT COALESCE(SUM(cost_units), 0) AS total FROM web_admission_events
-        WHERE event_kind = 'chat' AND created_at_ms >= ?
-      `, windowStart);
-      const dailyCost = sum(this.db, `
-        SELECT COALESCE(SUM(cost_units), 0) AS total FROM web_admission_events
-        WHERE event_kind = 'chat' AND created_at_ms >= ?
-      `, now - 86_400_000);
-      if (
-        userCost + REQUEST_COST_UNITS > config.web.maxCostUnitsPerUserWindow
-        || globalCost + REQUEST_COST_UNITS > config.web.maxCostUnitsGlobalWindow
-        || dailyCost + REQUEST_COST_UNITS > config.web.maxCostUnitsGlobalDay
-      ) {
-        return rejection(503, 'Сервис достиг безопасного лимита вычислений. Попробуйте позже.', 60);
-      }
-
-      const ipRecent = count(this.db, `
-        SELECT COUNT(*) AS count FROM web_admission_events
-        WHERE event_kind = 'chat' AND ip_key = ? AND created_at_ms >= ?
-      `, input.ipKey, windowStart);
-      if (ipRecent >= config.web.maxRequestsGlobalWindow) {
-        return rejection(429, 'Слишком много запросов. Попробуйте позже.', config.web.requestWindowSeconds);
-      }
-
       const requestId = randomUUID();
+      // Окна/IP/cost-units — общий слой допуска (web-admission.ts), тот же,
+      // что у ai-search. Событие пишется тем же event_id, что и запрос.
+      const admission = admitWebEvent(this.db, {
+        eventKind: 'chat',
+        userId: input.userId,
+        ipKey: input.ipKey,
+        costUnits: REQUEST_COST_UNITS,
+      }, now, requestId);
+      if (!admission.ok) return admission;
+
       this.db.prepare(`
         INSERT INTO messages (thread_id, role, content, web_request_id)
         VALUES (?, 'user', ?, ?)
@@ -251,10 +212,6 @@ export class WebAgentRequestCoordinator {
         REQUEST_COST_UNITS,
         now,
       );
-      this.db.prepare(`
-        INSERT INTO web_admission_events (event_id, event_kind, user_id, ip_key, cost_units, created_at_ms)
-        VALUES (?, 'chat', ?, ?, ?, ?)
-      `).run(requestId, input.userId, input.ipKey, REQUEST_COST_UNITS, now);
       return {
         ok: true,
         request: this.readOwned({ userId: input.userId, chatId: input.chatId }, requestId)!,
@@ -696,10 +653,6 @@ function hashMessage(threadId: string, message: string): string {
 
 function count(db: Db, sql: string, ...params: unknown[]): number {
   return (db.prepare(sql).get(...params) as { count: number }).count;
-}
-
-function sum(db: Db, sql: string, ...params: unknown[]): number {
-  return (db.prepare(sql).get(...params) as { total: number }).total;
 }
 
 function rejection(

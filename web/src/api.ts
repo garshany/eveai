@@ -1,6 +1,7 @@
 import type {
   ChatMessage,
   Conversation,
+  MarketAiSearchResult,
   MarketAlert,
   MarketAlertEvent,
   MarketGroupTreeRow,
@@ -12,6 +13,7 @@ import type {
   MarketRegion,
   MarketRegionComparisonRow,
   MarketSnapshotMeta,
+  MarketTypeInfo,
   MarketTypeSearchRow,
   MarketWatchlistItem,
   MyTransparency,
@@ -162,6 +164,14 @@ export const webApi = {
     ),
     regionComparison: (typeId: number) => request<{ regions: MarketRegionComparisonRow[] }>(
       `/api/web/market/types/${encodeURIComponent(typeId)}/regions`,
+    ),
+    info: (typeId: number, lang: Locale) => request<{ info: MarketTypeInfo }>(
+      `/api/web/market/types/${encodeURIComponent(typeId)}/info?lang=${lang}`,
+    ),
+    aiSearch: (query: string, regionId: number | null, csrfToken: string) => request<{ results: MarketAiSearchResult[] }>(
+      '/api/web/market/ai-search',
+      { method: 'POST', body: JSON.stringify({ query, region_id: regionId ?? undefined }) },
+      csrfToken,
     ),
     history: (typeId: number, regionId: number, days?: number) => request<{ history: MarketHistoryResponse }>(
       `/api/web/market/types/${encodeURIComponent(typeId)}/history?region_id=${regionId}${days === undefined ? '' : `&days=${days}`}`,

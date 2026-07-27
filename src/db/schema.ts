@@ -191,7 +191,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_web_agent_requests_idempotency
 
 CREATE TABLE IF NOT EXISTS web_admission_events (
   event_id       TEXT PRIMARY KEY,
-  event_kind     TEXT NOT NULL CHECK (event_kind IN ('session', 'chat')),
+  event_kind     TEXT NOT NULL CHECK (event_kind IN ('session', 'chat', 'ai-search')),
   user_id        INTEGER,
   ip_key         TEXT NOT NULL,
   cost_units     INTEGER NOT NULL DEFAULT 0,

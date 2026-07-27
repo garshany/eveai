@@ -12,6 +12,7 @@ import { buildCanonicalLoopbackUrl } from './canonical-origin.js';
 import { registerWebChatRoutes } from './chat-routes.js';
 import { registerHealthRoute } from './health.js';
 import { registerMarketAlertRoutes } from './market-alert-routes.js';
+import { registerMarketAiSearchRoutes } from './market-ai-search-routes.js';
 import { registerMarketRoutes } from './market-routes.js';
 import { registerSecurityHeaders } from './security.js';
 
@@ -34,6 +35,7 @@ export async function createServer(db: Db) {
   if (config.web.chatEnabled) {
     registerWebChatRoutes(app, db);
     registerMarketRoutes(app, db);
+    registerMarketAiSearchRoutes(app, db);
     registerMarketAlertRoutes(app, db);
     await registerWebApp(app);
   }

@@ -286,6 +286,10 @@ describe('OpenAI runtime configuration', () => {
       'AGENT_MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN',
       'AGENT_MAX_TRANSIENT_RETRIES',
       'AGENT_MAX_TOTAL_TURN_READ_LEAVES',
+      'WEB_AI_SEARCH_ENABLED',
+      'WEB_AI_SEARCH_MAX_MODEL_CALLS',
+      'WEB_AI_SEARCH_TIMEOUT_MS',
+      'WEB_AI_SEARCH_MAX_RESULTS',
       'CHEAPVIBE_READ_SUBAGENT_MAX_TASKS',
       'CHEAPVIBE_READ_SUBAGENT_MAX_WORKERS',
       'CHEAPVIBE_READ_SUBAGENT_MAX_WORKER_ITERATIONS',
@@ -319,6 +323,25 @@ describe('OpenAI runtime configuration', () => {
     expect(config.openai.readSubagentMaxModelCalls).toBe(24);
     expect(config.openai.readSubagentAggregateChars).toBe(60_000);
     expect(config.openai.readSubagentBatchDeadlineMs).toBe(600_000);
+    expect(config.web.aiSearchEnabled).toBe(true);
+    expect(config.web.aiSearchMaxModelCalls).toBe(2);
+    expect(config.web.aiSearchTimeoutMs).toBe(30_000);
+    expect(config.web.aiSearchMaxResults).toBe(20);
+  });
+
+  it('parses the market ai-search budgets and the off switch from env', async () => {
+    setRequiredEnv();
+    process.env.WEB_AI_SEARCH_ENABLED = 'false';
+    process.env.WEB_AI_SEARCH_MAX_MODEL_CALLS = '1';
+    process.env.WEB_AI_SEARCH_TIMEOUT_MS = '15000';
+    process.env.WEB_AI_SEARCH_MAX_RESULTS = '8';
+
+    const { config } = await import('../../src/config.js');
+
+    expect(config.web.aiSearchEnabled).toBe(false);
+    expect(config.web.aiSearchMaxModelCalls).toBe(1);
+    expect(config.web.aiSearchTimeoutMs).toBe(15_000);
+    expect(config.web.aiSearchMaxResults).toBe(8);
   });
 
   it('clamps the raised turn deadline ceiling instead of allowing infinity', async () => {

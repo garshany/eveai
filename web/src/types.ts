@@ -205,6 +205,47 @@ export type MarketWatchlistItem = {
   created_at: string;
 };
 
+export type MarketTypeInfoAttribute = {
+  attribute_id: number;
+  name: string | null;
+  display_name: string | null;
+  value: number;
+  unit: string | null;
+};
+
+export type MarketTypeInfoAttributeGroup = {
+  key: 'fitting' | 'capacitor' | 'shield' | 'armor' | 'structure' | 'propulsion' | 'targeting' | 'drones' | 'misc';
+  attributes: MarketTypeInfoAttribute[];
+};
+
+export type MarketTypeInfo = {
+  type_id: number;
+  name: string;
+  description: string | null;
+  group_id: number | null;
+  group_name: string | null;
+  category_name: string | null;
+  market_group_id: number | null;
+  market_group_name: string | null;
+  meta_group_id: number | null;
+  meta_group_name: string | null;
+  mass: number | null;
+  volume: number | null;
+  capacity: number | null;
+  base_price: number | null;
+  required_skills: Array<{ type_id: number; name: string; level: number | null }>;
+  attribute_groups: MarketTypeInfoAttributeGroup[];
+  variations: Array<{ type_id: number; name: string; meta_group_id: number | null; meta_group_name: string | null }>;
+};
+
+export type MarketAiSearchResult = {
+  type_id: number;
+  name: string;
+  reason: string;
+  best_sell: number | null;
+  best_buy: number | null;
+};
+
 export type MarketAlert = {
   alert_id: number;
   type_id: number;

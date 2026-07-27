@@ -37,3 +37,11 @@ export function formatClockTime(value: Date, locale: Locale): string {
     second: '2-digit',
   }).format(value);
 }
+
+/** Значение dogma-атрибута с единицей измерения: целые без дробной части. */
+export function formatAttributeValue(value: number, unit: string | null, locale: Locale): string {
+  const formatted = new Intl.NumberFormat(localeTag(locale), {
+    maximumFractionDigits: Number.isInteger(value) ? 0 : 2,
+  }).format(value);
+  return unit ? `${formatted} ${unit}` : formatted;
+}
