@@ -11,6 +11,7 @@ import {
 import { LoginScreen } from './components/LoginScreen';
 import { Sidebar, type AppView } from './components/Sidebar';
 import { ChatScreen } from './components/ChatScreen';
+import { MarketScreen } from './components/MarketScreen';
 import { PilotProfileScreen } from './components/PilotProfileScreen';
 import { useI18n } from './i18n';
 import type { ChatMessage, Conversation, SessionPayload, WebAgentRequest } from './types';
@@ -372,6 +373,7 @@ export default function App() {
         onLogout={() => void logout()}
       />
       {activeView === 'chat' ? <ChatScreen title={activeTitle} messages={messages} busy={busy} request={activeRequest} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} onDismissError={() => setError(null)} /> : null}
+      {activeView === 'market' ? <MarketScreen onMenu={() => setSidebarOpen(true)} csrfToken={session.csrfToken} /> : null}
       {activeView === 'profile' ? <PilotProfileScreen character={session.character} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} /> : null}
     </main>
   );

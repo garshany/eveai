@@ -1,7 +1,7 @@
 # Repo Map
 
 Status: active
-Verified against code: 2026-07-15
+Verified against code: 2026-07-27
 
 This file is the fast file-and-domain map for the repository.
 
@@ -66,6 +66,10 @@ Use it when you need to find the right file or folder before reading implementat
 - `eve-scout-client.ts`, `eve-scout-executor.ts`, `eve-scout-tools.ts`: fixed public EVE-Scout transport, bounded projections, and deferred tool schemas; see `docs/eve-scout.md`
 - `market-history-summary.ts`: bounded 30/90-day public ESI market aggregation without raw daily rows
 - `market-wide-summary.ts`: whole-New-Eden live order-book sweep for one type across all SDE-derived k-space trade regions, with explicit coverage reporting
+- `market-queries.ts`: read-only queries over the local `market_orders` snapshot with SDE joins — type search, overview/spread, paged order book, per-region comparison, market-group tree
+- `market-history.ts`: local daily price history (`market_price_history`) with lazy ESI backfill and trend/volatility aggregates
+- `market-history-worker.ts`: hourly cron worker draining due `(region, type)` history pairs (watchlist plus seeded top types)
+- `market-alerts-worker.ts`: 5-minute cron worker firing one-shot price alerts against the local snapshot, with event log and outbound push
 - `system-metric-snapshot.ts`: same-order projection of fixed public ESI system kill/jump/industry/sovereignty metrics
 - `dynamic-item-summary.ts`: requested dynamic-dogma attributes plus optional local-SDE base/delta evidence without creator/effect leakage
 - `user-profile.ts`: generated user snapshot/profile flow
@@ -133,7 +137,10 @@ Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integratio
 
 - `server.ts`: Fastify assembly for security headers, SSO, health, browser APIs, and built app assets
 - `web-session.ts`: opaque session, CSRF, reserved browser chat lanes, expiry, and creation admission
+- `web-route-guards.ts`: shared `requireSession`/`requireMutationSession` (CSRF) guards for browser APIs
 - `chat-routes.ts`: isolated browser conversations, characters, and shared agent-loop adapter
+- `market-routes.ts`: `/api/web/market/` read APIs (status, search, groups, regions, overview, orders, history) plus watchlist CRUD
+- `market-alert-routes.ts`: `/api/web/market/alerts*` price-alert CRUD and fired-event feed
 - `auth-routes.ts`: one-time EVE SSO login redirect, OAuth callback, and `/callback` alias
 - `health.ts`: runtime/dependency health endpoint for both bot platforms
 - `security.ts`: security headers
@@ -141,6 +148,7 @@ Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integratio
 ### `web/`
 
 - `src/`: React chat client, safe Markdown rendering, responsive shell, and API adapter
+- `src/components/MarketScreen.tsx` + `src/components/market/`: market browser — search, group tree, order book, price chart, region comparison, watchlist and price alerts with 60 s auto-refresh
 - `public/assets/`: generated production visual assets
 - `vite.config.ts`: `/web-assets/` production base and same-origin development proxy
 

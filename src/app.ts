@@ -73,6 +73,8 @@ async function main() {
   } = await import('./web/health.js');
   const { startHeartbeat, stopHeartbeat } = await import('./scheduled/heartbeat-worker.js');
   const { startMarketSnapshotWorker, stopMarketSnapshotWorker } = await import('./eve/market-snapshot.js');
+  const { startMarketHistoryWorker, stopMarketHistoryWorker } = await import('./eve/market-history-worker.js');
+  const { startMarketAlertsWorker, stopMarketAlertsWorker } = await import('./eve/market-alerts-worker.js');
   const { startEveKillFeedPoller, stopEveKillFeedPoller } = await import('./eve-kill/feed-poll.js');
   const { setRouteMonitorSender } = await import('./eve/route-planner.js');
   const { restoreMonitors, shutdownRouteMonitors } = await import('./eve-board/monitor.js');
@@ -168,6 +170,13 @@ async function main() {
     // away; the shared deadline caps the wait, and a mid-sweep exit is safe
     // (the swap is atomic, staging is dropped by the next sweep).
     await withDeadline(stopMarketSnapshotWorker(), deadline);
+    // Same drain contract as the snapshot sweep; history pairs commit
+    // independently, so a mid-tick exit only leaves the rest of the due list
+    // for the next process.
+    await withDeadline(stopMarketHistoryWorker(), deadline);
+    // Alerts are one-shot rows committed per firing; stopping mid-tick only
+    // delays pushes (delivered_at stays NULL), never loses an event.
+    await withDeadline(stopMarketAlertsWorker(), deadline);
 
     if (drainMs > 0) {
       const remaining = Math.max(0, deadline - Date.now());
@@ -284,6 +293,13 @@ async function main() {
   // Local whole-market snapshot: useful in every lane (CLI included), so it is
   // not gated on outbound platforms like push notifications.
   startMarketSnapshotWorker(db);
+  // Daily price history for watched and top-turnover pairs; same always-on
+  // lane policy as the snapshot worker, gated on MARKET_HISTORY_ENABLED.
+  startMarketHistoryWorker(db);
+  // One-shot price alerts over the local order book; delivery defaults to the
+  // user's outbound lane (same resolution as heartbeat), gated on
+  // MARKET_ALERTS_ENABLED.
+  startMarketAlertsWorker(db);
 
   const version = getAppVersion();
   const rows: BannerRow[] = [

@@ -46,6 +46,12 @@ export function runMigrations(db: Db): void {
     addColumnIfMissing(db, 'auth_requests', 'consented_at', 'TEXT');
     ensureConsentLanguageGuards(db);
     ensureProcessedUpdates(db);
+    // Market index cleanup: the history (type_id, date) index covered no
+    // query (every read goes through the (region_id, type_id, date) PK), and
+    // the alerts claim runs by PK while point lookups filter (user_id, status).
+    db.exec('DROP INDEX IF EXISTS idx_market_price_history_type_date');
+    db.exec('DROP INDEX IF EXISTS idx_market_alerts_active');
+    createIndexIfMissing(db, 'idx_market_price_alerts_user_status', 'market_price_alerts', 'user_id, status');
   });
 
   migrate();

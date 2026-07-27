@@ -63,3 +63,173 @@ export type ChatMessage = {
   created_at: string;
   activity?: ActivityStep[];
 };
+
+/* --- Маркет: контракты /api/web/market/* (см. src/web/market-routes.ts и src/web/market-alert-routes.ts) --- */
+
+export type MarketOrderSide = 'sell' | 'buy';
+
+export type MarketSnapshotRegionMeta = {
+  region_id: number;
+  fetched_at: string | null;
+  age_minutes: number | null;
+  stale: boolean;
+  last_error: string | null;
+};
+
+export type MarketSnapshotMeta = {
+  loaded: boolean;
+  status: string;
+  snapshot_time: string | null;
+  age_minutes: number | null;
+  stale: boolean;
+  rows_loaded: number | null;
+  last_error: string | null;
+  regions: MarketSnapshotRegionMeta[];
+};
+
+export type MarketRegion = {
+  region_id: number;
+  name: string;
+  stargates: number;
+};
+
+export type MarketTypeSearchRow = {
+  type_id: number;
+  name: string;
+  group_id: number | null;
+  market_group_id: number | null;
+};
+
+export type MarketOverview = {
+  type_id: number;
+  type_name: string | null;
+  group_id: number | null;
+  group_name: string | null;
+  market_group_id: number | null;
+  region_id: number;
+  best_sell: number | null;
+  best_buy: number | null;
+  sell_volume: number;
+  buy_volume: number;
+  sell_orders: number;
+  buy_orders: number;
+  spread_abs: number | null;
+  spread_pct: number | null;
+};
+
+export type MarketOrderRow = {
+  order_id: number;
+  type_id: number;
+  region_id: number;
+  is_buy_order: boolean;
+  price: number;
+  volume_remain: number;
+  volume_total: number;
+  min_volume: number;
+  duration: number;
+  range: string;
+  issued: string;
+  system_id: number;
+  system_name: string | null;
+  station_id: number | null;
+  location_id: number;
+  location_name: string | null;
+};
+
+export type MarketRegionComparisonRow = {
+  region_id: number;
+  region_name: string | null;
+  min_sell: number | null;
+  max_buy: number | null;
+  sell_volume: number;
+  buy_volume: number;
+  sell_orders: number;
+  buy_orders: number;
+};
+
+export type MarketGroupTreeRow = {
+  market_group_id: number;
+  name: string;
+  parent_group_id: number | null;
+  has_children: boolean;
+};
+
+export type MarketGroupTypeRow = {
+  type_id: number;
+  name: string;
+  group_id: number | null;
+  market_group_id: number | null;
+};
+
+export type MarketHistoryPoint = {
+  date: string;
+  order_count: number;
+  volume: number;
+  highest: number;
+  average: number;
+  lowest: number;
+};
+
+export type MarketHistoryStats = {
+  mean_average: number | null;
+  median_average: number | null;
+  daily_log_return_stddev_percent: number | null;
+  change_7d_percent: number | null;
+  change_30d_percent: number | null;
+  change_90d_percent: number | null;
+  mean_daily_volume: number | null;
+  trend_slope_per_day: number | null;
+};
+
+export type MarketHistoryFreshness = {
+  last_synced_at: string | null;
+  next_due_at: string | null;
+  status: 'ok' | 'error' | null;
+  error: string | null;
+};
+
+export type MarketHistoryResponse = {
+  region_id: number;
+  type_id: number;
+  series: MarketHistoryPoint[];
+  stats: MarketHistoryStats;
+  freshness: MarketHistoryFreshness;
+};
+
+export type MarketWatchlistItem = {
+  type_id: number;
+  type_name: string | null;
+  region_id: number;
+  best_sell: number | null;
+  best_buy: number | null;
+  created_at: string;
+};
+
+export type MarketAlert = {
+  alert_id: number;
+  type_id: number;
+  type_name: string | null;
+  region_id: number;
+  region_name: string | null;
+  side: MarketOrderSide;
+  comparator: 'above' | 'below';
+  threshold_price: number;
+  status: 'active' | 'triggered' | 'disabled';
+  created_at: string;
+  triggered_at: string | null;
+  trigger_price: number | null;
+  best_price: number | null;
+};
+
+export type MarketAlertEvent = {
+  event_id: number;
+  alert_id: number;
+  type_id: number;
+  type_name: string | null;
+  region_id: number | null;
+  region_name: string | null;
+  price: number;
+  threshold: number;
+  triggered_at: string;
+  delivered_at: string | null;
+};

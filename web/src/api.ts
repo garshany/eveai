@@ -1,4 +1,23 @@
-import type { ChatMessage, Conversation, PilotProfile, SessionPayload, WebAgentRequest } from './types';
+import type {
+  ChatMessage,
+  Conversation,
+  MarketAlert,
+  MarketAlertEvent,
+  MarketGroupTreeRow,
+  MarketGroupTypeRow,
+  MarketHistoryResponse,
+  MarketOrderRow,
+  MarketOrderSide,
+  MarketOverview,
+  MarketRegion,
+  MarketRegionComparisonRow,
+  MarketSnapshotMeta,
+  MarketTypeSearchRow,
+  MarketWatchlistItem,
+  PilotProfile,
+  SessionPayload,
+  WebAgentRequest,
+} from './types';
 import type { Locale } from './i18n';
 
 type ErrorPayload = { error?: string };
@@ -121,4 +140,68 @@ export const webApi = {
     csrfToken,
   ),
   getProfile: () => request<{ profile: PilotProfile | null }>('/api/web/profile'),
+  market: {
+    status: () => request<{ snapshot: MarketSnapshotMeta }>('/api/web/market/status'),
+    regions: () => request<{ regions: MarketRegion[] }>('/api/web/market/regions'),
+    search: (q: string, limit?: number) => request<{ results: MarketTypeSearchRow[] }>(
+      `/api/web/market/search?q=${encodeURIComponent(q)}${limit === undefined ? '' : `&limit=${limit}`}`,
+    ),
+    groups: (parent?: number | null) => request<{ groups: MarketGroupTreeRow[] }>(
+      `/api/web/market/groups${parent === undefined || parent === null ? '' : `?parent=${parent}`}`,
+    ),
+    groupTypes: (groupId: number, limit?: number) => request<{ types: MarketGroupTypeRow[] }>(
+      `/api/web/market/groups/${encodeURIComponent(groupId)}/types${limit === undefined ? '' : `?limit=${limit}`}`,
+    ),
+    overview: (typeId: number, regionId: number) => request<{ overview: MarketOverview }>(
+      `/api/web/market/types/${encodeURIComponent(typeId)}/overview?region_id=${regionId}`,
+    ),
+    orders: (typeId: number, regionId: number, side: MarketOrderSide, offset?: number, limit?: number) => request<{ orders: MarketOrderRow[] }>(
+      `/api/web/market/types/${encodeURIComponent(typeId)}/orders?region_id=${regionId}&side=${side}${offset === undefined ? '' : `&offset=${offset}`}${limit === undefined ? '' : `&limit=${limit}`}`,
+    ),
+    regionComparison: (typeId: number) => request<{ regions: MarketRegionComparisonRow[] }>(
+      `/api/web/market/types/${encodeURIComponent(typeId)}/regions`,
+    ),
+    history: (typeId: number, regionId: number, days?: number) => request<{ history: MarketHistoryResponse }>(
+      `/api/web/market/types/${encodeURIComponent(typeId)}/history?region_id=${regionId}${days === undefined ? '' : `&days=${days}`}`,
+    ),
+    watchlist: {
+      list: () => request<{ items: MarketWatchlistItem[] }>('/api/web/market/watchlist'),
+      add: (typeId: number, regionId: number | undefined, csrfToken: string) => request<{ created: boolean; item: MarketWatchlistItem }>(
+        '/api/web/market/watchlist',
+        { method: 'POST', body: JSON.stringify({ type_id: typeId, region_id: regionId }) },
+        csrfToken,
+      ),
+      remove: (typeId: number, regionId: number | undefined, csrfToken: string) => request<{ ok: true }>(
+        `/api/web/market/watchlist/${encodeURIComponent(typeId)}${regionId === undefined ? '' : `?region_id=${regionId}`}`,
+        { method: 'DELETE' },
+        csrfToken,
+      ),
+    },
+    alerts: {
+      list: () => request<{ alerts: MarketAlert[] }>('/api/web/market/alerts'),
+      create: (
+        params: { typeId: number; regionId: number; side: MarketOrderSide; comparator: 'above' | 'below'; thresholdPrice: number },
+        csrfToken: string,
+      ) => request<{ alert: MarketAlert }>(
+        '/api/web/market/alerts',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            type_id: params.typeId,
+            region_id: params.regionId,
+            side: params.side,
+            comparator: params.comparator,
+            threshold_price: params.thresholdPrice,
+          }),
+        },
+        csrfToken,
+      ),
+      remove: (alertId: number, csrfToken: string) => request<{ ok: true }>(
+        `/api/web/market/alerts/${encodeURIComponent(alertId)}`,
+        { method: 'DELETE' },
+        csrfToken,
+      ),
+      events: () => request<{ events: MarketAlertEvent[] }>('/api/web/market/alerts/events'),
+    },
+  },
 };

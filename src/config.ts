@@ -318,6 +318,35 @@ export const config = {
     majorIntervalMinutes: boundedPositiveInt('MARKET_SNAPSHOT_MAJOR_INTERVAL_MINUTES', 30, 5, 1_440),
     minorIntervalMinutes: boundedPositiveInt('MARKET_SNAPSHOT_MINOR_INTERVAL_MINUTES', 360, 5, 10_080),
   },
+  marketHistory: {
+    // Local per-type daily price history, refreshed from ESI
+    // /markets/{region_id}/history/. CCP rebuilds that endpoint once a day at
+    // 11:05 UTC, so the hourly tick mostly revalidates warm pairs.
+    enabled: optionalBoolean('MARKET_HISTORY_ENABLED', true),
+    // One tick's worth of due pairs. The due set after a quiet night is the
+    // watchlist plus the seeded top types (a few hundred pairs), so 100
+    // drains it in a handful of ticks without crowding the agent's ESI calls.
+    maxPerTick: boundedPositiveInt('MARKET_HISTORY_MAX_PER_TICK', 100, 1, 500),
+    // Each pair is a single unauthenticated ESI call; 4 in flight stays well
+    // inside the public error-limit budget.
+    concurrency: boundedPositiveInt('MARKET_HISTORY_CONCURRENCY', 4, 1, 16),
+    // Watchlist pairs are always seeded; this additionally seeds the top-N
+    // types by listed value (volume_remain * price) in major regions. 0
+    // disables the top-types seed (clamped like maxUpdateAgeMinutes: a
+    // negative reads as disabled, which lowering the number never intends).
+    seedTopTypes: Math.min(1_000, Math.max(0, optionalInt('MARKET_HISTORY_SEED_TOP_TYPES', 200))),
+  },
+  marketAlerts: {
+    // One-shot price alerts evaluated against the local market_orders snapshot
+    // every 5 minutes. The tick is a single indexed read per active alert and
+    // makes zero ESI calls, so there is no cost reason to default it off.
+    enabled: optionalBoolean('MARKET_ALERTS_ENABLED', true),
+    // Cap on simultaneously active alerts per user. Alerts are one-shot (a
+    // firing flips status to 'triggered' forever), so the cap bounds the
+    // per-tick scan size and the alerts panel, not any external quota. 200 is
+    // the "something is wrong with the client" ceiling, not a target.
+    maxActivePerUser: boundedPositiveInt('MARKET_ALERTS_MAX_ACTIVE_PER_USER', 50, 1, 200),
+  },
   tavily: {
     apiKey: optional('TAVILY_API_KEY', ''),
   },

@@ -746,4 +746,84 @@ CREATE TABLE IF NOT EXISTS market_snapshot_regions (
   expires_at  TEXT,
   last_error  TEXT
 );
+
+-- Local daily price history accumulated from ESI /markets/{region_id}/history/.
+-- Rows are never deleted once synced, so over time this outlives ESI's own
+-- ~365-day window. Populated lazily (backfill on first view) and by the
+-- market history worker (see src/eve/market-history.ts).
+CREATE TABLE IF NOT EXISTS market_price_history (
+  region_id   INTEGER NOT NULL,
+  type_id     INTEGER NOT NULL,
+  date        TEXT NOT NULL,
+  order_count INTEGER NOT NULL,
+  volume      INTEGER NOT NULL,
+  highest     REAL NOT NULL,
+  average     REAL NOT NULL,
+  lowest      REAL NOT NULL,
+  synced_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (region_id, type_id, date)
+);
+
+-- Per-(region, type) sync state for the history backfiller/worker. next_due_at
+-- is the next ESI refresh (daily at 11:05 UTC plus a buffer) after which a new
+-- history day may exist. The worker picks due pairs by this column.
+CREATE TABLE IF NOT EXISTS market_history_sync (
+  region_id      INTEGER NOT NULL,
+  type_id        INTEGER NOT NULL,
+  last_synced_at TEXT,
+  next_due_at    TEXT,
+  status         TEXT NOT NULL DEFAULT 'ok'
+    CHECK (status IN ('ok', 'error')),
+  error          TEXT,
+  PRIMARY KEY (region_id, type_id)
+);
+CREATE INDEX IF NOT EXISTS idx_market_history_sync_due
+  ON market_history_sync(next_due_at);
+
+-- Web market watchlist. region_id is always stored as a concrete value:
+-- writers substitute the user's default region when the caller omits it,
+-- because the (user_id, type_id, region_id) primary key treats NULL as
+-- distinct and would let duplicates through.
+CREATE TABLE IF NOT EXISTS market_watchlist (
+  user_id    INTEGER NOT NULL,
+  type_id    INTEGER NOT NULL,
+  region_id  INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, type_id, region_id)
+);
+
+-- Price alerts evaluated against the local market_orders snapshot by the
+-- alerts worker. 'triggered' rows keep triggered_at/trigger_price as evidence.
+CREATE TABLE IF NOT EXISTS market_price_alerts (
+  alert_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id         INTEGER NOT NULL,
+  type_id         INTEGER NOT NULL,
+  region_id       INTEGER NOT NULL,
+  side            TEXT NOT NULL CHECK (side IN ('sell', 'buy')),
+  comparator      TEXT NOT NULL CHECK (comparator IN ('above', 'below')),
+  threshold_price REAL NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'triggered', 'disabled')),
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  triggered_at    TEXT,
+  trigger_price   REAL
+);
+CREATE INDEX IF NOT EXISTS idx_market_price_alerts_user_status
+  ON market_price_alerts(user_id, status);
+
+-- Append-only firing log for market_price_alerts. delivered_at flips when the
+-- outbound lane (Telegram/web) has pushed the notification. Rows stay visible
+-- in the UI regardless of delivery.
+CREATE TABLE IF NOT EXISTS market_alert_events (
+  event_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id     INTEGER NOT NULL,
+  user_id      INTEGER NOT NULL,
+  type_id      INTEGER NOT NULL,
+  price        REAL NOT NULL,
+  threshold    REAL NOT NULL,
+  triggered_at TEXT NOT NULL DEFAULT (datetime('now')),
+  delivered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_market_alert_events_user
+  ON market_alert_events(user_id, triggered_at);
 `;

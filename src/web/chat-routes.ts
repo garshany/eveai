@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { createAuthRequestToken } from '../auth/auth-request.js';
@@ -30,11 +30,11 @@ import {
   revokeWebSession,
   reuseOrRotateWebCsrf,
   setWebSessionCookies,
-  verifyWebMutation,
   verifyWebSessionCreation,
   buildWebClientIpKey,
   type WebSession,
 } from './web-session.js';
+import { requireMutationSession, requireSession } from './web-route-guards.js';
 import { WebAgentRequestCoordinator } from './agent-requests.js';
 import { isTurnstileEnabled, verifyTurnstileToken } from './turnstile.js';
 
@@ -440,29 +440,6 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
       eventsUrl: `/api/web/chat/requests/${encodeURIComponent(requestId)}/events`,
     });
   });
-}
-
-function requireSession(
-  db: Db,
-  request: FastifyRequest,
-  reply: FastifyReply,
-): WebSession | null {
-  const session = readWebSession(db, request);
-  if (session) return session;
-  void reply.status(401).send({ error: 'Сессия истекла. Обновите страницу.' });
-  return null;
-}
-
-function requireMutationSession(
-  db: Db,
-  request: FastifyRequest,
-  reply: FastifyReply,
-): WebSession | null {
-  const session = requireSession(db, request, reply);
-  if (!session) return null;
-  if (verifyWebMutation(request, session)) return session;
-  void reply.status(403).send({ error: 'Проверка безопасности запроса не пройдена.' });
-  return null;
 }
 
 function buildSessionPayload(db: Db, session: WebSession, csrfToken: string) {
