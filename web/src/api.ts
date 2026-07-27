@@ -101,6 +101,11 @@ export const webApi = {
     { method: 'POST' },
     csrfToken,
   ),
+  unlinkCharacter: (characterId: number, csrfToken: string) => request<void>(
+    `/api/web/characters/${encodeURIComponent(characterId)}/unlink`,
+    { method: 'POST' },
+    csrfToken,
+  ),
   listConversations: () => request<{ conversations: Conversation[] }>('/api/web/conversations'),
   createConversation: (csrfToken: string) => request<{ threadId: string }>(
     '/api/web/conversations',

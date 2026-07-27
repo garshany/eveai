@@ -1,8 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Brand } from './Brand';
 import { ChartIcon, ShieldIcon, TargetIcon } from '../icons';
 import { LocaleSwitch, useI18n } from '../i18n';
+import {
+  INITIAL_TURNSTILE_TOKEN_STATE,
+  reduceTurnstileToken,
+  type TurnstileTokenEvent,
+  type TurnstileTokenState,
+} from '../turnstile-token';
 import { TurnstileWidget } from './TurnstileWidget';
 
 type LoginScreenProps = {
@@ -10,10 +16,12 @@ type LoginScreenProps = {
   ssoConfigured: boolean;
   error: string | null;
   turnstileSiteKey: string | null;
-  onConnect: (turnstileToken?: string) => void;
-  onGuest: (turnstileToken?: string) => void;
+  onConnect: (turnstileToken?: string) => Promise<boolean>;
+  onGuest: (turnstileToken?: string) => Promise<boolean>;
   onShowSupport: () => void;
 };
+
+type PendingLoginAction = 'connect' | 'guest';
 
 export function LoginScreen({
   busy,
@@ -26,8 +34,50 @@ export function LoginScreen({
 }: LoginScreenProps) {
   const { t } = useI18n();
   const [privacyOpen, setPrivacyOpen] = useState(false);
-  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [turnstileState, setTurnstileState] = useState<TurnstileTokenState>(INITIAL_TURNSTILE_TOKEN_STATE);
+  const [turnstileVisible, setTurnstileVisible] = useState(false);
+  const turnstileRef = useRef(turnstileState);
+  const actionsRef = useRef({ onConnect, onGuest });
+  const pendingActionRef = useRef<PendingLoginAction | null>(null);
   const routeImage = `${import.meta.env.BASE_URL}assets/orbit-route.png`;
+
+  useEffect(() => {
+    actionsRef.current = { onConnect, onGuest };
+  });
+
+  // Токен одноразовый: после сброшенного состояния (resetWidget) виджет
+  // перемонтируется сам, потому что рендерится только в фазе idle.
+  const applyTurnstileEvent = useCallback((event: TurnstileTokenEvent) => {
+    const transition = reduceTurnstileToken(turnstileRef.current, event);
+    turnstileRef.current = transition.state;
+    setTurnstileState(transition.state);
+    if (transition.resetWidget) pendingActionRef.current = null;
+  }, []);
+
+  const executeAction = useCallback(async (action: PendingLoginAction) => {
+    const current = turnstileRef.current;
+    const token = current.phase === 'idle' ? undefined : current.token;
+    if (current.phase === 'ready') applyTurnstileEvent({ type: 'requestStarted' });
+    const run = action === 'connect' ? actionsRef.current.onConnect : actionsRef.current.onGuest;
+    const succeeded = await run(token);
+    if (turnstileRef.current.phase === 'inFlight') {
+      applyTurnstileEvent(succeeded ? { type: 'requestSucceeded' } : { type: 'requestFailed' });
+    }
+  }, [applyTurnstileEvent]);
+
+  // Стабильный коллбэк: иначе TurnstileWidget перемонтирует виджет на каждый
+  // рендер (onToken у него в зависимостях эффекта) и теряет выданный токен.
+  const handleTurnstileToken = useCallback((token: string | null) => {
+    if (!token) {
+      applyTurnstileEvent({ type: 'tokenExpired' });
+      return;
+    }
+    applyTurnstileEvent({ type: 'tokenReceived', token });
+    const pending = pendingActionRef.current;
+    if (!pending) return;
+    pendingActionRef.current = null;
+    void executeAction(pending);
+  }, [applyTurnstileEvent, executeAction]);
 
   useEffect(() => {
     if (!privacyOpen) return;
@@ -37,6 +87,19 @@ export function LoginScreen({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [privacyOpen]);
+
+  // Без siteKey или с уже полученным токеном действие выполняется сразу;
+  // иначе показываем виджет и запоминаем отложенное действие.
+  const runWithTurnstile = (action: PendingLoginAction) => {
+    if (!turnstileSiteKey || turnstileRef.current.phase !== 'idle') {
+      void executeAction(action);
+      return;
+    }
+    pendingActionRef.current = action;
+    setTurnstileVisible(true);
+  };
+
+  const turnstileBusy = turnstileState.phase === 'inFlight';
 
   return (
     <main className="login" style={{ '--route-image': `url(${routeImage})` } as CSSProperties}>
@@ -55,19 +118,22 @@ export function LoginScreen({
           <p>{t('loginLead')}</p>
 
           <div className="login__actions">
-            {turnstileSiteKey ? (
-              <TurnstileWidget siteKey={turnstileSiteKey} onToken={setTurnstileToken} />
+            {turnstileSiteKey && turnstileVisible && turnstileState.phase === 'idle' ? (
+              <div className="login__turnstile">
+                <p className="login__turnstile-caption">{t('turnstilePrompt')}</p>
+                <TurnstileWidget siteKey={turnstileSiteKey} onToken={handleTurnstileToken} />
+              </div>
             ) : null}
             <button
               className="button button--primary button--login"
               type="button"
-              onClick={() => onConnect(turnstileToken ?? undefined)}
-              disabled={busy || !ssoConfigured || Boolean(turnstileSiteKey && !turnstileToken)}
+              onClick={() => runWithTurnstile('connect')}
+              disabled={busy || turnstileBusy || !ssoConfigured}
             >
               <TargetIcon size={26} />
               {ssoConfigured ? t('loginEve') : t('ssoMissing')}
             </button>
-            <button className="text-action" type="button" onClick={() => onGuest(turnstileToken ?? undefined)} disabled={busy || Boolean(turnstileSiteKey && !turnstileToken)}>
+            <button className="text-action" type="button" onClick={() => runWithTurnstile('guest')} disabled={busy || turnstileBusy}>
               {t('guestContinue')}
             </button>
           </div>

@@ -60,8 +60,8 @@ export function PilotIcon(props: IconProps) {
   return <IconBase {...props}><circle cx="12" cy="8" r="3.5" /><path d="M5 21c.7-4 3.1-6 7-6s6.3 2 7 6" /><path d="M4 12a8 8 0 0 1 16 0" /></IconBase>;
 }
 
-export function PaperclipIcon(props: IconProps) {
-  return <IconBase {...props}><path d="m9.5 12.8 5.7-5.7a3 3 0 1 1 4.2 4.2l-8.5 8.5a5 5 0 1 1-7.1-7.1l8.1-8.1" /></IconBase>;
+export function TrashIcon(props: IconProps) {
+  return <IconBase {...props}><path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="m6 7 1 13h10l1-13" /><path d="M10 11v5M14 11v5" /></IconBase>;
 }
 
 export function SendIcon(props: IconProps) {

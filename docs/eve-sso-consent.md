@@ -36,8 +36,10 @@ community data without private scopes.
 
 The accepted version, language, time, and resulting scope set remain attached
 to the encrypted character authorization for as long as that authorization is
-stored. Browser-only authorization and its consent record are removed together
-when the browser lane is purged.
+stored. Once a character is linked, the authorization and its consent record
+survive browser logout and session expiry so the returning user keeps their
+identity; only anonymous browser lanes (no linked character) are purged, and
+their consent records are removed together with the lane.
 
 ## Optional access groups / Необязательные группы доступа
 

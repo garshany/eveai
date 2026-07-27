@@ -635,7 +635,7 @@ describe('web chat routes', () => {
     expect(db.prepare('SELECT 1 FROM route_monitors WHERE chat_id = ?').get(owner.chatId)).toBeUndefined();
   });
 
-  it('purges browser-only durable data when its session expires', async () => {
+  it('keeps the durable data of a character-linked user when its session expires', async () => {
     const session = await createBrowserSession();
     const created = await app.inject({
       method: 'POST',
@@ -667,10 +667,15 @@ describe('web chat routes', () => {
     });
     expect(expired.json()).toMatchObject({ session: null });
     await cleanExpiredWebSessions(db, { force: true });
-    expect(db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(session.userId)).toBeUndefined();
-    expect(db.prepare('SELECT 1 FROM telegram_sessions WHERE chat_id = ?').get(session.chatId)).toBeUndefined();
-    expect(db.prepare('SELECT 1 FROM agent_threads WHERE thread_id = ?').get(threadId)).toBeUndefined();
-    expect(db.prepare('SELECT 1 FROM eve_accounts WHERE character_id = 9001').get()).toBeUndefined();
+    // Only the expired login token and the session-scoped route monitor are
+    // gone; the identity, the lane and every durable row survive so the next
+    // SSO sign-in reattaches them.
+    expect(db.prepare('SELECT 1 FROM web_sessions WHERE chat_id = ?').get(session.chatId)).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(session.userId)).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM telegram_sessions WHERE chat_id = ?').get(session.chatId)).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM agent_threads WHERE thread_id = ?').get(threadId)).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM messages WHERE thread_id = ?').get(threadId)).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM eve_accounts WHERE character_id = 9001').get()).toBeDefined();
     expect(db.prepare('SELECT 1 FROM route_monitors WHERE chat_id = ?').get(session.chatId)).toBeUndefined();
   });
 

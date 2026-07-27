@@ -547,7 +547,7 @@ describe('auth routes', () => {
     await app.close();
   });
 
-  it('does not delete the current owner profile when browser ownership validation fails', async () => {
+  it('merges a browser guest that owns another character into the current owner', async () => {
     const app = Fastify();
     registerAuthRoutes(app, db);
     const characterId = 95465503;
@@ -624,6 +624,8 @@ describe('auth routes', () => {
     });
     await jwtVerified;
     await new Promise<void>((resolve) => setImmediate(resolve));
+    // The guest picks up another character mid-flight. Owning one no longer
+    // blocks the link: the merge carries it over to the surviving owner.
     db.prepare(`
       INSERT INTO eve_accounts (
         character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id
@@ -634,11 +636,14 @@ describe('auth routes', () => {
     const response = await responsePromise;
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe('http://localhost:3000/app?auth=error');
-    for (const path of ownerPaths) expect(existsSync(path)).toBe(true);
-    expect(db.prepare('SELECT scopes_json, user_id FROM eve_accounts WHERE character_id = ?').get(characterId))
-      .toEqual({ scopes_json: '["esi-wallet.read_character_wallet.v1"]', user_id: 1 });
-    expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeDefined();
+    expect(response.headers.location).toBe('http://localhost:3000/app?auth=connected');
+    expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeUndefined();
+    expect(db.prepare('SELECT user_id FROM eve_accounts WHERE character_id = ?').get(characterId))
+      .toEqual({ user_id: 1 });
+    expect(db.prepare('SELECT user_id FROM eve_accounts WHERE character_id = 95465504').get())
+      .toEqual({ user_id: 1 });
+    // The materialized profile of the re-linked character is rebuilt on demand.
+    for (const path of ownerPaths) expect(existsSync(path)).toBe(false);
     await app.close();
   });
 

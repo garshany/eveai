@@ -20,9 +20,13 @@ ModelHub, ESI, or any tool directly from the browser.
    the model turn. The browser receives only the final answer and a bounded
    activity summary.
 7. The same browser identity may repeat EVE SSO for multiple characters. The
-   sidebar switches the active character and shows only its conversations.
-   EVE SSO exposes a character, not a stable game-account identifier, so
-   characters from different EVE accounts use the same per-character flow.
+   sidebar switches the active character and shows its conversations plus the
+   pre-link guest threads. Linking a character already owned by another user
+   merges the browser guest into that owner instead of failing, so characters
+   from different EVE accounts use the same per-character flow.
+8. `POST /api/web/characters/:characterId/unlink` revokes a character: it
+   drops the link and, when no links remain, deletes the encrypted tokens and
+   the materialized private character data.
 
 The browser lane is request/response only. Background heartbeat, kill-watch,
 and route-monitor tools are not exposed and `plan_route` never auto-starts a
@@ -44,6 +48,7 @@ to users, stored in browser storage, included in HTML, or returned by an API.
 - `DELETE /api/web/conversations/:threadId`
 - `GET /api/web/characters`
 - `POST /api/web/characters/:characterId/activate`
+- `POST /api/web/characters/:characterId/unlink`
 - `POST /api/web/chat`
 - `GET /auth/eve/login?state=...`
 - `GET /auth/eve/callback`
@@ -62,14 +67,26 @@ to users, stored in browser storage, included in HTML, or returned by an API.
   internal user and browser chat lane;
 - conversation lists and new threads are additionally bound to the active
   `character_id`, preventing a thread from one character from continuing under
-  another;
+  another; pre-link guest threads without a character stay listed regardless
+  of the active character;
+- a browser user may own several EVE characters; linking a character owned by
+  another user folds the browser guest into that existing owner (lanes,
+  conversations, market and usage data follow the surviving identity);
+- `POST /api/web/characters/:characterId/unlink` revokes a character for the
+  session user and, on the last link, deletes its encrypted tokens and
+  materialized private data;
 - anonymous-session creation is bounded per effective client IP before new
   rows reach SQLite;
 - each browser lane is capped at 40 conversations, repeated new-chat requests
   reuse the same empty thread, and only one pending SSO request is retained;
-- logout and expiry transactionally purge the browser lane, its conversations,
-  user-only links, and encrypted EVE credentials; a canonical Telegram,
-  Discord, or CLI identity and its shared character ownership are retained;
+- logout and expiry revoke only the browser session token for users with a
+  linked EVE character: the persistent identity, its lanes, conversations,
+  links, and encrypted EVE credentials are retained and reattached on the next
+  SSO sign-in (orphaned lanes are folded into the signing-in lane). Route
+  monitors are session-scoped and are discarded with the session. Anonymous
+  guest lanes are purged transactionally — conversations, user-only links, and
+  encrypted EVE credentials; a canonical Telegram, Discord, or CLI identity and
+  its shared character ownership are retained;
 - when a browser authenticates a character already owned by another channel,
   the browser lane joins that canonical internal user instead of transferring
   the character away from the existing channel.

@@ -11,6 +11,7 @@ import {
   getLinkedCharacter,
   listLinkedCharacters,
   setActiveCharacter,
+  unlinkCharacter,
 } from '../eve/sso.js';
 import { isEveSsoConfigured } from '../eve/eve-login.js';
 import { fetchWithTimeout } from '../eve/http.js';
@@ -177,11 +178,15 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
     if (!session) return;
     const reusable = findEmptyConversation(db, session);
     if (reusable) return reply.status(200).send({ threadId: reusable });
+    // The cap counts the same set the sidebar lists: guest threads (no
+    // character) stay visible regardless of the active character.
+    const characterId = getLinkedCharacter(db, sessionContext(session))?.characterId ?? null;
     const count = db.prepare(`
       SELECT COUNT(*) AS count
-      FROM agent_threads
-      WHERE chat_id = ? AND user_id = ?
-    `).get(session.chatId, session.userId) as { count: number };
+      FROM agent_threads t
+      WHERE t.chat_id = ? AND t.user_id = ?
+        AND (t.character_id IS NULL OR t.character_id = ?)
+    `).get(session.chatId, session.userId, characterId) as { count: number };
     if (count.count >= MAX_WEB_CONVERSATIONS) {
       return reply.status(409).send({
         error: `Достигнут лимит в ${MAX_WEB_CONVERSATIONS} диалогов. Удалите ненужный диалог.`,
@@ -254,6 +259,23 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
       discardRouteMonitor(session.chatId, db);
     }
     return buildSessionPayload(db, session, request.headers['x-csrf-token'] as string);
+  });
+
+  app.post<{ Params: CharacterParams }>('/api/web/characters/:characterId/unlink', async (request, reply) => {
+    const session = requireMutationSession(db, request, reply);
+    if (!session) return;
+    const characterId = parsePositiveInteger(request.params.characterId);
+    if (!characterId) return reply.status(404).send({ error: 'Персонаж не найден.' });
+    // unlinkCharacter takes the character lock itself, clears links/active
+    // state and profile artifacts, and drops character_* data plus the
+    // eve_accounts row (encrypted tokens) when no links remain.
+    const unlinked = await unlinkCharacter(db, sessionContext(session), characterId);
+    if (!unlinked) return reply.status(404).send({ error: 'Персонаж не найден.' });
+    const monitor = getRouteMonitorRuntimeStatus(db, session.chatId).monitor;
+    if (monitor && monitor.characterId === characterId) {
+      discardRouteMonitor(session.chatId, db);
+    }
+    return reply.status(204).send();
   });
 
   app.get('/api/web/profile', async (request, reply) => {
@@ -536,6 +558,8 @@ function buildWebScanPayload(db: Db, session: WebSession) {
 
 function listConversations(db: Db, session: WebSession) {
   const characterId = getLinkedCharacter(db, sessionContext(session))?.characterId ?? null;
+  // Guest threads (no character) are always listed: they predate any link and
+  // must not vanish from the sidebar once a character becomes active.
   const rows = db.prepare(`
     SELECT
       t.thread_id,
@@ -552,11 +576,11 @@ function listConversations(db: Db, session: WebSession) {
     LEFT JOIN messages m ON m.thread_id = t.thread_id
     WHERE t.chat_id = ?
       AND t.user_id = ?
-      AND ((t.character_id IS NULL AND ? IS NULL) OR t.character_id = ?)
+      AND (t.character_id IS NULL OR t.character_id = ?)
     GROUP BY t.thread_id
     ORDER BY updated_at DESC
     LIMIT 40
-  `).all(session.chatId, session.userId, characterId, characterId) as ConversationRow[];
+  `).all(session.chatId, session.userId, characterId) as ConversationRow[];
   return rows.map((row) => ({
     id: row.thread_id,
     characterId: row.character_id,

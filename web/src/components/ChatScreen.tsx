@@ -1,16 +1,17 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { AlertIcon, ArrowDownIcon, CheckIcon, CloseIcon, CompassMark, MarketIcon, MenuIcon, PaperclipIcon, RouteIcon, SendIcon, TargetIcon } from '../icons';
+import { AlertIcon, ArrowDownIcon, CheckIcon, CloseIcon, CompassMark, MarketIcon, MenuIcon, RouteIcon, SendIcon, TargetIcon } from '../icons';
 import type { ChatMessage, WebAgentRequest } from '../types';
+import { decideScrollBehavior, isPinnedToBottom, scrollToBottom } from '../chat-scroll';
 import { LocaleSwitch, useI18n } from '../i18n';
 import { MarkdownMessage } from './MarkdownMessage';
 
-const SCROLL_PIN_THRESHOLD_PX = 90;
 const MAX_MESSAGE_LENGTH = 2000;
 const COUNTER_VISIBLE_FROM = 1600;
 
 type ChatScreenProps = {
   title: string;
+  conversationId: string | null;
   messages: ChatMessage[];
   busy: boolean;
   request: WebAgentRequest | null;
@@ -21,13 +22,27 @@ type ChatScreenProps = {
   onDismissError: () => void;
 };
 
-export function ChatScreen({ title, messages, busy, request, error, onMenu, onSend, onCancel, onDismissError }: ChatScreenProps) {
+export function ChatScreen({ title, conversationId, messages, busy, request, error, onMenu, onSend, onCancel, onDismissError }: ChatScreenProps) {
   const { t } = useI18n();
   const [draft, setDraft] = useState('');
   const [pinnedToBottom, setPinnedToBottom] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  // После смены разговора первая прокрутка к свежей истории — мгновенная.
+  // App держит сообщения предыдущего разговора до загрузки новых, поэтому
+  // мгновенная прокрутка откладывается, пока на экране старые сообщения.
+  const initialScroll = useRef({
+    conversationId,
+    firstMessageId: (messages[0]?.id ?? null) as ChatMessage['id'] | null,
+    done: false,
+  });
+  if (initialScroll.current.conversationId !== conversationId) {
+    initialScroll.current = {
+      conversationId,
+      firstMessageId: messages[0]?.id ?? null,
+      done: false,
+    };
+  }
   const routeImage = `${import.meta.env.BASE_URL}assets/orbit-route.png`;
   const suggestions = [
     { text: t('suggestionRoute'), Icon: RouteIcon },
@@ -40,19 +55,34 @@ export function ChatScreen({ title, messages, busy, request, error, onMenu, onSe
     : '';
 
   useEffect(() => {
-    if (pinnedToBottom) endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, busy, progressSequence, streamText.length, pinnedToBottom]);
+    setPinnedToBottom(true);
+  }, [conversationId]);
+
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!pinnedToBottom || !container) return;
+    const state = initialScroll.current;
+    if (!state.done) {
+      const firstMessageId = messages[0]?.id ?? null;
+      // На экране ещё история предыдущего разговора — ждём свежую.
+      if (messages.length > 0 && firstMessageId === state.firstMessageId) return;
+      scrollToBottom(container, decideScrollBehavior(true));
+      state.done = true;
+      return;
+    }
+    scrollToBottom(container, decideScrollBehavior(false));
+  }, [conversationId, messages, busy, progressSequence, streamText.length, pinnedToBottom]);
 
   const handleScroll = () => {
     const container = scrollRef.current;
     if (!container) return;
-    const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
-    setPinnedToBottom(distance < SCROLL_PIN_THRESHOLD_PX);
+    setPinnedToBottom(isPinnedToBottom(container));
   };
 
   const scrollToLatest = () => {
+    const container = scrollRef.current;
     setPinnedToBottom(true);
-    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    if (container) scrollToBottom(container, 'smooth');
   };
 
   const resizeComposer = () => {
@@ -79,21 +109,21 @@ export function ChatScreen({ title, messages, busy, request, error, onMenu, onSe
       {busy ? (streamText
         ? <StreamingMessage text={streamText} onCancel={onCancel} />
         : <ThinkingMessage request={request} onCancel={onCancel} />) : null}
-      <div ref={endRef} />
     </div>
   );
 
+  const showIntro = messages.length === 0 && !busy && !streamText;
+
   return <section className="chat-canvas" style={{ '--chat-route-image': `url(${routeImage})` } as CSSProperties}>
-    <header className="chat-header"><button className="icon-button chat-header__menu" type="button" onClick={onMenu} aria-label={t('openMenu')}><MenuIcon /></button><h1>{title}</h1><div className="chat-header__actions"><div className="connection-state" role="status"><span />{t('connected')}</div><LocaleSwitch /></div></header>
+    <header className="chat-header"><button className="icon-button chat-header__menu" type="button" onClick={onMenu} aria-label={t('openMenu')}><MenuIcon /></button><h1>{title}</h1><div className="chat-header__actions"><LocaleSwitch /></div></header>
     <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll} aria-live="polite">
-      <section className={`chat-intro${messages.length > 0 ? ' chat-intro--compact' : ''}`}><div className="chat-intro__orbit" aria-hidden="true" /><h2>{t('introTitle')}</h2><p>{t('introLead')}</p><div className="suggestions">{suggestions.map(({ text, Icon }) => <button type="button" key={text} onClick={() => void submit(text)} disabled={busy}><Icon size={23} /><span>{text}</span></button>)}</div></section>
+      {showIntro ? <section className="chat-intro"><div className="chat-intro__orbit" aria-hidden="true" /><h2>{t('introTitle')}</h2><p>{t('introLead')}</p><div className="suggestions">{suggestions.map(({ text, Icon }) => <button type="button" key={text} onClick={() => void submit(text)} disabled={busy}><Icon size={23} /><span>{text}</span></button>)}</div></section> : null}
       {messages.length > 0 || busy ? thread : null}
     </div>
     {pinnedToBottom ? null : <button className="scroll-latest" type="button" onClick={scrollToLatest} aria-label={t('scrollToLatest')}><ArrowDownIcon size={18} /><span>{t('scrollToLatest')}</span></button>}
     <div className="composer-region">
       {error ? <div className="composer-error" role="alert"><AlertIcon size={15} /><span>{error}</span><button className="composer-error__dismiss" type="button" onClick={onDismissError} aria-label={t('dismissError')}><CloseIcon size={14} /></button></div> : null}
       <div className="composer">
-        <button className="icon-button composer__utility" type="button" aria-label={t('attachments')} disabled><PaperclipIcon size={24} /></button>
         <textarea
           ref={composerRef}
           value={draft}

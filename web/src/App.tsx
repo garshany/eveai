@@ -192,27 +192,31 @@ export default function App() {
     return payload.session;
   };
 
-  const connectEve = async (turnstileToken?: string) => {
+  const connectEve = async (turnstileToken?: string): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       const activeSession = await ensureSession(turnstileToken);
       const { url } = await webApi.startEveLogin(activeSession.csrfToken, locale);
       window.location.assign(url);
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось начать вход через EVE.');
       setBusy(false);
+      return false;
     }
   };
 
-  const continueAsGuest = async (turnstileToken?: string) => {
+  const continueAsGuest = async (turnstileToken?: string): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       await ensureSession(turnstileToken);
       await loadConversations();
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось открыть гостевой режим.');
+      return false;
     } finally {
       setBusy(false);
     }
@@ -229,6 +233,21 @@ export default function App() {
       setSidebarOpen(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось переключить персонажа.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Ошибки не проглатываем: профиль показывает текст сервера из ApiRequestError.
+  const unlinkCharacter = async (characterId: number) => {
+    if (!session) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await webApi.unlinkCharacter(characterId, session.csrfToken);
+      const payload = await webApi.getSession();
+      setBootstrap(payload);
+      await loadConversations();
     } finally {
       setBusy(false);
     }
@@ -262,6 +281,17 @@ export default function App() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось загрузить диалог.');
     }
+  };
+
+  const deleteConversation = async (threadId: string) => {
+    if (!session) return;
+    await webApi.deleteConversation(threadId, session.csrfToken);
+    if (activeIdRef.current === threadId) {
+      messageLoadGeneration.current += 1;
+      setActiveConversation(null);
+      setMessages([]);
+    }
+    await refreshConversationList();
   };
 
   const sendMessage = async (content: string) => {
@@ -351,8 +381,8 @@ export default function App() {
         ssoConfigured={bootstrap?.ssoConfigured ?? false}
         turnstileSiteKey={bootstrap?.turnstileSiteKey ?? null}
         error={error}
-        onConnect={(token) => void connectEve(token)}
-        onGuest={(token) => void continueAsGuest(token)}
+        onConnect={connectEve}
+        onGuest={continueAsGuest}
         onShowSupport={() => setActiveView('support')}
       />
     );
@@ -373,13 +403,14 @@ export default function App() {
         onView={(view) => { setActiveView(view); setSidebarOpen(false); }}
         onNew={() => { setActiveView('chat'); void createConversation(); }}
         onSelect={(id) => { setActiveView('chat'); void selectConversation(id); }}
+        onDelete={deleteConversation}
         onConnect={() => void connectEve()}
         onActivate={(characterId) => void activateCharacter(characterId)}
         onLogout={() => void logout()}
       />
-      {activeView === 'chat' ? <ChatScreen title={activeTitle} messages={messages} busy={busy} request={activeRequest} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} onDismissError={() => setError(null)} /> : null}
+      {activeView === 'chat' ? <ChatScreen title={activeTitle} conversationId={activeId} messages={messages} busy={busy} request={activeRequest} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} onDismissError={() => setError(null)} /> : null}
       {activeView === 'market' ? <MarketScreen onMenu={() => setSidebarOpen(true)} csrfToken={session.csrfToken} /> : null}
-      {activeView === 'profile' ? <PilotProfileScreen character={session.character} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} /> : null}
+      {activeView === 'profile' ? <PilotProfileScreen character={session.character} busy={busy} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} onUnlink={unlinkCharacter} /> : null}
       {activeView === 'support' ? <SupportScreen hasSession onMenu={() => setSidebarOpen(true)} /> : null}
     </main>
   );

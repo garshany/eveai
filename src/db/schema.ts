@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS telegram_sessions (
   active_character_id INTEGER,
   last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_telegram_sessions_username ON telegram_sessions(username);
 
 -- Browser-only identities use opaque, keyed-hash sessions and a chat-id range
 -- reserved away from Telegram (>0), CLI (0), and Discord (-1, -2, ...).

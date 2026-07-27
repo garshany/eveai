@@ -65,11 +65,16 @@
 
 ## Data Retention
 
-- unlinking a character removes the generated `USER.md` artifact for that user/chat and drops retained encrypted token material when no active links remain
+- unlinking a character removes the generated `USER.md` artifact for that user/chat and drops retained encrypted token material when no active links remain; the browser exposes this as `POST /api/web/characters/:characterId/unlink` (204 on success, 404 when the character is not linked to the session user)
 - stale profile artifacts are also deleted when ownership is reassigned away from a previously linked user
-- browser logout and session expiry purge browser-only history, links, encrypted
-  EVE credentials, and profile artifacts; data owned by another live platform
-  identity is retained
+- a browser user may own several EVE characters; linking a character owned by another user merges the browser guest into that existing owner
+- browser logout and session expiry revoke only the browser session token when the
+  user owns a linked EVE character; the persistent identity, its conversations,
+  characters, market and usage data are retained and reattached on the next SSO
+  sign-in, while route monitors are session-scoped and discarded with the session.
+  Anonymous browser guests (no linked character) are fully purged:
+  history, links, encrypted EVE credentials, and profile artifacts; data owned by
+  another live platform identity is retained
 
 ## Current Gaps
 

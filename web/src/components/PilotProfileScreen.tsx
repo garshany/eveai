@@ -4,13 +4,15 @@ import { LocaleSwitch, useI18n } from '../i18n';
 import { MenuIcon, PilotIcon } from '../icons';
 import type { Character, PilotProfile, ProfileAvailability } from '../types';
 
-type Props = { character: Character | null; onMenu: () => void; onConnect: () => void };
+type Props = { character: Character | null; busy: boolean; onMenu: () => void; onConnect: () => void; onUnlink: (characterId: number) => Promise<void> };
 
-export function PilotProfileScreen({ character, onMenu, onConnect }: Props) {
+export function PilotProfileScreen({ character, busy, onMenu, onConnect, onUnlink }: Props) {
   const { locale, t } = useI18n();
   const [profile, setProfile] = useState<PilotProfile | null>(null);
   const [loading, setLoading] = useState(Boolean(character));
   const [error, setError] = useState<string | null>(null);
+  const [unlinking, setUnlinking] = useState(false);
+  const [unlinkError, setUnlinkError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!character) { setProfile(null); setLoading(false); return; }
@@ -22,6 +24,21 @@ export function PilotProfileScreen({ character, onMenu, onConnect }: Props) {
 
   useEffect(() => { void load(); }, [load]);
 
+  const unlink = async () => {
+    if (!character || unlinking) return;
+    if (!window.confirm(t('revokeAccessConfirm').replace('{name}', character.name))) return;
+    setUnlinking(true);
+    setUnlinkError(null);
+    try {
+      await onUnlink(character.id);
+    } catch (reason) {
+      // Сервер возвращает осмысленный текст ошибки (404/403) — показываем его.
+      setUnlinkError(reason instanceof Error ? reason.message : t('requestFailed'));
+    } finally {
+      setUnlinking(false);
+    }
+  };
+
   return <section className="workspace-screen">
     <header className="workspace-header">
       <button className="icon-button chat-header__menu" type="button" onClick={onMenu} aria-label={t('openMenu')}><MenuIcon /></button>
@@ -32,11 +49,15 @@ export function PilotProfileScreen({ character, onMenu, onConnect }: Props) {
       {!character ? <EmptyState icon={<PilotIcon size={38} />} title={t('noPilot')} action={t('connectPilot')} onAction={onConnect} /> : null}
       {loading ? <div className="panel-loading">{t('loading')}…</div> : null}
       {error ? <div className="workspace-error" role="alert">{error}<button type="button" onClick={() => void load()}>{t('refresh')}</button></div> : null}
+      {unlinkError ? <div className="workspace-error" role="alert">{unlinkError}</div> : null}
       {profile ? <>
         <section className="pilot-hero">
           <img src={profile.character.portraitUrl} alt="" />
           <div className="pilot-identity"><span className={`online-pill ${profile.online ? 'online-pill--on' : ''}`}>{profile.online === null ? statusText(profile.availability.online, t) : profile.online ? t('online') : t('offline')}</span><h2>{profile.character.name}</h2><p>{profile.character.title || profile.corporation?.name || 'EVE Online'}</p><div className="pilot-affiliation"><span>{profile.corporation ? `${profile.corporation.name}${profile.corporation.ticker ? ` [${profile.corporation.ticker}]` : ''}` : t('unavailable')}</span><span>{profile.alliance ? `${profile.alliance.name}${profile.alliance.ticker ? ` [${profile.alliance.ticker}]` : ''}` : '—'}</span></div></div>
-          <button className="button profile-refresh" type="button" onClick={() => void load()}>{t('refresh')}</button>
+          <div className="pilot-hero__actions">
+            <button className="button profile-refresh" type="button" onClick={() => void load()}>{t('refresh')}</button>
+            <button className="button button--danger" type="button" disabled={busy || unlinking} onClick={() => void unlink()}>{t('revokeAccess')}</button>
+          </div>
         </section>
         <div className="profile-grid">
           <ProfileCard title={t('location')} availability={profile.availability.location} t={t}><strong>{profile.location?.solarSystemName ?? '—'}</strong><small>{profile.location?.security === null || profile.location?.security === undefined ? '' : `security ${profile.location.security.toFixed(1)}`}</small></ProfileCard>

@@ -243,6 +243,16 @@ button:disabled {
   background: var(--accent-subtle);
 }
 
+.button--danger {
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
+.button--danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
 .icon-button {
   display: inline-grid;
   width: 36px;
@@ -350,8 +360,7 @@ button:disabled {
   color: var(--text-bright);
 }
 
-.service-state__dot,
-.connection-state span {
+.service-state__dot {
   width: 8px;
   height: 8px;
   flex: none;
@@ -405,6 +414,19 @@ button:disabled {
 
 .turnstile-widget {
   min-height: 65px;
+}
+
+.login__turnstile {
+  width: 100%;
+}
+
+.login__turnstile-caption {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-align: center;
 }
 
 .button--login {
@@ -660,9 +682,9 @@ button:disabled {
   display: flex;
   width: 100%;
   min-height: 44px;
-  padding: 0 var(--space-4);
+  padding: 0 var(--space-2) 0 var(--space-4);
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   overflow: hidden;
   border: var(--border-width) solid transparent;
   border-radius: var(--radius-sm);
@@ -670,8 +692,23 @@ button:disabled {
   color: var(--muted-bright);
   font-size: var(--text-sm);
   text-align: left;
-  cursor: pointer;
   transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.conversation-row__main {
+  display: flex;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-3);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .conversation-row span {
@@ -684,7 +721,68 @@ button:disabled {
   flex: none;
 }
 
-.conversation-row:hover:not(:disabled) {
+.conversation-row__delete {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  opacity: 0;
+}
+
+.conversation-row:hover .conversation-row__delete,
+.conversation-row:focus-within .conversation-row__delete {
+  opacity: 1;
+}
+
+.conversation-row__delete:hover:not(:disabled) {
+  border-color: var(--danger-line);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+@media (hover: none) {
+  .conversation-row__delete { opacity: 1; }
+}
+
+.conversation-row--confirm {
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
+
+.conversation-row__confirm-label {
+  width: 100%;
+  color: var(--muted-bright);
+  font-size: var(--text-xs);
+}
+
+.conversation-row__confirm-delete,
+.conversation-row__confirm-cancel {
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-bright);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.conversation-row__confirm-delete {
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
+.conversation-row__confirm-delete:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+
+.conversation-row__confirm-cancel:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text-bright);
+}
+
+.conversation-row:hover {
   background: var(--surface);
   color: var(--text-bright);
 }
@@ -695,11 +793,28 @@ button:disabled {
   color: var(--link-bright);
 }
 
+.conversation-list__error {
+  margin: var(--space-2) var(--space-4);
+  color: var(--danger);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
 .conversation-list__empty {
   margin: var(--space-2) var(--space-4);
   color: var(--muted);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
+}
+
+.conversation-list__group-title {
+  margin: var(--space-4) var(--space-2) var(--space-1);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
 }
 
 .sidebar__account {
@@ -1019,17 +1134,6 @@ button:disabled {
   gap: var(--space-4);
 }
 
-.connection-state {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .chat-scroll {
   display: flex;
   /* Grid items default to min-width:auto, so a single wide message stretched
@@ -1046,8 +1150,7 @@ button:disabled {
 
 /* The intro divider separates it from the thread below. With no messages yet
    the intro is the last child, and the rule would draw a line under nothing. */
-.chat-intro:last-child,
-.chat-intro--compact:last-child {
+.chat-intro:last-child {
   border-bottom: 0;
 }
 
@@ -1062,11 +1165,6 @@ button:disabled {
   overflow: hidden;
   border-bottom: var(--border-width) solid var(--border-soft);
   text-align: center;
-}
-
-.chat-intro--compact {
-  min-height: 294px;
-  padding-top: var(--space-12);
 }
 
 .chat-intro__orbit {
@@ -1757,7 +1855,7 @@ button:disabled {
   width: min(880px, 100%);
   min-height: 64px;
   margin: 0 auto;
-  grid-template-columns: 56px minmax(0, 1fr) 64px;
+  grid-template-columns: minmax(0, 1fr) 64px;
   align-items: center;
   overflow: hidden;
   border: var(--border-width) solid var(--accent-line);
@@ -1768,13 +1866,6 @@ button:disabled {
 
 .composer:focus-within {
   border-color: var(--accent);
-}
-
-.composer__utility {
-  width: 56px;
-  height: 100%;
-  border-right: var(--border-width) solid var(--border);
-  border-radius: 0;
 }
 
 .composer textarea {
@@ -1945,6 +2036,7 @@ button:disabled {
 
 .pilot-identity > p { margin: 0; color: var(--muted-bright); font-size: var(--text-base); }
 .pilot-affiliation { display: flex; margin-top: var(--space-6); flex-wrap: wrap; gap: var(--space-2); }
+.pilot-hero__actions { display: flex; flex-direction: column; align-self: start; gap: var(--space-3); }
 .pilot-affiliation span {
   padding: var(--space-2) var(--space-3);
   border: var(--border-width) solid var(--border);
@@ -2319,7 +2411,7 @@ button:disabled {
   .profile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pilot-hero { grid-template-columns: 150px minmax(0, 1fr); }
   .pilot-hero img { width: 150px; }
-  .profile-refresh { grid-column: 1 / -1; justify-self: start; }
+  .pilot-hero__actions { flex-direction: row; grid-column: 1 / -1; justify-self: start; }
   .support-hero__grid { grid-template-columns: 1fr; gap: var(--space-5); }
   .support-breakdown { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .support-personal { grid-template-columns: 1fr; }
@@ -2408,20 +2500,16 @@ button:disabled {
 
   .chat-header__menu { display: inline-grid; }
   .chat-header h1 { flex: 1; }
-  .connection-state { font-size: 0; gap: 0; }
 
-  .chat-intro,
-  .chat-intro--compact {
+  .chat-intro {
     min-height: auto;
     padding: var(--space-10) var(--space-5);
   }
 
   /* Fill the scroll region only when the intro is the whole screen: at 375x812
      it was 453px inside a 651px area, leaving ~200px of dead space under a
-     divider. Once messages exist the compact intro must stay compact, or the
-     conversation starts a full screen below the fold. */
-  .chat-intro:last-child,
-  .chat-intro--compact:last-child {
+     divider. */
+  .chat-intro:last-child {
     min-height: 100%;
     flex: 1 0 auto;
   }
@@ -2445,7 +2533,6 @@ button:disabled {
 
   .composer-region { padding: var(--space-3) var(--space-3) calc(var(--space-4) + env(safe-area-inset-bottom, 0px)); }
   .composer { min-height: 60px; grid-template-columns: minmax(0, 1fr) 60px; }
-  .composer__utility { display: none; }
   /* iOS Safari force-zooms the page when a focused field is under 16px, and the
      100dvh/overflow:hidden shell never pans back — tapping the input wrecked
      the layout. 16px is the threshold, not a typographic preference. */
@@ -2474,7 +2561,6 @@ button:disabled {
   .pilot-identity h2 { margin-top: var(--space-2); font-size: 26px; }
   .pilot-affiliation { margin-top: var(--space-3); }
   .profile-grid { grid-template-columns: 1fr; }
-  .chat-header__actions .connection-state { display: none; }
 }
 
 @media (max-width: 520px) {

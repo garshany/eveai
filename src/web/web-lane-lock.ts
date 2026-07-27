@@ -23,3 +23,19 @@ export async function withWebLaneAuthorizationLock<T>(
     }
   }
 }
+
+/**
+ * Take several lane locks at once. Locks are acquired one by one in ascending
+ * chat-id order so concurrent multi-lane critical sections cannot deadlock.
+ */
+export async function withWebLaneAuthorizationLocks<T>(
+  chatIds: number[],
+  action: () => Promise<T>,
+): Promise<T> {
+  const ordered = [...new Set(chatIds)].sort((a, b) => a - b);
+  const acquire = (index: number): Promise<T> => {
+    if (index >= ordered.length) return action();
+    return withWebLaneAuthorizationLock(ordered[index]!, () => acquire(index + 1));
+  };
+  return await acquire(0);
+}

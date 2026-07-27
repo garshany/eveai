@@ -247,6 +247,26 @@ async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
       .get(chatId) as { user_id: number } | undefined;
     if (!lane) return;
     const userId = lane.user_id;
+
+    // A user with a linked EVE character owns a persistent identity: the web
+    // session is only a login token, not the data container. Expiry/logout
+    // drops just the session row; conversations, characters, market and usage
+    // data survive so the next SSO sign-in reattaches them to the returning
+    // user (see planBrowserSsoOwner in auth-routes.ts). Route monitors are
+    // session-scoped, though: without a live session nothing drives them, so
+    // they are discarded together with the session.
+    const ownsCharacter = db.prepare(`
+      SELECT 1 FROM eve_accounts WHERE user_id = ?
+      UNION
+      SELECT 1 FROM eve_character_links WHERE user_id = ?
+      LIMIT 1
+    `).get(userId, userId);
+    if (ownsCharacter) {
+      discardRouteMonitor(chatId, db);
+      db.prepare('DELETE FROM web_sessions WHERE chat_id = ?').run(chatId);
+      return;
+    }
+
     discardRouteMonitor(chatId);
     const linkedCharacters = db.prepare(`
       SELECT character_id FROM eve_character_links WHERE chat_id = ? OR user_id = ?
