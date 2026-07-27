@@ -427,6 +427,21 @@ export const config = {
   tavily: {
     apiKey: optional('TAVILY_API_KEY', ''),
   },
+  // Community-run EVE APIs (EVE Ref, zKillboard, MutaMarket, Janice). One
+  // shared retry/timeout budget: these are best-effort enrichments, so the
+  // budget is deliberately smaller than ESI's.
+  community: {
+    everefBaseUrl: optional('EVEREF_BASE_URL', 'https://api.everef.net'),
+    zkillBaseUrl: optional('ZKILL_BASE_URL', 'https://zkillboard.com'),
+    mutamarketBaseUrl: optional('MUTAMARKET_BASE_URL', 'https://mutamarket.com'),
+    janiceBaseUrl: optional('JANICE_BASE_URL', 'https://janice.e-351.com'),
+    // Empty key disables the Janice second opinion; the local appraisal
+    // still works without it.
+    janiceApiKey: optional('JANICE_API_KEY', ''),
+    timeoutMs: boundedPositiveInt('COMMUNITY_API_TIMEOUT_MS', 12_000, 250, 60_000),
+    retryMaxAttempts: boundedPositiveInt('COMMUNITY_API_RETRY_MAX_ATTEMPTS', 3, 1, 5),
+    backoffMaxMs: boundedPositiveInt('COMMUNITY_API_BACKOFF_MAX_MS', 8000, 100, 60_000),
+  },
   eveKill: {
     timeoutMs: boundedPositiveInt('EVE_KILL_TIMEOUT_MS', 8000, 250, 60_000),
     userAgent: optional('EVE_KILL_USER_AGENT', 'EVEAI/4.0 (+https://github.com/example/eveai; contact=operator@example.com)'),

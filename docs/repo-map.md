@@ -86,6 +86,10 @@ Use it when you need to find the right file or folder before reading implementat
 
 Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integration. See `docs/eve-kill.md`.
 
+### `src/community/`
+
+Defensive clients and tool schemas for community APIs (EVE Ref industry cost, zKillboard stats, MutaMarket abyssal listings) plus the local-first pasted-list appraiser. See `docs/community-apis.md`.
+
 - `client.ts`: fixed-base defensive v1 REST client, cache, search/window chunking, stats, and battles
 - `normalize.ts`: runtime payload validation and source-neutral killmail normalization
 - `feed-poll.ts`: one durable global poller, startup readiness handoff, active-platform watch matching, and delivery dedup
