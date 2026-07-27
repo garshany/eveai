@@ -3,6 +3,7 @@ import { webApi } from '../../api';
 import { useI18n } from '../../i18n';
 import { ChevronIcon } from '../../icons';
 import type { MarketGroupTreeRow, MarketGroupTypeRow } from '../../types';
+import { cachedMarketStatic } from './static-cache';
 
 type GroupNodeState = {
   children: MarketGroupTreeRow[];
@@ -19,8 +20,9 @@ type Props = {
 
 /**
  * Ленивое дерево маркет-групп: дети и типы группы подгружаются при первом
- * раскрытии (groups(parent) + groupTypes(id) параллельно). Сворачивание
- * сбрасывает поддерево — справочник SDE статичен, повторная загрузка дешёвая.
+ * раскрытии (groups(parent) + groupTypes(id) параллельно). Ответы кэшируются
+ * в памяти вкладки (cachedMarketStatic): SDE меняется раз в патч, поэтому
+ * сворачивание/повторное раскрытие не уходит в сеть.
  */
 export function MarketGroupsTree({ onSelect, selectedTypeId }: Props) {
   const { t } = useI18n();
@@ -30,7 +32,7 @@ export function MarketGroupsTree({ onSelect, selectedTypeId }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    webApi.market.groups(null)
+    cachedMarketStatic('groups:root', () => webApi.market.groups(null))
       .then((payload) => { if (!cancelled) setRoots(payload.groups); })
       .catch(() => { if (!cancelled) setRootsError(true); });
     return () => { cancelled = true; };
@@ -50,7 +52,10 @@ export function MarketGroupsTree({ onSelect, selectedTypeId }: Props) {
       ...current,
       [groupId]: { children: [], types: [], loading: true, loaded: false, error: false },
     }));
-    Promise.all([webApi.market.groups(groupId), webApi.market.groupTypes(groupId)])
+    Promise.all([
+      cachedMarketStatic(`groups:${groupId}`, () => webApi.market.groups(groupId)),
+      cachedMarketStatic(`groupTypes:${groupId}`, () => webApi.market.groupTypes(groupId)),
+    ])
       .then(([childrenPayload, typesPayload]) => {
         setExpanded((current) => (current[groupId]
           ? {

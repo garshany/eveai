@@ -247,7 +247,7 @@ export { ESI_FIELD_WHITELIST, filterEsiFields, validateEsiFields } from './esi-f
  * AND matches a request parameter value. These are pure waste —
  * the caller already knows the value from the request args.
  */
-async function executeBatchMarketPrices(
+export async function executeBatchMarketPrices(
   db: Db,
   args: Record<string, unknown>,
   _ctx: UserContext,

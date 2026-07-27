@@ -4,6 +4,7 @@ import { LocaleSwitch, useI18n } from '../i18n';
 import { MarketIcon, MenuIcon } from '../icons';
 import type { MarketOverview, MarketRegion, MarketSnapshotMeta } from '../types';
 import { AlertsPanel } from './market/AlertsPanel';
+import { MarketAiSearch } from './market/MarketAiSearch';
 import { MarketGroupsTree } from './market/MarketGroupsTree';
 import { MarketOverview as MarketOverviewPanel } from './market/MarketOverview';
 import { MarketSearch } from './market/MarketSearch';
@@ -11,9 +12,10 @@ import { OrderBookTable } from './market/OrderBookTable';
 import { PriceChart } from './market/PriceChart';
 import { RegionCompareTable } from './market/RegionCompareTable';
 import { RegionSelect } from './market/RegionSelect';
+import { TypeInfoPanel } from './market/TypeInfoPanel';
 import { WatchlistPanel } from './market/WatchlistPanel';
 
-type MarketTab = 'book' | 'analytics' | 'watchlist';
+type MarketTab = 'book' | 'analytics' | 'watchlist' | 'about';
 
 type SelectedType = { typeId: number; name: string };
 
@@ -83,6 +85,12 @@ export function MarketScreen({ onMenu, csrfToken }: Props) {
     setActiveTab('book');
   }, []);
 
+  // Выбор варианта из мета-цепочки на вкладке «О предмете»: пользователь
+  // сравнивает карточки, выбрасывать его на стакан не нужно.
+  const selectTypeKeepTab = useCallback((typeId: number, name: string) => {
+    setSelectedType({ typeId, name });
+  }, []);
+
   // Сводка перезагружается при смене товара или региона.
   const selectedTypeId = selectedType?.typeId ?? null;
   useEffect(() => {
@@ -119,6 +127,7 @@ export function MarketScreen({ onMenu, csrfToken }: Props) {
   const tabs: Array<{ id: MarketTab; label: string }> = [
     { id: 'book', label: t('marketTabBook') },
     { id: 'analytics', label: t('marketTabAnalytics') },
+    { id: 'about', label: t('marketTabAbout') },
     { id: 'watchlist', label: t('marketTabWatchlist') },
   ];
 
@@ -143,6 +152,7 @@ export function MarketScreen({ onMenu, csrfToken }: Props) {
               <RegionSelect regions={regions} value={regionId} onChange={setRegionId} />
               <MarketSearch onSelect={selectType} />
             </div>
+            <MarketAiSearch regionId={regionId} csrfToken={csrfToken} onSelect={selectType} />
             <div className="market-layout">
               <MarketGroupsTree onSelect={selectType} selectedTypeId={selectedTypeId} />
               <div className="market-content">
@@ -197,6 +207,9 @@ export function MarketScreen({ onMenu, csrfToken }: Props) {
                     <PriceChart typeId={selectedType.typeId} regionId={regionId} />
                     <RegionCompareTable typeId={selectedType.typeId} selectedRegionId={regionId} />
                   </>
+                ) : null}
+                {selectedType && activeTab === 'about' ? (
+                  <TypeInfoPanel typeId={selectedType.typeId} onSelect={selectTypeKeepTab} />
                 ) : null}
                 {activeTab === 'watchlist' ? (
                   <>

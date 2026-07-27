@@ -144,6 +144,21 @@ function decorateProgrammaticTool(tool: NativeFunctionTool): NativeFunctionTool 
     output_schema: getProgrammaticOutputSchema(tool.name),
   };
 }
+const SDE_SQL_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: SDE_SQL_TOOL_NAME,
+  description: 'Query the local EVE Static Data Export (SDE) via SQL. Use this tool for: resolving item/ship/module names↔IDs, ship and module stats (dogma attributes: DPS, range, speed, tank, cap, fitting), ship role bonuses (sde_type_bonus), blueprint materials and manufacturing time, system/region/constellation lookups, security status, stargate destinations, meta group (Tech I/II/Faction/Officer), group/category classification. JOIN sde_type_dogma with sde_dogma_attributes to get human-readable attribute names. See <sde_schema> for tables, columns, JSON fields, and ready-to-use dogma query pattern. Batch multiple lookups: WHERE name IN (...) or WHERE type_id IN (...). Always prefer this over ESI for static data.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      sql: { type: 'string', description: 'Read-only SQL query. Use json_extract() for data_json fields, json_each() for arrays. Max 50 rows returned.' },
+    },
+    required: ['sql'],
+    additionalProperties: false,
+  },
+};
+
 const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   {
     type: 'function',
@@ -240,20 +255,7 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
       additionalProperties: false,
     },
   },
-  {
-    type: 'function',
-    name: SDE_SQL_TOOL_NAME,
-    description: 'Query the local EVE Static Data Export (SDE) via SQL. Use this tool for: resolving item/ship/module names↔IDs, ship and module stats (dogma attributes: DPS, range, speed, tank, cap, fitting), ship role bonuses (sde_type_bonus), blueprint materials and manufacturing time, system/region/constellation lookups, security status, stargate destinations, meta group (Tech I/II/Faction/Officer), group/category classification. JOIN sde_type_dogma with sde_dogma_attributes to get human-readable attribute names. See <sde_schema> for tables, columns, JSON fields, and ready-to-use dogma query pattern. Batch multiple lookups: WHERE name IN (...) or WHERE type_id IN (...). Always prefer this over ESI for static data.',
-    strict: true,
-    parameters: {
-      type: 'object',
-      properties: {
-        sql: { type: 'string', description: 'Read-only SQL query. Use json_extract() for data_json fields, json_each() for arrays. Max 50 rows returned.' },
-      },
-      required: ['sql'],
-      additionalProperties: false,
-    },
-  },
+  SDE_SQL_TOOL,
   {
     type: 'function',
     name: CHARACTER_SQL_TOOL_NAME,
@@ -611,6 +613,14 @@ export function buildReadSubagentTools(
     const tool = canonical.get(name);
     return tool ? [tool] : [];
   });
+}
+
+/**
+ * Лёгкий toolset веб-эндпоинта /api/web/market/ai-search: только статика SDE
+ * и точечные цены. Никаких приватных данных персонажа, мутаций и UI-действий.
+ */
+export function buildMarketAiSearchTools(): NativeFunctionTool[] {
+  return [SDE_SQL_TOOL, BATCH_MARKET_TOOL];
 }
 
 export function getAlwaysOnFunctionToolNames(): string[] {

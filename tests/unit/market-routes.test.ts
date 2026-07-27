@@ -551,3 +551,87 @@ describe('market watchlist routes', () => {
     expect((duplicate.json() as { created: boolean }).created).toBe(false);
   });
 });
+
+describe('market type info route', () => {
+  function seedInfoType(): void {
+    db.prepare("INSERT INTO sde_categories (category_id, name, data_json) VALUES (6, 'Ship', '{}')").run();
+    db.prepare("INSERT INTO sde_groups (group_id, name, category_id, data_json) VALUES (25, 'Frigate', 6, '{}')").run();
+    db.prepare("INSERT INTO sde_market_groups (market_group_id, name, parent_group_id, data_json) VALUES (61, 'Standard Frigates', NULL, '{}')").run();
+    db.prepare("INSERT INTO sde_meta_groups (meta_group_id, name, data_json) VALUES (1, 'Tech I', '{}')").run();
+    insertType(TRITANIUM, 'Rifter', 25, {
+      published: 1,
+      marketGroupID: 61,
+      metaGroupID: 1,
+      description: { en: 'A frigate.', ru: 'Фрегат.' },
+    });
+  }
+
+  it('rejects requests without a browser session', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/web/market/types/34/info' });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('validates the type id and lang', async () => {
+    const cookie = browserSessionCookie();
+    const badId = await app.inject({ method: 'GET', url: '/api/web/market/types/abc/info', headers: { cookie } });
+    expect(badId.statusCode).toBe(400);
+    const badLang = await app.inject({ method: 'GET', url: '/api/web/market/types/34/info?lang=de', headers: { cookie } });
+    expect(badLang.statusCode).toBe(400);
+    expect(badLang.json()).toEqual({ error: "Параметр lang должен быть 'en' или 'ru'." });
+  });
+
+  it('returns 404 for a type missing from the SDE', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/web/market/types/34/info',
+      headers: { cookie: browserSessionCookie() },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: 'Товар не найден в локальной базе.' });
+  });
+
+  it('serves the assembled card with static-SDE cache headers', async () => {
+    seedInfoType();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/web/market/types/34/info?lang=ru',
+      headers: { cookie: browserSessionCookie() },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('private, max-age=300');
+    const payload = response.json() as {
+      ok: boolean;
+      info: { name: string; description: string | null; group_name: string | null; meta_group_name: string | null };
+    };
+    expect(payload.ok).toBe(true);
+    expect(payload.info).toMatchObject({
+      name: 'Rifter',
+      description: 'Фрегат.',
+      group_name: 'Frigate',
+      meta_group_name: 'Tech I',
+    });
+  });
+});
+
+describe('market static-SDE cache headers', () => {
+  it('lets the browser cache the group tree briefly, but not live data', async () => {
+    const cookie = browserSessionCookie();
+
+    const groups = await app.inject({ method: 'GET', url: '/api/web/market/groups', headers: { cookie } });
+    expect(groups.statusCode).toBe(200);
+    expect(groups.headers['cache-control']).toBe('private, max-age=300');
+
+    insertMarketGroup(5, 'Standard Minerals', null);
+    const types = await app.inject({ method: 'GET', url: '/api/web/market/groups/5/types', headers: { cookie } });
+    expect(types.statusCode).toBe(200);
+    expect(types.headers['cache-control']).toBe('private, max-age=300');
+
+    // Живые данные (снапшот, поиск, ордера) остаются no-store.
+    const status = await app.inject({ method: 'GET', url: '/api/web/market/status', headers: { cookie } });
+    expect(status.headers['cache-control']).toBe('no-store');
+
+    seedTypes();
+    const search = await app.inject({ method: 'GET', url: '/api/web/market/search?q=Trit', headers: { cookie } });
+    expect(search.headers['cache-control']).toBe('no-store');
+  });
+});

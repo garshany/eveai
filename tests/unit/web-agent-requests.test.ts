@@ -293,8 +293,8 @@ describe('durable web agent request coordinator', () => {
     const rejected = coordinator.enqueue(input('budget_key_0000001'));
     expect(rejected).toMatchObject({
       ok: false,
-      statusCode: 503,
-      error: 'Сервис достиг безопасного лимита вычислений. Попробуйте позже.',
+      statusCode: 429,
+      error: 'Исчерпан лимит вычислений. Попробуйте позже.',
     });
     expect(db.prepare('SELECT COUNT(*) AS count FROM web_agent_requests').get()).toEqual({ count: 0 });
     await coordinator.close();

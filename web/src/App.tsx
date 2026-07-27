@@ -15,6 +15,7 @@ import { MarketScreen } from './components/MarketScreen';
 import { PilotProfileScreen } from './components/PilotProfileScreen';
 import { SettingsScreen } from './components/SettingsScreen';
 import { SupportScreen } from './components/SupportScreen';
+import { clearMarketStaticCache } from './components/market/static-cache';
 import { useI18n } from './i18n';
 import type { ChatMessage, Conversation, SessionPayload, WebAgentRequest } from './types';
 
@@ -350,6 +351,9 @@ export default function App() {
     setBusy(true);
     try {
       await webApi.logout(session.csrfToken);
+      // Статика SDE следующего пользователя запрашивается заново, а не
+      // дочитывается из кэша вкладки прежнего сеанса.
+      clearMarketStaticCache();
       setBootstrap({
         session: null,
         ssoConfigured: bootstrap?.ssoConfigured ?? false,

@@ -67,6 +67,7 @@ Use it when you need to find the right file or folder before reading implementat
 - `market-history-summary.ts`: bounded 30/90-day public ESI market aggregation without raw daily rows
 - `market-wide-summary.ts`: whole-New-Eden live order-book sweep for one type across all SDE-derived k-space trade regions, with explicit coverage reporting
 - `market-queries.ts`: read-only queries over the local `market_orders` snapshot with SDE joins — type search, overview/spread, paged order book, per-region comparison, market-group tree
+- `market-type-info.ts`: full SDE item card for the web market — localized description, traits, grouped dogma attributes with units, required skills, meta-chain variations
 - `market-history.ts`: local daily price history (`market_price_history`) with lazy ESI backfill and trend/volatility aggregates
 - `market-history-worker.ts`: hourly cron worker draining due `(region, type)` history pairs (watchlist plus seeded top types)
 - `market-alerts-worker.ts`: 5-minute cron worker firing one-shot price alerts against the local snapshot, with event log and outbound push
@@ -152,7 +153,8 @@ Defensive clients and tool schemas for community APIs (EVE Ref industry cost, zK
 - `web-session.ts`: opaque session, CSRF, reserved browser chat lanes, expiry, and creation admission
 - `web-route-guards.ts`: shared `requireSession`/`requireMutationSession` (CSRF) guards for browser APIs
 - `chat-routes.ts`: isolated browser conversations, characters, and shared agent-loop adapter
-- `market-routes.ts`: `/api/web/market/` read APIs (status, search, groups, regions, overview, orders, history) plus watchlist CRUD
+- `market-routes.ts`: `/api/web/market/` read APIs (status, search, groups, regions, overview, orders, history, type info) plus watchlist CRUD; static-SDE routes send `Cache-Control: private, max-age=300`
+- `market-ai-search-routes.ts`: `/api/web/market/ai-search` natural-language item picking via the light agent runner (`src/agent/market-ai-search.ts`, sde_sql + batch_market_prices, bounded budget), usage recorded to `usage_events` as channel `web`
 - `market-alert-routes.ts`: `/api/web/market/alerts*` price-alert CRUD and fired-event feed
 - `transparency.ts`: public aggregate spend/infrastructure snapshot and session-gated personal spend
 - `auth-routes.ts`: one-time EVE SSO login redirect, OAuth callback, and `/callback` alias
@@ -162,7 +164,7 @@ Defensive clients and tool schemas for community APIs (EVE Ref industry cost, zK
 ### `web/`
 
 - `src/`: React chat client, safe Markdown rendering, responsive shell, and API adapter
-- `src/components/MarketScreen.tsx` + `src/components/market/`: market browser — search, group tree, order book, price chart, region comparison, watchlist and price alerts with 60 s auto-refresh
+- `src/components/MarketScreen.tsx` + `src/components/market/`: market browser — search, AI picker, group tree, order book, price chart, region comparison, item info tab, watchlist and price alerts with 60 s auto-refresh; SDE statics cached in-tab (`static-cache.ts`)
 - `public/assets/`: generated production visual assets
 - `vite.config.ts`: `/web-assets/` production base and same-origin development proxy
 

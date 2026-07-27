@@ -345,6 +345,12 @@ export const config = {
     maxCostUnitsGlobalDay: boundedPositiveInt('WEB_MAX_COST_UNITS_GLOBAL_DAY', 40_000, 1, 10_000_000),
     agentDeadlineMs: boundedPositiveInt('WEB_AGENT_DEADLINE_MS', 600_000, 30_000, 3_600_000),
     requestRetentionDays: boundedPositiveInt('WEB_REQUEST_RETENTION_DAYS', 7, 1, 90),
+    // АИ-подбор предметов (/api/web/market/ai-search): отдельный выключатель и
+    // бюджеты, чтобы оператор мог удешевить или погасить фичу, не трогая чат.
+    aiSearchEnabled: optionalBoolean('WEB_AI_SEARCH_ENABLED', true),
+    aiSearchMaxModelCalls: boundedPositiveInt('WEB_AI_SEARCH_MAX_MODEL_CALLS', 2, 1, 5),
+    aiSearchTimeoutMs: boundedPositiveInt('WEB_AI_SEARCH_TIMEOUT_MS', 30_000, 5_000, 120_000),
+    aiSearchMaxResults: boundedPositiveInt('WEB_AI_SEARCH_MAX_RESULTS', 20, 1, 50),
     turnstileSiteKey: optional('TURNSTILE_SITE_KEY', ''),
     turnstileSecretKey: optional('TURNSTILE_SECRET_KEY', ''),
     turnstileHostname: optional('TURNSTILE_EXPECTED_HOSTNAME', ''),

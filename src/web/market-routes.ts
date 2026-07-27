@@ -11,6 +11,7 @@ import {
   searchMarketTypes,
   type MarketOrderSide,
 } from '../eve/market-queries.js';
+import { getMarketTypeInfo } from '../eve/market-type-info.js';
 import { getMarketSnapshotMeta } from '../eve/market-snapshot-loader.js';
 import { loadTradeRegions } from '../eve/market-wide-summary.js';
 import { cleanExpiredWebSessions } from './web-session.js';
@@ -76,9 +77,9 @@ export function registerMarketRoutes(app: FastifyInstance, db: Db): void {
     if (parent === null) {
       return reply.status(400).send({ error: 'Некорректная маркет-группа.' });
     }
+    markStaticSde(reply);
     return { ok: true, groups: getMarketGroupTree(db, parent ?? null) };
   });
-
   app.get<{ Params: GroupParams; Querystring: LimitQuery }>('/api/web/market/groups/:groupId/types', async (request, reply) => {
     const session = requireSession(db, request, reply);
     if (!session) return;
@@ -90,6 +91,7 @@ export function registerMarketRoutes(app: FastifyInstance, db: Db): void {
     if (limit === null) {
       return reply.status(400).send({ error: `Лимит должен быть целым числом от 1 до ${GROUP_TYPES_MAX_LIMIT}.` });
     }
+    markStaticSde(reply);
     return { ok: true, types: getMarketGroupTypes(db, groupId, limit ?? GROUP_TYPES_DEFAULT_LIMIT) };
   });
 
@@ -141,6 +143,25 @@ export function registerMarketRoutes(app: FastifyInstance, db: Db): void {
         offset: offset ?? 0,
       }),
     };
+  });
+
+  app.get<{ Params: TypeParams; Querystring: InfoQuery }>('/api/web/market/types/:typeId/info', async (request, reply) => {
+    const session = requireSession(db, request, reply);
+    if (!session) return;
+    const typeId = parsePositiveInteger(request.params.typeId);
+    if (!typeId) {
+      return reply.status(400).send({ error: 'Некорректный идентификатор товара.' });
+    }
+    const langRaw = request.query.lang;
+    if (langRaw !== undefined && langRaw !== 'en' && langRaw !== 'ru') {
+      return reply.status(400).send({ error: "Параметр lang должен быть 'en' или 'ru'." });
+    }
+    const info = getMarketTypeInfo(db, typeId, langRaw ?? 'en');
+    if (!info) {
+      return reply.status(404).send({ error: 'Товар не найден в локальной базе.' });
+    }
+    markStaticSde(reply);
+    return { ok: true, info };
   });
 
   app.get<{ Params: TypeParams }>('/api/web/market/types/:typeId/regions', async (request, reply) => {
@@ -275,6 +296,14 @@ const HISTORY_DEFAULT_DAYS = 90;
 // 0 means "all stored rows" and maps to days=null in getTypeHistory.
 const HISTORY_ALLOWED_DAYS = new Set([0, 30, 90, 365]);
 const WATCHLIST_MAX_ITEMS = 100;
+// SDE reference data changes once per game patch; the onRequest hook above
+// pins every market route to no-store, static-SDE routes override it here so
+// the browser may reuse the response for a few minutes (per-session: private).
+const STATIC_SDE_CACHE_CONTROL = 'private, max-age=300';
+
+function markStaticSde(reply: FastifyReply): void {
+  void reply.header('Cache-Control', STATIC_SDE_CACHE_CONTROL);
+}
 
 type SearchQuery = { q?: string; limit?: string };
 type GroupsQuery = { parent?: string };
@@ -282,6 +311,7 @@ type LimitQuery = { limit?: string };
 type RegionQuery = { region_id?: string };
 type OrdersQuery = { region_id?: string; side?: string; offset?: string; limit?: string };
 type HistoryQuery = { region_id?: string; days?: string };
+type InfoQuery = { lang?: 'en' | 'ru' };
 type GroupParams = { groupId: string };
 type TypeParams = { typeId: string };
 

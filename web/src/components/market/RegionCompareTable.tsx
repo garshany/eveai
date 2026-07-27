@@ -109,6 +109,10 @@ export function RegionCompareTable({ typeId, selectedRegionId }: Props) {
       {!loading && !error && sorted.length > 0 ? (
         <div className="region-compare__scroll">
           <table className="region-compare__table">
+            <colgroup>
+              <col className="region-compare__col region-compare__col--region" />
+              <col className="region-compare__col" span={5} />
+            </colgroup>
             <thead>
               <tr>
                 {renderHeader('region', t('marketRegion'), false)}
