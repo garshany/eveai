@@ -1124,6 +1124,10 @@ button:disabled {
   min-width: 0;
   height: 100dvh;
   grid-template-rows: 72px minmax(0, 1fr) auto;
+  /* Without an explicit column the implicit `auto` track sizes to the widest
+     item's max-content, so one long message widened header, thread and
+     composer past the viewport while overflow:hidden hid the evidence. */
+  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
   background: var(--bg);
 }
@@ -1172,8 +1176,24 @@ button:disabled {
 }
 
 .chat-scroll {
+  display: flex;
+  /* Grid items default to min-width:auto, so a single wide message stretched
+     this track past the viewport (493px at 375px) and overflow:hidden on the
+     canvas silently clipped the right edge — send button included. */
+  min-width: 0;
   min-height: 0;
+  flex-direction: column;
   overflow-y: auto;
+  /* Keep rubber-banding inside the thread: on touch platforms a chained scroll
+     bounces the whole app and can arm pull-to-refresh mid-conversation. */
+  overscroll-behavior: contain;
+}
+
+/* The intro divider separates it from the thread below. With no messages yet
+   the intro is the last child, and the rule would draw a line under nothing. */
+.chat-intro:last-child,
+.chat-intro--compact:last-child {
+  border-bottom: 0;
 }
 
 .chat-intro {
@@ -2231,7 +2251,17 @@ button:disabled {
   .chat-intro,
   .chat-intro--compact {
     min-height: auto;
-    padding: var(--space-16) var(--space-5) var(--space-10);
+    padding: var(--space-10) var(--space-5);
+  }
+
+  /* Fill the scroll region only when the intro is the whole screen: at 375x812
+     it was 453px inside a 651px area, leaving ~200px of dead space under a
+     divider. Once messages exist the compact intro must stay compact, or the
+     conversation starts a full screen below the fold. */
+  .chat-intro:last-child,
+  .chat-intro--compact:last-child {
+    min-height: 100%;
+    flex: 1 0 auto;
   }
 
   .chat-intro__orbit {
@@ -2254,7 +2284,10 @@ button:disabled {
   .composer-region { padding: var(--space-3) var(--space-3) calc(var(--space-4) + env(safe-area-inset-bottom, 0px)); }
   .composer { min-height: 60px; grid-template-columns: minmax(0, 1fr) 60px; }
   .composer__utility { display: none; }
-  .composer textarea { padding: var(--space-4); }
+  /* iOS Safari force-zooms the page when a focused field is under 16px, and the
+     100dvh/overflow:hidden shell never pans back — tapping the input wrecked
+     the layout. 16px is the threshold, not a typographic preference. */
+  .composer textarea { padding: var(--space-4); font-size: 16px; }
   .send-button { width: 48px; height: 48px; margin-right: var(--space-2); }
   .scroll-latest { right: var(--space-4); bottom: calc(var(--space-16) + var(--space-12)); }
   .scroll-latest span { display: none; }
