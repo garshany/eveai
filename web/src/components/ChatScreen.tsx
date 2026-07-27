@@ -28,14 +28,15 @@ type ChatScreenProps = {
 export function ChatScreen({ title, conversationId, messages, busy, request, error, onMenu, onSend, onCancel, onDismissError, initialDraft, onInitialDraftConsumed }: ChatScreenProps) {
   const { t } = useI18n();
   const [draft, setDraft] = useState('');
+  // Deliberately keyed to initialDraft alone: the consume callback identity
+  // must not re-run the seeding.
   useEffect(() => {
-    if (initialDraft) {
-      setDraft(initialDraft);
-      onInitialDraftConsumed?.();
-      composerRef.current?.focus();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!initialDraft) return;
+    setDraft(initialDraft);
+    onInitialDraftConsumed?.();
+    composerRef.current?.focus();
   }, [initialDraft]);
+
   const [pinnedToBottom, setPinnedToBottom] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
