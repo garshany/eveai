@@ -1,4 +1,4 @@
-import type { ChatMessage, Conversation, PilotProfile, SessionPayload, WebAgentRequest } from './types';
+import type { ChatMessage, Conversation, MyTransparency, PilotProfile, SessionPayload, TransparencyPayload, WebAgentRequest } from './types';
 import type { Locale } from './i18n';
 
 type ErrorPayload = { error?: string };
@@ -121,4 +121,6 @@ export const webApi = {
     csrfToken,
   ),
   getProfile: () => request<{ profile: PilotProfile | null }>('/api/web/profile'),
+  getTransparency: () => request<TransparencyPayload>('/api/web/transparency'),
+  getMyTransparency: () => request<MyTransparency>('/api/web/transparency/me'),
 };

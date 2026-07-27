@@ -129,11 +129,21 @@ Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integratio
 - `update/check.ts`: bounded, cached canonical GitHub stable-release check
 - `update/format.ts`, `update/check-cli.ts`: shared UX text and `npm run update:check`
 
+### `src/usage/`
+
+- `pricing.ts`: per-model USD/1M tariffs from config and integer-microdollar cost math (unknown tariff = null, never 0)
+- `tracker.ts`: non-fatal per-response usage_event writes with chat-lane channel resolution
+- `rollup.ts`: scheduled raw-event -> daily aggregate fold with idempotent day rebuilds and retention pruning
+- `stats.ts`: public/personal report reads (usage_daily + today's raw tail only)
+- `scheduler.ts`: hourly rollup timer
+- `gcp-billing.ts`: BigQuery billing-export reader with TTL background refresh and explicit not-configured states
+
 ### `src/web/`
 
 - `server.ts`: Fastify assembly for security headers, SSO, health, browser APIs, and built app assets
 - `web-session.ts`: opaque session, CSRF, reserved browser chat lanes, expiry, and creation admission
 - `chat-routes.ts`: isolated browser conversations, characters, and shared agent-loop adapter
+- `transparency.ts`: public aggregate spend/infrastructure snapshot and session-gated personal spend
 - `auth-routes.ts`: one-time EVE SSO login redirect, OAuth callback, and `/callback` alias
 - `health.ts`: runtime/dependency health endpoint for both bot platforms
 - `security.ts`: security headers

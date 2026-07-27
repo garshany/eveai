@@ -99,3 +99,7 @@ export function ArrowDownIcon(props: IconProps) {
 export function AlertIcon(props: IconProps) {
   return <IconBase {...props}><path d="M12 3 2.5 20h19L12 3Z" /><path d="M12 10v4.5" /><circle cx="12" cy="17.2" r="0.4" fill="currentColor" /></IconBase>;
 }
+
+export function ChartIcon(props: IconProps) {
+  return <IconBase {...props}><path d="M4 4v16h16" /><path d="M8.5 16v-4.5M12.5 16V7.5M16.5 16v-3" /></IconBase>;
+}

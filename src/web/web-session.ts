@@ -15,7 +15,9 @@ import { withWebLaneAuthorizationLock } from './web-lane-lock.js';
 export const WEB_SESSION_COOKIE = 'eveai_session';
 export const WEB_CSRF_COOKIE = 'eveai_csrf';
 
-const WEB_CHAT_ID_START = -2_000_000_000;
+// Web lanes allocate chat ids downwards from here; Discord lanes use the
+// small negatives above it, 0 is the local CLI, positives are Telegram.
+export const WEB_CHAT_ID_START = -2_000_000_000;
 const SESSION_PURPOSE = 'web_session';
 const CSRF_PURPOSE = 'web_csrf';
 const SESSION_CLEANUP_INTERVAL_MS = 60_000;

@@ -96,6 +96,10 @@ async function main() {
   const runtimeLock = acquireRuntimeLock(config.db.path, 'bot service');
   const db = initDb(config.db.path);
   runMigrations(db);
+  const { startUsageRollupScheduler } = await import('./usage/scheduler.js');
+  const { startGcpBillingRefresher } = await import('./usage/gcp-billing.js');
+  const stopUsageRollupScheduler = startUsageRollupScheduler(db);
+  const stopGcpBilling = startGcpBillingRefresher();
   const { recoverInterruptedPlans } = await import('./agent/planner.js');
   const recoveredPlans = recoverInterruptedPlans(db);
   if (recoveredPlans > 0) {
@@ -163,6 +167,8 @@ async function main() {
     await withDeadline(stopEveKillFeedPoller(), deadline);
     shutdownRouteMonitors();
     stopHeartbeat();
+    stopUsageRollupScheduler();
+    stopGcpBilling();
 
     if (drainMs > 0) {
       const remaining = Math.max(0, deadline - Date.now());

@@ -113,6 +113,7 @@ import { executeHeartbeatConfig } from '../scheduled/heartbeat-config.js';
 import type { HeartbeatConfigArgs } from '../scheduled/heartbeat-config.js';
 import { getLinkedCharacter } from '../eve/sso.js';
 import type { UserContext } from '../auth/user-resolver.js';
+import { recordModelUsageSafe } from '../usage/tracker.js';
 import { executeOsintInferHome } from '../eve-osint/inference.js';
 import { executeAnalyzeLocal } from '../eve-local/analyzer.js';
 import { executeAnalyzeScan } from '../eve-scan/analyzer.js';
@@ -1120,6 +1121,16 @@ async function runNativeAgentLoop(
       totalCacheWriteTokens += response.usage.cacheWrite ?? 0;
       totalReasoningTokens += response.usage.reasoning;
       if (response.usage.input > peakInputTokens) peakInputTokens = response.usage.input;
+      // Durable per-response spend event (usage_events). Deliberately
+      // non-fatal like the total_tokens counter below: accounting failure
+      // must never break the user's turn.
+      recordModelUsageSafe(db, ctx, threadId, {
+        input: response.usage.input,
+        output: response.usage.output,
+        cached: response.usage.cached,
+        cacheWrite: response.usage.cacheWrite ?? 0,
+        reasoning: response.usage.reasoning,
+      });
       console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d cache_write=%d reasoning=%d',
         iteration, response.usage.input, response.usage.output, response.usage.cached,
         response.usage.cacheWrite ?? 0, response.usage.reasoning);

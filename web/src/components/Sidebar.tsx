@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react';
 import { Brand } from './Brand';
-import { ChatIcon, ChevronIcon, CloseIcon, LogOutIcon, PilotIcon, PlusIcon } from '../icons';
+import { ChartIcon, ChatIcon, ChevronIcon, CloseIcon, LogOutIcon, PilotIcon, PlusIcon } from '../icons';
 import { useI18n } from '../i18n';
 import type { Character, Conversation } from '../types';
 
-export type AppView = 'chat' | 'profile';
+export type AppView = 'chat' | 'profile' | 'support';
 type Props = { open: boolean; activeView: AppView; conversations: Conversation[]; activeId: string | null; busy: boolean; character: Character | null; characters: Character[]; onClose: () => void; onView: (view: AppView) => void; onNew: () => void; onSelect: (id: string) => void; onConnect: () => void; onActivate: (characterId: number) => void; onLogout: () => void };
 
 export function Sidebar({ open, activeView, conversations, activeId, busy, character, characters, onClose, onView, onNew, onSelect, onConnect, onActivate, onLogout }: Props) {
   const { t } = useI18n();
   const [characterMenuOpen, setCharacterMenuOpen] = useState(false);
-  const nav = [{ id: 'chat' as const, label: t('chat'), Icon: ChatIcon }, { id: 'profile' as const, label: t('profile'), Icon: PilotIcon }];
+  const nav = [{ id: 'chat' as const, label: t('chat'), Icon: ChatIcon }, { id: 'profile' as const, label: t('profile'), Icon: PilotIcon }, { id: 'support' as const, label: t('support'), Icon: ChartIcon }];
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {

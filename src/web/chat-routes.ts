@@ -37,6 +37,7 @@ import {
 } from './web-session.js';
 import { WebAgentRequestCoordinator } from './agent-requests.js';
 import { isTurnstileEnabled, verifyTurnstileToken } from './turnstile.js';
+import { registerTransparencyRoutes, TRANSPARENCY_PUBLIC_PATH } from './transparency.js';
 
 type ConversationRow = {
   thread_id: string;
@@ -74,9 +75,25 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
   app.addHook('onRequest', async (request, reply) => {
     if (request.url.startsWith('/api/web/')) {
       void cleanExpiredWebSessions(db);
-      reply.header('Cache-Control', 'no-store');
+      // Everything under /api/web/ is no-store except the public transparency
+      // snapshot: it is identical for every caller and carries no session
+      // data, so a short public cache keeps repeated page loads off SQLite.
+      // TRANSPARENCY_PUBLIC_CACHE_SECONDS=0 restores no-store here as well.
+      // The personal /me sub-route stays no-store like the rest.
+      const path = request.url.split('?', 1)[0];
+      if (
+        request.method === 'GET'
+        && path === TRANSPARENCY_PUBLIC_PATH
+        && config.transparency.publicCacheSeconds > 0
+      ) {
+        reply.header('Cache-Control', `public, max-age=${config.transparency.publicCacheSeconds}`);
+      } else {
+        reply.header('Cache-Control', 'no-store');
+      }
     }
   });
+
+  registerTransparencyRoutes(app, db);
 
   app.get('/api/web/session', async (request, reply) => {
     const session = readWebSession(db, request);

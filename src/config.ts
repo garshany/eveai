@@ -16,6 +16,7 @@ import {
   TEXT_VERBOSITIES,
 } from './openai-options.js';
 import { resolveOpenAiProvider } from './openai-provider.js';
+import { parseModelPricingJson } from './usage/pricing.js';
 
 // Strict parsing: malformed integers (e.g. "3000.5", "1e3", unsafe ints) fail
 // fast at startup instead of being silently coerced. See src/config-env.ts.
@@ -63,6 +64,58 @@ function parseResponseStateMode(storeResponses: boolean): ResponseStateMode {
     throw new Error('OPENAI_RESPONSE_STATE_MODE=server requires OPENAI_STORE_RESPONSES=true');
   }
   return value;
+}
+
+/** Strict non-negative decimal ("19", "19.5") — rejects "1e3", "19,5", junk. */
+function optionalUsdAmount(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const trimmed = raw.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new Error(`${name} must be a plain non-negative decimal number, got: "${raw}"`);
+  }
+  return Number(trimmed);
+}
+
+const DEFAULT_BOOSTY_URL = 'https://boosty.to/artemy1337';
+
+/**
+ * BOOSTY_URL: unset → the confirmed production page; explicitly empty → null,
+ * which hides the donate button so the page never shows a dead link. Only
+ * https:// targets are accepted — this is the single place the domain lives.
+ */
+function parseBoostyUrl(): string | null {
+  const raw = process.env.BOOSTY_URL;
+  if (raw === undefined) return DEFAULT_BOOSTY_URL;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  if (!/^https:\/\//i.test(trimmed)) {
+    throw new Error(`BOOSTY_URL must be an https:// URL (or empty to hide donations), got: "${raw}"`);
+  }
+  return trimmed;
+}
+
+/**
+ * USD is the accounting currency and the source of truth. RUB is display-only
+ * and exists solely when the operator pins a rate: USD_RUB_RATE plus
+ * USD_RUB_RATE_DATE so the page can say "at rate X as of date Y". The rate is
+ * never fetched from anywhere.
+ */
+function parseFxConfig(): { usdRubRate: number | null; usdRubRateDate: string | null } {
+  const rawRate = process.env.USD_RUB_RATE;
+  if (rawRate === undefined || rawRate.trim() === '') {
+    return { usdRubRate: null, usdRubRateDate: null };
+  }
+  const trimmed = rawRate.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed) || Number(trimmed) <= 0) {
+    throw new Error(`USD_RUB_RATE must be a positive decimal number, got: "${rawRate}"`);
+  }
+  const rawDate = process.env.USD_RUB_RATE_DATE;
+  const date = rawDate?.trim() ?? '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error('USD_RUB_RATE requires USD_RUB_RATE_DATE in YYYY-MM-DD format (the rate must be labeled with its date)');
+  }
+  return { usdRubRate: Number(trimmed), usdRubRateDate: date };
 }
 
 const storeResponses = parseOptionalStrictBooleanEnv(process.env, 'OPENAI_STORE_RESPONSES', false);
@@ -331,5 +384,42 @@ export const config = {
     // drain and TimeoutStopSec together with it. 0 exits immediately.
     drainMs: Math.max(0, Math.min(3_600_000, optionalInt('SHUTDOWN_DRAIN_MS', 600_000))),
     drainPollMs: boundedPositiveInt('SHUTDOWN_DRAIN_POLL_MS', 250, 10, 5_000),
+  },
+  usage: {
+    // Raw usage_events rows older than this are pruned after the daily rollup;
+    // usage_daily aggregates are kept forever. The floor guarantees "today's
+    // tail" plus one full rollup cycle always survive in the raw table.
+    retentionDays: boundedPositiveInt('USAGE_EVENTS_RETENTION_DAYS', 30, 2, 365),
+    // USD per 1M tokens keyed by model id. Empty = no tariffs known: the
+    // transparency page then shows tokens and an explicit "cost unknown".
+    pricing: parseModelPricingJson(process.env.MODEL_PRICING_JSON),
+  },
+  donations: {
+    boostyUrl: parseBoostyUrl(),
+  },
+  fx: parseFxConfig(),
+  gcpBilling: {
+    // Cloud Billing API only serves the SKU price list; actual spend exists
+    // solely in the BigQuery billing export. All four values are required for
+    // the reader to run; all empty means "export not set up" (an explicit
+    // state, never a silent fallback to made-up numbers).
+    projectId: optional('GCP_BILLING_PROJECT_ID', ''),
+    dataset: optional('GCP_BILLING_DATASET', ''),
+    table: optional('GCP_BILLING_TABLE', ''),
+    serviceAccountKeyPath: optional('GCP_BILLING_SERVICE_ACCOUNT_KEY_PATH', ''),
+    // The export itself lags by hours, so polling faster than this buys
+    // nothing. Refreshes run in the background, never in the HTTP handler.
+    refreshTtlMs: boundedPositiveInt('GCP_BILLING_REFRESH_TTL_MS', 3_600_000, 60_000, 86_400_000),
+    queryTimeoutMs: boundedPositiveInt('GCP_BILLING_QUERY_TIMEOUT_MS', 10_000, 1_000, 60_000),
+  },
+  infra: {
+    // Shown strictly while no live billing export is available, and always
+    // labeled as an estimate. From the owner's measurements: ~$18-20/month
+    // total for the e2-small VM, data disk, boot disk, and daily snapshots.
+    estimateMonthlyUsd: optionalUsdAmount('INFRA_ESTIMATE_USD_MONTHLY', 19),
+  },
+  transparency: {
+    // Public cache lifetime for GET /api/web/transparency. 0 restores no-store.
+    publicCacheSeconds: Math.max(0, Math.min(3600, optionalInt('TRANSPARENCY_PUBLIC_CACHE_SECONDS', 60))),
   },
 } as const;
