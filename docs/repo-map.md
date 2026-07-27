@@ -65,6 +65,7 @@ Use it when you need to find the right file or folder before reading implementat
 - `route-planner.ts`, `killmail.ts`: higher-level EVE features
 - `eve-scout-client.ts`, `eve-scout-executor.ts`, `eve-scout-tools.ts`: fixed public EVE-Scout transport, bounded projections, and deferred tool schemas; see `docs/eve-scout.md`
 - `market-history-summary.ts`: bounded 30/90-day public ESI market aggregation without raw daily rows
+- `market-wide-summary.ts`: whole-New-Eden live order-book sweep for one type across all SDE-derived k-space trade regions, with explicit coverage reporting
 - `system-metric-snapshot.ts`: same-order projection of fixed public ESI system kill/jump/industry/sovereignty metrics
 - `dynamic-item-summary.ts`: requested dynamic-dogma attributes plus optional local-SDE base/delta evidence without creator/effect leakage
 - `user-profile.ts`: generated user snapshot/profile flow

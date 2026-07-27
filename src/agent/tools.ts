@@ -21,6 +21,7 @@ import {
 } from '../eve/dynamic-item-summary.js';
 import { ASSETS_SUMMARY_TOOL, isAssetsSummaryTool } from '../eve/assets-summary.js';
 import { CHARACTER_ORDERS_SUMMARY_TOOL, isCharacterOrdersSummaryTool } from '../eve/orders-summary.js';
+import { MARKET_WIDE_SUMMARY_TOOL, isMarketWideSummaryTool } from '../eve/market-wide-summary.js';
 import {
   DOCTRINE_SUMMARY_TOOL,
   isDoctrineSummaryTool,
@@ -336,12 +337,12 @@ const INTEL_NOTE_TOOL_NAME = 'intel_note';
 const BATCH_MARKET_TOOL: NativeFunctionTool = {
   type: 'function',
   name: BATCH_MARKET_TOOL_NAME,
-  description: 'Get best prices for MULTIPLE items at once. Returns min sell price, max buy price, and available volume per item. Use for fits, shopping lists, cost estimation — any time you need prices for 2+ items. Much more efficient than calling get_markets_region_id_orders per item.',
+  description: 'Get best prices for MULTIPLE items at once in ONE named region. Returns min sell price, max buy price, and available volume per item. Use for fits, shopping lists, cost estimation, or a point comparison of a few explicitly chosen regions. For whole-New-Eden coverage of a single item ("весь рынок", cheapest anywhere, total supply) use market_wide_summary instead. Much more efficient than calling get_markets_region_id_orders per item.',
   strict: true,
   parameters: {
     type: 'object',
     properties: {
-      region_id: { type: 'integer', minimum: 1, description: '10000002=The Forge (Jita), 10000043=Domain (Amarr), 10000032=Sinq Laison (Dodixie)' },
+      region_id: { type: 'integer', minimum: 1, description: 'Any k-space trade region_id from sde_regions. Common hubs: 10000002=The Forge (Jita), 10000043=Domain (Amarr), 10000032=Sinq Laison (Dodixie)' },
       type_ids: {
         type: 'array',
         minItems: 1,
@@ -558,6 +559,7 @@ export async function buildNativeAgentTools(
     ...(includeRouteMonitor ? [ROUTE_MONITOR_TOOL] : []),
     ...(includeHeartbeat ? [HEARTBEAT_CONFIG_TOOL] : []),
     BATCH_MARKET_TOOL,
+    MARKET_WIDE_SUMMARY_TOOL,
     ASSETS_SUMMARY_TOOL,
     CHARACTER_ORDERS_SUMMARY_TOOL,
     KILL_ACTIVITY_SUMMARY_TOOL,
@@ -641,7 +643,7 @@ export function isDeferredLookupToolName(name: string): boolean {
   return isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name)
     || isBatchMarketTool(name) || isMarketHistorySummaryTool(name) || isSystemMetricSnapshotTool(name)
     || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name) || isAssetsSummaryTool(name)
-    || isCharacterOrdersSummaryTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
+    || isCharacterOrdersSummaryTool(name) || isMarketWideSummaryTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
 }
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
@@ -682,6 +684,7 @@ export async function getToolPolicy(
     || isMarketHistorySummaryTool(name) || isSystemMetricSnapshotTool(name)
     || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name)
     || isAssetsSummaryTool(name) || isCharacterOrdersSummaryTool(name)
+    || isMarketWideSummaryTool(name)
     || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
     return 'read';
   }

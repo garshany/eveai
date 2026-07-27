@@ -204,6 +204,20 @@ export const config = {
     userAgent: optional('ESI_USER_AGENT', 'EVEAI/4.0 (+https://github.com/example/eveai; contact=operator@example.com)'),
     maxPages: Math.max(1, optionalInt('ESI_MAX_PAGES', 5)),
     assetsMaxPages: Math.max(1, optionalInt('ESI_ASSETS_MAX_PAGES', 25)),
+    // market_wide_summary sweep budgets, tuned for coverage over politeness.
+    // The binding ceiling is not ours: ESI enforces an error limit and blocks
+    // the caller for minutes once it trips, so unbounded fan-out buys bans,
+    // not speed. 12 keeps a cold 68-region sweep at a few seconds while still
+    // leaving room under the shared ESI-leaf admission controller.
+    marketWideConcurrency: boundedPositiveInt('ESI_MARKET_WIDE_CONCURRENCY', 12, 1, 64),
+    // There are 68 k-space trade regions in the current SDE, so this never
+    // binds in practice; it exists only so a corrupt region list cannot spin
+    // the sweep forever.
+    marketWideMaxRegions: boundedPositiveInt('ESI_MARKET_WIDE_MAX_REGIONS', 500, 1, 2_000),
+    // Per-region page budget for the per-type order book. Jita rarely exceeds a
+    // couple of 1000-row pages for one type; generous so a busy type is swept
+    // whole rather than reported as failed.
+    marketWideMaxPages: boundedPositiveInt('ESI_MARKET_WIDE_MAX_PAGES', 50, 1, 500),
     backoffMaxSeconds: Math.max(1, optionalInt('ESI_BACKOFF_MAX_SECONDS', 10)),
     requestTimeoutMs: optionalInt('ESI_REQUEST_TIMEOUT_MS', 8000),
     retryMaxAttempts: Math.max(1, optionalInt('ESI_RETRY_MAX_ATTEMPTS', 3)),

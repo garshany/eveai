@@ -61,6 +61,7 @@ import {
 import { callEsiOperation } from '../eve/esi-client.js';
 import { executeAssetsSummary, isAssetsSummaryTool } from '../eve/assets-summary.js';
 import { executeCharacterOrdersSummary, isCharacterOrdersSummaryTool } from '../eve/orders-summary.js';
+import { executeMarketWideSummary, isMarketWideSummaryTool } from '../eve/market-wide-summary.js';
 import {
   executeMarketHistorySummary,
   isMarketHistorySummaryTool,
@@ -2584,6 +2585,12 @@ async function executeToolCallUnadmitted(
 
   if (isCharacterOrdersSummaryTool(name)) {
     return await executeCharacterOrdersSummary(db, args, ctx, guard);
+  }
+
+  if (isMarketWideSummaryTool(name)) {
+    // Every regional leaf goes through the shared ESI-leaf admission
+    // controller; the aggregator adds its own smaller fan-out cap on top.
+    return await executeMarketWideSummary(db, args, guard, (operation) => withEsiLeafAdmission(operation, guard));
   }
 
   if (isSystemMetricSnapshotTool(name)) {
