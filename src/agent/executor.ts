@@ -94,6 +94,14 @@ import {
 import { createRequestId } from './planner.js';
 import { getThreadSummary, runPreTurnCompact, needsMidTurnCompaction, runMidTurnCompact } from './compact.js';
 import { executeEveKillTool } from '../eve-kill/executor.js';
+import {
+  INDUSTRY_COST_TOOL_NAME,
+  APPRAISE_ITEMS_TOOL_NAME,
+  PILOT_INTEL_TOOL_NAME,
+  ABYSSAL_MARKET_TOOL_NAME,
+} from '../community/tools.js';
+import { fetchIndustryCost, fetchZkillStats, fetchAbyssalListings, type ZkillScope } from '../community/clients.js';
+import { parseItemLines, appraiseLocally, fetchJaniceAppraisal } from '../community/appraise.js';
 import { validateKillActivitySummaryArgs } from '../eve-kill/activity-summary.js';
 import {
   executeEveScoutTool,
@@ -2557,6 +2565,59 @@ async function executeToolCallUnadmitted(
   if (name === 'update_plan') {
     const steps = normalizePlanSteps(args.steps);
     return updatePlan(db, requestId, goal, steps);
+  }
+
+  if (name === INDUSTRY_COST_TOOL_NAME) {
+    const productId = Number(args.product_id);
+    const runs = Number(args.runs);
+    if (!Number.isSafeInteger(productId) || productId <= 0 || !Number.isSafeInteger(runs) || runs <= 0) {
+      return { ok: false, error: 'product_id and runs must be positive integers' };
+    }
+    const meLevel = args.me_level == null ? null : Number(args.me_level);
+    const teLevel = args.te_level == null ? null : Number(args.te_level);
+    const result = await fetchIndustryCost({ productId, runs, meLevel, teLevel });
+    return result.ok
+      ? { ok: true, source: 'everef.net industry API', cost: result.data }
+      : { ok: false, error: `industry cost service unavailable: ${result.error}` };
+  }
+
+  if (name === APPRAISE_ITEMS_TOOL_NAME) {
+    const itemsText = String(args.items_text ?? '');
+    if (!itemsText.trim()) return { ok: false, error: 'items_text is empty' };
+    const regionRaw = args.region_id == null ? 10000002 : Number(args.region_id);
+    if (!Number.isSafeInteger(regionRaw) || regionRaw <= 0) {
+      return { ok: false, error: 'region_id must be a positive integer or null' };
+    }
+    const parsed = parseItemLines(itemsText);
+    if (parsed.length === 0) return { ok: false, error: 'no parsable item lines found' };
+    const local = appraiseLocally(db, parsed, regionRaw);
+    // Optional second opinion; null when no key is configured, the region is
+    // not The Forge (Janice prices Jita only), or Janice fails.
+    const janice = await fetchJaniceAppraisal(itemsText, regionRaw);
+    return { ok: true, ...local, janice };
+  }
+
+  if (name === PILOT_INTEL_TOOL_NAME) {
+    const scope = String(args.scope ?? '') as ZkillScope;
+    const id = Number(args.id);
+    if (!['character', 'corporation', 'alliance'].includes(scope) || !Number.isSafeInteger(id) || id <= 0) {
+      return { ok: false, error: 'scope must be character|corporation|alliance and id a positive integer' };
+    }
+    const result = await fetchZkillStats(scope, id);
+    return result.ok
+      ? { ok: true, source: 'zkillboard.com aggregate stats', stats: result.data }
+      : { ok: false, error: `pilot intel unavailable: ${result.error}` };
+  }
+
+  if (name === ABYSSAL_MARKET_TOOL_NAME) {
+    const typeId = Number(args.type_id);
+    if (!Number.isSafeInteger(typeId) || typeId <= 0) {
+      return { ok: false, error: 'type_id must be a positive integer' };
+    }
+    const result = await fetchAbyssalListings(typeId);
+    return result.ok
+      ? { ok: true, source: 'mutamarket.com listings', listings: result.data }
+      : { ok: false, error: `abyssal market unavailable: ${result.error}` };
   }
 
   if (isSdeSqlTool(name)) {

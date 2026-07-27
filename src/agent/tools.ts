@@ -22,6 +22,7 @@ import {
 import { ASSETS_SUMMARY_TOOL, isAssetsSummaryTool } from '../eve/assets-summary.js';
 import { CHARACTER_ORDERS_SUMMARY_TOOL, isCharacterOrdersSummaryTool } from '../eve/orders-summary.js';
 import { MARKET_WIDE_SUMMARY_TOOL, isMarketWideSummaryTool } from '../eve/market-wide-summary.js';
+import { COMMUNITY_TOOLS, isCommunityToolName } from '../community/tools.js';
 import {
   DOCTRINE_SUMMARY_TOOL,
   isDoctrineSummaryTool,
@@ -572,6 +573,7 @@ export async function buildNativeAgentTools(
     ANALYZE_SCAN_TOOL,
     INTEL_NOTE_TOOL,
     SET_ACTIVE_FIT_TOOL,
+    ...COMMUNITY_TOOLS,
     buildEveKillNamespace({ includeWatch: includeFeedNotifications }),
     buildEveKillAnalyticsNamespace(),
     buildEveScoutNamespace(),
@@ -646,6 +648,8 @@ export function isDeferredLookupToolName(name: string): boolean {
     || isCharacterOrdersSummaryTool(name) || isMarketWideSummaryTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
 }
 
+export { isCommunityToolName } from '../community/tools.js';
+
 export { isEveKillToolName } from '../eve-kill/tools.js';
 export { isEveKillAnalyticsToolName } from '../eve-kill/analytics-tools.js';
 export { isEveScoutToolName } from '../eve/eve-scout-tools.js';
@@ -685,7 +689,8 @@ export async function getToolPolicy(
     || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name)
     || isAssetsSummaryTool(name) || isCharacterOrdersSummaryTool(name)
     || isMarketWideSummaryTool(name)
-    || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
+    || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)
+    || isCommunityToolName(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();
