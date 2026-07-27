@@ -72,6 +72,7 @@ async function main() {
     markBotFailed,
   } = await import('./web/health.js');
   const { startHeartbeat, stopHeartbeat } = await import('./scheduled/heartbeat-worker.js');
+  const { startMarketSnapshotWorker, stopMarketSnapshotWorker } = await import('./eve/market-snapshot.js');
   const { startEveKillFeedPoller, stopEveKillFeedPoller } = await import('./eve-kill/feed-poll.js');
   const { setRouteMonitorSender } = await import('./eve/route-planner.js');
   const { restoreMonitors, shutdownRouteMonitors } = await import('./eve-board/monitor.js');
@@ -163,6 +164,10 @@ async function main() {
     await withDeadline(stopEveKillFeedPoller(), deadline);
     shutdownRouteMonitors();
     stopHeartbeat();
+    // Drains the in-flight market sweep so a commit seconds away is not thrown
+    // away; the shared deadline caps the wait, and a mid-sweep exit is safe
+    // (the swap is atomic, staging is dropped by the next sweep).
+    await withDeadline(stopMarketSnapshotWorker(), deadline);
 
     if (drainMs > 0) {
       const remaining = Math.max(0, deadline - Date.now());
@@ -276,6 +281,9 @@ async function main() {
     });
   }
   if (hasOutboundPlatform) startHeartbeat(db);
+  // Local whole-market snapshot: useful in every lane (CLI included), so it is
+  // not gated on outbound platforms like push notifications.
+  startMarketSnapshotWorker(db);
 
   const version = getAppVersion();
   const rows: BannerRow[] = [

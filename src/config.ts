@@ -298,6 +298,26 @@ export const config = {
     defaultRegionId: requiredInt('DEFAULT_MARKET_REGION_ID'),
     defaultRegionName: required('DEFAULT_MARKET_REGION_NAME'),
   },
+  marketSnapshot: {
+    // Local whole-market snapshot walked straight from public ESI: the worker
+    // pages /markets/{region_id}/orders/ for every k-space trade region. No
+    // third-party dump dependency.
+    enabled: optionalBoolean('MARKET_SNAPSHOT_ENABLED', true),
+    // One missed major sweep is still tolerable, two is not.
+    staleMinutes: boundedPositiveInt('MARKET_SNAPSHOT_STALE_MINUTES', 75, 15, 1_440),
+    // 2000 measured on the production VM: ~135 MB peak RSS — safe next to the
+    // agent on a 2 GB box (20k rows/batch spiked to 306 MB).
+    batchSize: boundedPositiveInt('MARKET_SNAPSHOT_BATCH_SIZE', 2_000, 100, 100_000),
+    // Two-tier freshness, classified by page count (never by region name):
+    // regions whose book spans at least this many 1000-order pages refetch on
+    // the major interval, the long tail on the minor one. With the current
+    // market, 100 pages catches exactly The Forge (409), Domain (184),
+    // Sinq Laison (124) and Metropolis (120) — half of all orders.
+    majorMinPages: boundedPositiveInt('MARKET_SNAPSHOT_MAJOR_MIN_PAGES', 100, 1, 10_000),
+    // Never below ESI's own 5-minute order-book cache.
+    majorIntervalMinutes: boundedPositiveInt('MARKET_SNAPSHOT_MAJOR_INTERVAL_MINUTES', 30, 5, 1_440),
+    minorIntervalMinutes: boundedPositiveInt('MARKET_SNAPSHOT_MINOR_INTERVAL_MINUTES', 360, 5, 10_080),
+  },
   tavily: {
     apiKey: optional('TAVILY_API_KEY', ''),
   },

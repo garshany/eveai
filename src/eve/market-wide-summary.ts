@@ -49,7 +49,7 @@ export type MarketWideLeafRunner = <T>(operation: () => Promise<T>) => Promise<T
 
 const directLeafRunner: MarketWideLeafRunner = (operation) => operation();
 
-type TradeRegion = {
+export type TradeRegion = {
   region_id: number;
   name: string;
   stargates: number;
@@ -104,11 +104,7 @@ export async function executeMarketWideSummary(
     return failure('Invalid market_wide_summary arguments: type_id must be a positive safe integer.');
   }
 
-  // Trade regions are derived from the local SDE, not hardcoded: any region
-  // containing at least one stargate is k-space (wormhole and abyssal regions
-  // have no stargates at all), and k-space regions expose a public regional
-  // order book on ESI — including player-structure markets in station-less
-  // nullsec. Ordered by size so a truncated sweep keeps the biggest markets.
+  // Ordered by size so a truncated sweep keeps the biggest markets.
   const tradeRegions = loadTradeRegions(db);
   if (tradeRegions.length === 0) {
     return failure('Local SDE has no stargate geography; cannot determine k-space trade regions.');
@@ -303,7 +299,13 @@ function decorateBest(
   };
 }
 
-function loadTradeRegions(db: Db): TradeRegion[] {
+/**
+ * Any region containing at least one stargate is k-space (wormhole and abyssal
+ * regions have none), and k-space regions expose a public regional order book
+ * on ESI. Shared by market_wide_summary and the market snapshot sweep, which
+ * walks every one of these regions.
+ */
+export function loadTradeRegions(db: Db): TradeRegion[] {
   return db.prepare(`
     SELECT r.region_id AS region_id, r.name AS name, COUNT(g.stargate_id) AS stargates
     FROM sde_regions r

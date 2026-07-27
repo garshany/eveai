@@ -691,4 +691,59 @@ CREATE TABLE IF NOT EXISTS character_sync_state (
   error        TEXT,
   PRIMARY KEY (character_id, dataset)
 );
+
+-- Whole-New-Eden market snapshot walked directly from public ESI
+-- (/markets/{region_id}/orders/, one 1000-order page at a time).
+-- The loader never updates this table in place: it fills a staging table and
+-- swaps it in atomically (drop + rename in one transaction), so executed/
+-- cancelled orders vanish instead of lingering as ghosts. The three indexes
+-- are NOT created here: the loader builds them on the staging table under
+-- per-pass names before the swap (index names are schema-global and DROP
+-- TABLE carries a table's indexes away with it), so no rebuild ever happens
+-- inside the swap transaction. See src/eve/market-snapshot-loader.ts.
+CREATE TABLE IF NOT EXISTS market_orders (
+  order_id      INTEGER PRIMARY KEY,
+  type_id       INTEGER NOT NULL,
+  region_id     INTEGER NOT NULL,
+  system_id     INTEGER NOT NULL,
+  station_id    INTEGER,
+  location_id   INTEGER NOT NULL,
+  is_buy_order  INTEGER NOT NULL,
+  price         REAL    NOT NULL,
+  volume_remain INTEGER NOT NULL,
+  volume_total  INTEGER NOT NULL,
+  min_volume    INTEGER NOT NULL,
+  duration      INTEGER NOT NULL,
+  range         TEXT    NOT NULL,
+  issued        TEXT    NOT NULL
+);
+
+-- Loader/snapshot metadata (singleton, same pattern as eve_kill_feed_state).
+-- Survives restarts. Readers report snapshot_time as the data age: it is the
+-- OLDEST region's fetched_at in the serving book (the swapped table mixes
+-- rows of different ages), not the moment of the last tick. snapshot_etag is
+-- unused by the ESI sweep (no upstream file to compare) and stays NULL.
+CREATE TABLE IF NOT EXISTS market_snapshot_state (
+  feed_key        TEXT PRIMARY KEY CHECK (feed_key = 'global'),
+  status          TEXT NOT NULL DEFAULT 'idle',
+  snapshot_url    TEXT,
+  snapshot_etag   TEXT,
+  snapshot_time   TEXT,
+  rows_loaded     INTEGER,
+  loaded_at       TEXT,
+  last_error      TEXT,
+  last_attempt_at TEXT
+);
+
+-- Per-region freshness for the two-tier sweep: a region is refetched only
+-- when fetched_at + its tier interval (major/minor by page count) has passed,
+-- and never before expires_at (ESI's own 5-minute order-book cache).
+CREATE TABLE IF NOT EXISTS market_snapshot_regions (
+  region_id   INTEGER PRIMARY KEY,
+  pages       INTEGER,
+  rows_loaded INTEGER,
+  fetched_at  TEXT,
+  expires_at  TEXT,
+  last_error  TEXT
+);
 `;
