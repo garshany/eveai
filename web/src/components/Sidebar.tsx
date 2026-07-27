@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { ApiRequestError } from '../api';
 import { Brand } from './Brand';
-import { ChartIcon, ChatIcon, ChevronIcon, CloseIcon, LogOutIcon, MarketIcon, PilotIcon, PlusIcon, TrashIcon } from '../icons';
+import { ChartIcon, ChatIcon, ChevronIcon, CloseIcon, GearIcon, LogOutIcon, MarketIcon, PilotIcon, PlusIcon, TrashIcon } from '../icons';
 import { useI18n } from '../i18n';
 import type { Character, Conversation } from '../types';
 
-export type AppView = 'chat' | 'profile' | 'market' | 'support';
+export type AppView = 'chat' | 'profile' | 'market' | 'settings' | 'support';
 type Props = { open: boolean; activeView: AppView; conversations: Conversation[]; activeId: string | null; busy: boolean; character: Character | null; characters: Character[]; onClose: () => void; onView: (view: AppView) => void; onNew: () => void; onSelect: (id: string) => void; onDelete: (id: string) => Promise<void>; onConnect: () => void; onActivate: (characterId: number) => void; onLogout: () => void };
 
 export function Sidebar({ open, activeView, conversations, activeId, busy, character, characters, onClose, onView, onNew, onSelect, onDelete, onConnect, onActivate, onLogout }: Props) {
@@ -17,6 +17,7 @@ export function Sidebar({ open, activeView, conversations, activeId, busy, chara
     { id: 'chat' as const, label: t('chat'), Icon: ChatIcon },
     { id: 'market' as const, label: t('market'), Icon: MarketIcon },
     { id: 'profile' as const, label: t('profile'), Icon: PilotIcon },
+    { id: 'settings' as const, label: t('settings'), Icon: GearIcon },
     { id: 'support' as const, label: t('support'), Icon: ChartIcon },
   ];
   useEffect(() => {

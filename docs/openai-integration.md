@@ -55,6 +55,8 @@ The self-hosting operator selects one process-wide model:
 
 `OPENAI_TEXT_VERBOSITY` accepts `low`, `medium`, or `high`. The developer prompt keeps task-specific chat requirements; this API control supplies the default amount of detail.
 
+End users can override the process-wide defaults for their own conversations on the web «Settings» screen (`GET`/`PUT`/`DELETE /api/web/settings/model`, session + CSRF; `PUT` requires a linked EVE character). The per-user row in `user_model_settings` (keyed by `user_id`, so it spans the web, Telegram, and Discord lanes) carries one of the three verified model ids (`gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`), a reasoning effort from the same whitelist as `OPENAI_REASONING_EFFORT`, and a verbosity. Users without a row run on the operator config; changes apply from the next turn. Usage events record the applied model, so the per-model tariffs on the transparency page price each event by the model that actually served it: top-level turns and delegated read-subagent calls inherit the user's model, while internal compaction summaries always run on — and are billed as — the operator-configured model.
+
 ## Response State Modes
 
 `OPENAI_RESPONSE_STATE_MODE=stateless` remains the default and immediate

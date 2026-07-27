@@ -243,4 +243,35 @@ describe('read-only subagents', () => {
     expect(result.results.filter((item) => item.status !== 'failed').length).toBeLessThan(2);
     expect(responseFactory).toHaveBeenCalledTimes(1);
   });
+
+  it('runs worker model calls on the caller-provided model and reports their usage', async () => {
+    const usage = { input: 11, output: 5, total: 16, cached: 2, cacheWrite: 0, reasoning: 1 };
+    const responseFactory = vi.fn(async (_input: Parameters<typeof createNativeResponse>[0]) => ({
+      ...response([{
+        type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'No grounded data.' }],
+      }], 'No grounded data.'),
+      usage,
+    }));
+    const recordUsage = vi.fn();
+
+    const result = await runReadSubagentBatch(tasks(), {
+      toolsFor: () => [countTool],
+      dispatch: async () => ({ ok: true }),
+      responseFactory,
+      concurrency: 2,
+      model: 'gpt-5.6-luna',
+      recordUsage,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(responseFactory).toHaveBeenCalledTimes(3);
+    for (const call of responseFactory.mock.calls) {
+      expect(call[0]!.model).toBe('gpt-5.6-luna');
+    }
+    // One usage report per worker model call — the turn owner bills them all.
+    expect(recordUsage).toHaveBeenCalledTimes(3);
+    for (const call of recordUsage.mock.calls) {
+      expect(call[0]).toEqual(usage);
+    }
+  });
 });

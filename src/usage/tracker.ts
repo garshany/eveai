@@ -60,9 +60,14 @@ export function recordModelUsageSafe(
   ctx: { userId: number; chatId?: number },
   threadId: string,
   usage: UsageTokenCounts,
+  /**
+   * The model actually sent to the provider this turn (per-user setting or
+   * config default). Costs are priced by this id's tariff, so it must be the
+   * applied model, never assumed from config — hence a required parameter.
+   */
+  model: string,
 ): void {
   try {
-    const model = config.openai.model;
     recordUsageEvent(db, {
       createdAtMs: Date.now(),
       userId: ctx.userId,

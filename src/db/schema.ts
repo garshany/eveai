@@ -9,6 +9,18 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Per-user model preferences (model / reasoning effort / verbosity), one row
+-- per user, shared by every channel lane. A missing row means the operator
+-- config defaults apply. Values are validated against whitelists on every
+-- write (src/user-model-settings.ts).
+CREATE TABLE IF NOT EXISTS user_model_settings (
+  user_id          INTEGER PRIMARY KEY REFERENCES users(user_id),
+  model            TEXT NOT NULL,
+  reasoning_effort TEXT NOT NULL,
+  verbosity        TEXT NOT NULL,
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS telegram_accounts (
   telegram_user_id INTEGER PRIMARY KEY,
   user_id          INTEGER NOT NULL REFERENCES users(user_id),

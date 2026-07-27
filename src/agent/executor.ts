@@ -114,6 +114,7 @@ import type { HeartbeatConfigArgs } from '../scheduled/heartbeat-config.js';
 import { getLinkedCharacter } from '../eve/sso.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { recordModelUsageSafe } from '../usage/tracker.js';
+import { resolveModelSettings } from '../user-model-settings.js';
 import { executeOsintInferHome } from '../eve-osint/inference.js';
 import { executeAnalyzeLocal } from '../eve-local/analyzer.js';
 import { executeAnalyzeScan } from '../eve-scan/analyzer.js';
@@ -843,13 +844,19 @@ async function runNativeAgentLoop(
     config.openai.toolSearchExecution === 'client' ? tools : builtTools,
   );
   const webSearchState = createWebSearchState();
-  const reasoningEffort = resolveReasoningEffort(goal, config.openai.reasoningEffort);
+  // Per-user model preferences, resolved once at turn start: a settings change
+  // mid-turn applies from the next turn, never retroactively. No saved row
+  // means the operator config defaults, so existing users are unaffected.
+  const modelSettings = resolveModelSettings(db, ctx.userId);
+  const reasoningEffort = resolveReasoningEffort(goal, modelSettings.reasoningEffort);
   const safetyIdentifier = buildSafetyIdentifier(ctx.userId, config.auth.secretKey);
   console.log(
-    '[executor] reasoning effort=%s source=%s mode=%s for goal="%s"',
+    '[executor] model=%s reasoning effort=%s source=%s mode=%s verbosity=%s for goal="%s"',
+    modelSettings.model,
     reasoningEffort,
-    config.openai.reasoningEffort === 'auto' ? 'auto' : 'fixed',
+    modelSettings.reasoningEffort === 'auto' ? 'auto' : 'fixed',
     config.openai.reasoningMode,
+    modelSettings.verbosity,
     goal.slice(0, 60),
   );
 
@@ -974,6 +981,8 @@ async function runNativeAgentLoop(
         parallelToolCalls: true,
         truncation: 'auto',
         contextManagement,
+        model: modelSettings.model,
+        textVerbosity: modelSettings.verbosity,
         reasoningEffort: iterationReasoningEffort,
         reasoningMode: config.openai.reasoningMode,
         // Preserve opaque reasoning for exact active-turn recovery in both
@@ -1130,7 +1139,7 @@ async function runNativeAgentLoop(
         cached: response.usage.cached,
         cacheWrite: response.usage.cacheWrite ?? 0,
         reasoning: response.usage.reasoning,
-      });
+      }, modelSettings.model);
       console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d cache_write=%d reasoning=%d',
         iteration, response.usage.input, response.usage.output, response.usage.cached,
         response.usage.cacheWrite ?? 0, response.usage.reasoning);
@@ -1559,12 +1568,14 @@ async function runNativeAgentLoop(
           requestId,
           goal,
           ctx,
+          threadId,
           argsList[index] ?? {},
           webSearchState,
           localBatchState,
           readSubagentState,
           safetyIdentifier,
           reasoningEffort,
+          modelSettings.model,
           responseFactory,
           turnContext,
           sharedReadBudget,
@@ -2349,12 +2360,14 @@ async function executeReadSubagentDelegation(
   requestId: string,
   goal: string,
   ctx: UserContext,
+  threadId: string,
   args: Record<string, unknown>,
   webSearchState: WebSearchState,
   localBatchState: { callsExecuted: number },
   state: { batchesExecuted: number },
   safetyIdentifier: string | undefined,
   reasoningEffort: ReasoningEffort,
+  model: string,
   responseFactory: typeof createNativeResponse,
   turnContext: AgentTurnContext,
   sharedReadBudget: ReadSubagentSharedBudget,
@@ -2411,6 +2424,18 @@ async function executeReadSubagentDelegation(
       },
       concurrency: config.openai.readSubagentConcurrency,
       reasoningEffort,
+      model,
+      // Every subagent model call is spend on the user's lane: bill it like
+      // the top-level sampling calls, priced by the applied model's tariff.
+      recordUsage: (usage) => {
+        recordModelUsageSafe(db, ctx, threadId, {
+          input: usage.input,
+          output: usage.output,
+          cached: usage.cached,
+          cacheWrite: usage.cacheWrite ?? 0,
+          reasoning: usage.reasoning,
+        }, model);
+      },
       safetyIdentifier,
       signal: controller.signal,
       responseFactory,

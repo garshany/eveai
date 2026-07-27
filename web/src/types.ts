@@ -288,3 +288,23 @@ export type MyTransparency = {
   monthly: UsageMonthlyRow[];
   models: UsageModelRow[];
 };
+
+export type ModelSettings = {
+  model: string;
+  reasoningEffort: string;
+  verbosity: string;
+  isDefault: boolean;
+};
+
+export type ModelSettingsPayload = {
+  ok: true;
+  settings: ModelSettings;
+  defaults: { model: string; reasoningEffort: string; verbosity: string };
+  options: {
+    models: Array<{ id: string; tariff: ModelPricing | null }>;
+    reasoningEfforts: string[];
+    verbosities: string[];
+  };
+  /** False for anonymous guests: the picker is visible but locked. */
+  canCustomize: boolean;
+};

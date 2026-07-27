@@ -517,6 +517,18 @@ function applyBrowserSsoOwnerPlan(db: Db, plan: BrowserSsoOwnerPlan): number {
       unknown_cost_events = unknown_cost_events + excluded.unknown_cost_events
   `).run(plan.existingUserId, plan.requestedUserId);
   db.prepare('DELETE FROM usage_daily WHERE user_id = ?').run(plan.requestedUserId);
+  // Migrate the discarded guest identity's model settings to the surviving
+  // owner. ON CONFLICT DO NOTHING keeps the owner's own row when both exist —
+  // the authenticated identity's choice wins. The guest row is then removed:
+  // it would otherwise block the users delete below (FK, no cascade).
+  db.prepare(`
+    INSERT INTO user_model_settings (user_id, model, reasoning_effort, verbosity, updated_at)
+    SELECT ?, model, reasoning_effort, verbosity, updated_at
+    FROM user_model_settings
+    WHERE user_id = ?
+    ON CONFLICT(user_id) DO NOTHING
+  `).run(plan.existingUserId, plan.requestedUserId);
+  db.prepare('DELETE FROM user_model_settings WHERE user_id = ?').run(plan.requestedUserId);
   // In-flight requests pinned to the guest by an idempotency collision still
   // reference the guest row; the identity row goes once they finish.
   const requestsLeft = db.prepare(

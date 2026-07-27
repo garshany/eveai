@@ -306,6 +306,7 @@ async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
         if (hasOtherIdentity) return false;
 
         db.prepare('DELETE FROM heartbeat_config WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM user_model_settings WHERE user_id = ?').run(userId);
         db.prepare('DELETE FROM intel_notes WHERE user_id = ?').run(userId);
         db.prepare('DELETE FROM auth_requests WHERE user_id = ?').run(userId);
         db.prepare('DELETE FROM eve_character_links WHERE user_id = ?').run(userId);
