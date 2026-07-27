@@ -30,7 +30,7 @@ const SDE_ALIAS_STOP_KEYWORDS = new Set([
 const SDE_CTE_HINT_KEYWORDS = new Set(['MATERIALIZED', 'NOT']);
 const SDE_IGNORED_PLAN_REFERENCES = new Set(['constant']);
 
-type SqlToken = {
+export type SqlToken = {
   value: string;
   upper: string;
 };
@@ -39,7 +39,7 @@ type QueryPlanRow = {
   detail: string;
 };
 
-function tokenizeSql(sql: string): SqlToken[] {
+export function tokenizeSql(sql: string): SqlToken[] {
   const tokens: SqlToken[] = [];
   let index = 0;
 
@@ -143,7 +143,7 @@ function normalizeSqlIdentifier(value: string): string {
   return value.toLowerCase();
 }
 
-function normalizeObjectReference(value: string): string | null {
+export function normalizeObjectReference(value: string): string | null {
   const parts = value
     .split('.')
     .map((part) => normalizeSqlIdentifier(part))
@@ -175,7 +175,7 @@ function skipParenthesizedTokens(tokens: SqlToken[], startIndex: number): number
   return index;
 }
 
-function extractCteNames(tokens: SqlToken[]): Set<string> {
+export function extractCteNames(tokens: SqlToken[]): Set<string> {
   const cteNames = new Set<string>();
   let index = 0;
 
@@ -226,7 +226,7 @@ function extractCteNames(tokens: SqlToken[]): Set<string> {
   return cteNames;
 }
 
-function extractTableAliases(tokens: SqlToken[]): Map<string, string> {
+export function extractTableAliases(tokens: SqlToken[]): Map<string, string> {
   const aliases = new Map<string, string>();
 
   for (let index = 0; index < tokens.length; index += 1) {

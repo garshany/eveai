@@ -158,6 +158,17 @@ export const config = {
     requestTimeoutMs: optionalInt('ESI_REQUEST_TIMEOUT_MS', 8000),
     retryMaxAttempts: Math.max(1, optionalInt('ESI_RETRY_MAX_ATTEMPTS', 3)),
   },
+  characterSync: {
+    // Page ceiling for the character-datastore sync path only. Interactive ESI
+    // tool calls keep the tighter esi.maxPages; a full private profile (assets,
+    // wallet journal) legitimately spans far more pages.
+    maxPages: boundedPositiveInt('CHARACTER_SYNC_MAX_PAGES', 50, 1, 200),
+    // Freshness used when ESI omits an Expires header on a synced dataset.
+    fallbackTtlSeconds: boundedPositiveInt('CHARACTER_SYNC_FALLBACK_TTL_SECONDS', 3600, 60, 86_400),
+    // After a failed dataset refresh, wait this long before retrying so a
+    // broken endpoint is not hammered on every character_sql call.
+    errorRetrySeconds: boundedPositiveInt('CHARACTER_SYNC_ERROR_RETRY_SECONDS', 120, 10, 3600),
+  },
   server: {
     port: optionalInt('PORT', 3000),
     host: optional('HOST', '127.0.0.1'),

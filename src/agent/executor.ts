@@ -10,6 +10,8 @@ import {
   planRoute,
   getToolPolicy,
   isSdeSqlTool,
+  isCharacterSqlTool,
+  runCharacterSqlTool,
   isUniverseCountTool,
   isEveKillToolName,
   isEveKillAnalyticsToolName,
@@ -2482,6 +2484,10 @@ async function executeToolCallUnadmitted(
 
   if (isSdeSqlTool(name)) {
     return executeSdeSql(db, String(args.sql ?? ''));
+  }
+
+  if (isCharacterSqlTool(name)) {
+    return await runCharacterSqlTool(db, ctx, String(args.sql ?? ''), guard);
   }
 
   if (isUniverseCountTool(name)) {
