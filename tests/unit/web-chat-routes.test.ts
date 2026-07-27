@@ -477,6 +477,42 @@ describe('web chat routes', () => {
       .toEqual({ n: 40 });
   });
 
+  it('keeps guest-era conversations replyable after a character is linked', async () => {
+    const session = await createBrowserSession();
+    // A guest conversation created BEFORE any character existed.
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/web/conversations',
+      headers: mutationHeaders(session),
+    });
+    const guestThreadId = (created.json() as { threadId: string }).threadId;
+    expect(db.prepare('SELECT character_id FROM agent_threads WHERE thread_id = ?').get(guestThreadId))
+      .toMatchObject({ character_id: null });
+
+    // The user then links and activates a character.
+    db.prepare(`
+      INSERT INTO eve_accounts (
+        character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id
+      ) VALUES (9107, 'Pilot G', 'enc:a', 'enc:r', datetime('now', '+1 hour'), '[]', ?)
+    `).run(session.userId);
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (?, 9107, ?)')
+      .run(session.chatId, session.userId);
+    db.prepare('UPDATE users SET active_character_id = 9107 WHERE user_id = ?').run(session.userId);
+    db.prepare('UPDATE telegram_sessions SET active_character_id = 9107 WHERE chat_id = ?').run(session.chatId);
+
+    // The listed guest thread must accept a follow-up, not 404: the sidebar
+    // shows it, so the send path has to honour it (it simply continues
+    // without character context).
+    const answer = await app.inject({
+      method: 'POST',
+      url: '/api/web/chat',
+      headers: mutationHeaders(session),
+      payload: { message: 'Продолжаем гостевой диалог', threadId: guestThreadId },
+    });
+    expect(answer.statusCode).toBe(202);
+    expect((answer.json() as { request: { threadId: string } }).request.threadId).toBe(guestThreadId);
+  });
+
   it('does not reuse an empty conversation belonging to another active character', async () => {
     const session = await createBrowserSession();
     const insertAccount = db.prepare(`

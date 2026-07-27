@@ -630,6 +630,11 @@ function ownedThread(db: Db, session: WebSession, threadId: string) {
 function ownedThreadForActiveCharacter(db: Db, session: WebSession, threadId: string) {
   const thread = ownedThread(db, session, threadId);
   if (!thread) return null;
+  // Guest-era threads (no character) stay replyable after a character is
+  // linked: the sidebar lists them, so the send path must accept them — they
+  // simply continue without character context. A thread pinned to ANOTHER
+  // character is still rejected.
+  if (thread.character_id === null) return thread;
   const active = getLinkedCharacter(db, sessionContext(session));
   if ((active?.characterId ?? null) !== thread.character_id) return null;
   return thread;

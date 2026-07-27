@@ -127,6 +127,7 @@ export async function runMarketAlertsTick(
 }
 
 async function tickOnce(db: Db, deps: MarketAlertsTickDeps): Promise<void> {
+  await redeliverUndeliveredEvents(db, deps);
   const rows = db.prepare(`
     SELECT a.alert_id, a.user_id, a.type_id, a.region_id, a.side, a.comparator, a.threshold_price,
       CASE a.side
@@ -233,6 +234,51 @@ async function defaultSendNotification(db: Db, userId: number, text: string): Pr
   const chatId = getUserOutboundChatId(db, userId);
   if (!chatId) throw new Error(`no outbound lane for user ${userId}`);
   await deliverOutbound(chatId, text);
+}
+
+/**
+ * Durable delivery: an event whose platform send failed (timeout, dead lane,
+ * process stop right after the claim transaction) keeps delivered_at NULL.
+ * The alert itself is already 'triggered', so the main scan never revisits
+ * it — this pass does. Retries are bounded per tick and capped to a 24h
+ * window; marking delivered_at only after a successful send keeps the
+ * exactly-once-per-event property (the event row IS the dedup key).
+ */
+const REDELIVERY_BATCH = 20;
+const REDELIVERY_WINDOW_HOURS = 24;
+
+async function redeliverUndeliveredEvents(db: Db, deps: MarketAlertsTickDeps): Promise<void> {
+  const pending = db.prepare(`
+    SELECT e.event_id, e.alert_id, e.user_id, e.type_id, e.price AS best_price,
+           e.threshold AS threshold_price, a.region_id, a.side, a.comparator
+    FROM market_alert_events e
+    JOIN market_price_alerts a ON a.alert_id = e.alert_id
+    WHERE e.delivered_at IS NULL
+      AND e.triggered_at > datetime('now', '-' || ? || ' hours')
+    ORDER BY e.triggered_at
+    LIMIT ?
+  `).all(REDELIVERY_WINDOW_HOURS, REDELIVERY_BATCH) as Array<FiringAlertRow & { event_id: number }>;
+  if (pending.length === 0) return;
+
+  const sendNotification = deps.sendNotification
+    ?? ((userId: number, text: string) => defaultSendNotification(db, userId, text));
+  const sendTimeoutMs = deps.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS;
+  const markDelivered = db.prepare(
+    "UPDATE market_alert_events SET delivered_at = datetime('now') WHERE event_id = ? AND delivered_at IS NULL",
+  );
+  let recovered = 0;
+  for (const event of pending) {
+    try {
+      await withSendTimeout(sendNotification(event.user_id, formatAlertMessage(db, event)), sendTimeoutMs);
+      markDelivered.run(event.event_id);
+      recovered += 1;
+    } catch {
+      // Still undeliverable: the next tick retries until the window closes.
+    }
+  }
+  if (recovered > 0) {
+    console.log('[market-alerts] Redelivered %d/%d pending event(s)', recovered, pending.length);
+  }
 }
 
 function formatAlertMessage(db: Db, row: FiringAlertRow): string {

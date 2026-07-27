@@ -338,3 +338,50 @@ describe('worker concurrency and shutdown', () => {
     expect(stopped).toBe(true);
   });
 });
+
+describe('undelivered event redelivery', () => {
+  function seedTriggeredEvent(options: { userId: number; hoursAgo?: number }): number {
+    addUser(options.userId);
+    const alertId = addAlert(options.userId, { status: 'triggered' });
+    const result = db.prepare(`
+      INSERT INTO market_alert_events (alert_id, user_id, type_id, price, threshold, triggered_at)
+      VALUES (?, ?, ?, 120, 100, datetime('now', ?))
+    `).run(alertId, options.userId, TRITANIUM, `-${options.hoursAgo ?? 1} hours`);
+    return Number(result.lastInsertRowid);
+  }
+
+  it('redelivers a previously failed event on the next tick and marks it delivered', async () => {
+    const eventId = seedTriggeredEvent({ userId: 7 });
+    const sender = recordingSender();
+    await runMarketAlertsTick(db, { sendNotification: sender.sendNotification });
+
+    expect(sender.calls).toHaveLength(1);
+    expect(sender.calls[0].userId).toBe(7);
+    const row = eventRows().find((event) => event.event_id === eventId);
+    expect(row?.delivered_at).not.toBeNull();
+  });
+
+  it('keeps the event pending when redelivery fails again', async () => {
+    const eventId = seedTriggeredEvent({ userId: 7 });
+    await runMarketAlertsTick(db, {
+      sendNotification: async () => { throw new Error('lane down'); },
+    });
+    const row = eventRows().find((event) => event.event_id === eventId);
+    expect(row?.delivered_at).toBeNull();
+  });
+
+  it('gives up on events older than the 24h window', async () => {
+    seedTriggeredEvent({ userId: 7, hoursAgo: 30 });
+    const sender = recordingSender();
+    await runMarketAlertsTick(db, { sendNotification: sender.sendNotification });
+    expect(sender.calls).toHaveLength(0);
+  });
+
+  it('never double-delivers an already delivered event', async () => {
+    const eventId = seedTriggeredEvent({ userId: 7 });
+    db.prepare("UPDATE market_alert_events SET delivered_at = datetime('now') WHERE event_id = ?").run(eventId);
+    const sender = recordingSender();
+    await runMarketAlertsTick(db, { sendNotification: sender.sendNotification });
+    expect(sender.calls).toHaveLength(0);
+  });
+});
