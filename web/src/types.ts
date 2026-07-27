@@ -264,7 +264,7 @@ export type TransparencyInfrastructure = {
   asOf: string | null;
   error: string | null;
   actualsNote: string | null;
-  estimate: { monthlyUsd: number; components: string[]; note: string } | null;
+  estimate: { monthlyUsd: number; components: string[] } | null;
 };
 
 export type TransparencyPayload = {

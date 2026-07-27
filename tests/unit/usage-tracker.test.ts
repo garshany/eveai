@@ -3,11 +3,7 @@ import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import { runMigrations } from '../../src/db/migrations.js';
 import { config } from '../../src/config.js';
-import {
-  recordModelUsageSafe,
-  recordUsageEvent,
-  resolveUsageChannel,
-} from '../../src/usage/tracker.js';
+import { recordModelUsageSafe, recordUsageEvent, resolveUsageChannel } from '../../src/usage/tracker.js';
 
 // Same harness as executor-loop.test.ts: mock only the network call so the
 // real loop runs and its accounting write is exercised end to end.
@@ -59,13 +55,15 @@ describe('resolveUsageChannel', () => {
 });
 
 describe('recordModelUsageSafe', () => {
-  it('writes the event with the resolved channel and NULL cost when untariffed', () => {
+  it('writes the event with the resolved channel and the tariff-priced cost', () => {
+    // Model is explicit (required argument) and matches the terra tariff the
+    // literal cost oracle below was computed for.
     recordModelUsageSafe(
       db,
       { userId: 7, chatId: -2_000_000_000 },
       'thread-x',
       { input: 5000, output: 600, cached: 400, cacheWrite: 100, reasoning: 60 },
-      'gpt-5.6-sol',
+      'gpt-5.6-terra',
     );
     const row = db.prepare('SELECT * FROM usage_events').get() as Record<string, unknown>;
     expect(row).toMatchObject({
@@ -77,7 +75,10 @@ describe('recordModelUsageSafe', () => {
       cached_tokens: 400,
       cache_write_tokens: 100,
       reasoning_tokens: 60,
-      cost_micros: null, // no tariffs in the test env: unknown, never 0
+      // Literal oracle against the pinned gpt-5.6-terra default tariff
+      // (0.0525/0.2625/0.0126 USD per 1M): re-running the pricing function
+      // here would make the test unfalsifiable.
+      cost_micros: 404,
     });
     expect(typeof row.created_at_ms).toBe('number');
   });
@@ -134,7 +135,8 @@ describe('executor accounting wiring', () => {
       cached_tokens: 100,
       cache_write_tokens: 0,
       reasoning_tokens: 30,
-      cost_micros: null,
+      // Literal oracle, same tariff as above.
+      cost_micros: 80,
     });
   });
 });
