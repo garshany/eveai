@@ -2128,17 +2128,37 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.support-badge {
-  margin-left: var(--space-2);
-  padding: 0 var(--space-2);
-  border: var(--border-width) solid var(--accent-line);
-  border-radius: var(--radius-sm);
+.support-integrations {
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--space-3);
+}
+
+.support-integrations li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+}
+
+.support-integrations a {
   color: var(--accent-bright);
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-style: normal;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+}
+
+.support-integrations a:hover {
+  text-decoration: underline;
+}
+
+.support-integrations span {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
 }
 
 .support-note {

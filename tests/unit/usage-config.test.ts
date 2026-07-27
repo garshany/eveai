@@ -62,15 +62,30 @@ describe('transparency & usage configuration', () => {
     await expect(import('../../src/config.js')).rejects.toThrow('USD_RUB_RATE');
   });
 
-  it('keeps tariffs empty by default and prices only what MODEL_PRICING_JSON names', async () => {
+  it('ships the owner’s tariffs by default and lets MODEL_PRICING_JSON replace them', async () => {
     delete process.env.MODEL_PRICING_JSON;
-    const empty = (await import('../../src/config.js')).config.usage.pricing;
-    expect(empty).toEqual({});
+    const defaults = (await import('../../src/config.js')).config.usage.pricing;
+    expect(defaults['gpt-5.6-sol']).toEqual({
+      input: 0.06825, output: 0.34125, cached: 0.0126, reasoning: 0.34125,
+    });
+    expect(defaults['gpt-5.6-terra']).toEqual({
+      input: 0.0525, output: 0.2625, cached: 0.0126, reasoning: 0.2625,
+    });
+    expect(defaults['gpt-5.6-luna']).toEqual({
+      input: 0.042, output: 0.21, cached: 0.0126, reasoning: 0.21,
+    });
+
+    vi.resetModules();
+    // An empty value behaves like unset: the defaults still apply.
+    process.env.MODEL_PRICING_JSON = '';
+    expect((await import('../../src/config.js')).config.usage.pricing).toEqual(defaults);
 
     vi.resetModules();
     process.env.MODEL_PRICING_JSON = '{"gpt-5.6-sol": {"input": 2, "output": 8, "cached": 0.5, "reasoning": 8}}';
     const { config } = await import('../../src/config.js');
-    expect(config.usage.pricing['gpt-5.6-sol']).toEqual({ input: 2, output: 8, cached: 0.5, reasoning: 8 });
+    expect(config.usage.pricing).toEqual({
+      'gpt-5.6-sol': { input: 2, output: 8, cached: 0.5, reasoning: 8 },
+    });
 
     // The knob reaches the actual cost path, not just the config object.
     const { computeUsageCostMicros } = await import('../../src/usage/pricing.js');

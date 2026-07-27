@@ -8,32 +8,40 @@ import { readWebSession } from './web-session.js';
 export const TRANSPARENCY_PUBLIC_PATH = '/api/web/transparency';
 
 /**
- * Estimate shown only while no live billing export data exists, and always
- * labeled as an estimate. Component list from the owner's measurements; only
+ * Static infrastructure configuration shown only while no live billing
+ * export data exists. Component list from the owner's measurements; only
  * the monthly total is configurable (INFRA_ESTIMATE_USD_MONTHLY).
  */
+// Language-neutral technical labels: the API has no locale, and proper nouns
+// (VM/disk names, GCP terms) read the same in RU and EN.
 const INFRA_ESTIMATE_COMPONENTS = [
-  'ВМ eveai-1 (e2-small, europe-west3-c)',
-  'Диск данных eveai-data',
-  'Загрузочный диск ВМ',
-  'Суточные снапшоты обоих дисков (расписание eveai-daily, хранение 7 дней)',
+  'VM eveai-1 (e2-small, europe-west3-c)',
+  'Disk eveai-data (pd-balanced)',
+  'Boot disk eveai-1',
+  'Daily snapshots, 7-day retention (eveai-daily)',
 ];
 
-function withTariffs(report: UsageReport) {
+function withTariffs(report: UsageReport, options: { includeUnusedPriced: boolean }) {
   const known = new Set(report.models.map((entry) => entry.model));
-  const pricedOnly = Object.keys(config.usage.pricing)
-    .filter((model) => !known.has(model))
-    .map((model) => ({
-      model,
-      events: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cachedTokens: 0,
-      cacheWriteTokens: 0,
-      reasoningTokens: 0,
-      costMicros: 0,
-      unknownCostEvents: 0,
-    }));
+  // Public page only: advertise the tariff of the model the deployment
+  // actually runs, even before its first event. Models nobody ever ran must
+  // not appear as "$0.00 spent" rows, and the personal endpoint reflects the
+  // caller's own events exclusively.
+  const pricedOnly = options.includeUnusedPriced
+    ? [config.openai.model]
+      .filter((model) => !known.has(model) && config.usage.pricing[model])
+      .map((model) => ({
+        model,
+        events: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+        costMicros: 0,
+        unknownCostEvents: 0,
+      }))
+    : [];
   return [...report.models, ...pricedOnly].map((entry) => ({
     ...entry,
     // null = no tariff configured for this model; cost is unknown, not zero.
@@ -59,7 +67,8 @@ function buildInfrastructurePayload() {
       : {
         monthlyUsd: config.infra.estimateMonthlyUsd,
         components: INFRA_ESTIMATE_COMPONENTS,
-        note: 'Оценка по замерам оператора, а не живой биллинг.',
+        // Deliberately no timestamp: this is a static configuration, and
+        // stamping it with "now" would claim a freshness nobody verified.
       },
   };
 }
@@ -73,7 +82,7 @@ function buildPublicPayload(db: Db) {
     totals: report.totals,
     daily: report.daily,
     monthly: report.monthly,
-    models: withTariffs(report),
+    models: withTariffs(report, { includeUnusedPriced: true }),
     infrastructure: buildInfrastructurePayload(),
     fx: config.fx.usdRubRate !== null
       ? { usdRubRate: config.fx.usdRubRate, date: config.fx.usdRubRateDate }
@@ -100,7 +109,7 @@ export function registerTransparencyRoutes(app: FastifyInstance, db: Db): void {
       totals: report.totals,
       daily: report.daily,
       monthly: report.monthly,
-      models: withTariffs(report),
+      models: withTariffs(report, { includeUnusedPriced: false }),
     };
   });
 }

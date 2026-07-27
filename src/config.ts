@@ -18,6 +18,18 @@ import {
 import { resolveOpenAiProvider } from './openai-provider.js';
 import { parseModelPricingJson } from './usage/pricing.js';
 
+/**
+ * Default token tariffs (USD per 1M tokens: input / output / cached /
+ * reasoning), from the owner's ModelHub numbers of 2026-07-27. Reasoning
+ * tokens bill at the plain output rate. MODEL_PRICING_JSON overrides this
+ * table wholesale.
+ */
+const DEFAULT_MODEL_PRICING_JSON = JSON.stringify({
+  'gpt-5.6-sol': { input: 0.06825, output: 0.34125, cached: 0.0126, reasoning: 0.34125 },
+  'gpt-5.6-terra': { input: 0.0525, output: 0.2625, cached: 0.0126, reasoning: 0.2625 },
+  'gpt-5.6-luna': { input: 0.042, output: 0.21, cached: 0.0126, reasoning: 0.21 },
+});
+
 // Strict parsing: malformed integers (e.g. "3000.5", "1e3", unsafe ints) fail
 // fast at startup instead of being silently coerced. See src/config-env.ts.
 function required(name: string): string {
@@ -451,9 +463,12 @@ export const config = {
     // usage_daily aggregates are kept forever. The floor guarantees "today's
     // tail" plus one full rollup cycle always survive in the raw table.
     retentionDays: boundedPositiveInt('USAGE_EVENTS_RETENTION_DAYS', 30, 2, 365),
-    // USD per 1M tokens keyed by model id. Empty = no tariffs known: the
-    // transparency page then shows tokens and an explicit "cost unknown".
-    pricing: parseModelPricingJson(process.env.MODEL_PRICING_JSON),
+    // USD per 1M tokens keyed by model id. Unset/empty falls back to the
+    // owner's current ModelHub tariffs (DEFAULT_MODEL_PRICING_JSON);
+    // a non-empty MODEL_PRICING_JSON replaces the table wholesale.
+    pricing: parseModelPricingJson(
+      process.env.MODEL_PRICING_JSON?.trim() ? process.env.MODEL_PRICING_JSON : DEFAULT_MODEL_PRICING_JSON,
+    ),
   },
   donations: {
     boostyUrl: parseBoostyUrl(),
@@ -474,9 +489,9 @@ export const config = {
     queryTimeoutMs: boundedPositiveInt('GCP_BILLING_QUERY_TIMEOUT_MS', 10_000, 1_000, 60_000),
   },
   infra: {
-    // Shown strictly while no live billing export is available, and always
-    // labeled as an estimate. From the owner's measurements: ~$18-20/month
-    // total for the e2-small VM, data disk, boot disk, and daily snapshots.
+    // Static monthly figure shown strictly while no live billing export is
+    // available. From the owner's measurements: ~$18-20/month total for the
+    // e2-small VM, data disk, boot disk, and daily snapshots.
     estimateMonthlyUsd: optionalUsdAmount('INFRA_ESTIMATE_USD_MONTHLY', 19),
   },
   transparency: {

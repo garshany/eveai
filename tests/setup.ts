@@ -42,3 +42,12 @@ if (!existsSync(cachePath)) {
   mkdirSync(dirname(cachePath), { recursive: true });
   copyFileSync(resolve('./tests/fixtures/esi-swagger.json'), cachePath);
 }
+
+// Token tariffs are pinned to the built-in defaults (empty = defaults apply)
+// regardless of the operator's shell or .env, so cost assertions in the usage
+// tests stay deterministic.
+process.env.MODEL_PRICING_JSON = '';
+// The model id is pinned for the same reason: cost assertions price events
+// against the default tariff table, and an operator OPENAI_MODEL outside the
+// default table would flip priced costs back to NULL.
+process.env.OPENAI_MODEL = 'gpt-5.6-terra';

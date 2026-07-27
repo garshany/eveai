@@ -118,7 +118,7 @@ describe('GET /api/web/transparency (public)', () => {
     expect(modelB).toMatchObject({ inputTokens: 9000, tariff: null, unknownCostEvents: 1 });
   });
 
-  it('reports the billing export state explicitly and falls back to a labeled estimate', async () => {
+  it('reports the billing export state explicitly and falls back to the static configuration', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/web/transparency' });
     const infra = response.json().infrastructure;
 
@@ -126,7 +126,14 @@ describe('GET /api/web/transparency (public)', () => {
     expect(infra.monthToDateUsd).toBeNull();
     expect(infra.estimate.monthlyUsd).toBe(19);
     expect(infra.estimate.components.length).toBeGreaterThan(0);
-    expect(infra.estimate.note).toContain('Оценка');
+    // The static configuration must carry no fabricated freshness stamp and
+    // no user-facing "estimate" branding in either language (the payload key
+    // `estimate` is an API name, not rendered text).
+    expect(infra.estimate.asOf).toBeUndefined();
+    expect(infra.estimate.note).toBeUndefined();
+    const rendered = [...infra.estimate.components].join(' ');
+    expect(rendered.toLowerCase()).not.toContain('оценк');
+    expect(rendered.toLowerCase()).not.toContain('estimate');
   });
 });
 
@@ -156,7 +163,11 @@ describe('GET /api/web/transparency/me (personal)', () => {
     expect(own.totals.events).toBe(1);
     expect(own.totals.costMicros).toBe(1000);
     // The other user's 9000-token model never appears in this caller's cuts.
-    expect(own.models.map((entry: { model: string }) => entry.model)).toEqual(['model-a']);
+    // (Zero-event rows for tariff-only models are ignored here.)
+    const usedModels = own.models
+      .filter((entry: { events: number }) => entry.events > 0)
+      .map((entry: { model: string }) => entry.model);
+    expect(usedModels).toEqual(['model-a']);
 
     const otherResponse = await app.inject({
       method: 'GET',

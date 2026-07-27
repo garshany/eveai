@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { webApi } from '../api';
+import { formatDate, formatDateTime, formatDay, formatMonth } from '../dates';
 import { LocaleSwitch, useI18n } from '../i18n';
 import { MenuIcon } from '../icons';
 import type { ModelPricing, MyTransparency, TransparencyPayload, UsageDailyRow, UsageSums } from '../types';
@@ -53,7 +54,7 @@ export function SupportScreen({ hasSession, onMenu, onBackToLogin }: Props) {
   const mineCost = mine ? costView(mine.totals, mine.totals.costComplete) : null;
   const infra = payload?.infrastructure ?? null;
   const fx = payload?.fx ?? null;
-  const fxNote = fx ? t('supportFxNote').replace('{rate}', String(fx.usdRubRate)).replace('{date}', fx.date) : null;
+  const fxNote = fx ? t('supportFxNote').replace('{rate}', String(fx.usdRubRate)).replace('{date}', formatDate(fx.date, locale)) : null;
   const dailyMax = payload ? Math.max(0, ...payload.daily.map((row) => rowTokens(row))) : 0;
 
   return <section className="workspace-screen">
@@ -118,12 +119,11 @@ export function SupportScreen({ hasSession, onMenu, onBackToLogin }: Props) {
           </> : null}
           {infra.monthToDateUsd === null && infra.estimate ? <>
             <div className="support-stat support-stat--inline">
-              <span className="support-stat__label">{t('supportInfraEstimateTitle')} <em className="support-badge">{t('supportInfraEstimateBadge')}</em></span>
+              <span className="support-stat__label">{t('supportInfraMonthly')}</span>
               <strong className="support-stat__value support-stat__value--accent">{formatUsd(infra.estimate.monthlyUsd, locale)}</strong>
               {fx && fxNote ? <small className="support-stat__note">{formatRub(infra.estimate.monthlyUsd, fx.usdRubRate, locale)} · {fxNote}</small> : null}
             </div>
             <ul className="support-components">{infra.estimate.components.map((item) => <li key={item}>{item}</li>)}</ul>
-            <p className="support-note">{infra.estimate.note}</p>
             {infra.status === 'error' ? <p className="support-note support-note--warn">{t('supportInfraStale')}</p> : null}
           </> : null}
           {infra.monthToDateUsd === null && !infra.estimate && infra.error ? <p className="support-note support-note--warn">{infra.error}</p> : null}
@@ -173,6 +173,28 @@ export function SupportScreen({ hasSession, onMenu, onBackToLogin }: Props) {
               </tr>)}</tbody>
             </table>
           </div> : <p className="support-note">{t('supportNoData')}</p>}
+        </section>
+
+        <section className="support-panel">
+          <header className="support-panel__head"><h2>{t('supportIntegrationsTitle')}</h2></header>
+          <ul className="support-integrations">
+            <li>
+              <a href="https://esi.evetech.net" target="_blank" rel="noopener noreferrer">EVE ESI</a>
+              <span>{t('supportIntegrationEsi')}</span>
+            </li>
+            <li>
+              <a href="https://developers.eveonline.com/static-data" target="_blank" rel="noopener noreferrer">EVE SDE</a>
+              <span>{t('supportIntegrationSde')}</span>
+            </li>
+            <li>
+              <a href="https://eve-kill.com" target="_blank" rel="noopener noreferrer">EVE-KILL</a>
+              <span>{t('supportIntegrationEveKill')}</span>
+            </li>
+            {payload.donations.boostyUrl ? <li>
+              <a href={payload.donations.boostyUrl} target="_blank" rel="noopener noreferrer">Boosty</a>
+              <span>{t('supportIntegrationBoosty')}</span>
+            </li> : null}
+          </ul>
         </section>
 
         <section className="support-panel">
@@ -297,24 +319,4 @@ function formatRub(usd: number, rate: number, locale: Locale): string {
     maximumFractionDigits: rub < 100 ? 2 : 0,
   }).format(rub);
   return `≈ ${formatted} ₽`;
-}
-
-function formatDateTime(value: string, locale: Locale): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(locale === 'ru' ? 'ru-RU' : 'en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
-}
-
-// Day keys arrive as YYYY-MM-DD; pinning them to UTC avoids an off-by-one
-// shift for users east of Greenwich.
-function formatDay(value: string, locale: Locale): string {
-  const date = new Date(value.includes('T') ? value : `${value}T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(locale === 'ru' ? 'ru-RU' : 'en-US', { day: '2-digit', month: '2-digit', timeZone: 'UTC' }).format(date);
-}
-
-function formatMonth(value: string, locale: Locale): string {
-  const date = new Date(`${value}-01T00:00:00Z`);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(locale === 'ru' ? 'ru-RU' : 'en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(date);
 }
