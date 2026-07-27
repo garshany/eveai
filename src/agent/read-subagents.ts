@@ -16,17 +16,37 @@ import {
 } from './programmatic-contracts.js';
 import { EffectiveToolRegistry, validateEffectiveToolCalls } from './tool-registry.js';
 
-const MAX_TASKS = 3;
-const MAX_CONCURRENT_WORKERS = 3;
-const MAX_WORKER_ITERATIONS = 4;
-export const MAX_TOTAL_SUBAGENT_MODEL_CALLS = 6;
+// Defaults for the delegation budgets. Production wiring overrides them from
+// config (env-driven); the exported names stay as the test-visible defaults.
+const DEFAULT_MAX_TASKS = 8;
+const DEFAULT_MAX_CONCURRENT_WORKERS = 6;
+const DEFAULT_MAX_WORKER_ITERATIONS = 8;
+export const MAX_TOTAL_SUBAGENT_MODEL_CALLS = 24;
 // Complex root turns may need several private prerequisite reads before their
 // bounded public fan-out. Keep one shared ceiling across root and children so
 // delegation cannot reset the budget, while leaving room for that legitimate
 // two-phase workflow.
-export const MAX_TOTAL_TURN_READ_LEAVES = 24;
+export const MAX_TOTAL_TURN_READ_LEAVES = 96;
 const MAX_TASK_SUMMARY_CHARS = 1_200;
-const MAX_AGGREGATE_CHARS = 12_000;
+const DEFAULT_MAX_AGGREGATE_CHARS = 60_000;
+
+export type ReadSubagentLimits = {
+  maxTasks: number;
+  maxConcurrentWorkers: number;
+  maxWorkerIterations: number;
+  maxTotalModelCalls: number;
+  maxToolLeaves: number;
+  maxAggregateChars: number;
+};
+
+const DEFAULT_READ_SUBAGENT_LIMITS: ReadSubagentLimits = {
+  maxTasks: DEFAULT_MAX_TASKS,
+  maxConcurrentWorkers: DEFAULT_MAX_CONCURRENT_WORKERS,
+  maxWorkerIterations: DEFAULT_MAX_WORKER_ITERATIONS,
+  maxTotalModelCalls: MAX_TOTAL_SUBAGENT_MODEL_CALLS,
+  maxToolLeaves: MAX_TOTAL_TURN_READ_LEAVES,
+  maxAggregateChars: DEFAULT_MAX_AGGREGATE_CHARS,
+};
 
 export const READ_SUBAGENT_SYSTEM_PROMPT = `You are an isolated read-only EVE evidence worker.
 Complete exactly the assigned public-data objective using only the provided tools.
@@ -75,6 +95,7 @@ type ReadSubagentOptions = {
   safetyIdentifier?: string;
   signal?: AbortSignal;
   budget?: ReadSubagentSharedBudget;
+  limits?: Partial<ReadSubagentLimits>;
 };
 
 export type ReadSubagentSharedBudget = {
@@ -86,14 +107,15 @@ export async function runReadSubagentBatch(
   raw: unknown,
   options: ReadSubagentOptions,
 ): Promise<ReadSubagentBatchResult> {
-  const tasks = validateReadSubagentBatch(raw);
+  const limits: ReadSubagentLimits = { ...DEFAULT_READ_SUBAGENT_LIMITS, ...options.limits };
+  const tasks = validateReadSubagentBatch(raw, limits.maxTasks);
   if (!tasks) return { ok: false, blocked: true, error: 'Invalid read subagent batch' };
 
   const budget = options.budget ?? { modelCalls: 0, toolLeaves: 0 };
   const results = new Array<ReadSubagentResult>(tasks.length);
   const concurrency = Math.min(
     Math.max(1, options.concurrency ?? 2),
-    MAX_CONCURRENT_WORKERS,
+    limits.maxConcurrentWorkers,
     tasks.length,
   );
   let nextTask = 0;
@@ -109,7 +131,7 @@ export async function runReadSubagentBatch(
         continue;
       }
       try {
-        results[index] = await runReadSubagent(task, options, budget);
+        results[index] = await runReadSubagent(task, options, budget, limits);
       } catch {
         results[index] = failedResult(task.id, 'Subagent execution failed');
       }
@@ -117,17 +139,20 @@ export async function runReadSubagentBatch(
   });
   await Promise.allSettled(workers);
 
-  return boundAggregate({
-    ok: true,
-    classification: 'public-read-subagents',
-    results,
-    usage: { model_calls: budget.modelCalls, tool_leaves: budget.toolLeaves },
-  });
+  return boundAggregate(
+    {
+      ok: true,
+      classification: 'public-read-subagents',
+      results,
+      usage: { model_calls: budget.modelCalls, tool_leaves: budget.toolLeaves },
+    },
+    limits.maxAggregateChars,
+  );
 }
 
-export function validateReadSubagentBatch(raw: unknown): ReadSubagentTask[] | null {
+export function validateReadSubagentBatch(raw: unknown, maxTasks = DEFAULT_MAX_TASKS): ReadSubagentTask[] | null {
   if (!isRecord(raw) || Object.keys(raw).length !== 1 || !Array.isArray(raw.tasks)) return null;
-  if (raw.tasks.length < 2 || raw.tasks.length > MAX_TASKS) return null;
+  if (raw.tasks.length < 2 || raw.tasks.length > maxTasks) return null;
   const tasks: ReadSubagentTask[] = [];
   const ids = new Set<string>();
   for (const value of raw.tasks) {
@@ -158,6 +183,7 @@ async function runReadSubagent(
   task: ReadSubagentTask,
   options: ReadSubagentOptions,
   budget: ReadSubagentSharedBudget,
+  limits: ReadSubagentLimits,
 ): Promise<ReadSubagentResult> {
   const tools = options.toolsFor(task.tool_hints);
   if (tools.length !== task.tool_hints.length) return failedResult(task.id, 'Subagent tool allowlist unavailable');
@@ -168,9 +194,9 @@ async function runReadSubagent(
   let pendingItems: NativeInputItem[] = [toNativeMessage(task.objective)];
   const responseFactory = options.responseFactory ?? createNativeResponse;
 
-  for (let iteration = 0; iteration < MAX_WORKER_ITERATIONS; iteration += 1) {
+  for (let iteration = 0; iteration < limits.maxWorkerIterations; iteration += 1) {
     if (options.signal?.aborted) return partialOrFailed(task.id, evidence, gaps, iteration, 'Subagent aborted');
-    if (budget.modelCalls >= MAX_TOTAL_SUBAGENT_MODEL_CALLS) {
+    if (budget.modelCalls >= limits.maxTotalModelCalls) {
       return partialOrFailed(task.id, evidence, gaps, iteration, 'Shared subagent model-call budget exceeded');
     }
     budget.modelCalls += 1;
@@ -216,7 +242,7 @@ async function runReadSubagent(
       return partialOrFailed(task.id, evidence, gaps, iteration + 1, 'Subagent returned an invalid call envelope');
     }
     for (const call of calls) seenCallIds.add(call.callId);
-    if (budget.toolLeaves + calls.length > MAX_TOTAL_TURN_READ_LEAVES) {
+    if (budget.toolLeaves + calls.length > limits.maxToolLeaves) {
       return partialOrFailed(task.id, evidence, gaps, iteration + 1, 'Shared delegated tool budget exceeded');
     }
 
@@ -256,7 +282,7 @@ async function runReadSubagent(
     ];
   }
 
-  return partialOrFailed(task.id, evidence, gaps, MAX_WORKER_ITERATIONS, 'Subagent iteration budget exceeded');
+  return partialOrFailed(task.id, evidence, gaps, limits.maxWorkerIterations, 'Subagent iteration budget exceeded');
 }
 
 function partialOrFailed(
@@ -285,8 +311,11 @@ function sanitizeSummary(value: string): string | null {
   return normalized ? normalized.slice(0, MAX_TASK_SUMMARY_CHARS) : null;
 }
 
-function boundAggregate(result: Extract<ReadSubagentBatchResult, { ok: true }>): ReadSubagentBatchResult {
-  while (JSON.stringify(result).length > MAX_AGGREGATE_CHARS) {
+function boundAggregate(
+  result: Extract<ReadSubagentBatchResult, { ok: true }>,
+  maxAggregateChars: number,
+): ReadSubagentBatchResult {
+  while (JSON.stringify(result).length > maxAggregateChars) {
     const candidates = result.results.flatMap((task, taskIndex) =>
       task.evidence.map((entry, evidenceIndex) => ({
         taskIndex,

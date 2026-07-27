@@ -856,3 +856,118 @@ describe('streaming text deltas', () => {
     expect(seen).toEqual([{ type: 'text_delta', text: 'tok' }]);
   });
 });
+
+describe('stream useful-delta tracking', () => {
+  function setEnv() {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+  }
+
+  it('flags an incomplete stream that already delivered text deltas', async () => {
+    setEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.output_text.delta',
+      'data: {"delta":"partial answer"}',
+      '',
+    ].join('\n'), { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const result = await createNativeResponse({
+      instructions: 't',
+      items: [toNativeMessage('hi')],
+      tools: [],
+    });
+
+    expect(result.error?.message).toContain('Incomplete response stream');
+    expect(result.sawUsefulDeltas).toBe(true);
+  });
+
+  it('flags an incomplete stream that already delivered a tool-call event', async () => {
+    setEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.output_item.added',
+      'data: {"item":{"type":"function_call","call_id":"call_1","name":"sde_sql"}}',
+      '',
+    ].join('\n'), { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const result = await createNativeResponse({
+      instructions: 't',
+      items: [toNativeMessage('hi')],
+      tools: [],
+    });
+
+    expect(result.error?.message).toContain('Incomplete response stream');
+    expect(result.sawUsefulDeltas).toBe(true);
+  });
+
+  it('reports no useful deltas when the stream dies before any content', async () => {
+    setEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const result = await createNativeResponse({
+      instructions: 't',
+      items: [toNativeMessage('hi')],
+      tools: [],
+    });
+
+    expect(result.error?.message).toContain('Incomplete response stream');
+    expect(result.sawUsefulDeltas).toBe(false);
+  });
+
+  it('attaches the useful-delta flag to an error thrown mid-stream', async () => {
+    setEnv();
+    // Pull-based: erroring the stream in start() would discard the still
+    // unread queued chunk (ReadableStream semantics) before the parser sees it.
+    let step = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        step += 1;
+        if (step === 1) {
+          controller.enqueue(new TextEncoder().encode(
+            'event: response.output_text.delta\ndata: {"delta":"x"}\n\n',
+          ));
+        } else {
+          controller.error(new Error('terminated'));
+        }
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(stream, { status: 200 })));
+
+    const { createNativeResponse, sawUsefulDeltasBeforeError, toNativeMessage } =
+      await import('../../src/agent/native-responses.js');
+    let thrown: unknown;
+    try {
+      await createNativeResponse({ instructions: 't', items: [toNativeMessage('hi')], tools: [] });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain('terminated');
+    expect(sawUsefulDeltasBeforeError(thrown)).toBe(true);
+  });
+
+  it('marks pre-stream HTTP failures as safe to retry (no useful deltas)', async () => {
+    setEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Bad Gateway', { status: 502 })));
+
+    const { createNativeResponse, sawUsefulDeltasBeforeError, toNativeMessage } =
+      await import('../../src/agent/native-responses.js');
+    let thrown: unknown;
+    try {
+      await createNativeResponse({ instructions: 't', items: [toNativeMessage('hi')], tools: [] });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect((thrown as Error).message).toContain('HTTP 502');
+    expect(sawUsefulDeltasBeforeError(thrown)).toBe(false);
+  });
+});

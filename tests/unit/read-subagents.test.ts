@@ -209,4 +209,38 @@ describe('read-only subagents', () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(budget.toolLeaves).toBe(MAX_TOTAL_TURN_READ_LEAVES);
   });
+
+  it('honours an explicit maxTasks limit override', async () => {
+    const result = await runReadSubagentBatch(tasks(), {
+      toolsFor: () => [countTool],
+      dispatch: async () => ({ ok: true }),
+      limits: { maxTasks: 2 },
+    });
+
+    expect(result).toEqual({ ok: false, blocked: true, error: 'Invalid read subagent batch' });
+  });
+
+  it('honours an explicit model-call budget override', async () => {
+    const responseFactory = vi.fn(async () => response([{
+      type: 'function_call', call_id: 'call_1', name: 'count_universe_objects',
+      arguments: '{"target_kind":"region","target_name":"The Forge","object_kind":"systems"}',
+    }]));
+
+    const result = await runReadSubagentBatch({
+      tasks: (tasks().tasks as unknown[]).slice(0, 2),
+    }, {
+      toolsFor: () => [countTool],
+      dispatch: async () => ({
+        ok: true, target_kind: 'region', target_name: 'The Forge', object_kind: 'systems', count: 1,
+      }),
+      responseFactory,
+      concurrency: 1,
+      limits: { maxTotalModelCalls: 1 },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.results.filter((item) => item.status !== 'failed').length).toBeLessThan(2);
+    expect(responseFactory).toHaveBeenCalledTimes(1);
+  });
 });

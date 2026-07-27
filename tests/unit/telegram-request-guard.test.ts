@@ -7,6 +7,13 @@ vi.mock('../../src/config.js', () => ({
       maxRequestsPerWindow: 2,
       maxActiveRequestsGlobal: 3,
     },
+    // The request-guard import chain loads tool facades that read these
+    // budgets at module scope.
+    openai: {
+      maxProgrammaticToolOutputChars: 120_000,
+      maxToolOutputChars: 120_000,
+      smartAggregateThreshold: 200,
+    },
   },
 }));
 

@@ -149,6 +149,13 @@ export type NativeResponseResult = {
   rawEvents: NativeSseEvent[];
   usage: NativeUsage | null;
   status: string | null;
+  /**
+   * True when the stream delivered useful model output (a text token or a
+   * tool-call event) before finishing or failing. The provider's retry
+   * contract: only retry the identical request while this is false — after
+   * useful deltas a replay can duplicate a tool action it already ran.
+   */
+  sawUsefulDeltas: boolean;
 };
 
 type NativeSseEvent = {
@@ -282,6 +289,7 @@ export async function createNativeResponse(input: {
     ?? (incompleteStream ? 'Incomplete response stream (no terminal event received)' : null);
 
   const toolSearchPaths = extractToolSearchPaths(output);
+  const sawUsefulDeltas = events.some(isUsefulStreamEvent);
 
   // Debug: log usage, reasoning summary, and tool_search activity
   const usage = (completedPayload as Record<string, unknown> | null)?.usage as Record<string, unknown> | undefined;
@@ -331,6 +339,7 @@ export async function createNativeResponse(input: {
       reasoning: Number((usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens ?? 0),
     } : null,
     status: completedPayload?.status ?? inferTerminalStatus(events),
+    sawUsefulDeltas,
   };
 }
 
@@ -444,8 +453,10 @@ async function requestHttpSseEvents(
   if (signal?.aborted) controller.abort();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const events: NativeSseEvent[] = [];
+  let sawUsefulDeltas = false;
   const parser = createSseParser((event) => {
     events.push(event);
+    if (!sawUsefulDeltas && isUsefulStreamEvent(event)) sawUsefulDeltas = true;
     maybeEmitTextDelta(event, streamToActivity);
   });
   try {
@@ -481,10 +492,10 @@ async function requestHttpSseEvents(
     parser.end();
   } catch (error) {
     if ((error as Error).name === 'AbortError' || (error as Error).name === 'TimeoutError') {
-      if (signal?.aborted) throw new Error('Responses request aborted');
-      throw new Error(`Responses API timed out after ${Math.round(timeoutMs / 1000)}s`);
+      if (signal?.aborted) throw markStreamProgress(new Error('Responses request aborted'), sawUsefulDeltas);
+      throw markStreamProgress(new Error(`Responses API timed out after ${Math.round(timeoutMs / 1000)}s`), sawUsefulDeltas);
     }
-    throw error;
+    throw markStreamProgress(error, sawUsefulDeltas);
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', abortFromCaller);
@@ -615,6 +626,38 @@ function maybeEmitTextDelta(event: NativeSseEvent, streamToActivity: boolean): v
   if (!streamToActivity || !isOutputTextDelta(event.event)) return;
   const token = textDeltaToken(event.data);
   if (token) reportActivity({ type: 'text_delta', text: token });
+}
+
+/**
+ * A "useful" stream event in the provider's retry sense: output text or a
+ * tool call already on the wire. Once one of these arrived, re-sending the
+ * identical request can duplicate a tool action the provider already ran.
+ */
+function isUsefulStreamEvent(event: NativeSseEvent): boolean {
+  if (isOutputTextDelta(event.event)) return textDeltaToken(event.data) !== null;
+  if (isOutputTextDone(event.event)) return true;
+  if (event.event === 'response.function_call_arguments.delta'
+    || event.event === 'response.function_call_arguments.done') return true;
+  if (event.event === 'response.output_item.added' || event.event === 'response.output_item.done') {
+    const item = (event.data as { item?: { type?: unknown } } | null)?.item;
+    return item?.type === 'function_call';
+  }
+  return false;
+}
+
+/**
+ * Attach the useful-delta flag to an error thrown mid-stream so the caller can
+ * apply the provider's retry rule: an identical retry is only safe while no
+ * useful deltas were delivered yet.
+ */
+function markStreamProgress<T>(error: T, sawUsefulDeltas: boolean): T {
+  (error as { sawUsefulDeltas?: boolean }).sawUsefulDeltas = sawUsefulDeltas;
+  return error;
+}
+
+/** Read the useful-delta flag from an error thrown by the stream transport. */
+export function sawUsefulDeltasBeforeError(error: unknown): boolean {
+  return (error as { sawUsefulDeltas?: boolean } | null)?.sawUsefulDeltas === true;
 }
 
 function isOutputTextDone(event: string): boolean {
@@ -877,6 +920,7 @@ export const __test__ = {
   collectDoneItems,
   findCompletedPayload,
   maybeEmitTextDelta,
+  isUsefulStreamEvent,
 };
 
 function collectToolSearchNames(value: unknown, paths: Set<string>): void {

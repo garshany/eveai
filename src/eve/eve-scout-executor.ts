@@ -4,6 +4,7 @@
  */
 
 import type { Db } from '../db/sqlite.js';
+import { config } from '../config.js';
 import type { EveScoutToolName } from './eve-scout-tools.js';
 import {
   getRoute,
@@ -19,7 +20,6 @@ import {
 
 const EVE_SCOUT_SOURCE = 'EVE-Scout' as const;
 const EVE_SCOUT_CACHE_MAX_AGE_SECONDS = 86400;
-const MAX_TOOL_OUTPUT_CHARS = 12_000;
 export const SCOUT_SYSTEMS_CANDIDATE_CAP = 250;
 const SCOUT_SYSTEM_CLASSES = [
   'hs', 'ls', 'ns', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c12', 'c13',
@@ -407,6 +407,6 @@ function scoutClientError(status: number | null): Record<string, unknown> {
 }
 
 function boundedScoutOutput(output: Record<string, unknown>): Record<string, unknown> {
-  if (JSON.stringify(output).length <= MAX_TOOL_OUTPUT_CHARS) return output;
+  if (JSON.stringify(output).length <= config.openai.maxToolOutputChars) return output;
   return scoutError('EVE-Scout result exceeds the local output size limit');
 }

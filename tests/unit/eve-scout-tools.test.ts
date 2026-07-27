@@ -199,9 +199,10 @@ describe('EVE-Scout bounded tool facades', () => {
     client.searchSystems.mockResolvedValue({
       ok: true,
       freshness: FRESHNESS,
+      // ~175k chars: over the raised AGENT_MAX_TOOL_OUTPUT_CHARS default (120k).
       data: Array.from({ length: 25 }, (_, index) => ({
         system_id: 31_000_000 + index,
-        system_name: `J${String(index).padStart(6, '0')}${'x'.repeat(500)}`,
+        system_name: `J${String(index).padStart(6, '0')}${'x'.repeat(6_000)}`,
         system_class: 'c1',
         security_status: -1,
         region_id: 11_000_001,

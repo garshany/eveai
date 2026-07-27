@@ -119,10 +119,23 @@ export const config = {
     supportsEncryptedReasoningReplay: openAiProvider.supportsEncryptedReasoningReplay,
     responseStateMode,
     reasoningEffort: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_EFFORT', REASONING_EFFORTS, 'auto'),
+    // Optional per-iteration effort tiers for the native tool loop. 'auto'
+    // inherits the base OPENAI_REASONING_EFFORT resolution, so unset tiers
+    // change nothing. INTERMEDIATE covers iterations that continue an
+    // in-flight tool chain; FINAL covers the first request and continuations
+    // after plain assistant text.
+    reasoningEffortIntermediate: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_EFFORT_INTERMEDIATE', REASONING_EFFORTS, 'auto'),
+    reasoningEffortFinal: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_EFFORT_FINAL', REASONING_EFFORTS, 'auto'),
     reasoningMode: parseOptionalEnumEnv(process.env, 'OPENAI_REASONING_MODE', REASONING_MODES, 'standard'),
     textVerbosity: parseOptionalEnumEnv(process.env, 'OPENAI_TEXT_VERBOSITY', TEXT_VERBOSITIES, 'low'),
-    responsesTimeoutMs: optionalPositiveInt('OPENAI_RESPONSES_TIMEOUT_MS', 90_000),
-    turnDeadlineMs: boundedPositiveInt('AGENT_TURN_DEADLINE_MS', 180_000, 30_000, 600_000),
+    // Provider latency up to ~53s per call was observed in production; 90s was
+    // cutting heavy turns mid-flight. The ceiling stays finite so a hung
+    // request still fails instead of pinning an admission slot forever.
+    responsesTimeoutMs: boundedPositiveInt('OPENAI_RESPONSES_TIMEOUT_MS', 300_000, 10_000, 900_000),
+    // Generous but finite: a zero deadline would leave a wedged turn holding an
+    // admission slot and its request record in `running` until systemd kills
+    // the process on restart.
+    turnDeadlineMs: boundedPositiveInt('AGENT_TURN_DEADLINE_MS', 600_000, 30_000, 3_600_000),
     maxConcurrentResponses: boundedPositiveInt('OPENAI_MAX_CONCURRENT_RESPONSES', 8, 1, 64),
     maxQueuedResponses: Math.max(0, Math.min(256, optionalInt('OPENAI_MAX_QUEUED_RESPONSES', 32))),
     responseQueueTimeoutMs: boundedPositiveInt('OPENAI_RESPONSE_QUEUE_TIMEOUT_MS', 15_000, 100, 120_000),
@@ -130,11 +143,47 @@ export const config = {
     maxConcurrentEsiLeaves: boundedPositiveInt('AGENT_MAX_CONCURRENT_ESI_LEAVES', 12, 1, 64),
     maxQueuedTools: Math.max(0, Math.min(512, optionalInt('AGENT_MAX_QUEUED_TOOLS', 64))),
     toolQueueTimeoutMs: boundedPositiveInt('AGENT_TOOL_QUEUE_TIMEOUT_MS', 15_000, 100, 120_000),
+    // Per-tool output budget in chars. Sized against the model context window
+    // (default 200k tokens): 120k chars ≈ 30k tokens, so several full outputs
+    // fit in one turn without tripping provider context errors. Finite on
+    // purpose — an unbounded output would blow the context window and turn a
+    // "full answer" into a provider error.
+    maxToolOutputChars: boundedPositiveInt('AGENT_MAX_TOOL_OUTPUT_CHARS', 120_000, 1_000, 1_000_000),
+    // Arrays below this row count are passed to the model verbatim (within the
+    // char budget); aggregation kicks in only for genuinely large result sets.
+    smartAggregateThreshold: boundedPositiveInt('AGENT_SMART_AGGREGATE_THRESHOLD', 200, 10, 100_000),
+    // Stateless context window loaded from SQLite per turn.
+    maxContextMessages: boundedPositiveInt('AGENT_MAX_CONTEXT_MESSAGES', 40, 4, 200),
+    maxContextChars: boundedPositiveInt('AGENT_MAX_CONTEXT_CHARS', 100_000, 4_000, 800_000),
+    maxProgrammaticToolOutputChars: boundedPositiveInt('AGENT_MAX_PROGRAMMATIC_TOOL_OUTPUT_CHARS', 120_000, 1_000, 1_000_000),
+    // Tool-loop iteration ceiling. Loop protection, not a quality cap: high
+    // enough that legitimate multi-step turns finish, finite so a stuck loop
+    // still terminates (the turn deadline also bounds it in time).
+    maxToolIterations: boundedPositiveInt('AGENT_MAX_TOOL_ITERATIONS', 80, 4, 400),
+    // Anti-loop guard: identical tool called this many times in a row triggers
+    // a nudge, not a hard stop. Kept low on purpose.
+    maxConsecutiveSameTool: boundedPositiveInt('AGENT_MAX_CONSECUTIVE_SAME_TOOL', 5, 2, 20),
+    maxClientSearchCallsPerResponse: boundedPositiveInt('AGENT_MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE', 8, 1, 32),
+    maxEveKillCallsPerTurn: boundedPositiveInt('AGENT_MAX_EVE_KILL_CALLS_PER_TURN', 60, 1, 500),
+    maxEveKillAnalyticsCallsPerTurn: boundedPositiveInt('AGENT_MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN', 12, 1, 100),
+    // Retries of the identical request after transient provider/transport
+    // failures. Bounded by the turn deadline in wall-clock terms.
+    maxTransientRetries: boundedPositiveInt('AGENT_MAX_TRANSIENT_RETRIES', 5, 1, 10),
+    // Shared read-leaf ceiling across the root turn and delegated subagents.
+    maxTotalTurnReadLeaves: boundedPositiveInt('AGENT_MAX_TOTAL_TURN_READ_LEAVES', 96, 4, 512),
     responseLanguage: optional('OPENAI_RESPONSE_LANGUAGE', 'Russian'),
     storeResponses,
     programmaticToolCalling: optionalBoolean('OPENAI_PROGRAMMATIC_TOOL_CALLING', false),
     readSubagentsEnabled,
-    readSubagentConcurrency: boundedPositiveInt('CHEAPVIBE_READ_SUBAGENT_CONCURRENCY', 2, 1, 3),
+    readSubagentConcurrency: boundedPositiveInt('CHEAPVIBE_READ_SUBAGENT_CONCURRENCY', 4, 1, 12),
+    readSubagentMaxTasks: boundedPositiveInt('CHEAPVIBE_READ_SUBAGENT_MAX_TASKS', 8, 2, 16),
+    readSubagentMaxWorkers: boundedPositiveInt('CHEAPVIBE_READ_SUBAGENT_MAX_WORKERS', 6, 1, 12),
+    readSubagentMaxWorkerIterations: boundedPositiveInt('CHEAPVIBE_READ_SUBAGENT_MAX_WORKER_ITERATIONS', 8, 1, 16),
+    readSubagentMaxModelCalls: boundedPositiveInt('CHEAPVIBE_READ_SUBAGENT_MAX_MODEL_CALLS', 24, 2, 128),
+    readSubagentAggregateChars: boundedPositiveInt('CHEAPVIBE_READ_SUBAGENT_AGGREGATE_CHARS', 60_000, 2_000, 500_000),
+    // Wall-clock cap for one delegated read batch. Always additionally bounded
+    // by the remaining turn deadline at dispatch time.
+    readSubagentBatchDeadlineMs: boundedPositiveInt('CHEAPVIBE_READ_SUBAGENT_BATCH_DEADLINE_MS', 600_000, 30_000, 3_600_000),
     maxOutputTokens: optionalInt('OPENAI_MAX_OUTPUT_TOKENS', 0),
     compactThreshold: optionalInt('OPENAI_COMPACT_THRESHOLD', 0),
     // Floor the window so a misconfigured 0/negative value can't make
@@ -192,7 +241,7 @@ export const config = {
     maxCostUnitsPerUserWindow: boundedPositiveInt('WEB_MAX_COST_UNITS_PER_USER_WINDOW', 24, 1, 100_000),
     maxCostUnitsGlobalWindow: boundedPositiveInt('WEB_MAX_COST_UNITS_GLOBAL_WINDOW', 480, 1, 1_000_000),
     maxCostUnitsGlobalDay: boundedPositiveInt('WEB_MAX_COST_UNITS_GLOBAL_DAY', 40_000, 1, 10_000_000),
-    agentDeadlineMs: boundedPositiveInt('WEB_AGENT_DEADLINE_MS', 180_000, 30_000, 600_000),
+    agentDeadlineMs: boundedPositiveInt('WEB_AGENT_DEADLINE_MS', 600_000, 30_000, 3_600_000),
     requestRetentionDays: boundedPositiveInt('WEB_REQUEST_RETENTION_DAYS', 7, 1, 90),
     turnstileSiteKey: optional('TURNSTILE_SITE_KEY', ''),
     turnstileSecretKey: optional('TURNSTILE_SECRET_KEY', ''),
@@ -233,11 +282,17 @@ export const config = {
     maxInputChars: optionalInt('COMPACT_MAX_INPUT_CHARS', 20000),
   },
   shutdown: {
-    // How long a stop waits for in-flight turns to finish before exiting. The
-    // ceiling matches the agent turn deadline so a drain can outlast the
-    // longest legitimate turn instead of cutting an answer in half. 0 exits
-    // immediately (previous behaviour).
-    drainMs: Math.max(0, Math.min(600_000, optionalInt('SHUTDOWN_DRAIN_MS', 30_000))),
+    // How long a stop waits for in-flight turns to finish before exiting.
+    // These three numbers must move together (see deploy/systemd/eveai.service):
+    //   AGENT_TURN_DEADLINE_MS (default 600s, ceiling 3600s) bounds one turn;
+    //   SHUTDOWN_DRAIN_MS bounds the stop wait for in-flight turns;
+    //   the supervisor's stop timeout (TimeoutStopSec) must stay above drain.
+    // The default matches the default turn deadline so a default-length turn
+    // always fits in the drain; it costs nothing on an idle stop because the
+    // drain exits as soon as nothing is in flight. The ceiling matches the
+    // turn-deadline ceiling so a raised deadline can still be drained — raise
+    // drain and TimeoutStopSec together with it. 0 exits immediately.
+    drainMs: Math.max(0, Math.min(3_600_000, optionalInt('SHUTDOWN_DRAIN_MS', 600_000))),
     drainPollMs: boundedPositiveInt('SHUTDOWN_DRAIN_POLL_MS', 250, 10, 5_000),
   },
 } as const;

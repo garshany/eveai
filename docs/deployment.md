@@ -40,7 +40,7 @@ OPENAI_MODEL=gpt-5.6-sol
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
-OPENAI_RESPONSES_TIMEOUT_MS=90000
+OPENAI_RESPONSES_TIMEOUT_MS=300000
 OPENAI_RESPONSE_STATE_MODE=stateless
 EVE_CLIENT_ID=...
 EVE_CLIENT_SECRET=...
@@ -112,7 +112,7 @@ OPENAI_MODEL=gpt-5.6-sol
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
-OPENAI_RESPONSES_TIMEOUT_MS=90000
+OPENAI_RESPONSES_TIMEOUT_MS=300000
 OPENAI_RESPONSE_STATE_MODE=stateless
 OPENAI_STORE_RESPONSES=false
 ```
@@ -301,6 +301,22 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now eveai
 sudo systemctl status eveai --no-pager
 ```
+
+### Shutdown budget: three numbers that must move together
+
+`AGENT_TURN_DEADLINE_MS` (default 600000, ceiling 3600000) bounds one agent
+turn; `SHUTDOWN_DRAIN_MS` (default 600000, ceiling 3600000) bounds how long a
+stop waits for in-flight turns to answer; the unit's `TimeoutStopSec` (660)
+must stay strictly above the configured drain, or systemd SIGKILLs the process
+mid-drain and running answers are lost. Keep `turn deadline <= drain <
+TimeoutStopSec`.
+
+The default drain equals the *default* turn deadline — not the one-hour
+ceiling — on purpose: the drain only waits while turns are actually in flight
+(an idle process stops immediately), and an hour-long drain would make every
+deploy during a long turn wait an hour. If you raise `AGENT_TURN_DEADLINE_MS`
+past 600000 and want turns of that length to survive restarts, raise
+`SHUTDOWN_DRAIN_MS` and `TimeoutStopSec` to match, keeping the ordering above.
 
 ## Health And Smoke Checks
 

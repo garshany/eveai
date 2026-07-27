@@ -43,6 +43,7 @@ import {
   extractFunctionCalls,
   extractClientToolSearchCalls,
   extractFinalAssistantText,
+  sawUsefulDeltasBeforeError,
   toNativeMessage,
   toNativeAssistantMessage,
   type NativeInputItem,
@@ -138,7 +139,6 @@ import {
   type ToolRegistryLoadDelta,
 } from './tool-registry.js';
 import {
-  MAX_TOTAL_TURN_READ_LEAVES,
   runReadSubagentBatch,
   type ReadSubagentSharedBudget,
 } from './read-subagents.js';
@@ -156,17 +156,19 @@ import {
   recordTurnToolOutcome,
 } from './turn-goals.js';
 
-const MAX_TOOL_ITERATIONS = 40;
-const MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE = 4;
+// Operator-tunable budgets are read from config (env-driven, see src/config.ts).
+// Hard-coded constants below are deliberate loop/coherence guards, not quality caps.
+const MAX_TOOL_ITERATIONS = config.openai.maxToolIterations;
+const MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE = config.openai.maxClientSearchCallsPerResponse;
 const MAX_CONSECUTIVE_EMPTY_CLIENT_SEARCHES = 3;
 const MAX_PROGRAMMATIC_CALLS_PER_BATCH = 4;
 const MAX_PROGRAMMATIC_CALLS_PER_TURN = 4;
 const MAX_PROGRAMMATIC_CALLS_PER_PROGRAM = 4;
-const MAX_EVE_KILL_CALLS_PER_TURN = 30;
-const MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN = 4;
-const MAX_CONSECUTIVE_SAME_TOOL = 3;
-const MAX_CONTEXT_MESSAGES = 10;
-const MAX_CONTEXT_CHARS = 15000;
+const MAX_EVE_KILL_CALLS_PER_TURN = config.openai.maxEveKillCallsPerTurn;
+const MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN = config.openai.maxEveKillAnalyticsCallsPerTurn;
+const MAX_CONSECUTIVE_SAME_TOOL = config.openai.maxConsecutiveSameTool;
+const MAX_CONTEXT_MESSAGES = config.openai.maxContextMessages;
+const MAX_CONTEXT_CHARS = config.openai.maxContextChars;
 const PREVIOUS_RESPONSE_MAX_AGE_MS = 55 * 60 * 1000;
 const RECOVERY_TOOL_SUMMARY_LIMIT = 6;
 const RECOVERY_TOOL_RESULT_CHARS = 280;
@@ -747,21 +749,29 @@ async function runPreTurnCompactSafe(
 }
 
 /**
- * Transient model/transport failures that are safe to retry with the exact
- * same request: our 90s deadline, truncated SSE streams, provider 429/5xx,
- * and undici/socket-level drops. Tool side effects only happen after a
- * successful response, so re-sending the identical call cannot duplicate them.
+ * Transient model/transport failures: our deadline, truncated SSE streams,
+ * provider 429/5xx, and undici/socket-level drops. Retrying the exact same
+ * request is only safe while the stream has produced NO useful deltas yet:
+ * the provider contract allows 1–2 jittered retries up to the first useful
+ * content/tool delta, but forbids automatic replay after that point, because
+ * the provider may already have executed a side-effecting tool and a replay
+ * would run it twice. The stream-aware gate lives in runNativeAgentLoop via
+ * `sawUsefulDeltas` (native-responses.ts).
  */
 function isTransientModelError(message: string): boolean {
   return /timed out|admission queue|Incomplete response stream|HTTP (429|5\d\d)|terminated|fetch failed|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|rate.?limit|server had an error|server_error|overloaded|too many requests|bad gateway|service unavailable|gateway time-?out/i.test(message);
 }
 
-const MAX_TRANSIENT_RETRIES = 3;
+const MAX_TRANSIENT_RETRIES = config.openai.maxTransientRetries;
 const TRANSIENT_RETRY_BASE_DELAY_MS = 1000;
 
-function transientRetryDelayMs(attempt: number): number {
-  // Bounded linear backoff: 1s, 2s, 3s — worst case adds ~6s to a turn.
-  return TRANSIENT_RETRY_BASE_DELAY_MS * attempt;
+function transientRetryDelayMs(attempt: number, rng: () => number = Math.random): number {
+  // Jittered backoff on a growing linear cap: attempt N sleeps a uniform
+  // random time in [cap/2, cap] with cap = 1s*N (worst case ~7.5s over 5
+  // attempts). A plain linear schedule makes parallel turns retry in
+  // lockstep after a shared provider hiccup; the random half spreads them.
+  const cap = TRANSIENT_RETRY_BASE_DELAY_MS * attempt;
+  return Math.floor(cap * (0.5 + rng() * 0.5));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -906,6 +916,14 @@ async function runNativeAgentLoop(
   const seenProviderCallIds = new Set<string>();
   const turnGoalLedger = createTurnGoalLedger(goal);
   let completionNudges = 0;
+  // Tiered effort is opt-in: while both tier overrides stay 'auto' every
+  // iteration uses the base resolution above. `continuesToolChain` marks that
+  // the previous response ended in tool calls whose outputs we feed back, so
+  // the next request continues an in-flight tool chain (intermediate tier)
+  // instead of opening or closing the turn (final tier).
+  const reasoningTiersEnabled = config.openai.reasoningEffortIntermediate !== 'auto'
+    || config.openai.reasoningEffortFinal !== 'auto';
+  let continuesToolChain = false;
 
   console.log('[executor] === NEW REQUEST request=%s goal="%s" ===', requestId, goal.slice(0, 80));
 
@@ -931,6 +949,13 @@ async function runNativeAgentLoop(
       ) modelController.abort();
     }, 100);
     let response;
+    const iterationReasoningEffort = continuesToolChain
+      ? resolveTierReasoningEffort(reasoningEffort, config.openai.reasoningEffortIntermediate)
+      : resolveTierReasoningEffort(reasoningEffort, config.openai.reasoningEffortFinal);
+    if (reasoningTiersEnabled) {
+      console.log('[executor] iter=%d reasoning tier=%s effort=%s',
+        iteration, continuesToolChain ? 'intermediate' : 'final', iterationReasoningEffort);
+    }
     try {
       response = await responseFactory({
         instructions: developerPrompt,
@@ -943,7 +968,7 @@ async function runNativeAgentLoop(
         parallelToolCalls: true,
         truncation: 'auto',
         contextManagement,
-        reasoningEffort,
+        reasoningEffort: iterationReasoningEffort,
         reasoningMode: config.openai.reasoningMode,
         // Preserve opaque reasoning for exact active-turn recovery in both
         // modes. It remains in memory and is never stored in SQLite.
@@ -961,16 +986,24 @@ async function runNativeAgentLoop(
       }
       if (isTurnAborted()) abortTurn();
       const message = error instanceof Error ? error.message : String(error);
-      if (isTransientModelError(message) && transientRetries < MAX_TRANSIENT_RETRIES) {
+      const deltasSeen = sawUsefulDeltasBeforeError(error);
+      if (isTransientModelError(message) && !deltasSeen && transientRetries < MAX_TRANSIENT_RETRIES) {
         transientRetries += 1;
         const delay = transientRetryDelayMs(transientRetries);
         console.warn('[executor] transient model error retry=%d/%d delay_ms=%d message_length=%d',
           transientRetries, MAX_TRANSIENT_RETRIES, delay, message.length);
         await sleep(delay);
-        // No response was processed: retry the exact same request without
-        // consuming a tool iteration or changing its continuation id.
+        // No useful deltas were streamed and no response was processed: retry
+        // the exact same request without consuming a tool iteration or
+        // changing its continuation id.
         iteration -= 1;
         continue;
+      }
+      if (deltasSeen && isTransientModelError(message)) {
+        // The stream had already delivered useful deltas before failing, so
+        // the provider may have run a side-effecting tool. An identical retry
+        // could run it twice — fail the turn honestly instead of replaying.
+        console.warn('[executor] transient model error after useful stream deltas — refusing identical retry');
       }
       if (
         shouldUseToolStateRecovery(
@@ -985,6 +1018,9 @@ async function runNativeAgentLoop(
         pendingItems = buildResponseStateRecoveryContext(db, threadId, serverRecoveryItems);
         serverRecoveryItems = [...pendingItems];
         saveLastResponseId(db, threadId, null);
+        // Recovery resends the rebuilt full context: like iteration 0, this is
+        // turn-level planning, not a tool-chain continuation.
+        continuesToolChain = false;
         console.warn('[executor] tool state lost, switching to cold recovery context');
         continue;
       }
@@ -1005,7 +1041,8 @@ async function runNativeAgentLoop(
     if (turnDeadlineExceeded()) return deadlineFailure(peakInputTokens);
 
     if (response.error) {
-      if (isTransientModelError(response.error.message) && transientRetries < MAX_TRANSIENT_RETRIES) {
+      const deltasSeen = response.sawUsefulDeltas === true;
+      if (isTransientModelError(response.error.message) && !deltasSeen && transientRetries < MAX_TRANSIENT_RETRIES) {
         transientRetries += 1;
         const delay = transientRetryDelayMs(transientRetries);
         console.warn('[executor] transient response error retry=%d/%d delay_ms=%d message_length=%d',
@@ -1014,6 +1051,12 @@ async function runNativeAgentLoop(
         // Error envelopes are rejected before their output is processed.
         iteration -= 1;
         continue;
+      }
+      if (deltasSeen && isTransientModelError(response.error.message)) {
+        // Same provider rule as the thrown path above: useful deltas were
+        // already on the wire, so an identical retry may duplicate a tool
+        // action. Fall through to the sanitized terminal failure.
+        console.warn('[executor] transient response error after useful stream deltas — refusing identical retry');
       }
       if (
         shouldUseToolStateRecovery(
@@ -1028,6 +1071,7 @@ async function runNativeAgentLoop(
         pendingItems = buildResponseStateRecoveryContext(db, threadId, serverRecoveryItems);
         serverRecoveryItems = [...pendingItems];
         saveLastResponseId(db, threadId, null);
+        continuesToolChain = false;
         console.warn('[executor] tool state lost in response payload, switching to cold recovery context');
         continue;
       }
@@ -1122,6 +1166,9 @@ async function runNativeAgentLoop(
             content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку и восстановленные tool-результаты выше. Если нужные данные уже есть — используй их, не вызывай tools повторно.' }],
           } as NativeInputItem);
           if (useServerResponseState) serverRecoveryItems = [...pendingItems];
+          // Compaction fires only when tool calls are pending — the turn stays
+          // inside its tool chain after the context rebuild.
+          continuesToolChain = true;
           continue;
         } catch (compactError) {
           if (compactController.signal.aborted || turnDeadlineExceeded()) {
@@ -1266,6 +1313,7 @@ async function runNativeAgentLoop(
         ];
         previousResponseId = null;
       }
+      continuesToolChain = true;
       continue;
     }
 
@@ -1313,6 +1361,9 @@ async function runNativeAgentLoop(
     }
 
     if (toolCalls.length === 0) {
+      // Every continuation below restarts the turn dialog (nudge, plain text
+      // replay, empty retry) rather than feeding tool outputs back.
+      continuesToolChain = false;
       const finalAssistantText = extractFinalAssistantText(response.output);
       const convenienceText = response.outputText.trim();
       if (finalAssistantText !== null) {
@@ -1464,7 +1515,7 @@ async function runNativeAgentLoop(
           && Array.isArray(argsList[index]?.calls)
           ? argsList[index]!.calls.length
           : 1;
-        if (sharedReadBudget.toolLeaves + requestedLeaves > MAX_TOTAL_TURN_READ_LEAVES) {
+        if (sharedReadBudget.toolLeaves + requestedLeaves > config.openai.maxTotalTurnReadLeaves) {
           return { ok: false, blocked: true, error: 'Shared turn read budget exceeded' };
         }
         sharedReadBudget.toolLeaves += requestedLeaves;
@@ -1634,7 +1685,7 @@ async function runNativeAgentLoop(
       // this round's calls/outputs to the accumulated items instead of
       // replacing them — otherwise the user's goal and earlier tool results
       // vanish after the first round and multi-step turns answer blind.
-      // Growth is bounded by MAX_TOOL_ITERATIONS, the 12k/tool output budget,
+      // Growth is bounded by MAX_TOOL_ITERATIONS, the per-tool output budget,
       // truncation:'auto', and mid-turn compaction.
       pendingItems = [
         ...pendingItems,
@@ -1658,6 +1709,10 @@ async function runNativeAgentLoop(
       if (useServerResponseState) serverRecoveryItems.push(antiLoopNudge);
       consecutiveSameToolCount = 0;
     }
+
+    // Tool outputs are being fed back: the next request continues this tool
+    // chain, so it falls under the intermediate effort tier.
+    continuesToolChain = true;
   }
 
   const timeout = 'Остановился после слишком большого числа tool iterations.';
@@ -2303,7 +2358,7 @@ async function executeReadSubagentDelegation(
 
   const controller = new AbortController();
   const deadlineMs = Math.max(1, Math.min(
-    120_000,
+    config.openai.readSubagentBatchDeadlineMs,
     Math.max(10_000, config.openai.responsesTimeoutMs * 2),
     turnContext.deadlineAt - Date.now(),
   ));
@@ -2344,6 +2399,14 @@ async function executeReadSubagentDelegation(
       signal: controller.signal,
       responseFactory,
       budget: sharedReadBudget,
+      limits: {
+        maxTasks: config.openai.readSubagentMaxTasks,
+        maxConcurrentWorkers: config.openai.readSubagentMaxWorkers,
+        maxWorkerIterations: config.openai.readSubagentMaxWorkerIterations,
+        maxTotalModelCalls: config.openai.readSubagentMaxModelCalls,
+        maxToolLeaves: config.openai.maxTotalTurnReadLeaves,
+        maxAggregateChars: config.openai.readSubagentAggregateChars,
+      },
     });
   } finally {
     clearTimeout(deadline);
@@ -3039,11 +3102,25 @@ export function resolveReasoningEffort(
     : configured;
 }
 
+/**
+ * Opt-in per-iteration effort tier. `tierOverride` comes from
+ * OPENAI_REASONING_EFFORT_INTERMEDIATE / OPENAI_REASONING_EFFORT_FINAL, where
+ * 'auto' means "inherit the base per-goal resolution" — so with both tiers
+ * unset every iteration uses `base` and behavior matches a single effort.
+ */
+export function resolveTierReasoningEffort(
+  base: ApiReasoningEffort,
+  tierOverride: ReasoningEffort,
+): ApiReasoningEffort {
+  return tierOverride === 'auto' ? base : tierOverride;
+}
+
 export const __test__ = {
   runNativeAgentLoop,
   runPreTurnCompactSafe,
   refreshMissingProfileWithinDeadline,
   isTransientModelError,
+  transientRetryDelayMs,
   buildSmartContext,
   buildToolStateRecoveryContext,
   buildResponseStateRecoveryContext,
@@ -3064,6 +3141,7 @@ export const __test__ = {
   isRecentSqliteTimestamp,
   classifyReasoningEffort,
   resolveReasoningEffort,
+  resolveTierReasoningEffort,
   validateProgrammaticBatch,
   validateLocalParallelBatch,
   executeLocalParallelBatch,
@@ -3099,8 +3177,8 @@ function compactToolResult(value: unknown): unknown {
   return compacted;
 }
 
-const MAX_TOOL_OUTPUT_CHARS = 12000;
-const SMART_AGGREGATE_THRESHOLD = 20;
+const MAX_TOOL_OUTPUT_CHARS = config.openai.maxToolOutputChars;
+const SMART_AGGREGATE_THRESHOLD = config.openai.smartAggregateThreshold;
 
 /**
  * Smart truncation: for large arrays, compute numeric aggregates (min/max/sum)

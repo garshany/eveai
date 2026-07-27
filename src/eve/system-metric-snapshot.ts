@@ -1,9 +1,10 @@
 import type { NativeFunctionTool } from '../agent/native-responses.js';
 import type { Db } from '../db/sqlite.js';
+import { config } from '../config.js';
 import { callEsiOperation } from './esi-client.js';
 
 const ARGUMENT_KEYS = new Set(['metric', 'system_ids']);
-const MAX_OUTPUT_CHARS = 12_000;
+const MAX_OUTPUT_CHARS = config.openai.maxProgrammaticToolOutputChars;
 const INDUSTRY_ACTIVITIES = [
   'manufacturing',
   'reaction',

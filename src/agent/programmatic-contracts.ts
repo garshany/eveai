@@ -1,4 +1,6 @@
-export const MAX_PROGRAMMATIC_TOOL_OUTPUT_CHARS = 12_000;
+import { config } from '../config.js';
+
+export const MAX_PROGRAMMATIC_TOOL_OUTPUT_CHARS = config.openai.maxProgrammaticToolOutputChars;
 
 export const PROGRAMMATIC_TOOL_NAMES = [
   'count_universe_objects',

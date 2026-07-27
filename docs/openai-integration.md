@@ -49,7 +49,9 @@ The self-hosting operator selects one process-wide model:
 
 `OPENAI_REASONING_EFFORT=auto` is an EVE Agent policy, not an API value. It uses the existing goal classifier for top-level chat turns and resolves internal model calls to the balanced `medium` baseline. A fixed value (`none`, `low`, `medium`, `high`, `xhigh`, or `max`) overrides the classifier and reaches every normal chat turn unchanged.
 
-`OPENAI_REASONING_MODE=pro` sends `reasoning.mode="pro"` on top-level agent turns. Pro uses the selected family model; there is no separate `gpt-5.6-pro` slug. It increases latency and token use, so evaluate it on representative difficult EVE tasks and raise `OPENAI_RESPONSES_TIMEOUT_MS` only when the measured workload needs more than 90 seconds. Internal summarization, OSINT, and advisor calls stay in standard mode.
+`OPENAI_REASONING_EFFORT_INTERMEDIATE` and `OPENAI_REASONING_EFFORT_FINAL` are opt-in per-iteration tiers on top of that base resolution. Both default to `auto`, which inherits the base effort and preserves single-tier behavior. The intermediate tier covers iterations that continue an in-flight tool chain (the previous response ended in tool calls whose outputs are fed back); the final tier covers the first request and continuations after plain assistant text. Set `OPENAI_REASONING_EFFORT_INTERMEDIATE=low` to cut reasoning spend on tool-selection steps while keeping the base effort for turn planning; unsetting the variable is the full rollback.
+
+`OPENAI_REASONING_MODE=pro` sends `reasoning.mode="pro"` on top-level agent turns. Pro uses the selected family model; there is no separate `gpt-5.6-pro` slug. It increases latency and token use, so evaluate it on representative difficult EVE tasks and raise `OPENAI_RESPONSES_TIMEOUT_MS` only when the measured workload needs more than the 300-second default. Internal summarization, OSINT, and advisor calls stay in standard mode.
 
 `OPENAI_TEXT_VERBOSITY` accepts `low`, `medium`, or `high`. The developer prompt keeps task-specific chat requirements; this API control supplies the default amount of detail.
 
@@ -273,11 +275,11 @@ OPENAI_RESPONSE_STATE_MODE=stateless
 OPENAI_STORE_RESPONSES=false
 OPENAI_PROGRAMMATIC_TOOL_CALLING=false
 CHEAPVIBE_READ_SUBAGENTS_ENABLED=true
-CHEAPVIBE_READ_SUBAGENT_CONCURRENCY=2
+CHEAPVIBE_READ_SUBAGENT_CONCURRENCY=4
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
-OPENAI_RESPONSES_TIMEOUT_MS=90000
+OPENAI_RESPONSES_TIMEOUT_MS=300000
 OPENAI_MAX_CONCURRENT_RESPONSES=8
 OPENAI_MAX_QUEUED_RESPONSES=32
 OPENAI_RESPONSE_QUEUE_TIMEOUT_MS=15000
