@@ -202,8 +202,13 @@ export const config = {
     catalogCachePath: optional('ESI_CATALOG_CACHE_PATH', './data/cache/esi-swagger.json'),
     compatibilityDate: optional('ESI_COMPATIBILITY_DATE', '2026-03-15'),
     userAgent: optional('ESI_USER_AGENT', 'EVEAI/4.0 (+https://github.com/example/eveai; contact=operator@example.com)'),
-    maxPages: Math.max(1, optionalInt('ESI_MAX_PAGES', 5)),
-    assetsMaxPages: Math.max(1, optionalInt('ESI_ASSETS_MAX_PAGES', 25)),
+    // Interactive pagination budget. At 5 this was not a soft cap: anything
+    // needing more pages (region orders without a type filter, a multi-year
+    // wallet journal, public contracts) failed outright with 422 instead of
+    // returning partial data. Oversized results are handled downstream by the
+    // tool-output budget and its bounded sample, so pull first and shape later.
+    maxPages: Math.max(1, optionalInt('ESI_MAX_PAGES', 50)),
+    assetsMaxPages: Math.max(1, optionalInt('ESI_ASSETS_MAX_PAGES', 200)),
     // market_wide_summary sweep budgets, tuned for coverage over politeness.
     // The binding ceiling is not ours: ESI enforces an error limit and blocks
     // the caller for minutes once it trips, so unbounded fan-out buys bans,
@@ -219,8 +224,11 @@ export const config = {
     // whole rather than reported as failed.
     marketWideMaxPages: boundedPositiveInt('ESI_MARKET_WIDE_MAX_PAGES', 50, 1, 500),
     backoffMaxSeconds: Math.max(1, optionalInt('ESI_BACKOFF_MAX_SECONDS', 10)),
-    requestTimeoutMs: optionalInt('ESI_REQUEST_TIMEOUT_MS', 8000),
-    retryMaxAttempts: Math.max(1, optionalInt('ESI_RETRY_MAX_ATTEMPTS', 3)),
+    // 8s cut off slow ESI endpoints (deep pagination, cold cache) mid-answer.
+    // Still bounded: the turn deadline is the real ceiling, and a hung request
+    // must not sit on an ESI leaf slot forever.
+    requestTimeoutMs: optionalInt('ESI_REQUEST_TIMEOUT_MS', 30_000),
+    retryMaxAttempts: Math.max(1, optionalInt('ESI_RETRY_MAX_ATTEMPTS', 5)),
   },
   characterSync: {
     // Page ceiling for the character-datastore sync path only. Interactive ESI
@@ -259,7 +267,10 @@ export const config = {
     ),
     maxConcurrentAgentRequests: boundedPositiveInt('WEB_MAX_CONCURRENT_AGENT_REQUESTS', 8, 1, 32),
     maxQueuedAgentRequests: boundedPositiveInt('WEB_MAX_QUEUED_AGENT_REQUESTS', 64, 1, 1000),
-    maxQueuedAgentRequestsPerUser: boundedPositiveInt('WEB_MAX_QUEUED_AGENT_REQUESTS_PER_USER', 1, 1, 10),
+    // At 1 a second question was rejected while the first was still running,
+    // which reads as the chat refusing to listen. Turns can take minutes, so
+    // let a few queue up per user.
+    maxQueuedAgentRequestsPerUser: boundedPositiveInt('WEB_MAX_QUEUED_AGENT_REQUESTS_PER_USER', 5, 1, 50),
     requestWindowSeconds: boundedPositiveInt('WEB_REQUEST_WINDOW_SECONDS', 60, 10, 3600),
     maxRequestsPerUserWindow: boundedPositiveInt('WEB_MAX_REQUESTS_PER_USER_WINDOW', 6, 1, 1000),
     maxRequestsGlobalWindow: boundedPositiveInt('WEB_MAX_REQUESTS_GLOBAL_WINDOW', 120, 1, 10000),
