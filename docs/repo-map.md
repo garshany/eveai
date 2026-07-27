@@ -156,6 +156,7 @@ Defensive clients and tool schemas for community APIs (EVE Ref industry cost, zK
 - `market-routes.ts`: `/api/web/market/` read APIs (status, search, groups, regions, overview, orders, history, type info) plus watchlist CRUD; static-SDE routes send `Cache-Control: private, max-age=300`
 - `market-ai-search-routes.ts`: `/api/web/market/ai-search` natural-language item picking via the light agent runner (`src/agent/market-ai-search.ts`, sde_sql + batch_market_prices, bounded budget), usage recorded to `usage_events` as channel `web`
 - `market-alert-routes.ts`: `/api/web/market/alerts*` price-alert CRUD and fired-event feed
+- `profile-routes.ts` + `profile-data.ts`: `/api/web/profile/` living-profile reads over the character_* datastore (SQL-side asset rollup, regional valuation, price-book age) plus the CSRF-protected manual sync with an overall deadline
 - `transparency.ts`: public aggregate spend/infrastructure snapshot and session-gated personal spend
 - `auth-routes.ts`: one-time EVE SSO login redirect, OAuth callback, and `/callback` alias
 - `health.ts`: runtime/dependency health endpoint for both bot platforms

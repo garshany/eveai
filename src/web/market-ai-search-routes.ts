@@ -103,7 +103,10 @@ export function registerMarketAiSearchRoutes(
       return reply.status(503).send({ error: UNAVAILABLE_ERROR });
     }
     if (outcome.usage) {
-      recordModelUsageSafe(db, { userId: session.userId, chatId: session.chatId }, USAGE_THREAD_ID, outcome.usage);
+      // The AI-search runner never overrides the model, so the config model is
+      // the one that actually served the call (required-arg contract from the
+      // per-user settings work).
+      recordModelUsageSafe(db, { userId: session.userId, chatId: session.chatId }, USAGE_THREAD_ID, outcome.usage, config.openai.model);
     }
     if (!outcome.ok) {
       reply.header('Retry-After', String(RETRY_AFTER_UNAVAILABLE_SECONDS));

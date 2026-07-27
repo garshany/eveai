@@ -29,6 +29,156 @@ export type PilotProfile = {
   availability: Record<'public' | 'online' | 'location' | 'ship' | 'skills' | 'wallet', ProfileAvailability>;
 };
 
+/* --- Живой профиль: контракты /api/web/profile/* (см. src/web/profile-routes.ts и src/web/profile-data.ts) --- */
+
+export type ProfileDatasetId =
+  | 'assets' | 'wallet' | 'wallet_journal' | 'orders' | 'contracts'
+  | 'skills' | 'skillqueue' | 'clones' | 'standings' | 'presence';
+
+export type ProfileFreshnessStatus = 'pending' | 'ok' | 'error' | 'no_scope';
+
+export type ProfileFreshness = {
+  dataset: string;
+  status: ProfileFreshnessStatus;
+  syncedAt: string | null;
+  expiresAt: string | null;
+  error: string | null;
+};
+
+export type ProfileSyncStatus = {
+  dataset: string;
+  status: ProfileFreshnessStatus;
+  rowsSynced: number;
+  syncedAt: string | null;
+  expiresAt: string | null;
+  error: string | null;
+};
+
+export type ProfileAssetLocation = {
+  locationId: number;
+  kind: 'station' | 'structure' | 'other';
+  name: string | null;
+  solarSystemName: string | null;
+  regionId: number | null;
+  regionName: string | null;
+  itemCount: number;
+  totalQuantity: number;
+  totalVolume: number;
+  estimatedValue: number | null;
+  valuation: 'complete' | 'partial' | 'unavailable';
+};
+
+export type ProfilePriceBook = {
+  loaded: boolean;
+  snapshotTime: string | null;
+  ageMinutes: number | null;
+  stale: boolean;
+};
+
+export type ProfileAssetsResponse = {
+  freshness: ProfileFreshness;
+  priceBook: ProfilePriceBook;
+  locations: ProfileAssetLocation[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type ProfileAssetItem = {
+  itemId: number;
+  typeId: number;
+  typeName: string | null;
+  groupName: string | null;
+  quantity: number;
+  unitVolume: number | null;
+  totalVolume: number | null;
+  unitPrice: number | null;
+  totalValue: number | null;
+  isBlueprintCopy: boolean;
+};
+
+export type ProfileAssetItemsResponse = {
+  freshness: ProfileFreshness;
+  items: ProfileAssetItem[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type ProfileOrder = {
+  orderId: number;
+  typeId: number;
+  typeName: string | null;
+  regionId: number | null;
+  regionName: string | null;
+  locationId: number | null;
+  locationKind: 'station' | 'structure' | 'other' | null;
+  locationName: string | null;
+  isBuyOrder: boolean;
+  price: number | null;
+  volumeRemain: number | null;
+  volumeTotal: number | null;
+  issued: string | null;
+};
+
+export type ProfileOrdersResponse = {
+  freshness: ProfileFreshness;
+  orders: ProfileOrder[];
+  total: number;
+  totals: { sellCount: number; sellTotal: number; buyCount: number; buyTotal: number; escrowTotal: number };
+  limit: number;
+  offset: number;
+};
+
+export type ProfileWalletResponse = {
+  freshness: ProfileFreshness[];
+  balance: number | null;
+  journal: Array<{ date: string; delta: number; balance: number | null }>;
+};
+
+export type ProfileImplant = { typeId: number; typeName: string | null };
+
+export type ProfileClonesResponse = {
+  freshness: ProfileFreshness;
+  home: { locationId: number; locationName: string | null } | null;
+  jumpClones: Array<{
+    jumpCloneId: number;
+    name: string | null;
+    locationId: number | null;
+    locationName: string | null;
+    implants: ProfileImplant[];
+  }>;
+  currentImplants: ProfileImplant[];
+};
+
+export type ProfileSkillsResponse = {
+  freshness: ProfileFreshness[];
+  totalSp: number | null;
+  unallocatedSp: number | null;
+  queue: Array<{
+    queuePosition: number;
+    skillId: number | null;
+    skillName: string | null;
+    finishedLevel: number | null;
+    startDate: string | null;
+    finishDate: string | null;
+  }>;
+};
+
+export type ProfileAccessResponse = {
+  freshness: null;
+  scopes: string[];
+  groups: Array<{ id: string; label: string; granted: string[]; missing: string[] }>;
+  datasets: Array<{
+    dataset: string;
+    status: string;
+    syncedAt: string | null;
+    expiresAt: string | null;
+    error: string | null;
+    requiredScopes: string[];
+  }>;
+};
+
 export type Conversation = {
   id: string;
   title: string;

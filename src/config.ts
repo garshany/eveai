@@ -344,6 +344,11 @@ export const config = {
     maxCostUnitsGlobalWindow: boundedPositiveInt('WEB_MAX_COST_UNITS_GLOBAL_WINDOW', 480, 1, 1_000_000),
     maxCostUnitsGlobalDay: boundedPositiveInt('WEB_MAX_COST_UNITS_GLOBAL_DAY', 40_000, 1, 10_000_000),
     agentDeadlineMs: boundedPositiveInt('WEB_AGENT_DEADLINE_MS', 600_000, 30_000, 3_600_000),
+    // Overall deadline for the manual profile sync (POST /api/web/profile/
+    // sync): without it a struggling ESI would hold the request for tens of
+    // minutes (datasets x pages x retries). On expiry the route answers 503
+    // with partial progress.
+    profileSyncTimeoutMs: boundedPositiveInt('WEB_PROFILE_SYNC_TIMEOUT_MS', 75_000, 5_000, 600_000),
     requestRetentionDays: boundedPositiveInt('WEB_REQUEST_RETENTION_DAYS', 7, 1, 90),
     // АИ-подбор предметов (/api/web/market/ai-search): отдельный выключатель и
     // бюджеты, чтобы оператор мог удешевить или погасить фичу, не трогая чат.
