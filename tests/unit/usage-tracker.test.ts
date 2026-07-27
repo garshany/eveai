@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import { runMigrations } from '../../src/db/migrations.js';
+import { config } from '../../src/config.js';
 import {
   recordModelUsageSafe,
   recordUsageEvent,
@@ -123,7 +124,9 @@ describe('executor accounting wiring', () => {
       user_id: 1,
       thread_id: 't1',
       channel: 'telegram',
-      model: 'gpt-5.6-sol',
+      // Whatever model the config resolves to: pinning the id would re-break
+      // this test on every default-model switch.
+      model: config.openai.model,
       input_tokens: 1200,
       output_tokens: 80,
       cached_tokens: 100,

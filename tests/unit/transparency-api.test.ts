@@ -4,6 +4,7 @@ import fastifyCookie from '@fastify/cookie';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import { runMigrations } from '../../src/db/migrations.js';
+import { config } from '../../src/config.js';
 import { registerWebChatRoutes } from '../../src/web/chat-routes.js';
 import { recordUsageEvent } from '../../src/usage/tracker.js';
 import { rollupUsageEvents } from '../../src/usage/rollup.js';
@@ -82,7 +83,9 @@ describe('GET /api/web/transparency (public)', () => {
     expect(response.headers['cache-control']).toBe('public, max-age=60');
     const body = response.json();
     expect(body.currency).toBe('USD');
-    expect(body.currentModel).toBe('gpt-5.6-sol');
+    // The endpoint reports whatever model the deployment runs; asserting the
+    // exact id would re-break this test on every default-model switch.
+    expect(body.currentModel).toBe(config.openai.model);
     expect(body.daily).toHaveLength(30);
     expect(body.donations).toEqual({ boostyUrl: 'https://boosty.to/artemy1337' });
     expect(body.fx).toBeNull();
