@@ -16,6 +16,24 @@ describe('web message formatting', () => {
     expect(normalized).toContain('[EVE-KILL](https://eve-kill.com/kill/137039248)');
   });
 
+  it('renders single-asterisk emphasis but leaves snake_case identifiers alone', () => {
+    const html = renderToStaticMarkup(MarkdownMessage({
+      content: 'Полностью *все регионы New Eden* одним запросом ESI не отдаёт.\n\n'
+        + 'Столбцы character_assets и average_price остаются как есть.\n\n'
+        + '**Amarr** дороже, чем *Jita*.',
+    }));
+
+    expect(html).toContain('<em>все регионы New Eden</em>');
+    expect(html).toContain('<em>Jita</em>');
+    expect(html).toContain('<strong>Amarr</strong>');
+    // Bold must not be swallowed by the italic branch.
+    expect(html).not.toContain('<em>*Amarr*</em>');
+    // Underscore emphasis stays unsupported so identifiers survive intact.
+    expect(html).toContain('character_assets');
+    expect(html).toContain('average_price');
+    expect(html).not.toContain('<em>и average</em>');
+  });
+
   it('rejects credentialed and non-http links', () => {
     expect(safeLink('javascript:alert(1)')).toBeNull();
     expect(safeLink('https://user:pass@example.com/private')).toBeNull();

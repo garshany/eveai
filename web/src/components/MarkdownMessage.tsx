@@ -257,7 +257,11 @@ function tableCellClass(align: TableAlign | undefined, cell: string): string | u
 }
 
 function parseInline(value: string, keyPrefix: string): ReactNode[] {
-  const tokenPattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
+  // Bold must precede italic in the alternation, otherwise `**x**` matches as an
+  // empty italic. Underscore emphasis is deliberately unsupported: answers are
+  // full of identifiers like type_id and character_assets, and treating those as
+  // emphasis would mangle far more text than it would ever style.
+  const tokenPattern = /(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
   const result: ReactNode[] = [];
   let cursor = 0;
   let match: RegExpExecArray | null;
@@ -267,6 +271,8 @@ function parseInline(value: string, keyPrefix: string): ReactNode[] {
     const key = `${keyPrefix}-${match.index}`;
     if (token.startsWith('**')) {
       result.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith('*')) {
+      result.push(<em key={key}>{token.slice(1, -1)}</em>);
     } else if (token.startsWith('`')) {
       result.push(<code key={key}>{token.slice(1, -1)}</code>);
     } else {
