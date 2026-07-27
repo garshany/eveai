@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AmbiguousApiRequestError } from '../../web/src/api.js';
 import {
   mergeRequestSnapshot,
+  mergeStreamDelta,
   preparePendingSubmission,
   submitWithAmbiguousRetry,
 } from '../../web/src/agent-request-client.js';
@@ -37,6 +38,34 @@ describe('web agent request client lifecycle', () => {
     expect(mergeRequestSnapshot(current, duplicate)).toBe(current);
     expect(mergeRequestSnapshot(current, advanced)).toBe(advanced);
   });
+
+  it('applies a stream delta only for a newer sequence of the same request', () => {
+    const current = request({ progressSequence: 2, streamText: 'partial' });
+
+    const accepted = mergeStreamDelta(current, { requestId: 'request-1', text: 'partial answer', sequence: 3 });
+    expect(accepted).toMatchObject({ streamText: 'partial answer', progressSequence: 3 });
+
+    expect(mergeStreamDelta(current, { requestId: 'request-1', text: 'stale', sequence: 2 })).toBe(current);
+    expect(mergeStreamDelta(current, { requestId: 'request-1', text: 'older', sequence: 1 })).toBe(current);
+    expect(mergeStreamDelta(current, { requestId: 'request-2', text: 'foreign', sequence: 9 })).toBe(current);
+    expect(mergeStreamDelta(null, { requestId: 'request-1', text: 'orphan', sequence: 3 })).toBeNull();
+  });
+
+  it('keeps delta-streamed text against older snapshots and accepts newer snapshots wholesale', () => {
+    const streamed = mergeStreamDelta(
+      request({ progressSequence: 2, streamText: 'par' }),
+      { requestId: 'request-1', text: 'partial ans', sequence: 4 },
+    );
+
+    const staleSnapshot = request({ progressSequence: 3, streamText: 'par' });
+    expect(mergeRequestSnapshot(streamed, staleSnapshot)).toBe(streamed);
+
+    const sameSequenceSnapshot = request({ progressSequence: 4, status: 'running', streamText: 'partial ans' });
+    expect(mergeRequestSnapshot(streamed, sameSequenceSnapshot)).toBe(streamed);
+
+    const advancedSnapshot = request({ progressSequence: 5, streamText: 'partial answer fina' });
+    expect(mergeRequestSnapshot(streamed, advancedSnapshot)).toBe(advancedSnapshot);
+  });
 });
 
 function request(overrides: Partial<WebAgentRequest>): WebAgentRequest {
@@ -46,6 +75,7 @@ function request(overrides: Partial<WebAgentRequest>): WebAgentRequest {
     status: 'running',
     activity: [],
     progressSequence: 1,
+    streamText: '',
     result: null,
     error: null,
     createdAt: '2026-07-16T00:00:00.000Z',

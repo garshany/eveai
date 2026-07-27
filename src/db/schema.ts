@@ -9,6 +9,18 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Per-user model preferences (model / reasoning effort / verbosity), one row
+-- per user, shared by every channel lane. A missing row means the operator
+-- config defaults apply. Values are validated against whitelists on every
+-- write (src/user-model-settings.ts).
+CREATE TABLE IF NOT EXISTS user_model_settings (
+  user_id          INTEGER PRIMARY KEY REFERENCES users(user_id),
+  model            TEXT NOT NULL,
+  reasoning_effort TEXT NOT NULL,
+  verbosity        TEXT NOT NULL,
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS telegram_accounts (
   telegram_user_id INTEGER PRIMARY KEY,
   user_id          INTEGER NOT NULL REFERENCES users(user_id),
@@ -74,6 +86,7 @@ CREATE TABLE IF NOT EXISTS telegram_sessions (
   active_character_id INTEGER,
   last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_telegram_sessions_username ON telegram_sessions(username);
 
 -- Browser-only identities use opaque, keyed-hash sessions and a chat-id range
 -- reserved away from Telegram (>0), CLI (0), and Discord (-1, -2, ...).
@@ -165,6 +178,7 @@ CREATE TABLE IF NOT EXISTS web_agent_requests (
   status           TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
   activity_json    TEXT NOT NULL DEFAULT '[]',
   progress_sequence INTEGER NOT NULL DEFAULT 0,
+  stream_text      TEXT NOT NULL DEFAULT '',
   result_text      TEXT,
   assistant_message_id INTEGER,
   error_code       TEXT,
@@ -190,7 +204,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_web_agent_requests_idempotency
 
 CREATE TABLE IF NOT EXISTS web_admission_events (
   event_id       TEXT PRIMARY KEY,
-  event_kind     TEXT NOT NULL CHECK (event_kind IN ('session', 'chat')),
+  event_kind     TEXT NOT NULL CHECK (event_kind IN ('session', 'chat', 'ai-search')),
   user_id        INTEGER,
   ip_key         TEXT NOT NULL,
   cost_units     INTEGER NOT NULL DEFAULT 0,
@@ -505,4 +519,324 @@ CREATE TABLE IF NOT EXISTS eve_kill_migrations (
   migration_key TEXT PRIMARY KEY,
   applied_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Character datastore: materialized private ESI profile, one row set per
+-- character. Every table carries character_id and synced_at. The character_sql
+-- agent tool only ever sees rows of the currently active character through
+-- per-query TEMP views (see src/agent/tools/character-execution.ts). Rows are
+-- replaced or upserted by src/eve/character-sync.ts and deleted on unlink/purge.
+
+CREATE TABLE IF NOT EXISTS character_assets (
+  character_id      INTEGER NOT NULL,
+  item_id           INTEGER NOT NULL,
+  type_id           INTEGER NOT NULL,
+  location_id       INTEGER NOT NULL,
+  location_type     TEXT,
+  location_flag     TEXT,
+  quantity          INTEGER,
+  is_singleton      INTEGER NOT NULL DEFAULT 0,
+  is_blueprint_copy INTEGER,
+  data_json         TEXT NOT NULL,
+  synced_at         TEXT NOT NULL,
+  PRIMARY KEY (character_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_character_assets_type ON character_assets(character_id, type_id);
+CREATE INDEX IF NOT EXISTS idx_character_assets_location ON character_assets(character_id, location_id);
+
+CREATE TABLE IF NOT EXISTS character_wallet (
+  character_id INTEGER PRIMARY KEY,
+  balance      REAL NOT NULL DEFAULT 0,
+  synced_at    TEXT NOT NULL
+);
+
+-- Append-only: journal rows accumulate via INSERT OR REPLACE (ids are stable),
+-- so history predating the sync page cap is preserved across refreshes.
+CREATE TABLE IF NOT EXISTS character_wallet_journal (
+  character_id    INTEGER NOT NULL,
+  journal_id      INTEGER NOT NULL,
+  date            TEXT,
+  ref_type        TEXT,
+  amount          REAL,
+  balance         REAL,
+  first_party_id  INTEGER,
+  second_party_id INTEGER,
+  description     TEXT,
+  context_id      INTEGER,
+  context_id_type TEXT,
+  data_json       TEXT NOT NULL,
+  synced_at       TEXT NOT NULL,
+  PRIMARY KEY (character_id, journal_id)
+);
+CREATE INDEX IF NOT EXISTS idx_character_wallet_journal_date
+  ON character_wallet_journal(character_id, date);
+
+CREATE TABLE IF NOT EXISTS character_orders (
+  character_id  INTEGER NOT NULL,
+  order_id      INTEGER NOT NULL,
+  type_id       INTEGER NOT NULL,
+  region_id     INTEGER,
+  location_id   INTEGER,
+  price         REAL,
+  volume_total  INTEGER,
+  volume_remain INTEGER,
+  min_volume    INTEGER,
+  is_buy_order  INTEGER NOT NULL DEFAULT 0,
+  range         TEXT,
+  duration      INTEGER,
+  issued        TEXT,
+  escrow        REAL,
+  data_json     TEXT NOT NULL,
+  synced_at     TEXT NOT NULL,
+  PRIMARY KEY (character_id, order_id)
+);
+CREATE INDEX IF NOT EXISTS idx_character_orders_type ON character_orders(character_id, type_id);
+
+CREATE TABLE IF NOT EXISTS character_contracts (
+  character_id      INTEGER NOT NULL,
+  contract_id       INTEGER NOT NULL,
+  type              TEXT,
+  status            TEXT,
+  availability      TEXT,
+  price             REAL,
+  reward            REAL,
+  collateral        REAL,
+  volume            REAL,
+  title             TEXT,
+  date_issued       TEXT,
+  date_expired      TEXT,
+  date_accepted     TEXT,
+  date_completed    TEXT,
+  issuer_id         INTEGER,
+  assignee_id       INTEGER,
+  acceptor_id       INTEGER,
+  start_location_id INTEGER,
+  end_location_id   INTEGER,
+  for_corporation   INTEGER,
+  data_json         TEXT NOT NULL,
+  synced_at         TEXT NOT NULL,
+  PRIMARY KEY (character_id, contract_id)
+);
+CREATE INDEX IF NOT EXISTS idx_character_contracts_status
+  ON character_contracts(character_id, status);
+
+CREATE TABLE IF NOT EXISTS character_skills (
+  character_id         INTEGER NOT NULL,
+  skill_id             INTEGER NOT NULL,
+  trained_skill_level  INTEGER,
+  active_skill_level   INTEGER,
+  skillpoints_in_skill INTEGER,
+  data_json            TEXT NOT NULL,
+  synced_at            TEXT NOT NULL,
+  PRIMARY KEY (character_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS character_skillqueue (
+  character_id      INTEGER NOT NULL,
+  queue_position    INTEGER NOT NULL,
+  skill_id          INTEGER,
+  finished_level    INTEGER,
+  start_date        TEXT,
+  finish_date       TEXT,
+  training_start_sp INTEGER,
+  level_start_sp    INTEGER,
+  level_end_sp      INTEGER,
+  data_json         TEXT NOT NULL,
+  synced_at         TEXT NOT NULL,
+  PRIMARY KEY (character_id, queue_position)
+);
+
+CREATE TABLE IF NOT EXISTS character_clones (
+  character_id  INTEGER NOT NULL,
+  jump_clone_id INTEGER NOT NULL,
+  location_id   INTEGER,
+  location_type TEXT,
+  name          TEXT,
+  implants_json TEXT NOT NULL DEFAULT '[]',
+  data_json     TEXT NOT NULL,
+  synced_at     TEXT NOT NULL,
+  PRIMARY KEY (character_id, jump_clone_id)
+);
+
+CREATE TABLE IF NOT EXISTS character_standings (
+  character_id INTEGER NOT NULL,
+  from_id      INTEGER NOT NULL,
+  from_type    TEXT NOT NULL,
+  standing     REAL,
+  data_json    TEXT NOT NULL,
+  synced_at    TEXT NOT NULL,
+  PRIMARY KEY (character_id, from_type, from_id)
+);
+
+-- Location + ship + online merged into one row per character.
+CREATE TABLE IF NOT EXISTS character_presence (
+  character_id     INTEGER PRIMARY KEY,
+  solar_system_id  INTEGER,
+  station_id       INTEGER,
+  structure_id     INTEGER,
+  ship_type_id     INTEGER,
+  ship_name        TEXT,
+  ship_item_id     INTEGER,
+  online           INTEGER,
+  last_login       TEXT,
+  last_logout      TEXT,
+  synced_at        TEXT NOT NULL
+);
+
+-- Singleton rollups that do not fit the per-row datasets above.
+CREATE TABLE IF NOT EXISTS character_profile (
+  character_id             INTEGER PRIMARY KEY,
+  character_name           TEXT,
+  total_skill_points       INTEGER,
+  unallocated_skill_points INTEGER,
+  implants_json            TEXT NOT NULL DEFAULT '[]',
+  home_location_json       TEXT,
+  synced_at                TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS character_sync_state (
+  character_id INTEGER NOT NULL,
+  dataset      TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'ok', 'error', 'no_scope')),
+  rows_synced  INTEGER NOT NULL DEFAULT 0,
+  synced_at    TEXT,
+  expires_at   TEXT,
+  error        TEXT,
+  PRIMARY KEY (character_id, dataset)
+);
+
+-- Whole-New-Eden market snapshot walked directly from public ESI
+-- (/markets/{region_id}/orders/, one 1000-order page at a time).
+-- The loader never updates this table in place: it fills a staging table and
+-- swaps it in atomically (drop + rename in one transaction), so executed/
+-- cancelled orders vanish instead of lingering as ghosts. The three indexes
+-- are NOT created here: the loader builds them on the staging table under
+-- per-pass names before the swap (index names are schema-global and DROP
+-- TABLE carries a table's indexes away with it), so no rebuild ever happens
+-- inside the swap transaction. See src/eve/market-snapshot-loader.ts.
+CREATE TABLE IF NOT EXISTS market_orders (
+  order_id      INTEGER PRIMARY KEY,
+  type_id       INTEGER NOT NULL,
+  region_id     INTEGER NOT NULL,
+  system_id     INTEGER NOT NULL,
+  station_id    INTEGER,
+  location_id   INTEGER NOT NULL,
+  is_buy_order  INTEGER NOT NULL,
+  price         REAL    NOT NULL,
+  volume_remain INTEGER NOT NULL,
+  volume_total  INTEGER NOT NULL,
+  min_volume    INTEGER NOT NULL,
+  duration      INTEGER NOT NULL,
+  range         TEXT    NOT NULL,
+  issued        TEXT    NOT NULL
+);
+
+-- Loader/snapshot metadata (singleton, same pattern as eve_kill_feed_state).
+-- Survives restarts. Readers report snapshot_time as the data age: it is the
+-- OLDEST region's fetched_at in the serving book (the swapped table mixes
+-- rows of different ages), not the moment of the last tick. snapshot_etag is
+-- unused by the ESI sweep (no upstream file to compare) and stays NULL.
+CREATE TABLE IF NOT EXISTS market_snapshot_state (
+  feed_key        TEXT PRIMARY KEY CHECK (feed_key = 'global'),
+  status          TEXT NOT NULL DEFAULT 'idle',
+  snapshot_url    TEXT,
+  snapshot_etag   TEXT,
+  snapshot_time   TEXT,
+  rows_loaded     INTEGER,
+  loaded_at       TEXT,
+  last_error      TEXT,
+  last_attempt_at TEXT
+);
+
+-- Per-region freshness for the two-tier sweep: a region is refetched only
+-- when fetched_at + its tier interval (major/minor by page count) has passed,
+-- and never before expires_at (ESI's own 5-minute order-book cache).
+CREATE TABLE IF NOT EXISTS market_snapshot_regions (
+  region_id   INTEGER PRIMARY KEY,
+  pages       INTEGER,
+  rows_loaded INTEGER,
+  fetched_at  TEXT,
+  expires_at  TEXT,
+  last_error  TEXT
+);
+
+-- Local daily price history accumulated from ESI /markets/{region_id}/history/.
+-- Rows are never deleted once synced, so over time this outlives ESI's own
+-- ~365-day window. Populated lazily (backfill on first view) and by the
+-- market history worker (see src/eve/market-history.ts).
+CREATE TABLE IF NOT EXISTS market_price_history (
+  region_id   INTEGER NOT NULL,
+  type_id     INTEGER NOT NULL,
+  date        TEXT NOT NULL,
+  order_count INTEGER NOT NULL,
+  volume      INTEGER NOT NULL,
+  highest     REAL NOT NULL,
+  average     REAL NOT NULL,
+  lowest      REAL NOT NULL,
+  synced_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (region_id, type_id, date)
+);
+
+-- Per-(region, type) sync state for the history backfiller/worker. next_due_at
+-- is the next ESI refresh (daily at 11:05 UTC plus a buffer) after which a new
+-- history day may exist. The worker picks due pairs by this column.
+CREATE TABLE IF NOT EXISTS market_history_sync (
+  region_id      INTEGER NOT NULL,
+  type_id        INTEGER NOT NULL,
+  last_synced_at TEXT,
+  next_due_at    TEXT,
+  status         TEXT NOT NULL DEFAULT 'ok'
+    CHECK (status IN ('ok', 'error')),
+  error          TEXT,
+  PRIMARY KEY (region_id, type_id)
+);
+CREATE INDEX IF NOT EXISTS idx_market_history_sync_due
+  ON market_history_sync(next_due_at);
+
+-- Web market watchlist. region_id is always stored as a concrete value:
+-- writers substitute the user's default region when the caller omits it,
+-- because the (user_id, type_id, region_id) primary key treats NULL as
+-- distinct and would let duplicates through.
+CREATE TABLE IF NOT EXISTS market_watchlist (
+  user_id    INTEGER NOT NULL,
+  type_id    INTEGER NOT NULL,
+  region_id  INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, type_id, region_id)
+);
+
+-- Price alerts evaluated against the local market_orders snapshot by the
+-- alerts worker. 'triggered' rows keep triggered_at/trigger_price as evidence.
+CREATE TABLE IF NOT EXISTS market_price_alerts (
+  alert_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id         INTEGER NOT NULL,
+  type_id         INTEGER NOT NULL,
+  region_id       INTEGER NOT NULL,
+  side            TEXT NOT NULL CHECK (side IN ('sell', 'buy')),
+  comparator      TEXT NOT NULL CHECK (comparator IN ('above', 'below')),
+  threshold_price REAL NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'triggered', 'disabled')),
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  triggered_at    TEXT,
+  trigger_price   REAL
+);
+CREATE INDEX IF NOT EXISTS idx_market_price_alerts_user_status
+  ON market_price_alerts(user_id, status);
+
+-- Append-only firing log for market_price_alerts. delivered_at flips when the
+-- outbound lane (Telegram/web) has pushed the notification. Rows stay visible
+-- in the UI regardless of delivery.
+CREATE TABLE IF NOT EXISTS market_alert_events (
+  event_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id     INTEGER NOT NULL,
+  user_id      INTEGER NOT NULL,
+  type_id      INTEGER NOT NULL,
+  price        REAL NOT NULL,
+  threshold    REAL NOT NULL,
+  triggered_at TEXT NOT NULL DEFAULT (datetime('now')),
+  delivered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_market_alert_events_user
+  ON market_alert_events(user_id, triggered_at);
 `;

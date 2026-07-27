@@ -293,8 +293,8 @@ describe('durable web agent request coordinator', () => {
     const rejected = coordinator.enqueue(input('budget_key_0000001'));
     expect(rejected).toMatchObject({
       ok: false,
-      statusCode: 503,
-      error: 'Сервис достиг безопасного лимита вычислений. Попробуйте позже.',
+      statusCode: 429,
+      error: 'Исчерпан лимит вычислений. Попробуйте позже.',
     });
     expect(db.prepare('SELECT COUNT(*) AS count FROM web_agent_requests').get()).toEqual({ count: 0 });
     await coordinator.close();
@@ -328,10 +328,106 @@ describe('durable web agent request coordinator', () => {
     await coordinator.close();
     expect(activeWebAgentRequestCount()).toBe(0);
   });
+
+  it('accumulates streamed deltas with reset and throttled writes, flushed at finish', async () => {
+    vi.useFakeTimers();
+    try {
+      let release = () => {};
+      const gate = new Promise<string>((resolve) => { release = () => resolve('Hello world'); });
+      const coordinator = new WebAgentRequestCoordinator(db, async () => {
+        reportActivity({ type: 'text_delta', text: 'stale partial' });
+        reportActivity({ type: 'text_delta', text: '', reset: true });
+        reportActivity({ type: 'text_delta', text: 'Hello' });
+        reportActivity({ type: 'text_delta', text: ' world' });
+        return gate;
+      });
+      coordinator.start();
+      const accepted = coordinator.enqueue(input('stream_key_0000001'));
+      expect(accepted.ok).toBe(true);
+      if (!accepted.ok) return;
+      const requestId = accepted.request.requestId;
+
+      // Let the drain and the runner reach the gate (microtasks only).
+      await vi.advanceTimersByTimeAsync(0);
+      expect(coordinator.readOwned(owner(), requestId)?.status).toBe('running');
+      // Writes are throttled: nothing durable yet despite four deltas.
+      expect(streamTextOf(requestId)).toBe('');
+
+      await vi.advanceTimersByTimeAsync(500);
+      // Reset dropped the stale partial text before accumulation restarted.
+      expect(streamTextOf(requestId)).toBe('Hello world');
+
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(coordinator.readOwned(owner(), requestId)).toMatchObject({
+        status: 'completed',
+        result: 'Hello world',
+        streamText: 'Hello world',
+      });
+      // The per-request buffer and its flush timer are gone after finish.
+      const buffers = (coordinator as unknown as { streamBuffers: Map<string, unknown> }).streamBuffers;
+      expect(buffers.size).toBe(0);
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('caps the durable stream buffer at 64KB without failing the turn', async () => {
+    vi.useFakeTimers();
+    try {
+      const coordinator = new WebAgentRequestCoordinator(db, async () => {
+        reportActivity({ type: 'text_delta', text: 'x'.repeat(70 * 1024) });
+        reportActivity({ type: 'text_delta', text: 'ignored-past-cap' });
+        db.prepare("INSERT INTO messages (thread_id, role, content) VALUES ('thread-1', 'assistant', 'done')").run();
+        return 'done';
+      });
+      coordinator.start();
+      const accepted = coordinator.enqueue(input('stream_cap_key_0001'));
+      expect(accepted.ok).toBe(true);
+      if (!accepted.ok) return;
+
+      await vi.advanceTimersByTimeAsync(0);
+      const result = coordinator.readOwned(owner(), accepted.request.requestId);
+      expect(result).toMatchObject({ status: 'completed', result: 'done' });
+      expect(result?.streamText).toHaveLength(64 * 1024);
+      expect(result?.streamText.endsWith('ignored-past-cap')).toBe(false);
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps cancellation winning over late stream flushes', async () => {
+    const coordinator = new WebAgentRequestCoordinator(db, async () => 'unused');
+    db.prepare(`
+      INSERT INTO web_agent_requests (
+        request_id, user_id, chat_id, thread_id, character_id, character_version,
+        message, message_hash, idempotency_key, status, cancel_requested, created_at_ms
+      ) VALUES ('stream-cancel', 1, -2000000000, 'thread-1', NULL, 0,
+        'race', 'hash', 'stream_cancel_key_1', 'running', 1, ?)
+    `).run(Date.now());
+
+    const internal = coordinator as unknown as {
+      recordActivity: (requestId: string, event: { type: 'text_delta'; text: string }) => void;
+      flushStreamText: (requestId: string) => void;
+    };
+    internal.recordActivity('stream-cancel', { type: 'text_delta', text: 'late' });
+    internal.flushStreamText('stream-cancel');
+
+    expect(streamTextOf('stream-cancel')).toBe('');
+    await coordinator.close();
+  });
 });
 
 function owner() {
   return { userId: 1, chatId: -2_000_000_000 };
+}
+
+function streamTextOf(requestId: string): string {
+  return (db.prepare(`
+    SELECT stream_text FROM web_agent_requests WHERE request_id = ?
+  `).get(requestId) as { stream_text: string }).stream_text;
 }
 
 function input(idempotencyKey: string) {

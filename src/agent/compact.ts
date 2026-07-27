@@ -1,7 +1,9 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
+import { recordModelUsageSafe } from '../usage/tracker.js';
 import { isTurnAborted } from './activity.js';
 import { runModelText } from './model.js';
+import type { NativeUsage } from './native-responses.js';
 
 type MessageRow = {
   id: number;
@@ -126,7 +128,7 @@ export function needsPreTurnCompaction(db: Db, threadId: string): boolean {
 export async function runPreTurnCompact(
   db: Db,
   threadId: string,
-  summarizer: SummarizerFn = defaultSummarizer,
+  summarizer?: SummarizerFn,
   signal?: AbortSignal,
 ): Promise<boolean> {
   if (!needsPreTurnCompaction(db, threadId)) return false;
@@ -156,7 +158,7 @@ export function needsMidTurnCompaction(inputTokens: number): boolean {
 export async function runMidTurnCompact(
   db: Db,
   threadId: string,
-  summarizer: SummarizerFn = defaultSummarizer,
+  summarizer?: SummarizerFn,
   signal?: AbortSignal,
 ): Promise<boolean> {
   console.log('[compact] mid-turn: compacting thread=%s', threadId.slice(0, 12));
@@ -176,7 +178,7 @@ export async function runMidTurnCompact(
 export async function compactThreadWithRetry(
   db: Db,
   threadId: string,
-  summarizer: SummarizerFn = defaultSummarizer,
+  summarizer?: SummarizerFn,
   signal?: AbortSignal,
 ): Promise<boolean> {
   let lastError: unknown;
@@ -207,9 +209,11 @@ export async function compactThreadWithRetry(
 export async function compactThread(
   db: Db,
   threadId: string,
-  summarizer: SummarizerFn = defaultSummarizer,
+  summarizer?: SummarizerFn,
   signal?: AbortSignal,
 ): Promise<boolean> {
+  const runSummarizer = summarizer
+    ?? ((input: Parameters<SummarizerFn>[0]) => defaultSummarizer(db, threadId, input));
   const allMessages = db.prepare(
     "SELECT id, role, content FROM messages WHERE thread_id = ? AND role IN ('user','assistant') ORDER BY id ASC"
   ).all(threadId) as MessageRow[];
@@ -262,7 +266,7 @@ export async function compactThread(
   }
 
   const lastSummarizedId = candidates[candidates.length - 1].id;
-  const summaryText = (await summarizer({
+  const summaryText = (await runSummarizer({
     existingSummary: existingSummaryRow?.summary ?? null,
     messages: candidates,
     signal,
@@ -311,11 +315,20 @@ export async function compactThread(
 // Default summarizer
 // ---------------------------------------------------------------------------
 
-async function defaultSummarizer(input: {
-  existingSummary: string | null;
-  messages: MessageRow[];
-  signal?: AbortSignal;
-}): Promise<string> {
+/**
+ * Default summarizer: one internal model call on the OPERATOR-configured model
+ * (deliberate — compaction is housekeeping, not user-facing work), but the
+ * spend is still billed to the thread owner's usage_events lane.
+ */
+async function defaultSummarizer(
+  db: Db,
+  threadId: string,
+  input: {
+    existingSummary: string | null;
+    messages: MessageRow[];
+    signal?: AbortSignal;
+  },
+): Promise<string> {
   const transcript = buildTranscript(input.messages, config.compact.maxInputChars);
   if (!transcript) return '';
 
@@ -325,7 +338,26 @@ async function defaultSummarizer(input: {
     transcript,
   ].filter(Boolean).join('\n\n');
 
-  return await runModelText(COMPACTION_DEVELOPER_PROMPT, userText, input.signal);
+  const usages: NativeUsage[] = [];
+  const text = await runModelText(COMPACTION_DEVELOPER_PROMPT, userText, input.signal, (u) => {
+    usages.push(u);
+  });
+  const usage = usages[0];
+  if (usage) {
+    const owner = db.prepare('SELECT user_id, chat_id FROM agent_threads WHERE thread_id = ?').get(threadId) as
+      | { user_id: number | null; chat_id: number }
+      | undefined;
+    if (owner?.user_id != null) {
+      recordModelUsageSafe(db, { userId: owner.user_id, chatId: owner.chat_id }, threadId, {
+        input: usage.input,
+        output: usage.output,
+        cached: usage.cached,
+        cacheWrite: usage.cacheWrite ?? 0,
+        reasoning: usage.reasoning,
+      }, config.openai.model);
+    }
+  }
+  return text;
 }
 
 function transcriptPrefix(msg: MessageRow): string {

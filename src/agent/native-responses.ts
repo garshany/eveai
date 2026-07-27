@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import WebSocket, { type RawData } from 'ws';
 import { config } from '../config.js';
 import {
   toApiReasoningEffort,
@@ -151,6 +149,13 @@ export type NativeResponseResult = {
   rawEvents: NativeSseEvent[];
   usage: NativeUsage | null;
   status: string | null;
+  /**
+   * True when the stream delivered useful model output (a text token or a
+   * tool-call event) before finishing or failing. The provider's retry
+   * contract: only retry the identical request while this is false — after
+   * useful deltas a replay can duplicate a tool action it already ran.
+   */
+  sawUsefulDeltas: boolean;
 };
 
 type NativeSseEvent = {
@@ -240,10 +245,11 @@ export async function createNativeResponse(input: {
   const releaseResponseSlot = await getResponseAdmission().acquire(input.signal);
   const requestStartedAt = Date.now();
   let events: NativeSseEvent[];
+  // A fresh model call restarts the answer text: drop whatever partial text a
+  // consumer accumulated from a previous iteration or a retried attempt.
+  if (streamThisCall) reportActivity({ type: 'text_delta', text: '', reset: true });
   try {
-    events = config.openai.responsesTransport === 'websocket'
-      ? await requestWebSocketEvents(baseUrl, bodyPayload, timeoutMs, input.signal)
-      : await requestHttpSseEvents(baseUrl, bodyJson, timeoutMs, input.signal);
+    events = await requestHttpSseEvents(baseUrl, bodyJson, timeoutMs, streamThisCall, input.signal);
   } finally {
     releaseResponseSlot();
   }
@@ -283,6 +289,7 @@ export async function createNativeResponse(input: {
     ?? (incompleteStream ? 'Incomplete response stream (no terminal event received)' : null);
 
   const toolSearchPaths = extractToolSearchPaths(output);
+  const sawUsefulDeltas = events.some(isUsefulStreamEvent);
 
   // Debug: log usage, reasoning summary, and tool_search activity
   const usage = (completedPayload as Record<string, unknown> | null)?.usage as Record<string, unknown> | undefined;
@@ -332,6 +339,7 @@ export async function createNativeResponse(input: {
       reasoning: Number((usage.output_tokens_details as Record<string, unknown> | undefined)?.reasoning_tokens ?? 0),
     } : null,
     status: completedPayload?.status ?? inferTerminalStatus(events),
+    sawUsefulDeltas,
   };
 }
 
@@ -436,6 +444,7 @@ async function requestHttpSseEvents(
   baseUrl: string,
   bodyJson: string,
   timeoutMs: number,
+  streamToActivity: boolean,
   signal?: AbortSignal,
 ): Promise<NativeSseEvent[]> {
   const controller = new AbortController();
@@ -443,10 +452,15 @@ async function requestHttpSseEvents(
   signal?.addEventListener('abort', abortFromCaller, { once: true });
   if (signal?.aborted) controller.abort();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let response: Response;
-  let rawText: string;
+  const events: NativeSseEvent[] = [];
+  let sawUsefulDeltas = false;
+  const parser = createSseParser((event) => {
+    events.push(event);
+    if (!sawUsefulDeltas && isUsefulStreamEvent(event)) sawUsefulDeltas = true;
+    maybeEmitTextDelta(event, streamToActivity);
+  });
   try {
-    response = await fetch(`${baseUrl}/responses`, {
+    const response = await fetch(`${baseUrl}/responses`, {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -455,247 +469,38 @@ async function requestHttpSseEvents(
       },
       body: bodyJson,
     });
-    rawText = await response.text();
+    if (!response.ok) {
+      // Error bodies are small and read whole: the message feeds classification.
+      const rawText = await response.text();
+      const category = classifyHttpError(rawText);
+      throw new Error(`Responses API HTTP ${response.status}${category ? ` (${category})` : ''}`);
+    }
+    if (!response.body) {
+      parser.feed(await response.text());
+    } else {
+      // Read the stream as it arrives so output-text deltas reach the activity
+      // sink while the model is still generating, not after the full body.
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parser.feed(decoder.decode(value, { stream: true }));
+      }
+      parser.feed(decoder.decode());
+    }
+    parser.end();
   } catch (error) {
     if ((error as Error).name === 'AbortError' || (error as Error).name === 'TimeoutError') {
-      if (signal?.aborted) throw new Error('Responses request aborted');
-      throw new Error(`Responses API timed out after ${Math.round(timeoutMs / 1000)}s`);
+      if (signal?.aborted) throw markStreamProgress(new Error('Responses request aborted'), sawUsefulDeltas);
+      throw markStreamProgress(new Error(`Responses API timed out after ${Math.round(timeoutMs / 1000)}s`), sawUsefulDeltas);
     }
-    throw error;
+    throw markStreamProgress(error, sawUsefulDeltas);
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', abortFromCaller);
   }
-
-  if (!response.ok) {
-    const category = classifyHttpError(rawText);
-    throw new Error(`Responses API HTTP ${response.status}${category ? ` (${category})` : ''}`);
-  }
-  return parseSse(rawText);
-}
-
-async function requestWebSocketEvents(
-  baseUrl: string,
-  body: Record<string, unknown>,
-  timeoutMs: number,
-  signal?: AbortSignal,
-): Promise<NativeSseEvent[]> {
-  const url = responsesWebSocketUrl(baseUrl);
-  const payload = JSON.stringify(buildWebSocketCreatePayload(body));
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error('Responses request aborted'));
-      return;
-    }
-    const events: NativeSseEvent[] = [];
-    let pendingText = '';
-    let settled = false;
-    const socket = new WebSocket(url, {
-      headers: buildWebSocketHeaders(config.openai.apiKey),
-      perMessageDeflate: true,
-      maxPayload: 1_000_000,
-      handshakeTimeout: timeoutMs,
-    });
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      signal?.removeEventListener('abort', abortFromCaller);
-      socket.terminate();
-      reject(new Error(`Responses API timed out after ${Math.round(timeoutMs / 1000)}s`));
-    }, timeoutMs);
-    const abortFromCaller = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.terminate();
-      reject(new Error('Responses request aborted'));
-    };
-    signal?.addEventListener('abort', abortFromCaller, { once: true });
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', abortFromCaller);
-      if (error) reject(error);
-      else resolve(events);
-    };
-
-    socket.once('open', () => socket.send(payload));
-    socket.on('message', (raw: RawData) => {
-      if (settled) return;
-      let frames: NativeSseEvent[];
-      try {
-        const consumed = consumeWebSocketBuffer(pendingText + rawDataToUtf8(raw));
-        pendingText = consumed.rest;
-        if (pendingText.length > 1_000_000) throw new Error('oversized frame');
-        frames = consumed.frames;
-      } catch {
-        const bytes = rawDataLength(raw);
-        console.warn('[api] rejected malformed websocket message bytes=%d first_byte=%d',
-          bytes, rawDataFirstByte(raw));
-        socket.terminate();
-        finish(new Error('Responses WebSocket returned a malformed frame'));
-        return;
-      }
-      for (const frame of frames) {
-        events.push(frame);
-        if (
-          frame.event === 'response.completed'
-          || frame.event === 'response.done'
-          || frame.event === 'response.incomplete'
-          || frame.event === 'response.failed'
-        ) {
-          socket.close();
-          finish();
-          break;
-        }
-      }
-    });
-    socket.once('error', () => finish(new Error('Responses WebSocket transport failed')));
-    socket.once('close', () => {
-      if (!settled) finish(new Error('Responses WebSocket closed before a terminal event'));
-    });
-  });
-}
-
-function consumeWebSocketBuffer(buffer: string): { frames: NativeSseEvent[]; rest: string } {
-  const first = buffer.search(/\S/);
-  if (first < 0) return { frames: [], rest: '' };
-  const firstChar = buffer[first];
-  if (firstChar !== '{' && firstChar !== '[') {
-    return { frames: parseWebSocketMessage(buffer), rest: '' };
-  }
-
-  const frames: NativeSseEvent[] = [];
-  let cursor = first;
-  while (cursor < buffer.length) {
-    while (cursor < buffer.length && /\s/.test(buffer[cursor]!)) cursor += 1;
-    if (cursor >= buffer.length) return { frames, rest: '' };
-    const start = cursor;
-    const opening = buffer[cursor];
-    if (opening !== '{' && opening !== '[') throw new Error('invalid websocket frame prefix');
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    let completedAt = -1;
-    for (; cursor < buffer.length; cursor += 1) {
-      const char = buffer[cursor]!;
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (char === '\\') escaped = true;
-        else if (char === '"') inString = false;
-        continue;
-      }
-      if (char === '"') {
-        inString = true;
-        continue;
-      }
-      if (char === '{' || char === '[') depth += 1;
-      else if (char === '}' || char === ']') depth -= 1;
-      if (depth < 0) throw new Error('invalid websocket frame nesting');
-      if (depth === 0) {
-        completedAt = cursor;
-        break;
-      }
-    }
-    if (completedAt < 0) return { frames, rest: buffer.slice(start) };
-    frames.push(...parseWebSocketMessage(buffer.slice(start, completedAt + 1)));
-    cursor = completedAt + 1;
-  }
-  return { frames, rest: '' };
-}
-
-function parseWebSocketMessage(raw: string): NativeSseEvent[] {
-  const normalizeFrame = (frame: unknown): NativeSseEvent | null => {
-    if (!frame || typeof frame !== 'object' || Array.isArray(frame)) {
-      throw new Error('invalid frame');
-    }
-    const type = (frame as { type?: unknown }).type;
-    if (typeof type !== 'string' || !type.trim()) return null;
-    return { event: type.trim(), data: frame };
-  };
-
-  const parseFrames = (value: string): NativeSseEvent[] => {
-    const trimmed = value.trim();
-    if (
-      !trimmed
-      || trimmed === '[DONE]'
-      || trimmed === 'ping'
-      || trimmed === 'pong'
-      || /^[0-9]$/.test(trimmed)
-    ) return [];
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (Array.isArray(parsed)) {
-      return parsed.map(normalizeFrame).filter((frame): frame is NativeSseEvent => frame !== null);
-    }
-    const frame = normalizeFrame(parsed);
-    return frame ? [frame] : [];
-  };
-
-  try {
-    return parseFrames(raw);
-  } catch {
-    const frames: NativeSseEvent[] = [];
-    let currentEvent = '';
-    for (const rawLine of raw.split(/\r?\n/)) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith(':')) continue;
-      if (line.startsWith('event:')) {
-        currentEvent = line.slice(6).trim();
-        continue;
-      }
-      const value = line.startsWith('data:') ? line.slice(5).trim() : line;
-      const parsed = parseFrames(value);
-      for (const frame of parsed) {
-        frames.push(currentEvent ? { ...frame, event: currentEvent } : frame);
-      }
-      currentEvent = '';
-    }
-    if (frames.length === 0) throw new Error('invalid frame');
-    return frames;
-  }
-}
-
-function rawDataToUtf8(raw: RawData): string {
-  if (Array.isArray(raw)) return Buffer.concat(raw).toString('utf8');
-  if (raw instanceof ArrayBuffer) return Buffer.from(raw).toString('utf8');
-  return Buffer.from(raw).toString('utf8');
-}
-
-function rawDataLength(raw: RawData): number {
-  if (Array.isArray(raw)) return raw.reduce((total, part) => total + part.length, 0);
-  return raw.byteLength;
-}
-
-function rawDataFirstByte(raw: RawData): number {
-  if (Array.isArray(raw)) return raw[0]?.[0] ?? -1;
-  if (raw instanceof ArrayBuffer) return new Uint8Array(raw)[0] ?? -1;
-  return Buffer.from(raw)[0] ?? -1;
-}
-
-function responsesWebSocketUrl(baseUrl: string): string {
-  const url = new URL(`${normalizeBaseUrl(baseUrl)}/responses`);
-  if (url.protocol === 'https:') url.protocol = 'wss:';
-  else if (url.protocol === 'http:') url.protocol = 'ws:';
-  else throw new Error('Responses WebSocket provider URL must use HTTP or HTTPS');
-  return url.toString();
-}
-
-function buildWebSocketCreatePayload(body: Record<string, unknown>): Record<string, unknown> {
-  const payload = { ...body };
-  delete payload.stream;
-  delete payload.background;
-  return { type: 'response.create', ...payload };
-}
-
-function buildWebSocketHeaders(apiKey: string, requestId = randomUUID()): Record<string, string> {
-  return {
-    authorization: `Bearer ${apiKey}`,
-    'OpenAI-Beta': 'responses_websockets=2026-02-06',
-    originator: 'codex_cli_rs',
-    version: '0.144.1',
-    'x-client-request-id': requestId,
-  };
+  return events;
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -704,8 +509,16 @@ function normalizeBaseUrl(baseUrl: string): string {
   return trimmed;
 }
 
-function parseSse(raw: string): NativeSseEvent[] {
-  const events: NativeSseEvent[] = [];
+/**
+ * Incremental SSE parser: feed() accepts arbitrary text chunks (events may be
+ * split across reads), end() flushes the trailing partial line and event.
+ * parseSse() below is the whole-buffer wrapper kept for tests and fallbacks.
+ */
+function createSseParser(onEvent: (event: NativeSseEvent) => void): {
+  feed: (text: string) => void;
+  end: () => void;
+} {
+  let buffer = '';
   let currentEvent = 'message';
   let dataLines: string[] = [];
 
@@ -733,38 +546,118 @@ function parseSse(raw: string): NativeSseEvent[] {
         event = dataType.trim();
       }
     }
-    events.push({ event, data });
+    onEvent({ event, data });
     currentEvent = 'message';
   };
 
-  const lines = raw.split(/\r?\n/);
-  for (const line of lines) {
+  const processLine = (line: string) => {
     if (line === '') {
       flush();
-      continue;
+      return;
     }
     if (line.startsWith(':')) {
-      continue;
+      return;
     }
     if (line.startsWith('event:')) {
       currentEvent = line.slice(6).trim() || 'message';
-      continue;
+      return;
     }
     if (line.startsWith('data:')) {
       dataLines.push(line.slice(5).replace(/^\s/, ''));
-      continue;
+      return;
     }
     if (line.startsWith('id:') || line.startsWith('retry:')) {
-      continue;
+      return;
     }
     dataLines.push(line);
-  }
-  flush();
+  };
+
+  return {
+    feed(text: string) {
+      buffer += text;
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        let line = buffer.slice(0, newline);
+        if (line.endsWith('\r')) line = line.slice(0, -1);
+        buffer = buffer.slice(newline + 1);
+        processLine(line);
+        newline = buffer.indexOf('\n');
+      }
+    },
+    end() {
+      if (buffer) {
+        let line = buffer;
+        if (line.endsWith('\r')) line = line.slice(0, -1);
+        buffer = '';
+        processLine(line);
+      }
+      flush();
+    },
+  };
+}
+
+function parseSse(raw: string): NativeSseEvent[] {
+  const events: NativeSseEvent[] = [];
+  const parser = createSseParser((event) => events.push(event));
+  parser.feed(raw);
+  parser.end();
   return events;
 }
 
 function isOutputTextDelta(event: string): boolean {
   return event === 'response.output_text.delta' || event === 'response.text.delta';
+}
+
+/** Pull the token string out of a text-delta payload, tolerating provider shape drift. */
+function textDeltaToken(data: unknown): string | null {
+  const record = data as Record<string, unknown> | null;
+  const delta = typeof record?.delta === 'string' ? record.delta : null;
+  const text = typeof record?.text === 'string' ? record.text : null;
+  const outputText = typeof record?.output_text === 'string' ? record.output_text : null;
+  const nestedText = typeof (record?.output_text as { text?: unknown } | undefined)?.text === 'string'
+    ? (record?.output_text as { text?: string }).text
+    : null;
+  const token = delta ?? text ?? outputText ?? nestedText;
+  return token ? token : null;
+}
+
+/** Live-emit one parsed stream event's text token to the activity sink, if streaming is on. */
+function maybeEmitTextDelta(event: NativeSseEvent, streamToActivity: boolean): void {
+  if (!streamToActivity || !isOutputTextDelta(event.event)) return;
+  const token = textDeltaToken(event.data);
+  if (token) reportActivity({ type: 'text_delta', text: token });
+}
+
+/**
+ * A "useful" stream event in the provider's retry sense: output text or a
+ * tool call already on the wire. Once one of these arrived, re-sending the
+ * identical request can duplicate a tool action the provider already ran.
+ */
+function isUsefulStreamEvent(event: NativeSseEvent): boolean {
+  if (isOutputTextDelta(event.event)) return textDeltaToken(event.data) !== null;
+  if (isOutputTextDone(event.event)) return true;
+  if (event.event === 'response.function_call_arguments.delta'
+    || event.event === 'response.function_call_arguments.done') return true;
+  if (event.event === 'response.output_item.added' || event.event === 'response.output_item.done') {
+    const item = (event.data as { item?: { type?: unknown } } | null)?.item;
+    return item?.type === 'function_call';
+  }
+  return false;
+}
+
+/**
+ * Attach the useful-delta flag to an error thrown mid-stream so the caller can
+ * apply the provider's retry rule: an identical retry is only safe while no
+ * useful deltas were delivered yet.
+ */
+function markStreamProgress<T>(error: T, sawUsefulDeltas: boolean): T {
+  (error as { sawUsefulDeltas?: boolean }).sawUsefulDeltas = sawUsefulDeltas;
+  return error;
+}
+
+/** Read the useful-delta flag from an error thrown by the stream transport. */
+export function sawUsefulDeltasBeforeError(error: unknown): boolean {
+  return (error as { sawUsefulDeltas?: boolean } | null)?.sawUsefulDeltas === true;
 }
 
 function isOutputTextDone(event: string): boolean {
@@ -785,8 +678,8 @@ function extractStreamedOutputText(events: NativeSseEvent[]): string {
       ? (data?.output_text as { text?: string }).text
       : null;
     if (isOutputTextDelta(event.event)) {
-      const token = delta ?? text ?? outputText ?? nestedText;
-      if (typeof token === 'string' && token) {
+      const token = textDeltaToken(event.data);
+      if (token) {
         sawDelta = true;
         chunks.push(token);
       }
@@ -1026,12 +919,8 @@ export const __test__ = {
   extractStreamedOutputText,
   collectDoneItems,
   findCompletedPayload,
-  responsesWebSocketUrl,
-  requestWebSocketEvents,
-  buildWebSocketCreatePayload,
-  buildWebSocketHeaders,
-  parseWebSocketMessage,
-  consumeWebSocketBuffer,
+  maybeEmitTextDelta,
+  isUsefulStreamEvent,
 };
 
 function collectToolSearchNames(value: unknown, paths: Set<string>): void {

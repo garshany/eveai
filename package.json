@@ -66,18 +66,16 @@
     "jose": "^6.2.3",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "socks-proxy-agent": "^10.1.0",
-    "ws": "^8.21.1"
+    "socks-proxy-agent": "^10.1.0"
   },
   "overrides": {
     "undici": "6.27.0"
   },
   "devDependencies": {
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^26.1.0",
-    "@types/ws": "^8.18.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "@typescript-eslint/eslint-plugin": "^8.63.0",
     "@typescript-eslint/parser": "^8.63.0",
     "@vitejs/plugin-react": "^6.0.3",

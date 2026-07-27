@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { rmSync } from 'node:fs';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
+import { deleteCharacterData } from '../db/character-datastore.js';
 import {
   resolveUserProfilePath,
   withUserProfileAuthorizationLock,
@@ -24,7 +25,8 @@ import {
   parseEveConsentForm,
 } from './eve-consent.js';
 import { buildLocalizedEveConsentPage, type ConsentLocale } from './localized-eve-consent-page.js';
-import { withWebLaneAuthorizationLock } from './web-lane-lock.js';
+import { withWebLaneAuthorizationLocks } from './web-lane-lock.js';
+import { WEB_CHAT_ID_START } from './web-session.js';
 
 const log = createLogger('auth');
 
@@ -192,12 +194,26 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
         isBrowserFlow: Boolean(appRedirect),
       };
       // Validate browser ownership before any profile is removed. Browser
-      // flows then hold the lane lock before the character lock and revalidate
-      // inside the transaction, keeping owner and character membership stable.
-      planBrowserSsoOwner(db, ownerInput);
+      // flows then hold the locks of every lane the merge may touch before the
+      // character lock and revalidate inside the transaction, keeping owner
+      // and character membership stable.
+      const preliminaryPlan = planBrowserSsoOwner(db, ownerInput);
+      const lockedChatIds = chatId === null
+        ? []
+        : [chatId, ...(preliminaryPlan.kind === 'merge' ? preliminaryPlan.orphanChatIds : [])];
       const persistCutover = async (): Promise<UserContext> => await withUserProfileAuthorizationLock(characterId, async () => {
         const persistAuthorization = db.transaction((): UserContext => {
           const ownerPlan = planBrowserSsoOwner(db, ownerInput);
+          if (ownerPlan.kind === 'merge') {
+            // The orphan set was computed before the lane locks were taken. A
+            // lane that appeared since is outside the held locks, so the merge
+            // cannot safely rewrite it — fail and let the user retry.
+            const held = new Set(lockedChatIds);
+            const orphanChatIds = listOrphanedWebLaneIds(db, ownerPlan.existingUserId, ownerPlan.chatId);
+            if (orphanChatIds.some((orphanChatId) => !held.has(orphanChatId))) {
+              throw new Error('Browser SSO orphan lanes changed during sign-in');
+            }
+          }
           deleteCharacterProfileArtifacts(db, characterId);
           const resolvedUserId = applyBrowserSsoOwnerPlan(db, ownerPlan);
           db.prepare(`
@@ -239,7 +255,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
         return persistAuthorization.immediate();
       });
       const ctx = appRedirect && chatId !== null
-        ? await withWebLaneAuthorizationLock(chatId, persistCutover)
+        ? await withWebLaneAuthorizationLocks(lockedChatIds, persistCutover)
         : await persistCutover();
 
       void refreshUserProfile(db, ctx)
@@ -356,6 +372,10 @@ function reassignCharacterOwnership(db: Db, userId: number, characterId: number)
   db.prepare('DELETE FROM eve_character_links WHERE character_id = ? AND COALESCE(user_id, 0) != ?')
     .run(characterId, userId);
   db.prepare('UPDATE eve_accounts SET user_id = ? WHERE character_id = ?').run(userId, characterId);
+  // Ownership changed hands: drop the materialized private profile so rows
+  // synced under the previous owner's consent are not inherited; the new
+  // owner re-syncs on first use under their own scopes.
+  deleteCharacterData(db, characterId);
 }
 
 function deleteCharacterProfileArtifacts(db: Db, characterId: number): void {
@@ -383,7 +403,7 @@ function deleteCharacterProfileArtifacts(db: Db, characterId: number): void {
 
 type BrowserSsoOwnerPlan =
   | { kind: 'keep'; userId: number }
-  | { kind: 'merge'; requestedUserId: number; existingUserId: number; chatId: number };
+  | { kind: 'merge'; requestedUserId: number; existingUserId: number; chatId: number; orphanChatIds: number[] };
 
 function planBrowserSsoOwner(
   db: Db,
@@ -400,48 +420,186 @@ function planBrowserSsoOwner(
   const browserSession = db.prepare(`
     SELECT 1
     FROM web_sessions
-    WHERE user_id = ? AND chat_id = ?
+    WHERE user_id = ? AND chat_id = ? AND expires_at > datetime('now')
   `).get(input.requestedUserId, input.chatId);
   if (!browserSession) throw new Error('Browser SSO session no longer exists');
 
   const existing = db.prepare(`
-    SELECT user_id
-    FROM eve_accounts
-    WHERE character_id = ? AND user_id IS NOT NULL
-  `).get(input.characterId) as { user_id: number } | undefined;
-  if (!existing || existing.user_id === input.requestedUserId) {
+    SELECT COALESCE(
+      (SELECT user_id FROM eve_accounts WHERE character_id = ? AND user_id IS NOT NULL),
+      (SELECT user_id FROM eve_character_links WHERE character_id = ? AND user_id IS NOT NULL LIMIT 1)
+    ) AS user_id
+  `).get(input.characterId, input.characterId) as { user_id: number | null } | undefined;
+  if (!existing || existing.user_id === null || existing.user_id === input.requestedUserId) {
     return { kind: 'keep', userId: input.requestedUserId };
   }
 
-  const alreadyLinked = db.prepare(`
-    SELECT 1 FROM eve_accounts WHERE user_id = ? LIMIT 1
-  `).get(input.requestedUserId);
-  if (alreadyLinked) {
-    throw new Error('Browser identity already owns a different EVE character');
-  }
-
+  // A browser identity may own several characters: linking a character owned
+  // by someone else always merges the fresh guest into the existing owner.
   return {
     kind: 'merge',
     requestedUserId: input.requestedUserId,
     existingUserId: existing.user_id,
     chatId: input.chatId,
+    orphanChatIds: listOrphanedWebLaneIds(db, existing.user_id, input.chatId),
   };
 }
 
 function applyBrowserSsoOwnerPlan(db: Db, plan: BrowserSsoOwnerPlan): number {
   if (plan.kind === 'keep') return plan.userId;
+  // Adopt first: rows moved off orphaned lanes keep the surviving user_id, so
+  // the idempotency-unique transfers below collide against the owner's
+  // pre-existing rows and it is the fresh guest duplicates that are dropped.
+  adoptOrphanedWebLanes(db, plan.existingUserId, plan.chatId);
   db.prepare('UPDATE web_sessions SET user_id = ? WHERE user_id = ? AND chat_id = ?')
     .run(plan.existingUserId, plan.requestedUserId, plan.chatId);
   db.prepare('UPDATE agent_threads SET user_id = ? WHERE user_id = ? AND chat_id = ?')
     .run(plan.existingUserId, plan.requestedUserId, plan.chatId);
-  db.prepare('UPDATE web_agent_requests SET user_id = ? WHERE user_id = ? AND chat_id = ?')
+  db.prepare('UPDATE OR IGNORE web_agent_requests SET user_id = ? WHERE user_id = ? AND chat_id = ?')
     .run(plan.existingUserId, plan.requestedUserId, plan.chatId);
+  // Colliding guest duplicates go once terminal; in-flight rows are never
+  // deleted — a live runner may still finish them.
+  db.prepare(`
+    DELETE FROM web_agent_requests
+    WHERE user_id = ? AND chat_id = ? AND status NOT IN ('queued', 'running')
+  `).run(plan.requestedUserId, plan.chatId);
   db.prepare('UPDATE web_admission_events SET user_id = ? WHERE user_id = ?')
     .run(plan.existingUserId, plan.requestedUserId);
   db.prepare('UPDATE intel_notes SET user_id = ? WHERE user_id = ?')
     .run(plan.existingUserId, plan.requestedUserId);
   db.prepare('UPDATE auth_requests SET user_id = ? WHERE user_id = ? AND chat_id = ?')
     .run(plan.existingUserId, plan.requestedUserId, plan.chatId);
-  db.prepare('DELETE FROM users WHERE user_id = ?').run(plan.requestedUserId);
+  // User-scoped data the fresh guest may have accumulated before linking must
+  // follow the surviving identity; nothing stays behind on the deleted user.
+  db.prepare('UPDATE market_price_alerts SET user_id = ? WHERE user_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId);
+  db.prepare('UPDATE market_alert_events SET user_id = ? WHERE user_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId);
+  db.prepare('UPDATE usage_events SET user_id = ? WHERE user_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId);
+  // Characters the guest linked before the merge follow the surviving
+  // identity as well: a browser user may own several EVE characters.
+  db.prepare('UPDATE eve_accounts SET user_id = ? WHERE user_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId);
+  db.prepare('UPDATE eve_character_links SET user_id = ? WHERE user_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId);
+  db.prepare(`
+    UPDATE users
+    SET active_character_id = (SELECT active_character_id FROM users WHERE user_id = ?),
+        active_character_version = active_character_version + 1,
+        updated_at = datetime('now')
+    WHERE user_id = ?
+      AND active_character_id IS NULL
+      AND (SELECT active_character_id FROM users WHERE user_id = ?) IS NOT NULL
+  `).run(plan.requestedUserId, plan.existingUserId, plan.requestedUserId);
+  db.prepare('UPDATE OR IGNORE market_watchlist SET user_id = ? WHERE user_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId);
+  db.prepare('DELETE FROM market_watchlist WHERE user_id = ?').run(plan.requestedUserId);
+  db.prepare('UPDATE OR IGNORE heartbeat_config SET user_id = ? WHERE user_id = ?')
+    .run(plan.existingUserId, plan.requestedUserId);
+  db.prepare('DELETE FROM heartbeat_config WHERE user_id = ?').run(plan.requestedUserId);
+  db.prepare(`
+    INSERT INTO usage_daily (
+      day, channel, model, user_id, events, input_tokens, output_tokens,
+      cached_tokens, cache_write_tokens, reasoning_tokens, cost_micros, unknown_cost_events
+    )
+    SELECT day, channel, model, ?, events, input_tokens, output_tokens,
+      cached_tokens, cache_write_tokens, reasoning_tokens, cost_micros, unknown_cost_events
+    FROM usage_daily WHERE user_id = ?
+    ON CONFLICT(day, channel, model, user_id) DO UPDATE SET
+      events = events + excluded.events,
+      input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens,
+      cached_tokens = cached_tokens + excluded.cached_tokens,
+      cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+      reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
+      cost_micros = cost_micros + excluded.cost_micros,
+      unknown_cost_events = unknown_cost_events + excluded.unknown_cost_events
+  `).run(plan.existingUserId, plan.requestedUserId);
+  db.prepare('DELETE FROM usage_daily WHERE user_id = ?').run(plan.requestedUserId);
+  // Migrate the discarded guest identity's model settings to the surviving
+  // owner. ON CONFLICT DO NOTHING keeps the owner's own row when both exist —
+  // the authenticated identity's choice wins. The guest row is then removed:
+  // it would otherwise block the users delete below (FK, no cascade).
+  db.prepare(`
+    INSERT INTO user_model_settings (user_id, model, reasoning_effort, verbosity, updated_at)
+    SELECT ?, model, reasoning_effort, verbosity, updated_at
+    FROM user_model_settings
+    WHERE user_id = ?
+    ON CONFLICT(user_id) DO NOTHING
+  `).run(plan.existingUserId, plan.requestedUserId);
+  db.prepare('DELETE FROM user_model_settings WHERE user_id = ?').run(plan.requestedUserId);
+  // In-flight requests pinned to the guest by an idempotency collision still
+  // reference the guest row; the identity row goes once they finish.
+  const requestsLeft = db.prepare(
+    'SELECT 1 FROM web_agent_requests WHERE user_id = ? LIMIT 1',
+  ).get(plan.requestedUserId);
+  if (!requestsLeft) {
+    db.prepare('DELETE FROM users WHERE user_id = ?').run(plan.requestedUserId);
+  }
   return plan.existingUserId;
+}
+
+// Web lanes belong to individual browser sessions, but the user's history
+// belongs to the user. When a returning user's previous sessions expired,
+// their lanes are orphaned (no live session row); fold those lanes into the
+// lane of the session that just linked the character so the old conversations
+// resurface in the sidebar. Lanes with a live session (another device) keep
+// their own view and are left untouched.
+function listOrphanedWebLaneIds(db: Db, userId: number, currentChatId: number): number[] {
+  const rows = db.prepare(`
+    SELECT s.chat_id
+    FROM telegram_sessions s
+    WHERE s.username = 'web'
+      AND s.chat_id <= ?
+      AND s.chat_id != ?
+      AND NOT EXISTS (
+        SELECT 1 FROM web_sessions w
+        WHERE w.chat_id = s.chat_id AND w.expires_at > datetime('now')
+      )
+      AND (
+        EXISTS (SELECT 1 FROM agent_threads t WHERE t.chat_id = s.chat_id AND t.user_id = ?)
+        OR EXISTS (SELECT 1 FROM eve_character_links l WHERE l.chat_id = s.chat_id AND l.user_id = ?)
+      )
+    ORDER BY s.chat_id ASC
+  `).all(WEB_CHAT_ID_START, currentChatId, userId, userId) as Array<{ chat_id: number }>;
+  return rows.map((row) => row.chat_id);
+}
+
+function adoptOrphanedWebLanes(db: Db, userId: number, currentChatId: number): void {
+  for (const orphanChatId of listOrphanedWebLaneIds(db, userId, currentChatId)) {
+    // Expired session rows only block the telegram_sessions FK; live sessions
+    // cannot exist here by the selection above.
+    db.prepare('DELETE FROM web_sessions WHERE chat_id = ?').run(orphanChatId);
+    db.prepare('UPDATE agent_threads SET chat_id = ? WHERE chat_id = ?').run(currentChatId, orphanChatId);
+    db.prepare('UPDATE OR IGNORE web_agent_requests SET chat_id = ? WHERE chat_id = ?')
+      .run(currentChatId, orphanChatId);
+    // In-flight rows are never dropped: a live runner may still finish them.
+    // Rows left behind by an idempotency-key collision on the adopting lane go
+    // only once they reached a terminal state.
+    db.prepare(`
+      DELETE FROM web_agent_requests
+      WHERE chat_id = ? AND status NOT IN ('queued', 'running')
+    `).run(orphanChatId);
+    db.prepare('UPDATE OR IGNORE eve_character_links SET chat_id = ? WHERE chat_id = ?').run(currentChatId, orphanChatId);
+    db.prepare('DELETE FROM eve_character_links WHERE chat_id = ?').run(orphanChatId);
+    db.prepare('UPDATE OR IGNORE route_monitors SET chat_id = ? WHERE chat_id = ?').run(currentChatId, orphanChatId);
+    db.prepare('DELETE FROM route_monitors WHERE chat_id = ?').run(orphanChatId);
+    db.prepare('UPDATE OR IGNORE route_monitor_kill_dedup SET chat_id = ? WHERE chat_id = ?').run(currentChatId, orphanChatId);
+    db.prepare('DELETE FROM route_monitor_kill_dedup WHERE chat_id = ?').run(orphanChatId);
+    db.prepare('UPDATE OR IGNORE kill_watches SET chat_id = ? WHERE chat_id = ?').run(currentChatId, orphanChatId);
+    db.prepare('DELETE FROM kill_watches WHERE chat_id = ?').run(orphanChatId);
+    db.prepare('UPDATE OR IGNORE eve_kill_notification_dedup SET chat_id = ? WHERE chat_id = ?').run(currentChatId, orphanChatId);
+    db.prepare('DELETE FROM eve_kill_notification_dedup WHERE chat_id = ?').run(orphanChatId);
+    db.prepare('DELETE FROM auth_requests WHERE chat_id = ?').run(orphanChatId);
+    // Keep the lane row while in-flight requests still reference it (an
+    // idempotency collision pinned them here); the next adoption retries the
+    // teardown once they finish.
+    const requestsLeft = db.prepare(
+      'SELECT 1 FROM web_agent_requests WHERE chat_id = ? LIMIT 1',
+    ).get(orphanChatId);
+    if (!requestsLeft) {
+      db.prepare('DELETE FROM telegram_sessions WHERE chat_id = ?').run(orphanChatId);
+    }
+  }
 }

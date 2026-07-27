@@ -10,6 +10,8 @@ import {
   planRoute,
   getToolPolicy,
   isSdeSqlTool,
+  isCharacterSqlTool,
+  runCharacterSqlTool,
   isUniverseCountTool,
   isEveKillToolName,
   isEveKillAnalyticsToolName,
@@ -43,6 +45,7 @@ import {
   extractFunctionCalls,
   extractClientToolSearchCalls,
   extractFinalAssistantText,
+  sawUsefulDeltasBeforeError,
   toNativeMessage,
   toNativeAssistantMessage,
   type NativeInputItem,
@@ -56,6 +59,9 @@ import {
   type ClientToolSearchIndex,
 } from './client-tool-search.js';
 import { callEsiOperation } from '../eve/esi-client.js';
+import { executeAssetsSummary, isAssetsSummaryTool } from '../eve/assets-summary.js';
+import { executeCharacterOrdersSummary, isCharacterOrdersSummaryTool } from '../eve/orders-summary.js';
+import { executeMarketWideSummary, isMarketWideSummaryTool } from '../eve/market-wide-summary.js';
 import {
   executeMarketHistorySummary,
   isMarketHistorySummaryTool,
@@ -88,6 +94,14 @@ import {
 import { createRequestId } from './planner.js';
 import { getThreadSummary, runPreTurnCompact, needsMidTurnCompaction, runMidTurnCompact } from './compact.js';
 import { executeEveKillTool } from '../eve-kill/executor.js';
+import {
+  INDUSTRY_COST_TOOL_NAME,
+  APPRAISE_ITEMS_TOOL_NAME,
+  PILOT_INTEL_TOOL_NAME,
+  ABYSSAL_MARKET_TOOL_NAME,
+} from '../community/tools.js';
+import { fetchIndustryCost, fetchZkillStats, fetchAbyssalListings, type ZkillScope } from '../community/clients.js';
+import { parseItemLines, appraiseLocally, fetchJaniceAppraisal } from '../community/appraise.js';
 import { validateKillActivitySummaryArgs } from '../eve-kill/activity-summary.js';
 import {
   executeEveScoutTool,
@@ -107,6 +121,8 @@ import { executeHeartbeatConfig } from '../scheduled/heartbeat-config.js';
 import type { HeartbeatConfigArgs } from '../scheduled/heartbeat-config.js';
 import { getLinkedCharacter } from '../eve/sso.js';
 import type { UserContext } from '../auth/user-resolver.js';
+import { recordModelUsageSafe } from '../usage/tracker.js';
+import { resolveModelSettings } from '../user-model-settings.js';
 import { executeOsintInferHome } from '../eve-osint/inference.js';
 import { executeAnalyzeLocal } from '../eve-local/analyzer.js';
 import { executeAnalyzeScan } from '../eve-scan/analyzer.js';
@@ -138,7 +154,6 @@ import {
   type ToolRegistryLoadDelta,
 } from './tool-registry.js';
 import {
-  MAX_TOTAL_TURN_READ_LEAVES,
   runReadSubagentBatch,
   type ReadSubagentSharedBudget,
 } from './read-subagents.js';
@@ -156,17 +171,19 @@ import {
   recordTurnToolOutcome,
 } from './turn-goals.js';
 
-const MAX_TOOL_ITERATIONS = 40;
-const MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE = 4;
+// Operator-tunable budgets are read from config (env-driven, see src/config.ts).
+// Hard-coded constants below are deliberate loop/coherence guards, not quality caps.
+const MAX_TOOL_ITERATIONS = config.openai.maxToolIterations;
+const MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE = config.openai.maxClientSearchCallsPerResponse;
 const MAX_CONSECUTIVE_EMPTY_CLIENT_SEARCHES = 3;
 const MAX_PROGRAMMATIC_CALLS_PER_BATCH = 4;
 const MAX_PROGRAMMATIC_CALLS_PER_TURN = 4;
 const MAX_PROGRAMMATIC_CALLS_PER_PROGRAM = 4;
-const MAX_EVE_KILL_CALLS_PER_TURN = 30;
-const MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN = 4;
-const MAX_CONSECUTIVE_SAME_TOOL = 3;
-const MAX_CONTEXT_MESSAGES = 10;
-const MAX_CONTEXT_CHARS = 15000;
+const MAX_EVE_KILL_CALLS_PER_TURN = config.openai.maxEveKillCallsPerTurn;
+const MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN = config.openai.maxEveKillAnalyticsCallsPerTurn;
+const MAX_CONSECUTIVE_SAME_TOOL = config.openai.maxConsecutiveSameTool;
+const MAX_CONTEXT_MESSAGES = config.openai.maxContextMessages;
+const MAX_CONTEXT_CHARS = config.openai.maxContextChars;
 const PREVIOUS_RESPONSE_MAX_AGE_MS = 55 * 60 * 1000;
 const RECOVERY_TOOL_SUMMARY_LIMIT = 6;
 const RECOVERY_TOOL_RESULT_CHARS = 280;
@@ -230,7 +247,7 @@ export { ESI_FIELD_WHITELIST, filterEsiFields, validateEsiFields } from './esi-f
  * AND matches a request parameter value. These are pure waste —
  * the caller already knows the value from the request args.
  */
-async function executeBatchMarketPrices(
+export async function executeBatchMarketPrices(
   db: Db,
   args: Record<string, unknown>,
   _ctx: UserContext,
@@ -747,21 +764,29 @@ async function runPreTurnCompactSafe(
 }
 
 /**
- * Transient model/transport failures that are safe to retry with the exact
- * same request: our 90s deadline, truncated SSE streams, provider 429/5xx,
- * and undici/socket-level drops. Tool side effects only happen after a
- * successful response, so re-sending the identical call cannot duplicate them.
+ * Transient model/transport failures: our deadline, truncated SSE streams,
+ * provider 429/5xx, and undici/socket-level drops. Retrying the exact same
+ * request is only safe while the stream has produced NO useful deltas yet:
+ * the provider contract allows 1–2 jittered retries up to the first useful
+ * content/tool delta, but forbids automatic replay after that point, because
+ * the provider may already have executed a side-effecting tool and a replay
+ * would run it twice. The stream-aware gate lives in runNativeAgentLoop via
+ * `sawUsefulDeltas` (native-responses.ts).
  */
 function isTransientModelError(message: string): boolean {
   return /timed out|admission queue|Incomplete response stream|HTTP (429|5\d\d)|terminated|fetch failed|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|EAI_AGAIN|rate.?limit|server had an error|server_error|overloaded|too many requests|bad gateway|service unavailable|gateway time-?out/i.test(message);
 }
 
-const MAX_TRANSIENT_RETRIES = 3;
+const MAX_TRANSIENT_RETRIES = config.openai.maxTransientRetries;
 const TRANSIENT_RETRY_BASE_DELAY_MS = 1000;
 
-function transientRetryDelayMs(attempt: number): number {
-  // Bounded linear backoff: 1s, 2s, 3s — worst case adds ~6s to a turn.
-  return TRANSIENT_RETRY_BASE_DELAY_MS * attempt;
+function transientRetryDelayMs(attempt: number, rng: () => number = Math.random): number {
+  // Jittered backoff on a growing linear cap: attempt N sleeps a uniform
+  // random time in [cap/2, cap] with cap = 1s*N (worst case ~7.5s over 5
+  // attempts). A plain linear schedule makes parallel turns retry in
+  // lockstep after a shared provider hiccup; the random half spreads them.
+  const cap = TRANSIENT_RETRY_BASE_DELAY_MS * attempt;
+  return Math.floor(cap * (0.5 + rng() * 0.5));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -827,13 +852,19 @@ async function runNativeAgentLoop(
     config.openai.toolSearchExecution === 'client' ? tools : builtTools,
   );
   const webSearchState = createWebSearchState();
-  const reasoningEffort = resolveReasoningEffort(goal, config.openai.reasoningEffort);
+  // Per-user model preferences, resolved once at turn start: a settings change
+  // mid-turn applies from the next turn, never retroactively. No saved row
+  // means the operator config defaults, so existing users are unaffected.
+  const modelSettings = resolveModelSettings(db, ctx.userId);
+  const reasoningEffort = resolveReasoningEffort(goal, modelSettings.reasoningEffort);
   const safetyIdentifier = buildSafetyIdentifier(ctx.userId, config.auth.secretKey);
   console.log(
-    '[executor] reasoning effort=%s source=%s mode=%s for goal="%s"',
+    '[executor] model=%s reasoning effort=%s source=%s mode=%s verbosity=%s for goal="%s"',
+    modelSettings.model,
     reasoningEffort,
-    config.openai.reasoningEffort === 'auto' ? 'auto' : 'fixed',
+    modelSettings.reasoningEffort === 'auto' ? 'auto' : 'fixed',
     config.openai.reasoningMode,
+    modelSettings.verbosity,
     goal.slice(0, 60),
   );
 
@@ -906,6 +937,14 @@ async function runNativeAgentLoop(
   const seenProviderCallIds = new Set<string>();
   const turnGoalLedger = createTurnGoalLedger(goal);
   let completionNudges = 0;
+  // Tiered effort is opt-in: while both tier overrides stay 'auto' every
+  // iteration uses the base resolution above. `continuesToolChain` marks that
+  // the previous response ended in tool calls whose outputs we feed back, so
+  // the next request continues an in-flight tool chain (intermediate tier)
+  // instead of opening or closing the turn (final tier).
+  const reasoningTiersEnabled = config.openai.reasoningEffortIntermediate !== 'auto'
+    || config.openai.reasoningEffortFinal !== 'auto';
+  let continuesToolChain = false;
 
   console.log('[executor] === NEW REQUEST request=%s goal="%s" ===', requestId, goal.slice(0, 80));
 
@@ -931,6 +970,13 @@ async function runNativeAgentLoop(
       ) modelController.abort();
     }, 100);
     let response;
+    const iterationReasoningEffort = continuesToolChain
+      ? resolveTierReasoningEffort(reasoningEffort, config.openai.reasoningEffortIntermediate)
+      : resolveTierReasoningEffort(reasoningEffort, config.openai.reasoningEffortFinal);
+    if (reasoningTiersEnabled) {
+      console.log('[executor] iter=%d reasoning tier=%s effort=%s',
+        iteration, continuesToolChain ? 'intermediate' : 'final', iterationReasoningEffort);
+    }
     try {
       response = await responseFactory({
         instructions: developerPrompt,
@@ -943,7 +989,9 @@ async function runNativeAgentLoop(
         parallelToolCalls: true,
         truncation: 'auto',
         contextManagement,
-        reasoningEffort,
+        model: modelSettings.model,
+        textVerbosity: modelSettings.verbosity,
+        reasoningEffort: iterationReasoningEffort,
         reasoningMode: config.openai.reasoningMode,
         // Preserve opaque reasoning for exact active-turn recovery in both
         // modes. It remains in memory and is never stored in SQLite.
@@ -961,16 +1009,24 @@ async function runNativeAgentLoop(
       }
       if (isTurnAborted()) abortTurn();
       const message = error instanceof Error ? error.message : String(error);
-      if (isTransientModelError(message) && transientRetries < MAX_TRANSIENT_RETRIES) {
+      const deltasSeen = sawUsefulDeltasBeforeError(error);
+      if (isTransientModelError(message) && !deltasSeen && transientRetries < MAX_TRANSIENT_RETRIES) {
         transientRetries += 1;
         const delay = transientRetryDelayMs(transientRetries);
         console.warn('[executor] transient model error retry=%d/%d delay_ms=%d message_length=%d',
           transientRetries, MAX_TRANSIENT_RETRIES, delay, message.length);
         await sleep(delay);
-        // No response was processed: retry the exact same request without
-        // consuming a tool iteration or changing its continuation id.
+        // No useful deltas were streamed and no response was processed: retry
+        // the exact same request without consuming a tool iteration or
+        // changing its continuation id.
         iteration -= 1;
         continue;
+      }
+      if (deltasSeen && isTransientModelError(message)) {
+        // The stream had already delivered useful deltas before failing, so
+        // the provider may have run a side-effecting tool. An identical retry
+        // could run it twice — fail the turn honestly instead of replaying.
+        console.warn('[executor] transient model error after useful stream deltas — refusing identical retry');
       }
       if (
         shouldUseToolStateRecovery(
@@ -985,6 +1041,9 @@ async function runNativeAgentLoop(
         pendingItems = buildResponseStateRecoveryContext(db, threadId, serverRecoveryItems);
         serverRecoveryItems = [...pendingItems];
         saveLastResponseId(db, threadId, null);
+        // Recovery resends the rebuilt full context: like iteration 0, this is
+        // turn-level planning, not a tool-chain continuation.
+        continuesToolChain = false;
         console.warn('[executor] tool state lost, switching to cold recovery context');
         continue;
       }
@@ -1005,7 +1064,8 @@ async function runNativeAgentLoop(
     if (turnDeadlineExceeded()) return deadlineFailure(peakInputTokens);
 
     if (response.error) {
-      if (isTransientModelError(response.error.message) && transientRetries < MAX_TRANSIENT_RETRIES) {
+      const deltasSeen = response.sawUsefulDeltas === true;
+      if (isTransientModelError(response.error.message) && !deltasSeen && transientRetries < MAX_TRANSIENT_RETRIES) {
         transientRetries += 1;
         const delay = transientRetryDelayMs(transientRetries);
         console.warn('[executor] transient response error retry=%d/%d delay_ms=%d message_length=%d',
@@ -1014,6 +1074,12 @@ async function runNativeAgentLoop(
         // Error envelopes are rejected before their output is processed.
         iteration -= 1;
         continue;
+      }
+      if (deltasSeen && isTransientModelError(response.error.message)) {
+        // Same provider rule as the thrown path above: useful deltas were
+        // already on the wire, so an identical retry may duplicate a tool
+        // action. Fall through to the sanitized terminal failure.
+        console.warn('[executor] transient response error after useful stream deltas — refusing identical retry');
       }
       if (
         shouldUseToolStateRecovery(
@@ -1028,6 +1094,7 @@ async function runNativeAgentLoop(
         pendingItems = buildResponseStateRecoveryContext(db, threadId, serverRecoveryItems);
         serverRecoveryItems = [...pendingItems];
         saveLastResponseId(db, threadId, null);
+        continuesToolChain = false;
         console.warn('[executor] tool state lost in response payload, switching to cold recovery context');
         continue;
       }
@@ -1071,6 +1138,16 @@ async function runNativeAgentLoop(
       totalCacheWriteTokens += response.usage.cacheWrite ?? 0;
       totalReasoningTokens += response.usage.reasoning;
       if (response.usage.input > peakInputTokens) peakInputTokens = response.usage.input;
+      // Durable per-response spend event (usage_events). Deliberately
+      // non-fatal like the total_tokens counter below: accounting failure
+      // must never break the user's turn.
+      recordModelUsageSafe(db, ctx, threadId, {
+        input: response.usage.input,
+        output: response.usage.output,
+        cached: response.usage.cached,
+        cacheWrite: response.usage.cacheWrite ?? 0,
+        reasoning: response.usage.reasoning,
+      }, modelSettings.model);
       console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d cache_write=%d reasoning=%d',
         iteration, response.usage.input, response.usage.output, response.usage.cached,
         response.usage.cacheWrite ?? 0, response.usage.reasoning);
@@ -1122,6 +1199,9 @@ async function runNativeAgentLoop(
             content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку и восстановленные tool-результаты выше. Если нужные данные уже есть — используй их, не вызывай tools повторно.' }],
           } as NativeInputItem);
           if (useServerResponseState) serverRecoveryItems = [...pendingItems];
+          // Compaction fires only when tool calls are pending — the turn stays
+          // inside its tool chain after the context rebuild.
+          continuesToolChain = true;
           continue;
         } catch (compactError) {
           if (compactController.signal.aborted || turnDeadlineExceeded()) {
@@ -1266,6 +1346,7 @@ async function runNativeAgentLoop(
         ];
         previousResponseId = null;
       }
+      continuesToolChain = true;
       continue;
     }
 
@@ -1313,6 +1394,9 @@ async function runNativeAgentLoop(
     }
 
     if (toolCalls.length === 0) {
+      // Every continuation below restarts the turn dialog (nudge, plain text
+      // replay, empty retry) rather than feeding tool outputs back.
+      continuesToolChain = false;
       const finalAssistantText = extractFinalAssistantText(response.output);
       const convenienceText = response.outputText.trim();
       if (finalAssistantText !== null) {
@@ -1464,7 +1548,7 @@ async function runNativeAgentLoop(
           && Array.isArray(argsList[index]?.calls)
           ? argsList[index]!.calls.length
           : 1;
-        if (sharedReadBudget.toolLeaves + requestedLeaves > MAX_TOTAL_TURN_READ_LEAVES) {
+        if (sharedReadBudget.toolLeaves + requestedLeaves > config.openai.maxTotalTurnReadLeaves) {
           return { ok: false, blocked: true, error: 'Shared turn read budget exceeded' };
         }
         sharedReadBudget.toolLeaves += requestedLeaves;
@@ -1492,12 +1576,14 @@ async function runNativeAgentLoop(
           requestId,
           goal,
           ctx,
+          threadId,
           argsList[index] ?? {},
           webSearchState,
           localBatchState,
           readSubagentState,
           safetyIdentifier,
           reasoningEffort,
+          modelSettings.model,
           responseFactory,
           turnContext,
           sharedReadBudget,
@@ -1634,7 +1720,7 @@ async function runNativeAgentLoop(
       // this round's calls/outputs to the accumulated items instead of
       // replacing them — otherwise the user's goal and earlier tool results
       // vanish after the first round and multi-step turns answer blind.
-      // Growth is bounded by MAX_TOOL_ITERATIONS, the 12k/tool output budget,
+      // Growth is bounded by MAX_TOOL_ITERATIONS, the per-tool output budget,
       // truncation:'auto', and mid-turn compaction.
       pendingItems = [
         ...pendingItems,
@@ -1658,6 +1744,10 @@ async function runNativeAgentLoop(
       if (useServerResponseState) serverRecoveryItems.push(antiLoopNudge);
       consecutiveSameToolCount = 0;
     }
+
+    // Tool outputs are being fed back: the next request continues this tool
+    // chain, so it falls under the intermediate effort tier.
+    continuesToolChain = true;
   }
 
   const timeout = 'Остановился после слишком большого числа tool iterations.';
@@ -2278,12 +2368,14 @@ async function executeReadSubagentDelegation(
   requestId: string,
   goal: string,
   ctx: UserContext,
+  threadId: string,
   args: Record<string, unknown>,
   webSearchState: WebSearchState,
   localBatchState: { callsExecuted: number },
   state: { batchesExecuted: number },
   safetyIdentifier: string | undefined,
   reasoningEffort: ReasoningEffort,
+  model: string,
   responseFactory: typeof createNativeResponse,
   turnContext: AgentTurnContext,
   sharedReadBudget: ReadSubagentSharedBudget,
@@ -2303,7 +2395,7 @@ async function executeReadSubagentDelegation(
 
   const controller = new AbortController();
   const deadlineMs = Math.max(1, Math.min(
-    120_000,
+    config.openai.readSubagentBatchDeadlineMs,
     Math.max(10_000, config.openai.responsesTimeoutMs * 2),
     turnContext.deadlineAt - Date.now(),
   ));
@@ -2340,10 +2432,30 @@ async function executeReadSubagentDelegation(
       },
       concurrency: config.openai.readSubagentConcurrency,
       reasoningEffort,
+      model,
+      // Every subagent model call is spend on the user's lane: bill it like
+      // the top-level sampling calls, priced by the applied model's tariff.
+      recordUsage: (usage) => {
+        recordModelUsageSafe(db, ctx, threadId, {
+          input: usage.input,
+          output: usage.output,
+          cached: usage.cached,
+          cacheWrite: usage.cacheWrite ?? 0,
+          reasoning: usage.reasoning,
+        }, model);
+      },
       safetyIdentifier,
       signal: controller.signal,
       responseFactory,
       budget: sharedReadBudget,
+      limits: {
+        maxTasks: config.openai.readSubagentMaxTasks,
+        maxConcurrentWorkers: config.openai.readSubagentMaxWorkers,
+        maxWorkerIterations: config.openai.readSubagentMaxWorkerIterations,
+        maxTotalModelCalls: config.openai.readSubagentMaxModelCalls,
+        maxToolLeaves: config.openai.maxTotalTurnReadLeaves,
+        maxAggregateChars: config.openai.readSubagentAggregateChars,
+      },
     });
   } finally {
     clearTimeout(deadline);
@@ -2480,8 +2592,65 @@ async function executeToolCallUnadmitted(
     return updatePlan(db, requestId, goal, steps);
   }
 
+  if (name === INDUSTRY_COST_TOOL_NAME) {
+    const productId = Number(args.product_id);
+    const runs = Number(args.runs);
+    if (!Number.isSafeInteger(productId) || productId <= 0 || !Number.isSafeInteger(runs) || runs <= 0) {
+      return { ok: false, error: 'product_id and runs must be positive integers' };
+    }
+    const meLevel = args.me_level == null ? null : Number(args.me_level);
+    const teLevel = args.te_level == null ? null : Number(args.te_level);
+    const result = await fetchIndustryCost({ productId, runs, meLevel, teLevel });
+    return result.ok
+      ? { ok: true, source: 'everef.net industry API', cost: result.data }
+      : { ok: false, error: `industry cost service unavailable: ${result.error}` };
+  }
+
+  if (name === APPRAISE_ITEMS_TOOL_NAME) {
+    const itemsText = String(args.items_text ?? '');
+    if (!itemsText.trim()) return { ok: false, error: 'items_text is empty' };
+    const regionRaw = args.region_id == null ? 10000002 : Number(args.region_id);
+    if (!Number.isSafeInteger(regionRaw) || regionRaw <= 0) {
+      return { ok: false, error: 'region_id must be a positive integer or null' };
+    }
+    const parsed = parseItemLines(itemsText);
+    if (parsed.length === 0) return { ok: false, error: 'no parsable item lines found' };
+    const local = appraiseLocally(db, parsed, regionRaw);
+    // Optional second opinion; null when no key is configured, the region is
+    // not The Forge (Janice prices Jita only), or Janice fails.
+    const janice = await fetchJaniceAppraisal(itemsText, regionRaw);
+    return { ok: true, ...local, janice };
+  }
+
+  if (name === PILOT_INTEL_TOOL_NAME) {
+    const scope = String(args.scope ?? '') as ZkillScope;
+    const id = Number(args.id);
+    if (!['character', 'corporation', 'alliance'].includes(scope) || !Number.isSafeInteger(id) || id <= 0) {
+      return { ok: false, error: 'scope must be character|corporation|alliance and id a positive integer' };
+    }
+    const result = await fetchZkillStats(scope, id);
+    return result.ok
+      ? { ok: true, source: 'zkillboard.com aggregate stats', stats: result.data }
+      : { ok: false, error: `pilot intel unavailable: ${result.error}` };
+  }
+
+  if (name === ABYSSAL_MARKET_TOOL_NAME) {
+    const typeId = Number(args.type_id);
+    if (!Number.isSafeInteger(typeId) || typeId <= 0) {
+      return { ok: false, error: 'type_id must be a positive integer' };
+    }
+    const result = await fetchAbyssalListings(typeId);
+    return result.ok
+      ? { ok: true, source: 'mutamarket.com listings', listings: result.data }
+      : { ok: false, error: `abyssal market unavailable: ${result.error}` };
+  }
+
   if (isSdeSqlTool(name)) {
     return executeSdeSql(db, String(args.sql ?? ''));
+  }
+
+  if (isCharacterSqlTool(name)) {
+    return await runCharacterSqlTool(db, ctx, String(args.sql ?? ''), guard);
   }
 
   if (isUniverseCountTool(name)) {
@@ -2505,6 +2674,20 @@ async function executeToolCallUnadmitted(
 
   if (isMarketHistorySummaryTool(name)) {
     return await executeMarketHistorySummary(db, args);
+  }
+
+  if (isAssetsSummaryTool(name)) {
+    return await executeAssetsSummary(db, args, ctx, guard);
+  }
+
+  if (isCharacterOrdersSummaryTool(name)) {
+    return await executeCharacterOrdersSummary(db, args, ctx, guard);
+  }
+
+  if (isMarketWideSummaryTool(name)) {
+    // Every regional leaf goes through the shared ESI-leaf admission
+    // controller; the aggregator adds its own smaller fan-out cap on top.
+    return await executeMarketWideSummary(db, args, guard, (operation) => withEsiLeafAdmission(operation, guard));
   }
 
   if (isSystemMetricSnapshotTool(name)) {
@@ -3039,11 +3222,25 @@ export function resolveReasoningEffort(
     : configured;
 }
 
+/**
+ * Opt-in per-iteration effort tier. `tierOverride` comes from
+ * OPENAI_REASONING_EFFORT_INTERMEDIATE / OPENAI_REASONING_EFFORT_FINAL, where
+ * 'auto' means "inherit the base per-goal resolution" — so with both tiers
+ * unset every iteration uses `base` and behavior matches a single effort.
+ */
+export function resolveTierReasoningEffort(
+  base: ApiReasoningEffort,
+  tierOverride: ReasoningEffort,
+): ApiReasoningEffort {
+  return tierOverride === 'auto' ? base : tierOverride;
+}
+
 export const __test__ = {
   runNativeAgentLoop,
   runPreTurnCompactSafe,
   refreshMissingProfileWithinDeadline,
   isTransientModelError,
+  transientRetryDelayMs,
   buildSmartContext,
   buildToolStateRecoveryContext,
   buildResponseStateRecoveryContext,
@@ -3064,11 +3261,13 @@ export const __test__ = {
   isRecentSqliteTimestamp,
   classifyReasoningEffort,
   resolveReasoningEffort,
+  resolveTierReasoningEffort,
   validateProgrammaticBatch,
   validateLocalParallelBatch,
   executeLocalParallelBatch,
   validateCompletedProgramShapes,
   truncateToolOutput,
+  smartAggregate,
 };
 
 function compactToolResult(value: unknown): unknown {
@@ -3099,8 +3298,8 @@ function compactToolResult(value: unknown): unknown {
   return compacted;
 }
 
-const MAX_TOOL_OUTPUT_CHARS = 12000;
-const SMART_AGGREGATE_THRESHOLD = 20;
+const MAX_TOOL_OUTPUT_CHARS = config.openai.maxToolOutputChars;
+const SMART_AGGREGATE_THRESHOLD = config.openai.smartAggregateThreshold;
 
 /**
  * Smart truncation: for large arrays, compute numeric aggregates (min/max/sum)
@@ -3111,7 +3310,12 @@ function truncateToolOutput(json: string): string {
   try {
     parsed = JSON.parse(json) as unknown;
   } catch {
-    return truncatedToolOutputNotice(json.length);
+    return JSON.stringify({
+      truncated: true,
+      total_chars: json.length,
+      notice: 'Tool output was not valid JSON; returning a raw prefix sample.',
+      raw_sample: json.slice(0, 2_000),
+    });
   }
 
   if (json.length <= MAX_TOOL_OUTPUT_CHARS) return json;
@@ -3134,20 +3338,14 @@ function truncateToolOutput(json: string): string {
 
     if (targetArray && targetArray.length >= SMART_AGGREGATE_THRESHOLD) {
       const aggregated = smartAggregate(targetArray);
-      if (wrapperObj) {
-        wrapperObj.data = aggregated;
-        const result = JSON.stringify(wrapperObj);
-        if (result.length <= MAX_TOOL_OUTPUT_CHARS) return result;
-        aggregated.top = aggregated.top.slice(0, 5);
-        wrapperObj.data = aggregated;
-        const smaller = stringifyWithinToolOutputBudget(wrapperObj);
-        if (smaller) return smaller;
+      for (const candidate of [aggregated, shrinkSmartAggregate(aggregated)]) {
+        if (wrapperObj) {
+          const withWrapper = stringifyWithinToolOutputBudget({ ...wrapperObj, data: candidate });
+          if (withWrapper) return withWrapper;
+        }
+        const plain = stringifyWithinToolOutputBudget(candidate);
+        if (plain) return plain;
       }
-      const result = JSON.stringify(aggregated);
-      if (result.length <= MAX_TOOL_OUTPUT_CHARS) return result;
-      aggregated.top = aggregated.top.slice(0, 5);
-      const smaller = JSON.stringify(aggregated);
-      if (smaller.length <= MAX_TOOL_OUTPUT_CHARS) return smaller;
     }
 
     // Fallback: simple slice
@@ -3168,7 +3366,7 @@ function truncateToolOutput(json: string): string {
   } catch {
     // fall through
   }
-  return truncatedToolOutputNotice(json.length);
+  return sampledTruncationNotice(parsed, json.length);
 }
 
 function stringifyWithinToolOutputBudget(value: unknown): string | null {
@@ -3184,14 +3382,99 @@ function truncatedToolOutputNotice(totalChars: number): string {
   });
 }
 
-function smartAggregate(rows: unknown[]): {
+/**
+ * Last-resort truncation for payloads with no single flat array (nested
+ * structures, arrays of arrays). The model always receives a real data sample
+ * plus per-array counts, never a bare "something was cut" notice.
+ */
+function sampledTruncationNotice(parsed: unknown, totalChars: number): string {
+  for (const sampleSize of [5, 2, 1]) {
+    const serialized = stringifyWithinToolOutputBudget({
+      truncated: true,
+      total_chars: totalChars,
+      notice: 'Tool output exceeded the size budget; structure kept with per-array counts and samples.',
+      sample: buildBoundedSample(parsed, sampleSize),
+    });
+    if (serialized) return serialized;
+  }
+  return truncatedToolOutputNotice(totalChars);
+}
+
+function buildBoundedSample(value: unknown, sampleSize: number): unknown {
+  if (typeof value === 'string') {
+    return value.length > 300 ? `${value.slice(0, 300)}…[${value.length} chars total]` : value;
+  }
+  if (Array.isArray(value)) {
+    return {
+      truncated_count: value.length,
+      sample: value.slice(0, sampleSize).map((entry) => buildBoundedSample(entry, sampleSize)),
+    };
+  }
+  if (value && typeof value === 'object') {
+    const record: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      record[key] = buildBoundedSample(entry, sampleSize);
+    }
+    return record;
+  }
+  return value;
+}
+
+// Field names that carry a meaningful magnitude for ranking, best first.
+// Chosen by name — never by position — so a leading id column can't silently
+// become the ranking key.
+const SORT_FIELD_PRIORITY = [
+  'total_value',
+  'value',
+  'price',
+  'unit_price',
+  'amount',
+  'balance',
+  'volume_remain',
+  'volume_sold',
+  'volume',
+  'quantity',
+  'total',
+] as const;
+
+const SORT_FIELD_SUFFIXES = ['_price', '_value', '_amount', '_total'] as const;
+
+function pickSortKey(numericFields: ReadonlyMap<string, unknown>): string | null {
+  for (const name of SORT_FIELD_PRIORITY) {
+    if (numericFields.has(name)) return name;
+  }
+  for (const key of numericFields.keys()) {
+    if (SORT_FIELD_SUFFIXES.some((suffix) => key.endsWith(suffix))) return key;
+  }
+  return null;
+}
+
+function numericFieldValue(row: unknown, key: string): number {
+  if (!row || typeof row !== 'object') return 0;
+  const value = (row as Record<string, unknown>)[key];
+  return typeof value === 'number' ? value : 0;
+}
+
+type SmartAggregation = {
   count: number;
   aggregates: Record<string, { min: number; max: number; sum: number }>;
-  top: unknown[];
-} {
+  sort_key: string | null;
+  top: unknown[] | null;
+  bottom: unknown[] | null;
+  sample: unknown[] | null;
+};
+
+function smartAggregate(rows: unknown[]): SmartAggregation {
+  const empty: Omit<SmartAggregation, 'count' | 'aggregates'> = {
+    sort_key: null,
+    top: null,
+    bottom: null,
+    sample: null,
+  };
   const first = rows[0];
   if (!first || typeof first !== 'object' || Array.isArray(first)) {
-    return { count: rows.length, aggregates: {}, top: rows.slice(0, 10) };
+    // Not rankable rows — an unsorted "top" would be misread as the answer.
+    return { count: rows.length, aggregates: {}, ...empty, sample: rows.slice(0, 10) };
   }
 
   // Detect numeric fields and compute min/max/sum
@@ -3223,20 +3506,32 @@ function smartAggregate(rows: unknown[]): {
     aggregates[key] = agg;
   }
 
-  // Sort by first numeric field (usually price) to get best top-N
-  const sortKey = keys.find((k) => numericFields.has(k));
-  const sorted = sortKey
-    ? [...rows].sort((a, b) => {
-        const av = (a as Record<string, unknown>)[sortKey];
-        const bv = (b as Record<string, unknown>)[sortKey];
-        return (typeof av === 'number' ? av : 0) - (typeof bv === 'number' ? bv : 0);
-      })
-    : rows;
+  const sortKey = pickSortKey(numericFields);
+  if (!sortKey) {
+    // No meaningful ranking field — report an honest positional sample instead
+    // of a "top" that would actually be arbitrary rows.
+    return { count: rows.length, aggregates, ...empty, sample: rows.slice(0, 10) };
+  }
+
+  // Descending: top holds the LARGEST values, bottom the smallest.
+  const sorted = [...rows].sort((a, b) => numericFieldValue(b, sortKey) - numericFieldValue(a, sortKey));
 
   return {
     count: rows.length,
     aggregates,
+    sort_key: sortKey,
     top: sorted.slice(0, 10),
+    bottom: sorted.length > 10 ? sorted.slice(-10).reverse() : [],
+    sample: null,
+  };
+}
+
+function shrinkSmartAggregate(aggregated: SmartAggregation): SmartAggregation {
+  return {
+    ...aggregated,
+    bottom: null,
+    top: aggregated.top ? aggregated.top.slice(0, 5) : null,
+    sample: aggregated.sample ? aggregated.sample.slice(0, 5) : null,
   };
 }
 

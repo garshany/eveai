@@ -152,7 +152,7 @@ function rebalanceFences(chunks: string[]): string[] {
  * that text from the answer.
  */
 function endsInsideFence(chunk: string): boolean {
-  const blocks = /```([^\n`]*)\n([\s\S]*?)(?:```|$)/g;
+  const blocks = /(^|\n)```([^\n`]*)\n([\s\S]*?)(?:```|$)/g;
   let open = false;
   let match: RegExpExecArray | null;
 

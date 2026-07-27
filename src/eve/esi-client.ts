@@ -31,6 +31,12 @@ type EsiCacheRow = {
 export type EsiExecutionGuard = {
   signal?: AbortSignal;
   identityCurrent?: () => boolean;
+  /**
+   * Page ceiling override for x-pages operations. Internal trusted callers
+   * only (character datastore sync, local aggregators); model-driven calls
+   * use config.esi.maxPages.
+   */
+  maxPages?: number;
 };
 
 /**
@@ -194,7 +200,20 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
 }
 
-function buildEsiUrl(baseUrl: string, path: string): URL {
+/**
+ * Standard headers for public (unauthenticated) ESI GETs. Exported for trusted
+ * internal callers that page endpoints directly, outside the esi_cache path
+ * (the market snapshot sweep must not buffer/cache whole page sets).
+ */
+export function buildPublicEsiHeaders(): Headers {
+  return new Headers({
+    Accept: 'application/json',
+    'User-Agent': config.esi.userAgent,
+    'X-Compatibility-Date': config.esi.compatibilityDate,
+  });
+}
+
+export function buildEsiUrl(baseUrl: string, path: string): URL {
   const url = new URL(normalizeBaseUrl(baseUrl));
   const basePath = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
   const relativePath = path.replace(/^\/+/, '');
@@ -226,11 +245,7 @@ async function fetchEsi<T>(
   token: string | null,
   guard: EsiExecutionGuard,
 ): Promise<EsiCallResult<T>> {
-  const headers = new Headers({
-    Accept: 'application/json',
-    'User-Agent': config.esi.userAgent,
-    'X-Compatibility-Date': config.esi.compatibilityDate,
-  });
+  const headers = buildPublicEsiHeaders();
   if (token) headers.set('Authorization', `Bearer ${token}`);
   if (body) headers.set('Content-Type', 'application/json');
 
@@ -254,7 +269,7 @@ async function fetchEsi<T>(
     if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
       return { ok: false, status: 409, error: 'ESI operation cancelled before request dispatch.' };
     }
-    const response = await fetchEsiWithRetry(pageUrl, operation, headers, body, guard);
+    const response = await fetchEsiWithRetry(pageUrl, operation.method, headers, body, guard);
     if (!response.ok) {
       return response.result;
     }
@@ -304,12 +319,14 @@ async function fetchEsi<T>(
     }
 
     pageData.push(...payload);
+    const maxPages = Math.max(1, Math.floor(guard.maxPages ?? config.esi.maxPages));
     const totalPages = Number(value.headers.get('x-pages') ?? '1');
-    if (Number.isFinite(totalPages) && totalPages > config.esi.maxPages) {
+    if (Number.isFinite(totalPages) && totalPages > maxPages) {
+      const budgetSource = guard.maxPages !== undefined ? 'per-call page budget' : 'ESI_MAX_PAGES';
       return {
         ok: false,
         status: 422,
-        error: `ESI pagination requires ${totalPages} pages, exceeds configured ESI_MAX_PAGES=${config.esi.maxPages}.`,
+        error: `ESI pagination requires ${totalPages} pages, exceeds configured ${budgetSource}=${maxPages}.`,
         headers: responseHeaders,
       };
     }
@@ -328,13 +345,18 @@ async function fetchEsi<T>(
   }
 }
 
-async function fetchEsiWithRetry(
+/**
+ * One ESI request with retries, backoff and timeout. Exported for trusted
+ * internal callers that page endpoints directly, outside the esi_cache path
+ * (the market snapshot sweep must not buffer/cache whole page sets).
+ */
+export async function fetchEsiWithRetry(
   url: URL,
-  operation: EsiOperationMeta,
+  method: string,
   headers: Headers,
   body: string | null,
   guard: EsiExecutionGuard,
-): Promise<{ ok: true; value: Response } | { ok: false; result: EsiCallResult<never> }> {
+): Promise<{ ok: true; value: Response } | { ok: false; result: Extract<EsiCallResult<never>, { ok: false }> }> {
   const maxAttempts = Math.max(1, config.esi.retryMaxAttempts);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -347,7 +369,7 @@ async function fetchEsiWithRetry(
     let response: Response;
     try {
       response = await fetchWithTimeout(url, {
-        method: operation.method,
+        method,
         headers,
         body,
         signal: guard.signal,
@@ -356,7 +378,7 @@ async function fetchEsiWithRetry(
       // Network failure is safe to retry for idempotent verbs. A POST may have
       // reached ESI and been processed (mail sent, fitting created) — retrying
       // could duplicate the side effect, so only retry idempotent methods.
-      if (attempt < maxAttempts && isIdempotentMethod(operation.method)) {
+      if (attempt < maxAttempts && isIdempotentMethod(method)) {
         await sleep(computeBackoffMs(new Headers(), attempt));
         continue;
       }
@@ -377,7 +399,7 @@ async function fetchEsiWithRetry(
     // 420/429 are rate-limit signals with no side effect, so retrying is always
     // safe. 5xx is only retried for idempotent verbs (see above).
     const isRateLimit = response.status === 420 || response.status === 429;
-    const shouldRetry = isRateLimit || (response.status >= 500 && isIdempotentMethod(operation.method));
+    const shouldRetry = isRateLimit || (response.status >= 500 && isIdempotentMethod(method));
     if (shouldRetry && attempt < maxAttempts) {
       await sleep(computeBackoffMs(response.headers, attempt));
       continue;
@@ -528,7 +550,12 @@ function computeBackoffMs(headers: Headers, attempt: number): number {
   return Math.min(ceilingMs, Math.round(baseMs + Math.random() * jitterMs));
 }
 
-async function throttleIfNeeded(headers: Headers): Promise<void> {
+/**
+ * Pace a paginated sweep: sleep one backoff slot when ESI's own rate- or
+ * error-limit is nearly exhausted. Exported for the direct-paging callers
+ * (market snapshot sweep) that walk pages outside callEsiOperation.
+ */
+export async function throttleIfNeeded(headers: Headers): Promise<void> {
   const remaining = parseHeaderInt(headers, 'x-ratelimit-remaining');
   const errorRemain = parseHeaderInt(headers, 'x-esi-error-limit-remain');
   if ((remaining !== null && remaining <= 1) || (errorRemain !== null && errorRemain <= 1)) {

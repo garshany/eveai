@@ -14,10 +14,17 @@ Environment=NODE_ENV=production
 ExecStart=/usr/bin/node /srv/eveai/dist/app.js
 Restart=always
 RestartSec=5
-# Must stay above SHUTDOWN_DRAIN_MS (default 30s) — otherwise systemd SIGKILLs
-# the process mid-drain and the in-flight answers are lost anyway. Raise both
-# together; the supported drain ceiling is 600s.
-TimeoutStopSec=60
+# Shutdown budget — these three numbers must move together:
+#   AGENT_TURN_DEADLINE_MS (default 600s, ceiling 3600s) bounds one agent turn;
+#   SHUTDOWN_DRAIN_MS    (default 600s, ceiling 3600s) bounds how long a stop
+#                        waits for in-flight turns to answer;
+#   TimeoutStopSec       must stay strictly ABOVE the configured drain,
+#                        otherwise systemd SIGKILLs the process mid-drain and
+#                        the in-flight answers are lost anyway.
+# Keep: turn deadline <= drain < TimeoutStopSec. The 60s headroom here covers
+# the post-drain market-sweep stop (up to 30s), connection and SQLite teardown. Raising AGENT_TURN_DEADLINE_MS
+# past 600s without raising the other two reintroduces the mid-turn kill.
+TimeoutStopSec=660
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

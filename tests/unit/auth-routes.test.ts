@@ -493,6 +493,12 @@ describe('auth routes', () => {
     db.prepare(`
       INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (111, 95465501, 1)
     `).run();
+    // The guest accumulated model settings before linking: they must migrate
+    // to the surviving owner instead of being dropped with the guest row.
+    db.prepare(`
+      INSERT INTO user_model_settings (user_id, model, reasoning_effort, verbosity)
+      VALUES (2, 'gpt-5.6-luna', 'low', 'high')
+    `).run();
     const state = createAuthRequestToken(db, 'eve_sso', 2, {
       chatId: -2_000_000_000,
       redirectUrl: '/app',
@@ -544,10 +550,70 @@ describe('auth routes', () => {
     ]);
     expect(db.prepare('SELECT user_id FROM eve_accounts WHERE character_id = 95465501').get())
       .toEqual({ user_id: 1 });
+    // Guest settings moved to the owner (who had none of their own).
+    expect(db.prepare('SELECT user_id, model, reasoning_effort, verbosity FROM user_model_settings').all())
+      .toEqual([{ user_id: 1, model: 'gpt-5.6-luna', reasoning_effort: 'low', verbosity: 'high' }]);
     await app.close();
   });
 
-  it('does not delete the current owner profile when browser ownership validation fails', async () => {
+  it('keeps the owner model settings when both identities have a row at SSO merge', async () => {
+    const app = Fastify();
+    registerAuthRoutes(app, db);
+    db.prepare("INSERT INTO users (user_id, display_name) VALUES (1, 'Telegram Pilot'), (2, 'Web capsuleer')").run();
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (111, 'telegram'), (-2000000000, 'web')").run();
+    db.prepare(`
+      INSERT INTO web_sessions (
+        session_hash, csrf_hash, user_id, chat_id, created_at, last_seen_at, expires_at
+      ) VALUES ('h1:web-session', 'h1:csrf', 2, -2000000000, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
+    `).run();
+    db.prepare(`
+      INSERT INTO eve_accounts (
+        character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id
+      ) VALUES (95465502, 'Shared Pilot', 'enc:old-a', 'enc:old-r', datetime('now', '+1 hour'), '[]', 1)
+    `).run();
+    db.prepare(`
+      INSERT INTO user_model_settings (user_id, model, reasoning_effort, verbosity)
+      VALUES (1, 'gpt-5.6-sol', 'max', 'low'), (2, 'gpt-5.6-luna', 'low', 'high')
+    `).run();
+    const state = createAuthRequestToken(db, 'eve_sso', 2, {
+      chatId: -2_000_000_000,
+      redirectUrl: '/app',
+      ttlSeconds: 600,
+    });
+    consentRequest(state, ['esi-location.read_location.v1']);
+
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        access_token: 'web-access',
+        refresh_token: 'web-refresh',
+        expires_in: 1200,
+        token_type: 'Bearer',
+      }),
+    });
+    jwtVerifyMock.mockResolvedValue({
+      payload: {
+        sub: 'CHARACTER:EVE:95465502',
+        name: 'Shared Pilot',
+        scp: ['esi-location.read_location.v1'],
+        aud: ['test-client', 'EVE Online'],
+      },
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
+    });
+    expect(response.statusCode).toBe(302);
+    // The authenticated identity's choice wins; the guest row is gone, so the
+    // users delete is not blocked by the FK.
+    expect(db.prepare('SELECT user_id, model, reasoning_effort, verbosity FROM user_model_settings').all())
+      .toEqual([{ user_id: 1, model: 'gpt-5.6-sol', reasoning_effort: 'max', verbosity: 'low' }]);
+    expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeUndefined();
+    await app.close();
+  });
+
+  it('merges a browser guest that owns another character into the current owner', async () => {
     const app = Fastify();
     registerAuthRoutes(app, db);
     const characterId = 95465503;
@@ -624,6 +690,8 @@ describe('auth routes', () => {
     });
     await jwtVerified;
     await new Promise<void>((resolve) => setImmediate(resolve));
+    // The guest picks up another character mid-flight. Owning one no longer
+    // blocks the link: the merge carries it over to the surviving owner.
     db.prepare(`
       INSERT INTO eve_accounts (
         character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id
@@ -634,11 +702,14 @@ describe('auth routes', () => {
     const response = await responsePromise;
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe('http://localhost:3000/app?auth=error');
-    for (const path of ownerPaths) expect(existsSync(path)).toBe(true);
-    expect(db.prepare('SELECT scopes_json, user_id FROM eve_accounts WHERE character_id = ?').get(characterId))
-      .toEqual({ scopes_json: '["esi-wallet.read_character_wallet.v1"]', user_id: 1 });
-    expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeDefined();
+    expect(response.headers.location).toBe('http://localhost:3000/app?auth=connected');
+    expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeUndefined();
+    expect(db.prepare('SELECT user_id FROM eve_accounts WHERE character_id = ?').get(characterId))
+      .toEqual({ user_id: 1 });
+    expect(db.prepare('SELECT user_id FROM eve_accounts WHERE character_id = 95465504').get())
+      .toEqual({ user_id: 1 });
+    // The materialized profile of the re-linked character is rebuilt on demand.
+    for (const path of ownerPaths) expect(existsSync(path)).toBe(false);
     await app.close();
   });
 

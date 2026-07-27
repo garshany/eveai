@@ -3,14 +3,42 @@ import { webApi } from '../api';
 import { LocaleSwitch, useI18n } from '../i18n';
 import { MenuIcon, PilotIcon } from '../icons';
 import type { Character, PilotProfile, ProfileAvailability } from '../types';
+import { AccessPanel } from './profile/AccessPanel';
+import { AssetsPanel } from './profile/AssetsPanel';
+import { ClonesPanel } from './profile/ClonesPanel';
+import { OrdersPanel } from './profile/OrdersPanel';
+import { SkillsPanel } from './profile/SkillsPanel';
+import { WalletPanel } from './profile/WalletPanel';
 
-type Props = { character: Character | null; onMenu: () => void; onConnect: () => void };
+type Props = { character: Character | null; csrfToken: string; busy: boolean; onMenu: () => void; onConnect: () => void; onUnlink: (characterId: number) => Promise<void> };
 
-export function PilotProfileScreen({ character, onMenu, onConnect }: Props) {
+type ProfileTab = 'overview' | 'assets' | 'orders' | 'wallet' | 'clones' | 'skills' | 'access';
+
+/**
+ * «Живой профиль»: шапка с обзором плюс вкладки с материализованными данными
+ * (/api/web/profile/*). Данные вкладки грузятся лениво при первом открытии;
+ * посещённые вкладки остаются смонтированными, чтобы не терять состояние.
+ */
+export function PilotProfileScreen({ character, csrfToken, busy, onMenu, onConnect, onUnlink }: Props) {
   const { locale, t } = useI18n();
   const [profile, setProfile] = useState<PilotProfile | null>(null);
   const [loading, setLoading] = useState(Boolean(character));
   const [error, setError] = useState<string | null>(null);
+  const [unlinking, setUnlinking] = useState(false);
+  const [unlinkError, setUnlinkError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<ProfileTab>('overview');
+  const [visited, setVisited] = useState<ReadonlySet<ProfileTab>>(new Set(['overview']));
+
+  const characterId = character?.id ?? null;
+  useEffect(() => {
+    setActiveTab('overview');
+    setVisited(new Set(['overview']));
+  }, [characterId]);
+
+  const openTab = (tab: ProfileTab) => {
+    setActiveTab(tab);
+    setVisited((prev) => (prev.has(tab) ? prev : new Set(prev).add(tab)));
+  };
 
   const load = useCallback(async () => {
     if (!character) { setProfile(null); setLoading(false); return; }
@@ -22,6 +50,35 @@ export function PilotProfileScreen({ character, onMenu, onConnect }: Props) {
 
   useEffect(() => { void load(); }, [load]);
 
+  const unlink = async () => {
+    if (!character || unlinking) return;
+    if (!window.confirm(t('revokeAccessConfirm').replace('{name}', character.name))) return;
+    setUnlinking(true);
+    setUnlinkError(null);
+    try {
+      await onUnlink(character.id);
+    } catch (reason) {
+      // Сервер возвращает осмысленный текст ошибки (404/403) — показываем его.
+      setUnlinkError(reason instanceof Error ? reason.message : t('requestFailed'));
+    } finally {
+      setUnlinking(false);
+    }
+  };
+
+  const tabs: Array<{ id: ProfileTab; label: string }> = [
+    { id: 'overview', label: t('profileTabOverview') },
+    { id: 'assets', label: t('profileTabAssets') },
+    { id: 'orders', label: t('profileTabOrders') },
+    { id: 'wallet', label: t('wallet') },
+    { id: 'clones', label: t('profileTabClones') },
+    { id: 'skills', label: t('skills') },
+    { id: 'access', label: t('profileTabAccess') },
+  ];
+
+  const panel = (tab: ProfileTab, node: React.ReactNode) => (
+    visited.has(tab) ? <div key={characterId ?? 'guest'} hidden={activeTab !== tab}>{node}</div> : null
+  );
+
   return <section className="workspace-screen">
     <header className="workspace-header">
       <button className="icon-button chat-header__menu" type="button" onClick={onMenu} aria-label={t('openMenu')}><MenuIcon /></button>
@@ -32,20 +89,46 @@ export function PilotProfileScreen({ character, onMenu, onConnect }: Props) {
       {!character ? <EmptyState icon={<PilotIcon size={38} />} title={t('noPilot')} action={t('connectPilot')} onAction={onConnect} /> : null}
       {loading ? <div className="panel-loading">{t('loading')}…</div> : null}
       {error ? <div className="workspace-error" role="alert">{error}<button type="button" onClick={() => void load()}>{t('refresh')}</button></div> : null}
+      {unlinkError ? <div className="workspace-error" role="alert">{unlinkError}</div> : null}
       {profile ? <>
         <section className="pilot-hero">
           <img src={profile.character.portraitUrl} alt="" />
           <div className="pilot-identity"><span className={`online-pill ${profile.online ? 'online-pill--on' : ''}`}>{profile.online === null ? statusText(profile.availability.online, t) : profile.online ? t('online') : t('offline')}</span><h2>{profile.character.name}</h2><p>{profile.character.title || profile.corporation?.name || 'EVE Online'}</p><div className="pilot-affiliation"><span>{profile.corporation ? `${profile.corporation.name}${profile.corporation.ticker ? ` [${profile.corporation.ticker}]` : ''}` : t('unavailable')}</span><span>{profile.alliance ? `${profile.alliance.name}${profile.alliance.ticker ? ` [${profile.alliance.ticker}]` : ''}` : '—'}</span></div></div>
-          <button className="button profile-refresh" type="button" onClick={() => void load()}>{t('refresh')}</button>
+          <div className="pilot-hero__actions">
+            <button className="button profile-refresh" type="button" onClick={() => void load()}>{t('refresh')}</button>
+            <button className="button button--danger" type="button" disabled={busy || unlinking} onClick={() => void unlink()}>{t('revokeAccess')}</button>
+          </div>
         </section>
-        <div className="profile-grid">
-          <ProfileCard title={t('location')} availability={profile.availability.location} t={t}><strong>{profile.location?.solarSystemName ?? '—'}</strong><small>{profile.location?.security === null || profile.location?.security === undefined ? '' : `security ${profile.location.security.toFixed(1)}`}</small></ProfileCard>
-          <ProfileCard title={t('ship')} availability={profile.availability.ship} t={t}><strong>{profile.ship?.name || profile.ship?.typeName || '—'}</strong><small>{profile.ship?.name && profile.ship.typeName ? profile.ship.typeName : ''}</small></ProfileCard>
-          <ProfileCard title={t('skills')} availability={profile.availability.skills} t={t}><strong>{profile.skills ? `${formatNumber(profile.skills.totalSp, locale)} ${t('skillPoints')}` : '—'}</strong><small>{profile.skills ? `${profile.skills.queued} ${t('queued')}` : ''}</small></ProfileCard>
-          <ProfileCard title={t('wallet')} availability={profile.availability.wallet} t={t}><strong>{profile.wallet ? `${formatNumber(profile.wallet.balance, locale, 2)} ISK` : '—'}</strong><small>{t('balance')}</small></ProfileCard>
-          <ProfileCard title={t('security')} availability={profile.availability.public} t={t}><strong>{profile.character.securityStatus?.toFixed(2) ?? '—'}</strong><small>{profile.location?.security === null || profile.location?.security === undefined ? '' : `${t('location')}: ${profile.location.security.toFixed(1)}`}</small></ProfileCard>
-          <ProfileCard title={t('born')} availability={profile.availability.public} t={t}><strong>{profile.character.birthday ? new Intl.DateTimeFormat(locale === 'ru' ? 'ru-RU' : 'en-US', { dateStyle: 'medium' }).format(new Date(profile.character.birthday)) : '—'}</strong><small>ID {profile.character.id}</small></ProfileCard>
+        <div className="market-tabs" role="tablist" aria-label={t('profileTitle')}>
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              className={`market-tabs__tab${activeTab === tab.id ? ' market-tabs__tab--active' : ''}`}
+              onClick={() => openTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
+        <div hidden={activeTab !== 'overview'}>
+          <div className="profile-grid">
+            <ProfileCard title={t('location')} availability={profile.availability.location} t={t}><strong>{profile.location?.solarSystemName ?? '—'}</strong><small>{profile.location?.security === null || profile.location?.security === undefined ? '' : `security ${profile.location.security.toFixed(1)}`}</small></ProfileCard>
+            <ProfileCard title={t('ship')} availability={profile.availability.ship} t={t}><strong>{profile.ship?.name || profile.ship?.typeName || '—'}</strong><small>{profile.ship?.name && profile.ship.typeName ? profile.ship.typeName : ''}</small></ProfileCard>
+            <ProfileCard title={t('skills')} availability={profile.availability.skills} t={t}><strong>{profile.skills ? `${formatNumber(profile.skills.totalSp, locale)} ${t('skillPoints')}` : '—'}</strong><small>{profile.skills ? `${profile.skills.queued} ${t('queued')}` : ''}</small></ProfileCard>
+            <ProfileCard title={t('wallet')} availability={profile.availability.wallet} t={t}><strong>{profile.wallet ? `${formatNumber(profile.wallet.balance, locale, 2)} ISK` : '—'}</strong><small>{t('balance')}</small></ProfileCard>
+            <ProfileCard title={t('security')} availability={profile.availability.public} t={t}><strong>{profile.character.securityStatus?.toFixed(2) ?? '—'}</strong><small>{profile.location?.security === null || profile.location?.security === undefined ? '' : `${t('location')}: ${profile.location.security.toFixed(1)}`}</small></ProfileCard>
+            <ProfileCard title={t('born')} availability={profile.availability.public} t={t}><strong>{profile.character.birthday ? new Intl.DateTimeFormat(locale === 'ru' ? 'ru-RU' : 'en-US', { dateStyle: 'medium' }).format(new Date(profile.character.birthday)) : '—'}</strong><small>ID {profile.character.id}</small></ProfileCard>
+          </div>
+        </div>
+        {panel('assets', <AssetsPanel csrfToken={csrfToken} />)}
+        {panel('orders', <OrdersPanel csrfToken={csrfToken} />)}
+        {panel('wallet', <WalletPanel csrfToken={csrfToken} />)}
+        {panel('clones', <ClonesPanel csrfToken={csrfToken} />)}
+        {panel('skills', <SkillsPanel csrfToken={csrfToken} />)}
+        {panel('access', <AccessPanel csrfToken={csrfToken} />)}
       </> : null}
     </div>
   </section>;

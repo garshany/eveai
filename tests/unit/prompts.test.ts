@@ -161,6 +161,19 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt).toContain('esi-skills.read_skills.v1');
     expect(prompt).toContain('Регион: The Forge');
     expect(prompt).toContain('my region');
+    expect(prompt).toContain('<character_schema>');
+    expect(prompt).toContain('character_assets');
+  });
+
+  it('omits the character datastore schema when no character is linked', () => {
+    const prompt = buildDeveloperPrompt({
+      authenticated: false,
+      characterId: null,
+      characterName: null,
+      grantedScopes: [],
+    });
+
+    expect(prompt).not.toContain('<character_schema>');
   });
 
   it('builds a compact static-aggregate prompt without identity, scopes, or full dogma schema', () => {

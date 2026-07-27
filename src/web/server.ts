@@ -1,5 +1,5 @@
 import Fastify from 'fastify';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import { existsSync } from 'node:fs';
@@ -7,11 +7,18 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
+import { createLogger } from '../observability/logger.js';
 import { registerAuthRoutes } from './auth-routes.js';
+import { registerExamplesRoutes } from './examples-routes.js';
 import { buildCanonicalLoopbackUrl } from './canonical-origin.js';
 import { registerWebChatRoutes } from './chat-routes.js';
 import { registerHealthRoute } from './health.js';
+import { registerMarketAlertRoutes } from './market-alert-routes.js';
+import { registerMarketAiSearchRoutes } from './market-ai-search-routes.js';
+import { registerMarketRoutes } from './market-routes.js';
+import { registerProfileRoutes } from './profile-routes.js';
 import { registerSecurityHeaders } from './security.js';
+import { registerSettingsRoutes } from './settings-routes.js';
 
 export async function createServer(db: Db) {
   const app = Fastify({
@@ -21,6 +28,7 @@ export async function createServer(db: Db) {
       ? [...config.web.trustedProxyCidrs]
       : false,
   });
+  registerWebErrorHandler(app);
   await app.register(fastifyCookie);
   registerSecurityHeaders(app, {
     baseUrl: config.web.baseUrl,
@@ -31,10 +39,41 @@ export async function createServer(db: Db) {
   registerAuthRoutes(app, db);
   if (config.web.chatEnabled) {
     registerWebChatRoutes(app, db);
+    registerMarketRoutes(app, db);
+    registerMarketAiSearchRoutes(app, db);
+    registerMarketAlertRoutes(app, db);
+    registerSettingsRoutes(app, db);
+    registerProfileRoutes(app, db);
+    registerExamplesRoutes(app);
     await registerWebApp(app);
   }
 
   return app;
+}
+
+const log = createLogger('web');
+
+/**
+ * Last-resort 500: Fastify's default handler serializes err.message, which
+ * leaks SQLite codes/text and internal details to the browser. Framework 4xx
+ * (bad JSON, unknown body shape) keeps its own safe message; anything else is
+ * logged in full on the server and answered with a generic body.
+ */
+export function registerWebErrorHandler(app: FastifyInstance): void {
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    const statusCode = error.statusCode ?? 500;
+    if (statusCode < 500) {
+      void reply.status(statusCode).send({ error: error.message });
+      return;
+    }
+    log.error(
+      'Unhandled request error: %s %s — %s',
+      request.method,
+      request.url,
+      error.stack ?? error.message,
+    );
+    void reply.status(500).send({ error: 'Внутренняя ошибка сервера.' });
+  });
 }
 
 async function registerWebApp(app: FastifyInstance): Promise<void> {
@@ -45,6 +84,12 @@ async function registerWebApp(app: FastifyInstance): Promise<void> {
     root: distRoot,
     prefix: '/web-assets/',
     wildcard: false,
+    // Vite emits content-hashed filenames under assets/ — safe to cache
+    // forever; a new build changes the URL, never the content behind it.
+    // Fonts are versioned by path the same way. index.html is NOT served
+    // from here (see sendApp), so nothing mutable gets the long TTL.
+    maxAge: '30d',
+    immutable: true,
   });
   const html = await readFile(resolve(distRoot, 'index.html'), 'utf8');
   const sendApp = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -55,7 +100,12 @@ async function registerWebApp(app: FastifyInstance): Promise<void> {
       request.headers.host,
     );
     if (canonicalUrl) return reply.redirect(canonicalUrl);
-    return reply.type('text/html; charset=utf-8').send(html);
+    // The shell must revalidate on every load, or a deploy strands users on
+    // an old bundle graph until the browser cache expires.
+    return reply
+      .type('text/html; charset=utf-8')
+      .header('Cache-Control', 'no-cache')
+      .send(html);
   };
   app.get('/', async (_request, reply) => reply.redirect('/app'));
   app.get('/app', sendApp);

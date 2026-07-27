@@ -72,6 +72,9 @@ async function main() {
     markBotFailed,
   } = await import('./web/health.js');
   const { startHeartbeat, stopHeartbeat } = await import('./scheduled/heartbeat-worker.js');
+  const { startMarketSnapshotWorker, stopMarketSnapshotWorker } = await import('./eve/market-snapshot.js');
+  const { startMarketHistoryWorker, stopMarketHistoryWorker } = await import('./eve/market-history-worker.js');
+  const { startMarketAlertsWorker, stopMarketAlertsWorker } = await import('./eve/market-alerts-worker.js');
   const { startEveKillFeedPoller, stopEveKillFeedPoller } = await import('./eve-kill/feed-poll.js');
   const { setRouteMonitorSender } = await import('./eve/route-planner.js');
   const { restoreMonitors, shutdownRouteMonitors } = await import('./eve-board/monitor.js');
@@ -84,7 +87,8 @@ async function main() {
     deliverOutbound,
     isOutboundAvailable,
   } = await import('./messaging/outbound.js');
-  const { waitForInFlightRequests, activeRequestCount } = await import('./chat/shared.js');
+  const { activeRequestCount } = await import('./chat/shared.js');
+  const { drainConversationsThenStopSweep, withDeadline } = await import('./app-shutdown.js');
   const {
     activeWebAgentRequestCount,
     stopWebAgentIngress,
@@ -96,6 +100,10 @@ async function main() {
   const runtimeLock = acquireRuntimeLock(config.db.path, 'bot service');
   const db = initDb(config.db.path);
   runMigrations(db);
+  const { startUsageRollupScheduler } = await import('./usage/scheduler.js');
+  const { startGcpBillingRefresher } = await import('./usage/gcp-billing.js');
+  const stopUsageRollupScheduler = startUsageRollupScheduler(db);
+  const stopGcpBilling = startGcpBillingRefresher();
   const { recoverInterruptedPlans } = await import('./agent/planner.js');
   const recoveredPlans = recoverInterruptedPlans(db);
   if (recoveredPlans > 0) {
@@ -163,16 +171,33 @@ async function main() {
     await withDeadline(stopEveKillFeedPoller(), deadline);
     shutdownRouteMonitors();
     stopHeartbeat();
+    // Synchronous and instant: both only clear timers.
+    stopUsageRollupScheduler();
+    stopGcpBilling();
+    // History pairs commit independently, so a mid-tick exit only leaves the
+    // rest of the due list for the next process.
+    await withDeadline(stopMarketHistoryWorker(), deadline);
+    // Alerts are one-shot rows committed per firing; stopping mid-tick only
+    // delays pushes (delivered_at stays NULL), never loses an event.
+    await withDeadline(stopMarketAlertsWorker(), deadline);
+    // The snapshot sweep is NOT stopped here: it drains after the turn drain
+    // below, on its own small budget — see drainConversationsThenStopSweep.
 
-    if (drainMs > 0) {
-      const remaining = Math.max(0, deadline - Date.now());
-      const stillRunning = await waitForInFlightRequests(
-        remaining,
-        config.shutdown.drainPollMs,
-        () => activeRequestCount() + activeWebAgentRequestCount(),
-      );
-      if (stillRunning > 0) {
-        log.warn('Shutdown drain: %d turn(s) still running after %dms — exiting anyway', stillRunning, drainMs);
+    // Conversations drain FIRST, the in-flight market sweep stops AFTER, under
+    // its own small budget: waiting for the sweep out of the shared budget
+    // would cut live turns off without their drain, and an aborted sweep is
+    // safe (the swap is atomic, staging is dropped by the next sweep). See
+    // src/app-shutdown.ts.
+    const drainResult = await drainConversationsThenStopSweep({
+      drainMs,
+      drainPollMs: config.shutdown.drainPollMs,
+      drainDeadlineMs: deadline,
+      countInFlightTurns: () => activeRequestCount() + activeWebAgentRequestCount(),
+      stopMarketSweep: stopMarketSnapshotWorker,
+    });
+    if (drainResult.turnsLeftAfterDrain !== null) {
+      if (drainResult.turnsLeftAfterDrain > 0) {
+        log.warn('Shutdown drain: %d turn(s) still running after %dms — exiting anyway', drainResult.turnsLeftAfterDrain, drainMs);
       } else {
         log.info('Shutdown drain: all turns finished');
       }
@@ -276,6 +301,16 @@ async function main() {
     });
   }
   if (hasOutboundPlatform) startHeartbeat(db);
+  // Local whole-market snapshot: useful in every lane (CLI included), so it is
+  // not gated on outbound platforms like push notifications.
+  startMarketSnapshotWorker(db);
+  // Daily price history for watched and top-turnover pairs; same always-on
+  // lane policy as the snapshot worker, gated on MARKET_HISTORY_ENABLED.
+  startMarketHistoryWorker(db);
+  // One-shot price alerts over the local order book; delivery defaults to the
+  // user's outbound lane (same resolution as heartbeat), gated on
+  // MARKET_ALERTS_ENABLED.
+  startMarketAlertsWorker(db);
 
   const version = getAppVersion();
   const rows: BannerRow[] = [
@@ -327,26 +362,6 @@ async function main() {
     log.error('Uncaught exception: %s', err.stack ?? err.message);
     void shutdown(1);
   });
-}
-
-/**
- * Await a promise but never past `deadlineMs`. A stalled shutdown step must not
- * eat the whole drain window and leave the supervisor to SIGKILL instead.
- */
-async function withDeadline(promise: Promise<unknown> | undefined, deadlineMs: number): Promise<void> {
-  if (!promise) return;
-  const remaining = Math.max(0, deadlineMs - Date.now());
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      promise.catch(() => {}),
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, remaining);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 function countSdeSystems(db: import('./db/sqlite.js').Db): number {

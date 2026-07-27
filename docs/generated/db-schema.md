@@ -1,6 +1,6 @@
 # Database Schema
 
-Generated from `src/db/schema.ts` on 2026-07-15. Runtime migrations in
+Generated from `src/db/schema.ts` on 2026-07-27. Runtime migrations in
 `src/db/migrations.ts` may add operational tables to an existing database.
 
 ## Identity, chat lanes, and SSO
@@ -45,6 +45,22 @@ Generated from `src/db/schema.ts` on 2026-07-15. Runtime migrations in
   version/language/time for the active authorization
 - `eve_character_links`
 - `esi_cache`
+
+## Market
+
+- `market_price_history`: local daily price history per `(region_id, type_id, date)`
+  accumulated from ESI; rows are never deleted, so the series outlives ESI's own
+  ~365-day window
+- `market_history_sync`: per-pair backfill state (`next_due_at`, status, error)
+  driving the market history worker
+- `market_watchlist`: per-user watched types; `region_id` is always stored as a
+  concrete value (writers substitute the user's default region when it is
+  omitted) because the primary key treats NULL as distinct and would let
+  duplicates through
+- `market_price_alerts`: one-shot price alerts evaluated against the local
+  `market_orders` snapshot; firing flips `status` to `triggered`
+- `market_alert_events`: append-only alert firing log; `delivered_at` flips once
+  the outbound lane pushed the notification
 
 ## Static Data
 

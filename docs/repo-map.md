@@ -1,7 +1,7 @@
 # Repo Map
 
 Status: active
-Verified against code: 2026-07-15
+Verified against code: 2026-07-27
 
 This file is the fast file-and-domain map for the repository.
 
@@ -29,6 +29,8 @@ Use it when you need to find the right file or folder before reading implementat
 - `prompts.ts`: prompt-policy boundary
 - `finalizer.ts`: response shaping and final output path
 - `tools.ts`: model-visible tool schema surface
+- `tools/sde-execution.ts`, `tools/sde-schema.ts`: read-only SDE SQL validation/execution and prompt schema
+- `tools/character-execution.ts`, `tools/character-sql-tool.ts`, `tools/character-schema.ts`: character_sql — read-only SQL over the synced private profile, isolated per active character through per-query TEMP views
 - `market-context.ts`, `model.ts`: supporting runtime context
 
 ### `src/auth/`
@@ -50,6 +52,7 @@ Use it when you need to find the right file or folder before reading implementat
 - `schema.ts`: SQLite source of truth
 - `migrations.ts`: in-place schema upgrades
 - `sqlite.ts`: DB open/setup helpers
+- `character-datastore.ts`: character_* table registry and lifecycle deletion (unlink/purge/ownership change)
 - `diagnose-links.ts`: identity-link diagnostics
 
 ### `src/eve/`
@@ -62,9 +65,16 @@ Use it when you need to find the right file or folder before reading implementat
 - `route-planner.ts`, `killmail.ts`: higher-level EVE features
 - `eve-scout-client.ts`, `eve-scout-executor.ts`, `eve-scout-tools.ts`: fixed public EVE-Scout transport, bounded projections, and deferred tool schemas; see `docs/eve-scout.md`
 - `market-history-summary.ts`: bounded 30/90-day public ESI market aggregation without raw daily rows
+- `market-wide-summary.ts`: whole-New-Eden live order-book sweep for one type across all SDE-derived k-space trade regions, with explicit coverage reporting
+- `market-queries.ts`: read-only queries over the local `market_orders` snapshot with SDE joins — type search, overview/spread, paged order book, per-region comparison, market-group tree
+- `market-type-info.ts`: full SDE item card for the web market — localized description, traits, grouped dogma attributes with units, required skills, meta-chain variations
+- `market-history.ts`: local daily price history (`market_price_history`) with lazy ESI backfill and trend/volatility aggregates
+- `market-history-worker.ts`: hourly cron worker draining due `(region, type)` history pairs (watchlist plus seeded top types)
+- `market-alerts-worker.ts`: 5-minute cron worker firing one-shot price alerts against the local snapshot, with event log and outbound push
 - `system-metric-snapshot.ts`: same-order projection of fixed public ESI system kill/jump/industry/sovereignty metrics
 - `dynamic-item-summary.ts`: requested dynamic-dogma attributes plus optional local-SDE base/delta evidence without creator/effect leakage
 - `user-profile.ts`: generated user snapshot/profile flow
+- `character-sync.ts`: lazy TTL-based mirror of the private ESI profile (assets, wallet/journal, orders, contracts, skills, clones, standings, presence) into character_* tables
 - `scopes.ts`, `eve-links.ts`, `http.ts`: support modules
 
 ### `src/eve-osint/`
@@ -76,6 +86,10 @@ Use it when you need to find the right file or folder before reading implementat
 ### `src/eve-kill/`
 
 Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integration. See `docs/eve-kill.md`.
+
+### `src/community/`
+
+Defensive clients and tool schemas for community APIs (EVE Ref industry cost, zKillboard stats, MutaMarket abyssal listings) plus the local-first pasted-list appraiser. See `docs/community-apis.md`.
 
 - `client.ts`: fixed-base defensive v1 REST client, cache, search/window chunking, stats, and battles
 - `normalize.ts`: runtime payload validation and source-neutral killmail normalization
@@ -124,11 +138,26 @@ Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integratio
 - `update/check.ts`: bounded, cached canonical GitHub stable-release check
 - `update/format.ts`, `update/check-cli.ts`: shared UX text and `npm run update:check`
 
+### `src/usage/`
+
+- `pricing.ts`: per-model USD/1M tariffs from config and integer-microdollar cost math (unknown tariff = null, never 0)
+- `tracker.ts`: non-fatal per-response usage_event writes with chat-lane channel resolution
+- `rollup.ts`: scheduled raw-event -> daily aggregate fold with idempotent day rebuilds and retention pruning
+- `stats.ts`: public/personal report reads (usage_daily + today's raw tail only)
+- `scheduler.ts`: hourly rollup timer
+- `gcp-billing.ts`: BigQuery billing-export reader with TTL background refresh and explicit not-configured states
+
 ### `src/web/`
 
 - `server.ts`: Fastify assembly for security headers, SSO, health, browser APIs, and built app assets
 - `web-session.ts`: opaque session, CSRF, reserved browser chat lanes, expiry, and creation admission
+- `web-route-guards.ts`: shared `requireSession`/`requireMutationSession` (CSRF) guards for browser APIs
 - `chat-routes.ts`: isolated browser conversations, characters, and shared agent-loop adapter
+- `market-routes.ts`: `/api/web/market/` read APIs (status, search, groups, regions, overview, orders, history, type info) plus watchlist CRUD; static-SDE routes send `Cache-Control: private, max-age=300`
+- `market-ai-search-routes.ts`: `/api/web/market/ai-search` natural-language item picking via the light agent runner (`src/agent/market-ai-search.ts`, sde_sql + batch_market_prices, bounded budget), usage recorded to `usage_events` as channel `web`
+- `market-alert-routes.ts`: `/api/web/market/alerts*` price-alert CRUD and fired-event feed
+- `profile-routes.ts` + `profile-data.ts`: `/api/web/profile/` living-profile reads over the character_* datastore (SQL-side asset rollup, regional valuation, price-book age) plus the CSRF-protected manual sync with an overall deadline
+- `transparency.ts`: public aggregate spend/infrastructure snapshot and session-gated personal spend
 - `auth-routes.ts`: one-time EVE SSO login redirect, OAuth callback, and `/callback` alias
 - `health.ts`: runtime/dependency health endpoint for both bot platforms
 - `security.ts`: security headers
@@ -136,6 +165,7 @@ Current public EVE-KILL REST, feed, and locally wrapped MCP analytics integratio
 ### `web/`
 
 - `src/`: React chat client, safe Markdown rendering, responsive shell, and API adapter
+- `src/components/MarketScreen.tsx` + `src/components/market/`: market browser — search, AI picker, group tree, order book, price chart, region comparison, item info tab, watchlist and price alerts with 60 s auto-refresh; SDE statics cached in-tab (`static-cache.ts`)
 - `public/assets/`: generated production visual assets
 - `vite.config.ts`: `/web-assets/` production base and same-origin development proxy
 

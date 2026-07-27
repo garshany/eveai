@@ -13,6 +13,8 @@ export function runMigrations(db: Db): void {
     addColumnIfMissing(db, 'agent_threads', 'last_response_id', 'TEXT');
     addColumnIfMissing(db, 'agent_threads', 'last_response_message_id', 'INTEGER');
     createIndexIfMissing(db, 'idx_agent_threads_chat_character', 'agent_threads', 'chat_id, character_id');
+    // Orphaned web-lane adoption scans telegram_sessions by username='web'.
+    createIndexIfMissing(db, 'idx_telegram_sessions_username', 'telegram_sessions', 'username');
     backfillThreadCharacters(db);
 
     addColumnIfMissing(db, 'eve_accounts', 'user_id', 'INTEGER');
@@ -46,6 +48,17 @@ export function runMigrations(db: Db): void {
     addColumnIfMissing(db, 'auth_requests', 'consented_at', 'TEXT');
     ensureConsentLanguageGuards(db);
     ensureProcessedUpdates(db);
+    // Market index cleanup: the history (type_id, date) index covered no
+    // query (every read goes through the (region_id, type_id, date) PK), and
+    // the alerts claim runs by PK while point lookups filter (user_id, status).
+    db.exec('DROP INDEX IF EXISTS idx_market_price_history_type_date');
+    db.exec('DROP INDEX IF EXISTS idx_market_alerts_active');
+    createIndexIfMissing(db, 'idx_market_price_alerts_user_status', 'market_price_alerts', 'user_id, status');
+    ensureUsageTables(db);
+    // Вариации карточки предмета фильтруют по group_id: без индекса каждый
+    // просмотр вкладки «О предмете» сканировал всю таблицу sde_types (~51k строк).
+    createIndexIfMissing(db, 'idx_sde_types_group_id', 'sde_types', 'group_id');
+    ensureWebAdmissionEventKinds(db);
   });
 
   migrate();
@@ -154,6 +167,37 @@ function createIndexIfMissing(db: Db, index: string, table: string, columns: str
   ).get(index) as { name: string } | undefined;
   if (row?.name) return;
   db.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(${columns})`);
+}
+
+/**
+ * SQLite не умеет ALTER CHECK, поэтому допуск 'ai-search' в web_admission_events
+ * приезжает пересборкой таблицы. Свежие БД уже созданы SCHEMA_SQL с новым
+ * CHECK — тогда пересборка пропускается по тексту DDL.
+ */
+function ensureWebAdmissionEventKinds(db: Db): void {
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'web_admission_events'",
+  ).get() as { sql: string } | undefined;
+  if (!row || row.sql.includes("'ai-search'")) return;
+  db.exec(`
+    CREATE TABLE web_admission_events_migrated (
+      event_id       TEXT PRIMARY KEY,
+      event_kind     TEXT NOT NULL CHECK (event_kind IN ('session', 'chat', 'ai-search')),
+      user_id        INTEGER,
+      ip_key         TEXT NOT NULL,
+      cost_units     INTEGER NOT NULL DEFAULT 0,
+      created_at_ms  INTEGER NOT NULL
+    );
+    INSERT INTO web_admission_events_migrated
+      SELECT event_id, event_kind, user_id, ip_key, cost_units, created_at_ms
+      FROM web_admission_events;
+    DROP TABLE web_admission_events;
+    ALTER TABLE web_admission_events_migrated RENAME TO web_admission_events;
+  `);
+  // Индексы умерли вместе со старой таблицей — пересоздаём.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_web_admission_events_kind_time ON web_admission_events(event_kind, created_at_ms)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_web_admission_events_ip_time ON web_admission_events(ip_key, created_at_ms)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_web_admission_events_user_time ON web_admission_events(user_id, created_at_ms)');
 }
 
 function ensureConsentLanguageGuards(db: Db): void {
@@ -410,6 +454,52 @@ function ensureProcessedUpdates(db: Db): void {
   }
 }
 
+/**
+ * Token spend accounting. Raw per-response events live in usage_events and are
+ * pruned by age after rollup; usage_daily keeps compact aggregates forever.
+ * Money is integer microdollars, never REAL. cost_micros is NULL when the
+ * model had no configured tariff — an unknown cost must never read as 0
+ * ("free"). usage_daily carries user_id so the logged-in "my spend" row stays
+ * answerable after raw events are gone; public reads always aggregate over
+ * every user and never expose a per-user row.
+ */
+function ensureUsageTables(db: Db): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS usage_events (
+      event_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at_ms      INTEGER NOT NULL,
+      user_id            INTEGER NOT NULL,
+      thread_id          TEXT NOT NULL,
+      channel            TEXT NOT NULL CHECK (channel IN ('web', 'telegram', 'discord', 'cli')),
+      model              TEXT NOT NULL,
+      input_tokens       INTEGER NOT NULL CHECK (input_tokens >= 0),
+      output_tokens      INTEGER NOT NULL CHECK (output_tokens >= 0),
+      cached_tokens      INTEGER NOT NULL CHECK (cached_tokens >= 0),
+      cache_write_tokens INTEGER NOT NULL CHECK (cache_write_tokens >= 0),
+      reasoning_tokens   INTEGER NOT NULL CHECK (reasoning_tokens >= 0),
+      cost_micros        INTEGER CHECK (cost_micros >= 0)
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_events_time ON usage_events(created_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_user ON usage_events(user_id, created_at_ms);
+
+    CREATE TABLE IF NOT EXISTS usage_daily (
+      day                 TEXT NOT NULL,
+      channel             TEXT NOT NULL,
+      model               TEXT NOT NULL,
+      user_id             INTEGER NOT NULL,
+      events              INTEGER NOT NULL CHECK (events > 0),
+      input_tokens        INTEGER NOT NULL,
+      output_tokens       INTEGER NOT NULL,
+      cached_tokens       INTEGER NOT NULL,
+      cache_write_tokens  INTEGER NOT NULL,
+      reasoning_tokens    INTEGER NOT NULL,
+      cost_micros         INTEGER NOT NULL,
+      unknown_cost_events INTEGER NOT NULL,
+      PRIMARY KEY (day, channel, model, user_id)
+    );
+  `);
+}
+
 function clearLegacyOauthStates(db: Db): void {
   db.prepare('UPDATE telegram_sessions SET oauth_state = NULL WHERE oauth_state IS NOT NULL').run();
 }
@@ -451,6 +541,7 @@ function ensureWebAgentRequests(db: Db): void {
       status           TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
       activity_json    TEXT NOT NULL DEFAULT '[]',
       progress_sequence INTEGER NOT NULL DEFAULT 0,
+      stream_text      TEXT NOT NULL DEFAULT '',
       result_text      TEXT,
       assistant_message_id INTEGER,
       error_code       TEXT,
@@ -475,6 +566,7 @@ function ensureWebAgentRequests(db: Db): void {
   addColumnIfMissing(db, 'web_agent_requests', 'cost_actual', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'web_agent_requests', 'heartbeat_at', 'TEXT');
   addColumnIfMissing(db, 'web_agent_requests', 'lease_expires_at', 'TEXT');
+  addColumnIfMissing(db, 'web_agent_requests', 'stream_text', "TEXT NOT NULL DEFAULT ''");
   db.prepare(`
     UPDATE web_agent_requests SET idempotency_key = request_id WHERE idempotency_key = ''
   `).run();

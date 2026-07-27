@@ -1,8 +1,8 @@
-export const OPENAI_PROVIDER_IDS = ['openai', 'cheapvibecode'] as const;
+export const OPENAI_PROVIDER_IDS = ['openai', 'modelhub'] as const;
 
 export type OpenAiProviderId = typeof OPENAI_PROVIDER_IDS[number];
 
-export type ResponsesTransport = 'http_sse' | 'websocket';
+export type ResponsesTransport = 'http_sse';
 export type ToolSearchExecution = 'hosted' | 'client';
 
 export interface OpenAiProvider {
@@ -29,11 +29,11 @@ const OPENAI_PROVIDERS: Record<OpenAiProviderId, OpenAiProvider> = {
     supportsTruncation: true,
     supportsEncryptedReasoningReplay: true,
   },
-  cheapvibecode: {
-    id: 'cheapvibecode',
-    name: 'CheapVibeCode',
-    baseUrl: 'https://cheapvibecode.ru/backend-api/codex',
-    responsesTransport: 'websocket',
+  modelhub: {
+    id: 'modelhub',
+    name: 'ModelHub',
+    baseUrl: 'https://modelhub.my/v1',
+    responsesTransport: 'http_sse',
     toolSearchExecution: 'client',
     supportsHostedProgrammaticToolCalling: false,
     supportsLocalParallelBatch: true,

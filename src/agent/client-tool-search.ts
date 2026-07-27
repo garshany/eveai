@@ -19,6 +19,7 @@ const CLIENT_EAGER_FUNCTIONS = new Set([
   'plan_route',
   'count_universe_objects',
   'sde_sql',
+  'character_sql',
   'local_parallel_batch',
   'delegate_read_subagents',
 ]);

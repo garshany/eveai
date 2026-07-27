@@ -19,6 +19,10 @@ import {
   DYNAMIC_ITEM_SUMMARY_TOOL,
   isDynamicItemSummaryTool,
 } from '../eve/dynamic-item-summary.js';
+import { ASSETS_SUMMARY_TOOL, isAssetsSummaryTool } from '../eve/assets-summary.js';
+import { CHARACTER_ORDERS_SUMMARY_TOOL, isCharacterOrdersSummaryTool } from '../eve/orders-summary.js';
+import { MARKET_WIDE_SUMMARY_TOOL, isMarketWideSummaryTool } from '../eve/market-wide-summary.js';
+import { COMMUNITY_TOOLS, isCommunityToolName } from '../community/tools.js';
 import {
   DOCTRINE_SUMMARY_TOOL,
   isDoctrineSummaryTool,
@@ -33,6 +37,7 @@ import {
 import { SDE_SCHEMA, STATIC_AGGREGATE_SDE_SCHEMA } from './tools/sde-schema.js';
 
 const SDE_SQL_TOOL_NAME = 'sde_sql';
+const CHARACTER_SQL_TOOL_NAME = 'character_sql';
 const WEB_SEARCH_TOOL_NAME = 'web_search';
 const LOCAL_PARALLEL_BATCH_TOOL_NAME = 'local_parallel_batch';
 const READ_SUBAGENT_BATCH_TOOL_NAME = 'delegate_read_subagents';
@@ -139,6 +144,21 @@ function decorateProgrammaticTool(tool: NativeFunctionTool): NativeFunctionTool 
     output_schema: getProgrammaticOutputSchema(tool.name),
   };
 }
+const SDE_SQL_TOOL: NativeFunctionTool = {
+  type: 'function',
+  name: SDE_SQL_TOOL_NAME,
+  description: 'Query the local EVE Static Data Export (SDE) via SQL. Use this tool for: resolving item/ship/module names↔IDs, ship and module stats (dogma attributes: DPS, range, speed, tank, cap, fitting), ship role bonuses (sde_type_bonus), blueprint materials and manufacturing time, system/region/constellation lookups, security status, stargate destinations, meta group (Tech I/II/Faction/Officer), group/category classification. JOIN sde_type_dogma with sde_dogma_attributes to get human-readable attribute names. See <sde_schema> for tables, columns, JSON fields, and ready-to-use dogma query pattern. Batch multiple lookups: WHERE name IN (...) or WHERE type_id IN (...). Always prefer this over ESI for static data.',
+  strict: true,
+  parameters: {
+    type: 'object',
+    properties: {
+      sql: { type: 'string', description: 'Read-only SQL query. Use json_extract() for data_json fields, json_each() for arrays. Max 50 rows returned.' },
+    },
+    required: ['sql'],
+    additionalProperties: false,
+  },
+};
+
 const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   {
     type: 'function',
@@ -235,15 +255,16 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
       additionalProperties: false,
     },
   },
+  SDE_SQL_TOOL,
   {
     type: 'function',
-    name: SDE_SQL_TOOL_NAME,
-    description: 'Query the local EVE Static Data Export (SDE) via SQL. Use this tool for: resolving item/ship/module names↔IDs, ship and module stats (dogma attributes: DPS, range, speed, tank, cap, fitting), ship role bonuses (sde_type_bonus), blueprint materials and manufacturing time, system/region/constellation lookups, security status, stargate destinations, meta group (Tech I/II/Faction/Officer), group/category classification. JOIN sde_type_dogma with sde_dogma_attributes to get human-readable attribute names. See <sde_schema> for tables, columns, JSON fields, and ready-to-use dogma query pattern. Batch multiple lookups: WHERE name IN (...) or WHERE type_id IN (...). Always prefer this over ESI for static data.',
+    name: CHARACTER_SQL_TOOL_NAME,
+    description: 'Query the linked character\'s private profile via SQL over local synced tables: assets (full unfiltered list), wallet balance and journal, market orders, contracts, skills, skill queue, clones/implants, standings, location/ship/online. Best for aggregates, rankings, filters, and joins across your own data (e.g. most valuable items, total hangar value, skill totals) — one query instead of many raw ESI calls. Rows are scoped to your active character server-side. Joins with SDE tables (sde_types etc.) are allowed for names/stats. See <character_schema> for tables and examples. Requires a linked character; tables refresh lazily from ESI and data_status reports per-dataset freshness.',
     strict: true,
     parameters: {
       type: 'object',
       properties: {
-        sql: { type: 'string', description: 'Read-only SQL query. Use json_extract() for data_json fields, json_each() for arrays. Max 50 rows returned.' },
+        sql: { type: 'string', description: 'Read-only SQL over character_* tables (and sde_* for joins). Do not filter by character_id — scoping is enforced. Max 50 rows returned.' },
       },
       required: ['sql'],
       additionalProperties: false,
@@ -319,12 +340,12 @@ const INTEL_NOTE_TOOL_NAME = 'intel_note';
 const BATCH_MARKET_TOOL: NativeFunctionTool = {
   type: 'function',
   name: BATCH_MARKET_TOOL_NAME,
-  description: 'Get best prices for MULTIPLE items at once. Returns min sell price, max buy price, and available volume per item. Use for fits, shopping lists, cost estimation — any time you need prices for 2+ items. Much more efficient than calling get_markets_region_id_orders per item.',
+  description: 'Get best prices for MULTIPLE items at once in ONE named region. Returns min sell price, max buy price, and available volume per item. Use for fits, shopping lists, cost estimation, or a point comparison of a few explicitly chosen regions. For whole-New-Eden coverage of a single item ("весь рынок", cheapest anywhere, total supply) use market_wide_summary instead. Much more efficient than calling get_markets_region_id_orders per item.',
   strict: true,
   parameters: {
     type: 'object',
     properties: {
-      region_id: { type: 'integer', minimum: 1, description: '10000002=The Forge (Jita), 10000043=Domain (Amarr), 10000032=Sinq Laison (Dodixie)' },
+      region_id: { type: 'integer', minimum: 1, description: 'Any k-space trade region_id from sde_regions. Common hubs: 10000002=The Forge (Jita), 10000043=Domain (Amarr), 10000032=Sinq Laison (Dodixie)' },
       type_ids: {
         type: 'array',
         minItems: 1,
@@ -541,6 +562,9 @@ export async function buildNativeAgentTools(
     ...(includeRouteMonitor ? [ROUTE_MONITOR_TOOL] : []),
     ...(includeHeartbeat ? [HEARTBEAT_CONFIG_TOOL] : []),
     BATCH_MARKET_TOOL,
+    MARKET_WIDE_SUMMARY_TOOL,
+    ASSETS_SUMMARY_TOOL,
+    CHARACTER_ORDERS_SUMMARY_TOOL,
     KILL_ACTIVITY_SUMMARY_TOOL,
     MARKET_HISTORY_SUMMARY_TOOL,
     SYSTEM_METRIC_SNAPSHOT_TOOL,
@@ -551,6 +575,7 @@ export async function buildNativeAgentTools(
     ANALYZE_SCAN_TOOL,
     INTEL_NOTE_TOOL,
     SET_ACTIVE_FIT_TOOL,
+    ...COMMUNITY_TOOLS,
     buildEveKillNamespace({ includeWatch: includeFeedNotifications }),
     buildEveKillAnalyticsNamespace(),
     buildEveScoutNamespace(),
@@ -590,6 +615,14 @@ export function buildReadSubagentTools(
   });
 }
 
+/**
+ * Лёгкий toolset веб-эндпоинта /api/web/market/ai-search: только статика SDE
+ * и точечные цены. Никаких приватных данных персонажа, мутаций и UI-действий.
+ */
+export function buildMarketAiSearchTools(): NativeFunctionTool[] {
+  return [SDE_SQL_TOOL, BATCH_MARKET_TOOL];
+}
+
 export function getAlwaysOnFunctionToolNames(): string[] {
   return ALWAYS_ON_FUNCTION_TOOLS.map((tool) => tool.name);
 }
@@ -614,12 +647,18 @@ export function isSdeSqlTool(name: string): boolean {
   return name === SDE_SQL_TOOL_NAME;
 }
 
+export function isCharacterSqlTool(name: string): boolean {
+  return name === CHARACTER_SQL_TOOL_NAME;
+}
+
 export function isDeferredLookupToolName(name: string): boolean {
   return isEveKillToolName(name) || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name)
     || isBatchMarketTool(name) || isMarketHistorySummaryTool(name) || isSystemMetricSnapshotTool(name)
-    || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name) || isOsintInferTool(name)
-    || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
+    || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name) || isAssetsSummaryTool(name)
+    || isCharacterOrdersSummaryTool(name) || isMarketWideSummaryTool(name) || isOsintInferTool(name) || isAnalyzeLocalTool(name) || isAnalyzeScanTool(name) || isIntelNoteTool(name) || isSetActiveFitTool(name);
 }
+
+export { isCommunityToolName } from '../community/tools.js';
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
 export { isEveKillAnalyticsToolName } from '../eve-kill/analytics-tools.js';
@@ -627,6 +666,8 @@ export { isEveScoutToolName } from '../eve/eve-scout-tools.js';
 
 export { executeSdeSql, executeUniverseObjectCount } from './tools/sde-execution.js';
 export type { UniverseCountResult } from './tools/sde-execution.js';
+export { runCharacterSqlTool } from './tools/character-sql-tool.js';
+export { CHARACTER_SCHEMA } from './tools/character-schema.js';
 
 export { planRoute } from '../eve/route-planner.js';
 export type { PlanRouteArgs } from '../eve/route-planner.js';
@@ -656,7 +697,10 @@ export async function getToolPolicy(
     || isEveKillAnalyticsToolName(name) || isEveScoutToolName(name) || isBatchMarketTool(name)
     || isMarketHistorySummaryTool(name) || isSystemMetricSnapshotTool(name)
     || isDoctrineSummaryTool(name) || isDynamicItemSummaryTool(name)
-    || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)) {
+    || isAssetsSummaryTool(name) || isCharacterOrdersSummaryTool(name)
+    || isMarketWideSummaryTool(name)
+    || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)
+    || isCommunityToolName(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();

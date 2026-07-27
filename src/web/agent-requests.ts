@@ -9,6 +9,7 @@ import {
 } from '../agent/activity.js';
 import { normalizeAgentRuntimeError, runAgentTurn } from '../chat/shared.js';
 import type { UserContext } from '../auth/user-resolver.js';
+import { admitWebEvent } from './web-admission.js';
 
 export type WebAgentRequestStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -18,6 +19,8 @@ export type WebAgentRequestDto = {
   status: WebAgentRequestStatus;
   activity: Array<{ name: string; detail?: string }>;
   progressSequence: number;
+  /** Best-effort accumulated streamed answer text; the final answer is in messages/result. */
+  streamText: string;
   result: string | null;
   error: string | null;
   createdAt: string;
@@ -39,6 +42,7 @@ type RequestRow = {
   status: WebAgentRequestStatus;
   activity_json: string;
   progress_sequence: number;
+  stream_text: string;
   result_text: string | null;
   error_code: string | null;
   cancel_requested: number;
@@ -75,7 +79,17 @@ type AgentRunner = (
 
 const MAX_ACTIVITY_ITEMS = 32;
 const MAX_ACTIVITY_DETAIL_CHARS = 160;
+/** Streamed answer text is best-effort progress, never the record of truth — cap it hard. */
+const MAX_STREAM_TEXT_CHARS = 64 * 1024;
+/** At most one stream_text write per request per interval; deltas are high-frequency. */
+const STREAM_FLUSH_INTERVAL_MS = 500;
 const REQUEST_COST_UNITS = 4;
+
+type StreamBuffer = {
+  text: string;
+  capped: boolean;
+  timer: NodeJS.Timeout | null;
+};
 
 /**
  * The coordinator is created inside the web routes, but shutdown lives in the
@@ -108,6 +122,7 @@ export function setWebAgentCloseGraceMs(ms: number): void {
 
 export class WebAgentRequestCoordinator {
   private readonly running = new Map<string, AbortController>();
+  private readonly streamBuffers = new Map<string, StreamBuffer>();
   private draining = false;
   private closed = false;
 
@@ -164,57 +179,17 @@ export class WebAgentRequestCoordinator {
         return rejection(503, 'Очередь сервиса заполнена. Попробуйте позже.', 15);
       }
 
-      const windowStart = now - config.web.requestWindowSeconds * 1000;
-      const userRecent = count(this.db, `
-        SELECT COUNT(*) AS count FROM web_agent_requests
-        WHERE user_id = ? AND created_at_ms >= ?
-      `, input.userId, windowStart);
-      if (userRecent >= config.web.maxRequestsPerUserWindow) {
-        return rejection(429, 'Слишком много запросов. Попробуйте позже.', config.web.requestWindowSeconds);
-      }
-
-      const globalRecent = count(this.db, `
-        SELECT COUNT(*) AS count FROM web_agent_requests WHERE created_at_ms >= ?
-      `, windowStart);
-      const globalDay = count(this.db, `
-        SELECT COUNT(*) AS count FROM web_agent_requests WHERE created_at_ms >= ?
-      `, now - 86_400_000);
-      if (
-        globalRecent >= config.web.maxRequestsGlobalWindow
-        || globalDay >= config.web.maxRequestsGlobalDay
-      ) {
-        return rejection(503, 'Сервис достиг безопасного лимита нагрузки. Попробуйте позже.', 60);
-      }
-
-      const userCost = sum(this.db, `
-        SELECT COALESCE(SUM(cost_units), 0) AS total FROM web_admission_events
-        WHERE event_kind = 'chat' AND user_id = ? AND created_at_ms >= ?
-      `, input.userId, windowStart);
-      const globalCost = sum(this.db, `
-        SELECT COALESCE(SUM(cost_units), 0) AS total FROM web_admission_events
-        WHERE event_kind = 'chat' AND created_at_ms >= ?
-      `, windowStart);
-      const dailyCost = sum(this.db, `
-        SELECT COALESCE(SUM(cost_units), 0) AS total FROM web_admission_events
-        WHERE event_kind = 'chat' AND created_at_ms >= ?
-      `, now - 86_400_000);
-      if (
-        userCost + REQUEST_COST_UNITS > config.web.maxCostUnitsPerUserWindow
-        || globalCost + REQUEST_COST_UNITS > config.web.maxCostUnitsGlobalWindow
-        || dailyCost + REQUEST_COST_UNITS > config.web.maxCostUnitsGlobalDay
-      ) {
-        return rejection(503, 'Сервис достиг безопасного лимита вычислений. Попробуйте позже.', 60);
-      }
-
-      const ipRecent = count(this.db, `
-        SELECT COUNT(*) AS count FROM web_admission_events
-        WHERE event_kind = 'chat' AND ip_key = ? AND created_at_ms >= ?
-      `, input.ipKey, windowStart);
-      if (ipRecent >= config.web.maxRequestsGlobalWindow) {
-        return rejection(429, 'Слишком много запросов. Попробуйте позже.', config.web.requestWindowSeconds);
-      }
-
       const requestId = randomUUID();
+      // Окна/IP/cost-units — общий слой допуска (web-admission.ts), тот же,
+      // что у ai-search. Событие пишется тем же event_id, что и запрос.
+      const admission = admitWebEvent(this.db, {
+        eventKind: 'chat',
+        userId: input.userId,
+        ipKey: input.ipKey,
+        costUnits: REQUEST_COST_UNITS,
+      }, now, requestId);
+      if (!admission.ok) return admission;
+
       this.db.prepare(`
         INSERT INTO messages (thread_id, role, content, web_request_id)
         VALUES (?, 'user', ?, ?)
@@ -237,10 +212,6 @@ export class WebAgentRequestCoordinator {
         REQUEST_COST_UNITS,
         now,
       );
-      this.db.prepare(`
-        INSERT INTO web_admission_events (event_id, event_kind, user_id, ip_key, cost_units, created_at_ms)
-        VALUES (?, 'chat', ?, ?, ?, ?)
-      `).run(requestId, input.userId, input.ipKey, REQUEST_COST_UNITS, now);
       return {
         ok: true,
         request: this.readOwned({ userId: input.userId, chatId: input.chatId }, requestId)!,
@@ -348,6 +319,12 @@ export class WebAgentRequestCoordinator {
   async close(): Promise<void> {
     this.closed = true;
     if (activeCoordinator === this) activeCoordinator = null;
+    // No timer may fire after close: flush what accumulated, then drop the buffers.
+    for (const [requestId, state] of this.streamBuffers) {
+      if (state.timer) clearTimeout(state.timer);
+      if (state.text) this.writeStreamText(requestId, state.text);
+    }
+    this.streamBuffers.clear();
     for (const controller of this.running.values()) controller.abort();
     const deadline = Date.now() + closeGraceMs;
     while (this.running.size > 0 && Date.now() < deadline) {
@@ -498,6 +475,10 @@ export class WebAgentRequestCoordinator {
   }
 
   private recordActivity(requestId: string, event: AgentActivityEvent): void {
+    if (event.type === 'text_delta') {
+      this.recordTextDelta(requestId, event);
+      return;
+    }
     if (event.type !== 'tool_start') return;
     const row = this.db.prepare(`
       SELECT activity_json FROM web_agent_requests WHERE request_id = ? AND status = 'running'
@@ -517,12 +498,68 @@ export class WebAgentRequestCoordinator {
     `).run(JSON.stringify(activity.slice(-MAX_ACTIVITY_ITEMS)), requestId);
   }
 
+  /**
+   * Accumulate one streamed token in memory; persistence is throttled so a
+   * fast token stream cannot turn into a write per token. Deltas past the cap
+   * are dropped — the final answer still lands in result_text via finish().
+   */
+  private recordTextDelta(requestId: string, event: { text: string; reset?: boolean }): void {
+    let state = this.streamBuffers.get(requestId);
+    if (!state) {
+      state = { text: '', capped: false, timer: null };
+      this.streamBuffers.set(requestId, state);
+    }
+    if (event.reset) {
+      state.text = '';
+      state.capped = false;
+    }
+    if (!state.capped && event.text) {
+      state.text += event.text;
+      if (state.text.length > MAX_STREAM_TEXT_CHARS) {
+        state.text = state.text.slice(0, MAX_STREAM_TEXT_CHARS);
+        state.capped = true;
+      }
+    }
+    if (state.timer) return;
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      this.flushStreamText(requestId);
+    }, STREAM_FLUSH_INTERVAL_MS);
+    state.timer.unref?.();
+  }
+
+  private flushStreamText(requestId: string): void {
+    const state = this.streamBuffers.get(requestId);
+    if (!state?.text) return;
+    this.writeStreamText(requestId, state.text);
+  }
+
+  /**
+   * Best-effort progress write. The guards keep it cancel-wins (a cancelled
+   * request is never touched) and harmless after the row went terminal.
+   */
+  private writeStreamText(requestId: string, text: string): void {
+    this.db.prepare(`
+      UPDATE web_agent_requests
+      SET stream_text = ?, progress_sequence = progress_sequence + 1, updated_at = datetime('now')
+      WHERE request_id = ? AND status = 'running' AND cancel_requested = 0
+    `).run(text.slice(0, MAX_STREAM_TEXT_CHARS), requestId);
+  }
+
   private finish(
     requestId: string,
     status: 'completed' | 'failed' | 'cancelled',
     result: string | null,
     errorCode: string | null,
   ): void {
+    // Forced final flush before the terminal write, then drop the buffer and
+    // its timer so nothing can write into a finished row afterwards.
+    const streamState = this.streamBuffers.get(requestId);
+    if (streamState) {
+      if (streamState.timer) clearTimeout(streamState.timer);
+      this.streamBuffers.delete(requestId);
+      if (streamState.text) this.writeStreamText(requestId, streamState.text);
+    }
     const assistant = status === 'completed'
       ? this.db.prepare(`
           SELECT id FROM messages
@@ -580,6 +617,7 @@ function toDto(row: RequestRow): WebAgentRequestDto {
     status: row.status,
     activity: parseActivity(row.activity_json),
     progressSequence: row.progress_sequence,
+    streamText: row.stream_text,
     result: row.status === 'completed' ? row.result_text : null,
     error: publicError(row.error_code),
     createdAt: row.created_at,
@@ -615,10 +653,6 @@ function hashMessage(threadId: string, message: string): string {
 
 function count(db: Db, sql: string, ...params: unknown[]): number {
   return (db.prepare(sql).get(...params) as { count: number }).count;
-}
-
-function sum(db: Db, sql: string, ...params: unknown[]): number {
-  return (db.prepare(sql).get(...params) as { total: number }).total;
 }
 
 function rejection(

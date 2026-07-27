@@ -20,7 +20,13 @@ export type AgentActivityEvent =
   | { type: 'tool_start'; name: string; detail?: string }
   | { type: 'programmatic_tool_batch'; accepted: number; rejected: number }
   | { type: 'final_assistant_message' }
-  | { type: 'reasoning'; text: string };
+  | { type: 'reasoning'; text: string }
+  /**
+   * One streamed output-text token from the model. Emitted only for top-level
+   * turns that opted into streaming (streamToActivity); `reset` clears whatever
+   * partial text a consumer accumulated (provider retry, next model iteration).
+   */
+  | { type: 'text_delta'; text: string; reset?: boolean };
 
 export interface AgentActivitySink {
   emit: (event: AgentActivityEvent) => void;

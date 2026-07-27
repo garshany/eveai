@@ -3,6 +3,7 @@ import type { Db } from '../db/sqlite.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { getUserTelegramChatId } from '../auth/user-resolver.js';
 import { decryptStoredSecret, encryptStoredSecret } from '../auth/secret-storage.js';
+import { deleteCharacterData } from '../db/character-datastore.js';
 import {
   deleteUserProfileArtifact,
   withUserProfileAuthorizationLock,
@@ -322,6 +323,8 @@ function cleanupDetachedCharacter(db: Db, characterId: number): void {
     return;
   }
 
+  // Private profile rows must not outlive the account they were synced for.
+  deleteCharacterData(db, characterId);
   db.prepare('DELETE FROM eve_accounts WHERE character_id = ?').run(characterId);
 }
 

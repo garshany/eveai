@@ -133,34 +133,6 @@ async function checkOpenAiResponses(): Promise<SmokeCheck> {
     false,
   );
   const url = `${baseUrl}/responses`;
-  if (provider.responsesTransport === 'websocket') {
-    try {
-      const { createNativeResponse, toNativeMessage } = await import('./agent/native-responses.js');
-      const response = await createNativeResponse({
-        model,
-        instructions: 'Reply with the single word pong.',
-        items: [toNativeMessage('ping')],
-        tools: [],
-        parallelToolCalls: false,
-        maxOutputTokens: 32,
-      });
-      if (response.error || response.status !== 'completed') {
-        return {
-          name: 'model_responses',
-          status: 'fail',
-          detail: response.error?.message ?? `WebSocket response status was ${response.status ?? 'unknown'}`,
-        };
-      }
-      const wsUrl = `${baseUrl.replace(/^https:/, 'wss:')}/responses`;
-      return { name: 'model_responses', status: 'ok', detail: `${wsUrl} accepted model ${model}` };
-    } catch (error) {
-      return {
-        name: 'model_responses',
-        status: 'fail',
-        detail: error instanceof Error ? error.message : 'WebSocket model check failed',
-      };
-    }
-  }
   const payload = {
     model,
     instructions: 'Reply with the single word pong.',

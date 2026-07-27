@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { createAuthRequestToken } from '../auth/auth-request.js';
@@ -11,6 +11,7 @@ import {
   getLinkedCharacter,
   listLinkedCharacters,
   setActiveCharacter,
+  unlinkCharacter,
 } from '../eve/sso.js';
 import { isEveSsoConfigured } from '../eve/eve-login.js';
 import { fetchWithTimeout } from '../eve/http.js';
@@ -30,13 +31,14 @@ import {
   revokeWebSession,
   reuseOrRotateWebCsrf,
   setWebSessionCookies,
-  verifyWebMutation,
   verifyWebSessionCreation,
   buildWebClientIpKey,
   type WebSession,
 } from './web-session.js';
+import { requireMutationSession, requireSession } from './web-route-guards.js';
 import { WebAgentRequestCoordinator } from './agent-requests.js';
 import { isTurnstileEnabled, verifyTurnstileToken } from './turnstile.js';
+import { registerTransparencyRoutes, TRANSPARENCY_PUBLIC_PATH } from './transparency.js';
 
 type ConversationRow = {
   thread_id: string;
@@ -74,9 +76,25 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
   app.addHook('onRequest', async (request, reply) => {
     if (request.url.startsWith('/api/web/')) {
       void cleanExpiredWebSessions(db);
-      reply.header('Cache-Control', 'no-store');
+      // Everything under /api/web/ is no-store except the public transparency
+      // snapshot: it is identical for every caller and carries no session
+      // data, so a short public cache keeps repeated page loads off SQLite.
+      // TRANSPARENCY_PUBLIC_CACHE_SECONDS=0 restores no-store here as well.
+      // The personal /me sub-route stays no-store like the rest.
+      const path = request.url.split('?', 1)[0];
+      if (
+        request.method === 'GET'
+        && path === TRANSPARENCY_PUBLIC_PATH
+        && config.transparency.publicCacheSeconds > 0
+      ) {
+        reply.header('Cache-Control', `public, max-age=${config.transparency.publicCacheSeconds}`);
+      } else {
+        reply.header('Cache-Control', 'no-store');
+      }
     }
   });
+
+  registerTransparencyRoutes(app, db);
 
   app.get('/api/web/session', async (request, reply) => {
     const session = readWebSession(db, request);
@@ -106,6 +124,7 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
       'session',
     );
     if (!turnstile.ok) {
+      if (turnstile.retryable) reply.header('Retry-After', '3');
       return reply.status(turnstile.retryable ? 503 : 403).send({
         error: turnstile.retryable
           ? 'Проверка защиты временно недоступна. Попробуйте ещё раз.'
@@ -159,11 +178,15 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
     if (!session) return;
     const reusable = findEmptyConversation(db, session);
     if (reusable) return reply.status(200).send({ threadId: reusable });
+    // The cap counts the same set the sidebar lists: guest threads (no
+    // character) stay visible regardless of the active character.
+    const characterId = getLinkedCharacter(db, sessionContext(session))?.characterId ?? null;
     const count = db.prepare(`
       SELECT COUNT(*) AS count
-      FROM agent_threads
-      WHERE chat_id = ? AND user_id = ?
-    `).get(session.chatId, session.userId) as { count: number };
+      FROM agent_threads t
+      WHERE t.chat_id = ? AND t.user_id = ?
+        AND (t.character_id IS NULL OR t.character_id = ?)
+    `).get(session.chatId, session.userId, characterId) as { count: number };
     if (count.count >= MAX_WEB_CONVERSATIONS) {
       return reply.status(409).send({
         error: `Достигнут лимит в ${MAX_WEB_CONVERSATIONS} диалогов. Удалите ненужный диалог.`,
@@ -236,6 +259,23 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
       discardRouteMonitor(session.chatId, db);
     }
     return buildSessionPayload(db, session, request.headers['x-csrf-token'] as string);
+  });
+
+  app.post<{ Params: CharacterParams }>('/api/web/characters/:characterId/unlink', async (request, reply) => {
+    const session = requireMutationSession(db, request, reply);
+    if (!session) return;
+    const characterId = parsePositiveInteger(request.params.characterId);
+    if (!characterId) return reply.status(404).send({ error: 'Персонаж не найден.' });
+    // unlinkCharacter takes the character lock itself, clears links/active
+    // state and profile artifacts, and drops character_* data plus the
+    // eve_accounts row (encrypted tokens) when no links remain.
+    const unlinked = await unlinkCharacter(db, sessionContext(session), characterId);
+    if (!unlinked) return reply.status(404).send({ error: 'Персонаж не найден.' });
+    const monitor = getRouteMonitorRuntimeStatus(db, session.chatId).monitor;
+    if (monitor && monitor.characterId === characterId) {
+      discardRouteMonitor(session.chatId, db);
+    }
+    return reply.status(204).send();
   });
 
   app.get('/api/web/profile', async (request, reply) => {
@@ -339,6 +379,15 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
       if (!snapshot) return close();
       if (snapshot.progressSequence !== lastSequence || lastSequence < 0) {
         lastSequence = snapshot.progressSequence;
+        // Full accumulated text, not an increment: dedup on the client is
+        // trivial and a Last-Event-ID reconnect cannot produce duplicates.
+        if (snapshot.streamText) {
+          reply.raw.write(`id: ${lastSequence}\nevent: delta\ndata: ${JSON.stringify({
+            requestId: snapshot.requestId,
+            text: snapshot.streamText,
+            sequence: lastSequence,
+          })}\n\n`);
+        }
         reply.raw.write(`id: ${lastSequence}\nevent: request\ndata: ${JSON.stringify({ request: snapshot })}\n\n`);
       }
       if (snapshot.status !== 'queued' && snapshot.status !== 'running') close();
@@ -432,29 +481,6 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
   });
 }
 
-function requireSession(
-  db: Db,
-  request: FastifyRequest,
-  reply: FastifyReply,
-): WebSession | null {
-  const session = readWebSession(db, request);
-  if (session) return session;
-  void reply.status(401).send({ error: 'Сессия истекла. Обновите страницу.' });
-  return null;
-}
-
-function requireMutationSession(
-  db: Db,
-  request: FastifyRequest,
-  reply: FastifyReply,
-): WebSession | null {
-  const session = requireSession(db, request, reply);
-  if (!session) return null;
-  if (verifyWebMutation(request, session)) return session;
-  void reply.status(403).send({ error: 'Проверка безопасности запроса не пройдена.' });
-  return null;
-}
-
 function buildSessionPayload(db: Db, session: WebSession, csrfToken: string) {
   const user = db.prepare('SELECT display_name FROM users WHERE user_id = ?').get(session.userId) as {
     display_name: string;
@@ -532,6 +558,8 @@ function buildWebScanPayload(db: Db, session: WebSession) {
 
 function listConversations(db: Db, session: WebSession) {
   const characterId = getLinkedCharacter(db, sessionContext(session))?.characterId ?? null;
+  // Guest threads (no character) are always listed: they predate any link and
+  // must not vanish from the sidebar once a character becomes active.
   const rows = db.prepare(`
     SELECT
       t.thread_id,
@@ -548,11 +576,11 @@ function listConversations(db: Db, session: WebSession) {
     LEFT JOIN messages m ON m.thread_id = t.thread_id
     WHERE t.chat_id = ?
       AND t.user_id = ?
-      AND ((t.character_id IS NULL AND ? IS NULL) OR t.character_id = ?)
+      AND (t.character_id IS NULL OR t.character_id = ?)
     GROUP BY t.thread_id
     ORDER BY updated_at DESC
     LIMIT 40
-  `).all(session.chatId, session.userId, characterId, characterId) as ConversationRow[];
+  `).all(session.chatId, session.userId, characterId) as ConversationRow[];
   return rows.map((row) => ({
     id: row.thread_id,
     characterId: row.character_id,
@@ -602,6 +630,11 @@ function ownedThread(db: Db, session: WebSession, threadId: string) {
 function ownedThreadForActiveCharacter(db: Db, session: WebSession, threadId: string) {
   const thread = ownedThread(db, session, threadId);
   if (!thread) return null;
+  // Guest-era threads (no character) stay replyable after a character is
+  // linked: the sidebar lists them, so the send path must accept them — they
+  // simply continue without character context. A thread pinned to ANOTHER
+  // character is still rejected.
+  if (thread.character_id === null) return thread;
   const active = getLinkedCharacter(db, sessionContext(session));
   if ((active?.characterId ?? null) !== thread.character_id) return null;
   return thread;

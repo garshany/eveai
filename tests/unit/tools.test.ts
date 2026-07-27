@@ -131,6 +131,7 @@ describe('agent tools', () => {
     expect(functionNames).not.toContain('count_moons');
     expect(functionNames).toContain('count_universe_objects');
     expect(functionNames).toContain('sde_sql');
+    expect(functionNames).toContain('character_sql');
     expect(functionNames).toContain('batch_market_prices');
     expect(functionNames).toContain('kill_activity_summary');
     expect(functionNames).toContain('market_history_summary');
@@ -336,6 +337,7 @@ describe('agent tools', () => {
     expect(aggregateSql?.description).toContain('geography names and IDs');
     expect(aggregateSql?.description).not.toContain('dogma');
     expect(aggregateSql?.description).not.toContain('blueprint');
+    expect(functionNames).not.toContain('character_sql');
     expect(functionNames).not.toContain('web_search');
     expect(functionNames).not.toContain('update_plan');
     expect(functionNames).not.toContain('get_eve_capabilities');
@@ -347,8 +349,8 @@ describe('agent tools', () => {
     expect(tools.some((tool) => tool.type === 'mcp')).toBe(false);
   });
 
-  it('gates hosted PTC off and exposes only the local batch on CheapVibeCode', async () => {
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+  it('gates hosted PTC off and exposes only the local batch on ModelHub', async () => {
+    process.env.OPENAI_PROVIDER = 'modelhub';
     process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
     vi.resetModules();
     try {

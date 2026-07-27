@@ -60,12 +60,8 @@ export function PilotIcon(props: IconProps) {
   return <IconBase {...props}><circle cx="12" cy="8" r="3.5" /><path d="M5 21c.7-4 3.1-6 7-6s6.3 2 7 6" /><path d="M4 12a8 8 0 0 1 16 0" /></IconBase>;
 }
 
-export function RadarIcon(props: IconProps) {
-  return <IconBase {...props}><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><path d="M12 12 18.5 5.5M12 3v2M21 12h-2M12 21v-2M3 12h2" /><circle cx="16.5" cy="8" r="1" /></IconBase>;
-}
-
-export function PaperclipIcon(props: IconProps) {
-  return <IconBase {...props}><path d="m9.5 12.8 5.7-5.7a3 3 0 1 1 4.2 4.2l-8.5 8.5a5 5 0 1 1-7.1-7.1l8.1-8.1" /></IconBase>;
+export function TrashIcon(props: IconProps) {
+  return <IconBase {...props}><path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="m6 7 1 13h10l1-13" /><path d="M10 11v5M14 11v5" /></IconBase>;
 }
 
 export function SendIcon(props: IconProps) {
@@ -90,4 +86,24 @@ export function LogOutIcon(props: IconProps) {
 
 export function CloseIcon(props: IconProps) {
   return <IconBase {...props}><path d="m6 6 12 12M18 6 6 18" /></IconBase>;
+}
+
+export function CopyIcon(props: IconProps) {
+  return <IconBase {...props}><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></IconBase>;
+}
+
+export function ArrowDownIcon(props: IconProps) {
+  return <IconBase {...props}><path d="M12 4v16m0 0 6-6m-6 6-6-6" /></IconBase>;
+}
+
+export function AlertIcon(props: IconProps) {
+  return <IconBase {...props}><path d="M12 3 2.5 20h19L12 3Z" /><path d="M12 10v4.5" /><circle cx="12" cy="17.2" r="0.4" fill="currentColor" /></IconBase>;
+}
+
+export function ChartIcon(props: IconProps) {
+  return <IconBase {...props}><path d="M4 4v16h16" /><path d="M8.5 16v-4.5M12.5 16V7.5M16.5 16v-3" /></IconBase>;
+}
+
+export function GearIcon(props: IconProps) {
+  return <IconBase {...props}><circle cx="12" cy="12" r="3" /><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1" /></IconBase>;
 }

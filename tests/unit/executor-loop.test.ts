@@ -33,6 +33,7 @@ type MockResponse = {
   rawEvents: Array<{ event: string; data: unknown }>;
   usage: { input: number; output: number; cached: number; reasoning: number } | null;
   status?: string | null;
+  sawUsefulDeltas?: boolean;
 };
 
 function toolCallResponse(callId: string, sql: string): MockResponse {
@@ -88,7 +89,9 @@ beforeEach(() => {
   process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
   process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
   process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'false';
-  delete process.env.OPENAI_PROVIDER;
+  // Pin the default provider explicitly: an operator .env may name a provider
+  // this test does not exercise, and dotenv would otherwise re-populate it.
+  process.env.OPENAI_PROVIDER = 'openai';
   process.env.OPENAI_REASONING_EFFORT = 'auto';
   process.env.OPENAI_REASONING_MODE = 'standard';
   process.env.AUTH_SECRET_KEY = 'test-secret';
@@ -110,6 +113,13 @@ afterEach(() => {
   db.close();
   delete process.env.OPENAI_PROVIDER;
   delete process.env.CHEAPVIBE_READ_SUBAGENTS_ENABLED;
+  delete process.env.AGENT_MAX_TOOL_OUTPUT_CHARS;
+  delete process.env.AGENT_SMART_AGGREGATE_THRESHOLD;
+  delete process.env.AGENT_MAX_TOOL_ITERATIONS;
+  delete process.env.AGENT_MAX_TRANSIENT_RETRIES;
+  delete process.env.AGENT_MAX_EVE_KILL_CALLS_PER_TURN;
+  delete process.env.AGENT_MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN;
+  delete process.env.AGENT_MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE;
   vi.resetModules();
 });
 
@@ -134,6 +144,7 @@ describe('tool output truncation', () => {
   });
 
   it('returns bounded valid JSON for malformed input', async () => {
+    process.env.AGENT_MAX_TOOL_OUTPUT_CHARS = '12000';
     const { __test__ } = await import('../../src/agent/executor.js');
 
     const truncated = __test__.truncateToolOutput('{not valid JSON');
@@ -142,6 +153,7 @@ describe('tool output truncation', () => {
   });
 
   it('keeps an oversized aggregate wrapper bounded and valid JSON', async () => {
+    process.env.AGENT_MAX_TOOL_OUTPUT_CHARS = '12000';
     const { __test__ } = await import('../../src/agent/executor.js');
     const output = JSON.stringify({
       context: 'x'.repeat(13_000),
@@ -154,6 +166,7 @@ describe('tool output truncation', () => {
   });
 
   it('keeps an oversized 20-item fallback bounded and valid JSON', async () => {
+    process.env.AGENT_MAX_TOOL_OUTPUT_CHARS = '12000';
     const { __test__ } = await import('../../src/agent/executor.js');
     const output = JSON.stringify(Array.from({ length: 20 }, (_, index) => ({
       id: index,
@@ -163,6 +176,98 @@ describe('tool output truncation', () => {
     const truncated = __test__.truncateToolOutput(output);
     expect(truncated.length).toBeLessThanOrEqual(12_000);
     expect(() => JSON.parse(truncated)).not.toThrow();
+  });
+
+  it('passes a mid-size array through verbatim under the raised default budget', async () => {
+    delete process.env.AGENT_MAX_TOOL_OUTPUT_CHARS;
+    const { __test__ } = await import('../../src/agent/executor.js');
+    // ~33k chars: over the old 12k cut (which aggregated/truncated it and
+    // caused "cannot determine the maximum" answers), well under the new one.
+    const output = JSON.stringify(Array.from({ length: 60 }, (_, index) => ({
+      item_id: 1_000_000 + index,
+      name: `asset-${index}`,
+      quantity: index * 3,
+      payload: 'x'.repeat(500),
+    })));
+
+    expect(output.length).toBeGreaterThan(12_000);
+    expect(__test__.truncateToolOutput(output)).toBe(output);
+  });
+
+  it('ranks top rows by the largest price values, descending', async () => {
+    process.env.AGENT_MAX_TOOL_OUTPUT_CHARS = '12000';
+    process.env.AGENT_SMART_AGGREGATE_THRESHOLD = '10';
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      type_id: 100 + index,
+      price: index + 1,
+      note: 'x'.repeat(400),
+    }));
+
+    const aggregated = __test__.smartAggregate(rows);
+    expect(aggregated.sort_key).toBe('price');
+    const topPrices = (aggregated.top as Array<{ price: number }>).map((row) => row.price);
+    expect(topPrices[0]).toBe(30);
+    expect(topPrices).toEqual([...topPrices].sort((a, b) => b - a));
+    const bottomPrices = (aggregated.bottom as Array<{ price: number }>).map((row) => row.price);
+    expect(bottomPrices[0]).toBe(1);
+
+    const truncated = JSON.parse(__test__.truncateToolOutput(JSON.stringify(rows))) as {
+      sort_key: string;
+      top: Array<{ price: number }>;
+    };
+    expect(truncated.sort_key).toBe('price');
+    expect(truncated.top[0]?.price).toBe(30);
+  });
+
+  it('reports an honest sample instead of a bogus top when no ranking field exists', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      type_id: 34 + index,
+      item_id: 1_000 + index,
+      payload: 'y'.repeat(300),
+    }));
+
+    const aggregated = __test__.smartAggregate(rows);
+    expect(aggregated.sort_key).toBeNull();
+    expect(aggregated.top).toBeNull();
+    expect(Array.isArray(aggregated.sample)).toBe(true);
+    expect((aggregated.sample as unknown[]).length).toBeGreaterThan(0);
+  });
+
+  it('keeps a real data sample for nested structures instead of dropping all rows', async () => {
+    process.env.AGENT_MAX_TOOL_OUTPUT_CHARS = '12000';
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const output = JSON.stringify({
+      ok: true,
+      data: {
+        items: Array.from({ length: 40 }, (_, index) => ({
+          id: index,
+          name: `item-${index}`,
+          payload: 'z'.repeat(500),
+        })),
+        meta: { source: 'esi', note: 'n'.repeat(400) },
+      },
+    });
+
+    const truncated = JSON.parse(__test__.truncateToolOutput(output)) as {
+      truncated: boolean;
+      sample: { data: { items: { truncated_count: number; sample: unknown[] } } };
+    };
+    expect(truncated.truncated).toBe(true);
+    expect(truncated.sample.data.items.truncated_count).toBe(40);
+    expect(truncated.sample.data.items.sample.length).toBeGreaterThan(0);
+  });
+
+  it('returns a raw prefix sample for malformed JSON', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+
+    const truncated = JSON.parse(__test__.truncateToolOutput('{"rows": [1, 2,')) as {
+      truncated: boolean;
+      raw_sample: string;
+    };
+    expect(truncated.truncated).toBe(true);
+    expect(truncated.raw_sample.length).toBeGreaterThan(0);
   });
 });
 
@@ -182,13 +287,13 @@ describe('client tool search loop', () => {
     };
   }
 
-  function useCheapVibeCode(): void {
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+  function useModelHub(): void {
+    process.env.OPENAI_PROVIDER = 'modelhub';
     vi.resetModules();
   }
 
   it('replays a valid client search call and its exact call-id output before continuing', async () => {
-    useCheapVibeCode();
+    useModelHub();
     createNativeResponseMock
       .mockResolvedValueOnce(outputResponse([toolSearchCall('search_1')]))
       .mockResolvedValueOnce(textResponse('нашёл подходящий tool'));
@@ -210,7 +315,11 @@ describe('client tool search loop', () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool'").get()).toEqual({ n: 0 });
   });
 
-  it.each([
+  it.each<Array<{
+    label: string;
+    output: Array<Record<string, unknown>>;
+    maxSearchCalls?: string;
+  }>>([
     {
       label: 'mixed ordinary and search calls',
       output: [
@@ -225,6 +334,7 @@ describe('client tool search loop', () => {
     {
       label: 'more than four calls',
       output: [1, 2, 3, 4, 5].map((index) => toolSearchCall(`budget_${index}`)),
+      maxSearchCalls: '4',
     },
     {
       label: 'provider-owned execution mode',
@@ -249,8 +359,12 @@ describe('client tool search loop', () => {
         { type: 'function_call', call_id: '', name: 'sde_sql', arguments: '{bad' },
       ],
     },
-  ])('fails closed on $label before any tool dispatch', async ({ output }) => {
-    useCheapVibeCode();
+  ])('fails closed on $label before any tool dispatch', async ({ output, maxSearchCalls }) => {
+    useModelHub();
+    if (typeof maxSearchCalls === 'string') {
+      process.env.AGENT_MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE = maxSearchCalls;
+      vi.resetModules();
+    }
     createNativeResponseMock.mockResolvedValueOnce(outputResponse(output));
 
     const result = await runLoop();
@@ -260,7 +374,7 @@ describe('client tool search loop', () => {
   });
 
   it('allows ten sequential useful searches without repeating loaded schemas', async () => {
-    useCheapVibeCode();
+    useModelHub();
     const queries = [
       'market_history_summary',
       'system_metric_snapshot',
@@ -305,7 +419,7 @@ describe('client tool search loop', () => {
   });
 
   it('terminalizes an active plan when discovery protocol fails', async () => {
-    useCheapVibeCode();
+    useModelHub();
     createNativeResponseMock
       .mockResolvedValueOnce(outputResponse([{
         type: 'function_call',
@@ -339,7 +453,7 @@ describe('client tool search loop', () => {
   });
 
   it('terminalizes a created plan after a successful final response', async () => {
-    useCheapVibeCode();
+    useModelHub();
     createNativeResponseMock
       .mockResolvedValueOnce(outputResponse([{
         type: 'function_call',
@@ -367,9 +481,9 @@ describe('client tool search loop', () => {
   });
 });
 
-describe('CheapVibe read subagent integration', () => {
+describe('ModelHub read subagent integration', () => {
   it('runs two isolated public workers and returns one bounded aggregate to the root', async () => {
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
+    process.env.OPENAI_PROVIDER = 'modelhub';
     process.env.CHEAPVIBE_READ_SUBAGENTS_ENABLED = 'true';
     vi.resetModules();
     db.prepare('INSERT INTO sde_regions (region_id, name, data_json) VALUES (?, ?, ?), (?, ?, ?)').run(
@@ -1184,6 +1298,7 @@ describe('stateless tool loop context accumulation', () => {
   });
 
   it('caps local EVE-KILL analytics at four calls per turn', async () => {
+    process.env.AGENT_MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN = '4';
     const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
       jsonrpc: '2.0',
       id: 1,
@@ -1580,10 +1695,58 @@ describe('transient model error retry', () => {
     expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
   });
 
+  it('does not auto-retry a thrown transient error once useful deltas were streamed', async () => {
+    // Provider contract: after the first useful content/tool delta an
+    // identical replay can duplicate a tool action — the turn must fail
+    // honestly instead of retrying.
+    const error = new Error('Responses API timed out after 300s') as Error & { sawUsefulDeltas?: boolean };
+    error.sawUsefulDeltas = true;
+    createNativeResponseMock.mockRejectedValueOnce(error);
+    await expect(runLoop()).rejects.toThrow('timed out');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not auto-retry an in-payload transient error once useful deltas were streamed', async () => {
+    createNativeResponseMock.mockResolvedValueOnce({
+      ...errorResponse('Incomplete response stream (no terminal event received)'),
+      sawUsefulDeltas: true,
+    });
+    const result = await runLoop();
+    expect(result.text).toContain('временно недоступен');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('still retries a truncated stream that produced no useful deltas', async () => {
+    createNativeResponseMock
+      .mockResolvedValueOnce({
+        ...errorResponse('Incomplete response stream (no terminal event received)'),
+        sawUsefulDeltas: false,
+      })
+      .mockResolvedValueOnce(textResponse('ответ'));
+    const result = await runLoop();
+    expect(result.text).toBe('ответ');
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('spreads transient retry delays with jitter inside [cap/2, cap]', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    // cap = 1000ms * attempt; the delay is uniform in [cap/2, cap].
+    expect(__test__.transientRetryDelayMs(1, () => 0)).toBe(500);
+    expect(__test__.transientRetryDelayMs(3, () => 0)).toBe(1500);
+    expect(__test__.transientRetryDelayMs(3, () => 0.9999)).toBeLessThanOrEqual(3000);
+    expect(__test__.transientRetryDelayMs(3, () => 0.9999)).toBeGreaterThan(2900);
+    // Distinct draws give distinct delays: parallel turns must not retry in
+    // lockstep after a shared provider hiccup.
+    const delays = new Set([0.1, 0.4, 0.7, 0.95].map((r) => __test__.transientRetryDelayMs(2, () => r)));
+    expect(delays.size).toBeGreaterThan(1);
+  });
+
   it('does not consume the tool-iteration budget on retry', async () => {
     // 1 transient failure + 39 tool rounds + final text. MAX_TOOL_ITERATIONS
-    // is 40: if the retry burned an iteration slot, the final text call would
-    // fall outside the loop and the turn would end with the timeout message.
+    // is pinned to 40: if the retry burned an iteration slot, the final text
+    // call would fall outside the loop and the turn would end with the
+    // timeout message.
+    process.env.AGENT_MAX_TOOL_ITERATIONS = '40';
     createNativeResponseMock.mockRejectedValueOnce(new Error('HTTP 502: Bad Gateway'));
     for (let i = 0; i < 39; i += 1) {
       createNativeResponseMock.mockResolvedValueOnce(
@@ -1599,6 +1762,7 @@ describe('transient model error retry', () => {
 
   // Real backoff delays (1s+2s+3s) run here — this test is deliberately slow.
   it('gives up after the per-turn retry budget', async () => {
+    process.env.AGENT_MAX_TRANSIENT_RETRIES = '3';
     createNativeResponseMock.mockRejectedValue(new Error('fetch failed'));
     await expect(runLoop()).rejects.toThrow('fetch failed');
     // 1 original + 3 retries, then the error propagates.
@@ -1812,5 +1976,75 @@ describe('runPreTurnCompactSafe', () => {
     const { __test__ } = await import('../../src/agent/executor.js');
     await expect(__test__.runPreTurnCompactSafe(db as never, 't1')).resolves.toBeUndefined();
     expect(runPreTurnCompactMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('tiered reasoning effort', () => {
+  function recordedEfforts(): unknown[] {
+    return createNativeResponseMock.mock.calls.map(
+      (call) => (call[0] as { reasoningEffort?: unknown }).reasoningEffort,
+    );
+  }
+
+  afterEach(() => {
+    delete process.env.OPENAI_REASONING_EFFORT_INTERMEDIATE;
+    delete process.env.OPENAI_REASONING_EFFORT_FINAL;
+  });
+
+  it('resolveTierReasoningEffort inherits the base effort on auto and honors fixed tiers', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    expect(__test__.resolveTierReasoningEffort('high', 'auto')).toBe('high');
+    expect(__test__.resolveTierReasoningEffort('medium', 'auto')).toBe('medium');
+    expect(__test__.resolveTierReasoningEffort('high', 'low')).toBe('low');
+    expect(__test__.resolveTierReasoningEffort('low', 'xhigh')).toBe('xhigh');
+  });
+
+  it('uses the base effort on every iteration while both tiers stay auto', async () => {
+    createNativeResponseMock
+      .mockResolvedValueOnce(toolCallResponse('call_1', 'SELECT type_id FROM sde_types LIMIT 1'))
+      .mockResolvedValueOnce(textResponse('готовый ответ'));
+
+    const result = await runLoop();
+
+    expect(result.text).toBe('готовый ответ');
+    // GOAL contains "проанализируй", so the goal classifier resolves high.
+    expect(recordedEfforts()).toEqual(['high', 'high']);
+  });
+
+  it('applies the intermediate tier only to tool-chain continuations', async () => {
+    process.env.OPENAI_REASONING_EFFORT_INTERMEDIATE = 'low';
+    vi.resetModules();
+    createNativeResponseMock
+      .mockResolvedValueOnce(toolCallResponse('call_1', 'SELECT type_id FROM sde_types LIMIT 1'))
+      .mockResolvedValueOnce(textResponse('готовый ответ'));
+
+    const result = await runLoop();
+
+    expect(result.text).toBe('готовый ответ');
+    expect(recordedEfforts()).toEqual(['high', 'low']);
+  });
+
+  it('applies the final tier to the opening request independently of the intermediate tier', async () => {
+    process.env.OPENAI_REASONING_EFFORT_INTERMEDIATE = 'low';
+    process.env.OPENAI_REASONING_EFFORT_FINAL = 'xhigh';
+    vi.resetModules();
+    createNativeResponseMock
+      .mockResolvedValueOnce(toolCallResponse('call_1', 'SELECT type_id FROM sde_types LIMIT 1'))
+      .mockResolvedValueOnce(textResponse('готовый ответ'));
+
+    await runLoop();
+
+    expect(recordedEfforts()).toEqual(['xhigh', 'low']);
+  });
+
+  it('keeps the final tier when the model answers without any tool call', async () => {
+    process.env.OPENAI_REASONING_EFFORT_INTERMEDIATE = 'low';
+    vi.resetModules();
+    createNativeResponseMock.mockResolvedValueOnce(textResponse('сразу ответ'));
+
+    const result = await runLoop();
+
+    expect(result.text).toBe('сразу ответ');
+    expect(recordedEfforts()).toEqual(['high']);
   });
 });

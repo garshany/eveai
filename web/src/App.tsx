@@ -2,15 +2,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { isAmbiguousApiRequestError, webApi } from './api';
 import {
   mergeRequestSnapshot,
+  mergeStreamDelta,
   preparePendingSubmission,
   submitWithAmbiguousRetry,
   type PendingSubmission,
+  type StreamDeltaFrame,
 } from './agent-request-client';
 import { LoginScreen } from './components/LoginScreen';
 import { Sidebar, type AppView } from './components/Sidebar';
 import { ChatScreen } from './components/ChatScreen';
+import { ExamplesScreen } from './components/ExamplesScreen';
+import { MarketScreen } from './components/MarketScreen';
 import { PilotProfileScreen } from './components/PilotProfileScreen';
-import { LiveScanScreen } from './components/LiveScanScreen';
+import { SettingsScreen } from './components/SettingsScreen';
+import { SupportScreen } from './components/SupportScreen';
+import { clearMarketStaticCache } from './components/market/static-cache';
 import { useI18n } from './i18n';
 import type { ChatMessage, Conversation, SessionPayload, WebAgentRequest } from './types';
 
@@ -31,6 +37,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(authResultMessage);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [pendingDraft, setPendingDraft] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [activeRequest, setActiveRequest] = useState<WebAgentRequest | null>(null);
   const activeIdRef = useRef<string | null>(null);
@@ -122,6 +129,17 @@ export default function App() {
         // Polling below remains authoritative when an SSE frame is malformed.
       }
     });
+    source?.addEventListener('delta', (event) => {
+      if (cancelled || !(event instanceof MessageEvent)) return;
+      try {
+        const frame = JSON.parse(event.data) as StreamDeltaFrame;
+        if (frame.requestId === observedRequestId) {
+          setActiveRequest((current) => mergeStreamDelta(current, frame));
+        }
+      } catch {
+        // Polling below remains authoritative when an SSE frame is malformed.
+      }
+    });
     source?.addEventListener('error', () => source.close());
     const timer = window.setInterval(() => {
       void webApi.getAgentRequest(observedRequestId)
@@ -178,27 +196,31 @@ export default function App() {
     return payload.session;
   };
 
-  const connectEve = async (turnstileToken?: string) => {
+  const connectEve = async (turnstileToken?: string): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       const activeSession = await ensureSession(turnstileToken);
       const { url } = await webApi.startEveLogin(activeSession.csrfToken, locale);
       window.location.assign(url);
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось начать вход через EVE.');
       setBusy(false);
+      return false;
     }
   };
 
-  const continueAsGuest = async (turnstileToken?: string) => {
+  const continueAsGuest = async (turnstileToken?: string): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       await ensureSession(turnstileToken);
       await loadConversations();
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось открыть гостевой режим.');
+      return false;
     } finally {
       setBusy(false);
     }
@@ -215,6 +237,21 @@ export default function App() {
       setSidebarOpen(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось переключить персонажа.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Ошибки не проглатываем: профиль показывает текст сервера из ApiRequestError.
+  const unlinkCharacter = async (characterId: number) => {
+    if (!session) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await webApi.unlinkCharacter(characterId, session.csrfToken);
+      const payload = await webApi.getSession();
+      setBootstrap(payload);
+      await loadConversations();
     } finally {
       setBusy(false);
     }
@@ -248,6 +285,17 @@ export default function App() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось загрузить диалог.');
     }
+  };
+
+  const deleteConversation = async (threadId: string) => {
+    if (!session) return;
+    await webApi.deleteConversation(threadId, session.csrfToken);
+    if (activeIdRef.current === threadId) {
+      messageLoadGeneration.current += 1;
+      setActiveConversation(null);
+      setMessages([]);
+    }
+    await refreshConversationList();
   };
 
   const sendMessage = async (content: string) => {
@@ -305,6 +353,9 @@ export default function App() {
     setBusy(true);
     try {
       await webApi.logout(session.csrfToken);
+      // Статика SDE следующего пользователя запрашивается заново, а не
+      // дочитывается из кэша вкладки прежнего сеанса.
+      clearMarketStaticCache();
       setBootstrap({
         session: null,
         ssoConfigured: bootstrap?.ssoConfigured ?? false,
@@ -328,14 +379,18 @@ export default function App() {
   }
 
   if (!session) {
+    if (activeView === 'support') {
+      return <SupportScreen hasSession={false} onBackToLogin={() => setActiveView('chat')} />;
+    }
     return (
       <LoginScreen
         busy={busy}
         ssoConfigured={bootstrap?.ssoConfigured ?? false}
         turnstileSiteKey={bootstrap?.turnstileSiteKey ?? null}
         error={error}
-        onConnect={(token) => void connectEve(token)}
-        onGuest={(token) => void continueAsGuest(token)}
+        onConnect={connectEve}
+        onGuest={continueAsGuest}
+        onShowSupport={() => setActiveView('support')}
       />
     );
   }
@@ -355,13 +410,17 @@ export default function App() {
         onView={(view) => { setActiveView(view); setSidebarOpen(false); }}
         onNew={() => { setActiveView('chat'); void createConversation(); }}
         onSelect={(id) => { setActiveView('chat'); void selectConversation(id); }}
+        onDelete={deleteConversation}
         onConnect={() => void connectEve()}
         onActivate={(characterId) => void activateCharacter(characterId)}
         onLogout={() => void logout()}
       />
-      {activeView === 'chat' ? <ChatScreen title={activeTitle} messages={messages} busy={busy} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} /> : null}
-      {activeView === 'profile' ? <PilotProfileScreen character={session.character} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} /> : null}
-      {activeView === 'scan' ? <LiveScanScreen csrfToken={session.csrfToken} onMenu={() => setSidebarOpen(true)} onPrompt={(prompt) => { setActiveView('chat'); void sendMessage(prompt); }} /> : null}
+      {activeView === 'chat' ? <ChatScreen title={activeTitle} conversationId={activeId} messages={messages} busy={busy} request={activeRequest} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} onDismissError={() => setError(null)} initialDraft={pendingDraft} onInitialDraftConsumed={() => setPendingDraft(null)} /> : null}
+      {activeView === 'market' ? <MarketScreen onMenu={() => setSidebarOpen(true)} csrfToken={session.csrfToken} /> : null}
+      {activeView === 'profile' ? <PilotProfileScreen character={session.character} csrfToken={session.csrfToken} busy={busy} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} onUnlink={unlinkCharacter} /> : null}
+      {activeView === 'settings' ? <SettingsScreen csrfToken={session.csrfToken} onMenu={() => setSidebarOpen(true)} /> : null}
+      {activeView === 'examples' ? <ExamplesScreen onMenu={() => setSidebarOpen(true)} onTryInChat={(question) => { setPendingDraft(question); setActiveView('chat'); }} /> : null}
+      {activeView === 'support' ? <SupportScreen hasSession onMenu={() => setSidebarOpen(true)} /> : null}
     </main>
   );
 }

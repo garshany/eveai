@@ -3,6 +3,7 @@ import { rmSync } from 'node:fs';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
+import { deleteCharacterData } from '../db/character-datastore.js';
 import { matchesOpaqueToken, protectOpaqueToken } from '../auth/secret-storage.js';
 import {
   resolveUserProfilePath,
@@ -14,7 +15,9 @@ import { withWebLaneAuthorizationLock } from './web-lane-lock.js';
 export const WEB_SESSION_COOKIE = 'eveai_session';
 export const WEB_CSRF_COOKIE = 'eveai_csrf';
 
-const WEB_CHAT_ID_START = -2_000_000_000;
+// Web lanes allocate chat ids downwards from here; Discord lanes use the
+// small negatives above it, 0 is the local CLI, positives are Telegram.
+export const WEB_CHAT_ID_START = -2_000_000_000;
 const SESSION_PURPOSE = 'web_session';
 const CSRF_PURPOSE = 'web_csrf';
 const SESSION_CLEANUP_INTERVAL_MS = 60_000;
@@ -244,6 +247,26 @@ async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
       .get(chatId) as { user_id: number } | undefined;
     if (!lane) return;
     const userId = lane.user_id;
+
+    // A user with a linked EVE character owns a persistent identity: the web
+    // session is only a login token, not the data container. Expiry/logout
+    // drops just the session row; conversations, characters, market and usage
+    // data survive so the next SSO sign-in reattaches them to the returning
+    // user (see planBrowserSsoOwner in auth-routes.ts). Route monitors are
+    // session-scoped, though: without a live session nothing drives them, so
+    // they are discarded together with the session.
+    const ownsCharacter = db.prepare(`
+      SELECT 1 FROM eve_accounts WHERE user_id = ?
+      UNION
+      SELECT 1 FROM eve_character_links WHERE user_id = ?
+      LIMIT 1
+    `).get(userId, userId);
+    if (ownsCharacter) {
+      discardRouteMonitor(chatId, db);
+      db.prepare('DELETE FROM web_sessions WHERE chat_id = ?').run(chatId);
+      return;
+    }
+
     discardRouteMonitor(chatId);
     const linkedCharacters = db.prepare(`
       SELECT character_id FROM eve_character_links WHERE chat_id = ? OR user_id = ?
@@ -283,6 +306,7 @@ async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
         if (hasOtherIdentity) return false;
 
         db.prepare('DELETE FROM heartbeat_config WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM user_model_settings WHERE user_id = ?').run(userId);
         db.prepare('DELETE FROM intel_notes WHERE user_id = ?').run(userId);
         db.prepare('DELETE FROM auth_requests WHERE user_id = ?').run(userId);
         db.prepare('DELETE FROM eve_character_links WHERE user_id = ?').run(userId);
@@ -290,7 +314,18 @@ async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
         db.prepare('DELETE FROM users WHERE user_id = ?').run(userId);
         return true;
       });
+
       const removedUser = purge.immediate();
+
+      // Materialized private profile rows go with the account: delete them for
+      // every character that has no surviving link or account after the purge.
+      db.transaction(() => {
+        for (const characterId of characterIds) {
+          const survives = db.prepare('SELECT 1 FROM eve_character_links WHERE character_id = ? LIMIT 1').get(characterId)
+            ?? db.prepare('SELECT 1 FROM eve_accounts WHERE character_id = ? LIMIT 1').get(characterId);
+          if (!survives) deleteCharacterData(db, characterId);
+        }
+      })();
 
       for (const characterId of characterIds) {
         try {

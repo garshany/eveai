@@ -1,11 +1,12 @@
 import type { NativeFunctionTool } from '../agent/native-responses.js';
 import type { Db } from '../db/sqlite.js';
+import { config } from '../config.js';
 import { isCanonicalIsoTimestamp } from './normalize.js';
 import { executeEveKillAnalyticsTool } from './mcp-analytics.js';
 
 const ARGUMENT_KEYS = new Set(['entity_id', 'entity_type', 'from', 'to', 'top']);
 const MAX_WINDOW_MS = 366 * 24 * 60 * 60 * 1_000;
-const MAX_OUTPUT_CHARS = 12_000;
+const MAX_OUTPUT_CHARS = config.openai.maxProgrammaticToolOutputChars;
 const FAMILY_HASH = /^[0-9a-f]{64}$/;
 const LIMITATION = 'Third-party public loss-fit inference; coverage and doctrine classifications may be incomplete.';
 

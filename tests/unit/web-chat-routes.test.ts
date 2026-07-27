@@ -276,6 +276,78 @@ describe('web chat routes', () => {
     expect((history.json() as { messages: unknown[] }).messages).toHaveLength(2);
   });
 
+  it('streams accumulated answer text via SSE delta frames, polling DTO, and never duplicates on reconnect', async () => {
+    runAgentTurnMock.mockImplementation(async (
+      database: Database.Database,
+      threadId: string,
+      _ctx: unknown,
+      text: string,
+    ) => {
+      const { reportActivity } = await import('../../src/agent/activity.js');
+      reportActivity({ type: 'text_delta', text: '', reset: true });
+      reportActivity({ type: 'text_delta', text: 'Ответ: ' });
+      reportActivity({ type: 'text_delta', text });
+      const answer = `Ответ: ${text}`;
+      database.prepare('INSERT INTO messages (thread_id, role, content) VALUES (?, ?, ?)').run(threadId, 'assistant', answer);
+      return answer;
+    });
+    const session = await createBrowserSession();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/web/conversations',
+      headers: mutationHeaders(session),
+    });
+    const threadId = (created.json() as { threadId: string }).threadId;
+    const answer = await app.inject({
+      method: 'POST',
+      url: '/api/web/chat',
+      headers: mutationHeaders(session),
+      payload: { message: 'Привет', threadId },
+    });
+    expect(answer.statusCode).toBe(202);
+    const accepted = answer.json() as { request: { requestId: string } };
+
+    let requestPayload: { request: { status: string; streamText?: string } } | null = null;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const status = await app.inject({
+        method: 'GET',
+        url: `/api/web/chat/requests/${accepted.request.requestId}`,
+        headers: { cookie: session.cookie },
+      });
+      requestPayload = status.json() as typeof requestPayload;
+      if (requestPayload?.request.status === 'completed') break;
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    // The polling fallback sees the same accumulated text as the SSE stream.
+    expect(requestPayload?.request.streamText).toBe('Ответ: Привет');
+
+    const events = await app.inject({
+      method: 'GET',
+      url: `/api/web/chat/requests/${accepted.request.requestId}/events`,
+      headers: { cookie: session.cookie },
+    });
+    expect(events.statusCode).toBe(200);
+    expect(events.body).toContain('event: delta');
+    expect(events.body).toContain('"text":"Ответ: Привет"');
+    expect(events.body).toContain('"requestId":"' + accepted.request.requestId + '"');
+    // The snapshot frame still arrives, after the delta frame.
+    expect(events.body).toContain('event: request');
+    expect(events.body.indexOf('event: delta')).toBeLessThan(events.body.indexOf('event: request'));
+    expect(events.body).toContain('"status":"completed"');
+
+    // A reconnect at the last seen sequence must not replay any frames.
+    const lastId = [...events.body.matchAll(/^id: (\d+)$/gm)].pop()?.[1];
+    expect(lastId).toBeDefined();
+    const replay = await app.inject({
+      method: 'GET',
+      url: `/api/web/chat/requests/${accepted.request.requestId}/events`,
+      headers: { cookie: session.cookie, 'last-event-id': lastId as string },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.body).not.toContain('event: delta');
+    expect(replay.body).not.toContain('event: request');
+  });
+
   it('does not allow one browser session to read another session conversation', async () => {
     const owner = await createBrowserSession();
     const intruder = await createBrowserSession();
@@ -403,6 +475,42 @@ describe('web chat routes', () => {
     expect(blocked.statusCode).toBe(409);
     expect(db.prepare('SELECT COUNT(*) AS n FROM agent_threads WHERE chat_id = ?').get(session.chatId))
       .toEqual({ n: 40 });
+  });
+
+  it('keeps guest-era conversations replyable after a character is linked', async () => {
+    const session = await createBrowserSession();
+    // A guest conversation created BEFORE any character existed.
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/web/conversations',
+      headers: mutationHeaders(session),
+    });
+    const guestThreadId = (created.json() as { threadId: string }).threadId;
+    expect(db.prepare('SELECT character_id FROM agent_threads WHERE thread_id = ?').get(guestThreadId))
+      .toMatchObject({ character_id: null });
+
+    // The user then links and activates a character.
+    db.prepare(`
+      INSERT INTO eve_accounts (
+        character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id
+      ) VALUES (9107, 'Pilot G', 'enc:a', 'enc:r', datetime('now', '+1 hour'), '[]', ?)
+    `).run(session.userId);
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (?, 9107, ?)')
+      .run(session.chatId, session.userId);
+    db.prepare('UPDATE users SET active_character_id = 9107 WHERE user_id = ?').run(session.userId);
+    db.prepare('UPDATE telegram_sessions SET active_character_id = 9107 WHERE chat_id = ?').run(session.chatId);
+
+    // The listed guest thread must accept a follow-up, not 404: the sidebar
+    // shows it, so the send path has to honour it (it simply continues
+    // without character context).
+    const answer = await app.inject({
+      method: 'POST',
+      url: '/api/web/chat',
+      headers: mutationHeaders(session),
+      payload: { message: 'Продолжаем гостевой диалог', threadId: guestThreadId },
+    });
+    expect(answer.statusCode).toBe(202);
+    expect((answer.json() as { request: { threadId: string } }).request.threadId).toBe(guestThreadId);
   });
 
   it('does not reuse an empty conversation belonging to another active character', async () => {
@@ -563,7 +671,7 @@ describe('web chat routes', () => {
     expect(db.prepare('SELECT 1 FROM route_monitors WHERE chat_id = ?').get(owner.chatId)).toBeUndefined();
   });
 
-  it('purges browser-only durable data when its session expires', async () => {
+  it('keeps the durable data of a character-linked user when its session expires', async () => {
     const session = await createBrowserSession();
     const created = await app.inject({
       method: 'POST',
@@ -595,10 +703,15 @@ describe('web chat routes', () => {
     });
     expect(expired.json()).toMatchObject({ session: null });
     await cleanExpiredWebSessions(db, { force: true });
-    expect(db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(session.userId)).toBeUndefined();
-    expect(db.prepare('SELECT 1 FROM telegram_sessions WHERE chat_id = ?').get(session.chatId)).toBeUndefined();
-    expect(db.prepare('SELECT 1 FROM agent_threads WHERE thread_id = ?').get(threadId)).toBeUndefined();
-    expect(db.prepare('SELECT 1 FROM eve_accounts WHERE character_id = 9001').get()).toBeUndefined();
+    // Only the expired login token and the session-scoped route monitor are
+    // gone; the identity, the lane and every durable row survive so the next
+    // SSO sign-in reattaches them.
+    expect(db.prepare('SELECT 1 FROM web_sessions WHERE chat_id = ?').get(session.chatId)).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(session.userId)).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM telegram_sessions WHERE chat_id = ?').get(session.chatId)).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM agent_threads WHERE thread_id = ?').get(threadId)).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM messages WHERE thread_id = ?').get(threadId)).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM eve_accounts WHERE character_id = 9001').get()).toBeDefined();
     expect(db.prepare('SELECT 1 FROM route_monitors WHERE chat_id = ?').get(session.chatId)).toBeUndefined();
   });
 

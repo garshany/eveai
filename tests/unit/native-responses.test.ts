@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 beforeEach(() => {
   vi.resetModules();
-  delete process.env.OPENAI_PROVIDER;
+  // Pin the default provider explicitly: an operator .env may name a provider
+  // this test does not exercise, and dotenv would otherwise re-populate it.
+  process.env.OPENAI_PROVIDER = 'openai';
   process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1';
   process.env.OPENAI_RESPONSE_STATE_MODE = 'stateless';
   process.env.OPENAI_STORE_RESPONSES = 'false';
@@ -66,38 +68,6 @@ describe('extractToolSearchPaths', () => {
 });
 
 describe('parseSse + streamed outputs', () => {
-  it('normalizes JSON, NDJSON, and SSE payloads carried in one WebSocket message', async () => {
-    const { __test__ } = await import('../../src/agent/native-responses.js');
-    expect(__test__.parseWebSocketMessage('{"type":"response.created"}')).toHaveLength(1);
-    expect(__test__.parseWebSocketMessage('[{"type":"response.created"},{"type":"codex.rate_limits"}]'))
-      .toHaveLength(2);
-    expect(__test__.parseWebSocketMessage('0')).toEqual([]);
-    expect(__test__.consumeWebSocketBuffer('{')).toEqual({ frames: [], rest: '{' });
-    const consumed = __test__.consumeWebSocketBuffer([
-      '{"type":"response.created","note":"brace } in string"}',
-      '{"type":"response.completed","response":{"status":"completed"}}',
-      '{"type":"response.output_text.delta"',
-    ].join(''));
-    expect(consumed.frames.map((event) => event.event)).toEqual([
-      'response.created',
-      'response.completed',
-    ]);
-    expect(consumed.rest).toBe('{"type":"response.output_text.delta"');
-    expect(__test__.parseWebSocketMessage([
-      '{"type":"response.output_text.delta","delta":"ok"}',
-      '{"type":"response.completed","response":{"status":"completed"}}',
-    ].join('\n')).map((event) => event.event)).toEqual([
-      'response.output_text.delta',
-      'response.completed',
-    ]);
-    expect(__test__.parseWebSocketMessage([
-      'event: response.completed',
-      'data: {"type":"response.completed","response":{"status":"completed"}}',
-      '',
-    ].join('\n'))[0]?.event).toBe('response.completed');
-    expect(() => __test__.parseWebSocketMessage('not-json')).toThrow();
-  });
-
   it('parses SSE stream, extracts deltas, done items, and terminal payload', async () => {
     process.env.ALLOWED_TELEGRAM_USER_ID = '1';
     process.env.TELEGRAM_BOT_TOKEN = 'test';
@@ -374,34 +344,6 @@ describe('createNativeResponse request body', () => {
 
     expect(body?.store).toBe(true);
     expect(body?.previous_response_id).toBeUndefined();
-  });
-
-  it('uses the fixed CheapVibeCode WebSocket endpoint and omits stream', async () => {
-    process.env.OPENAI_API_KEY = 'test';
-    process.env.EVE_CLIENT_ID = 'test';
-    process.env.EVE_CLIENT_SECRET = 'test';
-    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
-    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
-    process.env.OPENAI_PROVIDER = 'cheapvibecode';
-
-    const { __test__ } = await import('../../src/agent/native-responses.js');
-    const requestBody = __test__.buildWebSocketCreatePayload({
-      model: 'gpt-5.6-sol',
-      input: [],
-      tools: [],
-      stream: true,
-      background: false,
-    });
-    const requestHeaders = __test__.buildWebSocketHeaders('test', '00000000-0000-4000-8000-000000000000');
-
-    expect(__test__.responsesWebSocketUrl('https://cheapvibecode.ru/backend-api/codex'))
-      .toBe('wss://cheapvibecode.ru/backend-api/codex/responses');
-    expect(requestBody).toMatchObject({ type: 'response.create', model: 'gpt-5.6-sol' });
-    expect(requestBody).not.toHaveProperty('stream');
-    expect(requestBody).not.toHaveProperty('background');
-    expect(requestHeaders.authorization).toBe('Bearer test');
-    expect(requestHeaders['OpenAI-Beta']).toBe('responses_websockets=2026-02-06');
-    expect(requestHeaders['x-client-request-id']).toBe('00000000-0000-4000-8000-000000000000');
   });
 
   it('keeps automatic truncation on the default OpenAI provider', async () => {
@@ -788,5 +730,244 @@ describe('createNativeResponse request body', () => {
     expect(result.error?.message).not.toContain(sentinel);
     expect(JSON.stringify(logSpy.mock.calls)).not.toContain(sentinel);
     logSpy.mockRestore();
+  });
+});
+
+
+describe('streaming text deltas', () => {
+  it('emits HTTP SSE deltas to the activity sink as the stream is read', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+
+    const encoder = new TextEncoder();
+    const emojiBytes = encoder.encode('🌍');
+    let enqueueFinal: () => void = () => { throw new Error('stream not ready'); };
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // A data line split mid-token, and a multi-byte emoji split across reads.
+        controller.enqueue(encoder.encode(
+          'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hel',
+        ));
+        controller.enqueue(encoder.encode(
+          'lo"}\n\nevent: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"',
+        ));
+        controller.enqueue(emojiBytes.slice(0, 2));
+        enqueueFinal = () => {
+          controller.enqueue(emojiBytes.slice(2));
+          controller.enqueue(encoder.encode([
+            '"}',
+            '',
+            'event: response.done',
+            'data: {"response":{"id":"resp_stream","output_text":"Hello🌍","output":[{"type":"message","content":[{"type":"output_text","text":"Hello🌍"}]}]}}',
+            '',
+          ].join('\n')));
+          controller.close();
+        };
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(stream, { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+    type Seen = { type: string; text?: string; reset?: boolean };
+    const seen: Seen[] = [];
+    const sink = { emit: (event: Seen) => seen.push(event) };
+
+    let outputText: string | null = null;
+    await runWithActivitySink(sink, async () => {
+      const pending = createNativeResponse({
+        instructions: 't',
+        items: [toNativeMessage('hi')],
+        tools: [],
+        streamToActivity: true,
+      });
+      // The first delta must reach the sink while the stream is still open.
+      for (let attempt = 0; attempt < 200 && !seen.some((event) => event.text === 'Hello'); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      expect(seen).toEqual([
+        { type: 'text_delta', text: '', reset: true },
+        { type: 'text_delta', text: 'Hello' },
+      ]);
+      enqueueFinal();
+      outputText = (await pending).outputText;
+    });
+
+    expect(seen).toEqual([
+      { type: 'text_delta', text: '', reset: true },
+      { type: 'text_delta', text: 'Hello' },
+      { type: 'text_delta', text: '🌍' },
+    ]);
+    expect(outputText).toBe('Hello🌍');
+  });
+
+  it('emits no deltas for internal calls with streamToActivity false', async () => {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","delta":"internal"}',
+      '',
+      'event: response.done',
+      'data: {"response":{"id":"resp_internal","output_text":"internal","output":[{"type":"message","content":[{"type":"output_text","text":"internal"}]}]}}',
+      '',
+    ].join('\n'), { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+    const seen: Array<{ type: string }> = [];
+    const sink = { emit: (event: { type: string }) => seen.push(event) };
+
+    const result = await runWithActivitySink(sink, () => createNativeResponse({
+      instructions: 't',
+      items: [toNativeMessage('hi')],
+      tools: [],
+      streamToActivity: false,
+    }));
+
+    expect(result.outputText).toBe('internal');
+    expect(seen.filter((event) => event.type === 'text_delta')).toEqual([]);
+  });
+
+  it('emits WebSocket-frame deltas through the shared helper only when streaming', async () => {
+    const { __test__ } = await import('../../src/agent/native-responses.js');
+    const { runWithActivitySink } = await import('../../src/agent/activity.js');
+    const seen: Array<{ type: string; text?: string }> = [];
+    const sink = { emit: (event: { type: string; text?: string }) => seen.push(event) };
+
+    await runWithActivitySink(sink, async () => {
+      __test__.maybeEmitTextDelta({ event: 'response.output_text.delta', data: { delta: 'tok' } }, true);
+      __test__.maybeEmitTextDelta({ event: 'response.output_text.delta', data: { delta: 'hidden' } }, false);
+      __test__.maybeEmitTextDelta({ event: 'response.completed', data: {} }, true);
+      __test__.maybeEmitTextDelta({ event: 'response.output_text.delta', data: {} }, true);
+    });
+
+    expect(seen).toEqual([{ type: 'text_delta', text: 'tok' }]);
+  });
+});
+
+describe('stream useful-delta tracking', () => {
+  function setEnv() {
+    process.env.ALLOWED_TELEGRAM_USER_ID = '1';
+    process.env.TELEGRAM_BOT_TOKEN = 'test';
+    process.env.OPENAI_API_KEY = 'test';
+    process.env.EVE_CLIENT_ID = 'test';
+    process.env.EVE_CLIENT_SECRET = 'test';
+    process.env.DEFAULT_MARKET_REGION_ID = '10000002';
+    process.env.DEFAULT_MARKET_REGION_NAME = 'The Forge';
+  }
+
+  it('flags an incomplete stream that already delivered text deltas', async () => {
+    setEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.output_text.delta',
+      'data: {"delta":"partial answer"}',
+      '',
+    ].join('\n'), { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const result = await createNativeResponse({
+      instructions: 't',
+      items: [toNativeMessage('hi')],
+      tools: [],
+    });
+
+    expect(result.error?.message).toContain('Incomplete response stream');
+    expect(result.sawUsefulDeltas).toBe(true);
+  });
+
+  it('flags an incomplete stream that already delivered a tool-call event', async () => {
+    setEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.output_item.added',
+      'data: {"item":{"type":"function_call","call_id":"call_1","name":"sde_sql"}}',
+      '',
+    ].join('\n'), { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const result = await createNativeResponse({
+      instructions: 't',
+      items: [toNativeMessage('hi')],
+      tools: [],
+    });
+
+    expect(result.error?.message).toContain('Incomplete response stream');
+    expect(result.sawUsefulDeltas).toBe(true);
+  });
+
+  it('reports no useful deltas when the stream dies before any content', async () => {
+    setEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 200 })));
+
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const result = await createNativeResponse({
+      instructions: 't',
+      items: [toNativeMessage('hi')],
+      tools: [],
+    });
+
+    expect(result.error?.message).toContain('Incomplete response stream');
+    expect(result.sawUsefulDeltas).toBe(false);
+  });
+
+  it('attaches the useful-delta flag to an error thrown mid-stream', async () => {
+    setEnv();
+    // Pull-based: erroring the stream in start() would discard the still
+    // unread queued chunk (ReadableStream semantics) before the parser sees it.
+    let step = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        step += 1;
+        if (step === 1) {
+          controller.enqueue(new TextEncoder().encode(
+            'event: response.output_text.delta\ndata: {"delta":"x"}\n\n',
+          ));
+        } else {
+          controller.error(new Error('terminated'));
+        }
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(stream, { status: 200 })));
+
+    const { createNativeResponse, sawUsefulDeltasBeforeError, toNativeMessage } =
+      await import('../../src/agent/native-responses.js');
+    let thrown: unknown;
+    try {
+      await createNativeResponse({ instructions: 't', items: [toNativeMessage('hi')], tools: [] });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain('terminated');
+    expect(sawUsefulDeltasBeforeError(thrown)).toBe(true);
+  });
+
+  it('marks pre-stream HTTP failures as safe to retry (no useful deltas)', async () => {
+    setEnv();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Bad Gateway', { status: 502 })));
+
+    const { createNativeResponse, sawUsefulDeltasBeforeError, toNativeMessage } =
+      await import('../../src/agent/native-responses.js');
+    let thrown: unknown;
+    try {
+      await createNativeResponse({ instructions: 't', items: [toNativeMessage('hi')], tools: [] });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect((thrown as Error).message).toContain('HTTP 502');
+    expect(sawUsefulDeltasBeforeError(thrown)).toBe(false);
   });
 });

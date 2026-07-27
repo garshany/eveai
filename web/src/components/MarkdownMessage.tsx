@@ -1,9 +1,16 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { CheckIcon, CopyIcon } from '../icons';
+import { useI18n } from '../i18n';
+
+type TableAlign = 'left' | 'center' | 'right';
 
 type Block =
   | { kind: 'paragraph'; lines: string[] }
+  | { kind: 'heading'; level: number; text: string }
+  | { kind: 'quote'; lines: string[] }
   | { kind: 'unordered-list'; items: string[] }
   | { kind: 'ordered-list'; items: string[] }
+  | { kind: 'table'; header: string[]; aligns: TableAlign[]; rows: string[][] }
   | { kind: 'code'; language: string; value: string };
 
 export function MarkdownMessage({ content }: { content: string }) {
@@ -11,7 +18,19 @@ export function MarkdownMessage({ content }: { content: string }) {
   return blocks.map((block, blockIndex) => {
     const key = `${block.kind}-${blockIndex}`;
     if (block.kind === 'code') {
-      return <pre key={key} data-language={block.language || undefined}><code>{block.value}</code></pre>;
+      return <CodeBlock key={key} language={block.language} value={block.value} />;
+    }
+    if (block.kind === 'heading') {
+      const Tag = (`h${Math.min(Math.max(block.level + 2, 3), 6)}`) as 'h3' | 'h4' | 'h5' | 'h6';
+      return <Tag key={key}>{parseInline(block.text, key)}</Tag>;
+    }
+    if (block.kind === 'quote') {
+      return <blockquote key={key}>{block.lines.map((line, index) => (
+        <Fragment key={`${key}-${index}`}>
+          {index > 0 ? <br /> : null}
+          {parseInline(line, `${key}-${index}`)}
+        </Fragment>
+      ))}</blockquote>;
     }
     if (block.kind === 'unordered-list') {
       return <ul key={key}>{block.items.map((item, index) => (
@@ -23,6 +42,30 @@ export function MarkdownMessage({ content }: { content: string }) {
         <li key={`${key}-${index}`}>{parseInline(item, `${key}-${index}`)}</li>
       ))}</ol>;
     }
+    if (block.kind === 'table') {
+      return (
+        <div className="md-table" key={key}>
+          <table>
+            <thead>
+              <tr>{block.header.map((cell, index) => (
+                <th key={`${key}-h${index}`} className={tableCellClass(block.aligns[index], cell)}>
+                  {parseInline(cell, `${key}-h${index}`)}
+                </th>
+              ))}</tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, rowIndex) => (
+                <tr key={`${key}-r${rowIndex}`}>{row.map((cell, cellIndex) => (
+                  <td key={`${key}-r${rowIndex}-${cellIndex}`} className={tableCellClass(block.aligns[cellIndex], cell)}>
+                    {parseInline(cell, `${key}-r${rowIndex}-${cellIndex}`)}
+                  </td>
+                ))}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
     return <p key={key}>{block.lines.map((line, index) => (
       <Fragment key={`${key}-${index}`}>
         {index > 0 ? <br /> : null}
@@ -30,6 +73,58 @@ export function MarkdownMessage({ content }: { content: string }) {
       </Fragment>
     ))}</p>;
   });
+}
+
+function CodeBlock({ language, value }: { language: string; value: string }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+  }, []);
+
+  const copy = async () => {
+    try {
+      await copyText(value);
+      setCopied(true);
+      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+      resetTimer.current = window.setTimeout(() => setCopied(false), 1_600);
+    } catch {
+      // Clipboard unavailable (permissions policy) — leave the button inert.
+    }
+  };
+
+  return (
+    <figure className="code-block">
+      <figcaption className="code-block__bar">
+        <span className="code-block__language">{language || 'code'}</span>
+        <button className="code-block__copy" type="button" onClick={() => void copy()} aria-label={t('copyCode')}>
+          {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+          <span>{copied ? t('copied') : t('copyCode')}</span>
+        </button>
+      </figcaption>
+      <pre data-language={language || undefined}><code>{value}</code></pre>
+    </figure>
+  );
+}
+
+async function copyText(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand('copy');
+  } finally {
+    textarea.remove();
+  }
 }
 
 function parseBlocks(content: string): Block[] {
@@ -54,6 +149,21 @@ function parseBlocks(content: string): Block[] {
       blocks.push({ kind: 'code', language: fence[1] ?? '', value: code.join('\n') });
       continue;
     }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      blocks.push({ kind: 'heading', level: heading[1]?.length ?? 1, text: heading[2] ?? '' });
+      index += 1;
+      continue;
+    }
+    if (/^\s*>\s?/.test(line)) {
+      const quote: string[] = [];
+      while (index < lines.length && /^\s*>\s?/.test(lines[index] ?? '')) {
+        quote.push((lines[index] ?? '').replace(/^\s*>\s?/, ''));
+        index += 1;
+      }
+      blocks.push({ kind: 'quote', lines: quote });
+      continue;
+    }
     if (/^\s*[-*]\s+/.test(line)) {
       const items: string[] = [];
       while (index < lines.length && /^\s*[-*]\s+/.test(lines[index] ?? '')) {
@@ -72,13 +182,28 @@ function parseBlocks(content: string): Block[] {
       blocks.push({ kind: 'ordered-list', items });
       continue;
     }
+    if (isTableStart(lines, index)) {
+      const header = splitTableRow(line);
+      const aligns = parseTableAligns(lines[index + 1] ?? '', header.length);
+      index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && (lines[index] ?? '').trim() && (lines[index] ?? '').includes('|')) {
+        rows.push(normalizeTableRow(splitTableRow(lines[index] ?? ''), header.length));
+        index += 1;
+      }
+      blocks.push({ kind: 'table', header, aligns, rows });
+      continue;
+    }
     const paragraph: string[] = [];
     while (
       index < lines.length
       && (lines[index] ?? '').trim()
       && !/^```/.test(lines[index] ?? '')
+      && !/^(#{1,4})\s+/.test(lines[index] ?? '')
+      && !/^\s*>\s?/.test(lines[index] ?? '')
       && !/^\s*[-*]\s+/.test(lines[index] ?? '')
       && !/^\s*\d+\.\s+/.test(lines[index] ?? '')
+      && !isTableStart(lines, index)
     ) {
       paragraph.push(lines[index] ?? '');
       index += 1;
@@ -88,8 +213,55 @@ function parseBlocks(content: string): Block[] {
   return blocks;
 }
 
+function isTableStart(lines: string[], index: number): boolean {
+  const line = lines[index] ?? '';
+  const next = lines[index + 1] ?? '';
+  return line.includes('|') && splitTableRow(line).length > 1 && isTableSeparator(next);
+}
+
+function isTableSeparator(line: string): boolean {
+  const cells = splitTableRow(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function splitTableRow(line: string): string[] {
+  let value = line.trim();
+  if (value.startsWith('|')) value = value.slice(1);
+  if (value.endsWith('|')) value = value.slice(0, -1);
+  return value.split('|').map((cell) => cell.trim());
+}
+
+function parseTableAligns(line: string, columns: number): TableAlign[] {
+  const cells = splitTableRow(line);
+  return Array.from({ length: columns }, (_, index) => {
+    const cell = cells[index] ?? '';
+    const left = cell.startsWith(':');
+    const right = cell.endsWith(':');
+    if (left && right) return 'center';
+    if (right) return 'right';
+    return 'left';
+  });
+}
+
+function normalizeTableRow(cells: string[], columns: number): string[] {
+  const row = cells.slice(0, columns);
+  while (row.length < columns) row.push('');
+  return row;
+}
+
+function tableCellClass(align: TableAlign | undefined, cell: string): string | undefined {
+  const classes: string[] = [];
+  if (align === 'center' || align === 'right') classes.push(`md-align-${align}`);
+  if (/\d/.test(cell) && /^[-+−–\d\s.,''%]+$/.test(cell.trim())) classes.push('md-num');
+  return classes.length ? classes.join(' ') : undefined;
+}
+
 function parseInline(value: string, keyPrefix: string): ReactNode[] {
-  const tokenPattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
+  // Bold must precede italic in the alternation, otherwise `**x**` matches as an
+  // empty italic. Underscore emphasis is deliberately unsupported: answers are
+  // full of identifiers like type_id and character_assets, and treating those as
+  // emphasis would mangle far more text than it would ever style.
+  const tokenPattern = /(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
   const result: ReactNode[] = [];
   let cursor = 0;
   let match: RegExpExecArray | null;
@@ -99,6 +271,8 @@ function parseInline(value: string, keyPrefix: string): ReactNode[] {
     const key = `${keyPrefix}-${match.index}`;
     if (token.startsWith('**')) {
       result.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith('*')) {
+      result.push(<em key={key}>{token.slice(1, -1)}</em>);
     } else if (token.startsWith('`')) {
       result.push(<code key={key}>{token.slice(1, -1)}</code>);
     } else {
