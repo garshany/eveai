@@ -21,6 +21,8 @@ export function toolLabel(name: string): string {
   const KNOWN: Record<string, string> = {
     sde_sql: '🗄  SDE query',
     batch_market_prices: '💰 market prices',
+    assets_summary: '📦 assets summary',
+    character_orders_summary: '💱 orders summary',
     get_eve_capabilities: '🔑 EVE access check',
     plan_route: '🗺  route planner',
     route_monitor: '🛰  route monitor',

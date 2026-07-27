@@ -166,6 +166,79 @@ describe('tool output truncation', () => {
     expect(truncated.length).toBeLessThanOrEqual(12_000);
     expect(() => JSON.parse(truncated)).not.toThrow();
   });
+
+  it('ranks top rows by the largest price values, descending', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      type_id: 100 + index,
+      price: index + 1,
+      note: 'x'.repeat(400),
+    }));
+
+    const aggregated = __test__.smartAggregate(rows);
+    expect(aggregated.sort_key).toBe('price');
+    const topPrices = (aggregated.top as Array<{ price: number }>).map((row) => row.price);
+    expect(topPrices[0]).toBe(30);
+    expect(topPrices).toEqual([...topPrices].sort((a, b) => b - a));
+    const bottomPrices = (aggregated.bottom as Array<{ price: number }>).map((row) => row.price);
+    expect(bottomPrices[0]).toBe(1);
+
+    const truncated = JSON.parse(__test__.truncateToolOutput(JSON.stringify(rows))) as {
+      sort_key: string;
+      top: Array<{ price: number }>;
+    };
+    expect(truncated.sort_key).toBe('price');
+    expect(truncated.top[0]?.price).toBe(30);
+  });
+
+  it('reports an honest sample instead of a bogus top when no ranking field exists', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      type_id: 34 + index,
+      item_id: 1_000 + index,
+      payload: 'y'.repeat(300),
+    }));
+
+    const aggregated = __test__.smartAggregate(rows);
+    expect(aggregated.sort_key).toBeNull();
+    expect(aggregated.top).toBeNull();
+    expect(Array.isArray(aggregated.sample)).toBe(true);
+    expect((aggregated.sample as unknown[]).length).toBeGreaterThan(0);
+  });
+
+  it('keeps a real data sample for nested structures instead of dropping all rows', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const output = JSON.stringify({
+      ok: true,
+      data: {
+        items: Array.from({ length: 40 }, (_, index) => ({
+          id: index,
+          name: `item-${index}`,
+          payload: 'z'.repeat(500),
+        })),
+        meta: { source: 'esi', note: 'n'.repeat(400) },
+      },
+    });
+
+    const truncated = JSON.parse(__test__.truncateToolOutput(output)) as {
+      truncated: boolean;
+      sample: { data: { items: { truncated_count: number; sample: unknown[] } } };
+    };
+    expect(truncated.truncated).toBe(true);
+    expect(truncated.sample.data.items.truncated_count).toBe(40);
+    expect(truncated.sample.data.items.sample.length).toBeGreaterThan(0);
+  });
+
+  it('returns a raw prefix sample for malformed JSON', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+
+    const truncated = JSON.parse(__test__.truncateToolOutput('{"rows": [1, 2,')) as {
+      truncated: boolean;
+      raw_sample: string;
+    };
+    expect(truncated.truncated).toBe(true);
+    expect(truncated.raw_sample.length).toBeGreaterThan(0);
+  });
 });
 
 describe('client tool search loop', () => {

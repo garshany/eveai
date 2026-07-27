@@ -56,6 +56,8 @@ import {
   type ClientToolSearchIndex,
 } from './client-tool-search.js';
 import { callEsiOperation } from '../eve/esi-client.js';
+import { executeAssetsSummary, isAssetsSummaryTool } from '../eve/assets-summary.js';
+import { executeCharacterOrdersSummary, isCharacterOrdersSummaryTool } from '../eve/orders-summary.js';
 import {
   executeMarketHistorySummary,
   isMarketHistorySummaryTool,
@@ -2507,6 +2509,14 @@ async function executeToolCallUnadmitted(
     return await executeMarketHistorySummary(db, args);
   }
 
+  if (isAssetsSummaryTool(name)) {
+    return await executeAssetsSummary(db, args, ctx, guard);
+  }
+
+  if (isCharacterOrdersSummaryTool(name)) {
+    return await executeCharacterOrdersSummary(db, args, ctx, guard);
+  }
+
   if (isSystemMetricSnapshotTool(name)) {
     return await executeSystemMetricSnapshot(db, args);
   }
@@ -3069,6 +3079,7 @@ export const __test__ = {
   executeLocalParallelBatch,
   validateCompletedProgramShapes,
   truncateToolOutput,
+  smartAggregate,
 };
 
 function compactToolResult(value: unknown): unknown {
@@ -3111,7 +3122,12 @@ function truncateToolOutput(json: string): string {
   try {
     parsed = JSON.parse(json) as unknown;
   } catch {
-    return truncatedToolOutputNotice(json.length);
+    return JSON.stringify({
+      truncated: true,
+      total_chars: json.length,
+      notice: 'Tool output was not valid JSON; returning a raw prefix sample.',
+      raw_sample: json.slice(0, 2_000),
+    });
   }
 
   if (json.length <= MAX_TOOL_OUTPUT_CHARS) return json;
@@ -3134,20 +3150,14 @@ function truncateToolOutput(json: string): string {
 
     if (targetArray && targetArray.length >= SMART_AGGREGATE_THRESHOLD) {
       const aggregated = smartAggregate(targetArray);
-      if (wrapperObj) {
-        wrapperObj.data = aggregated;
-        const result = JSON.stringify(wrapperObj);
-        if (result.length <= MAX_TOOL_OUTPUT_CHARS) return result;
-        aggregated.top = aggregated.top.slice(0, 5);
-        wrapperObj.data = aggregated;
-        const smaller = stringifyWithinToolOutputBudget(wrapperObj);
-        if (smaller) return smaller;
+      for (const candidate of [aggregated, shrinkSmartAggregate(aggregated)]) {
+        if (wrapperObj) {
+          const withWrapper = stringifyWithinToolOutputBudget({ ...wrapperObj, data: candidate });
+          if (withWrapper) return withWrapper;
+        }
+        const plain = stringifyWithinToolOutputBudget(candidate);
+        if (plain) return plain;
       }
-      const result = JSON.stringify(aggregated);
-      if (result.length <= MAX_TOOL_OUTPUT_CHARS) return result;
-      aggregated.top = aggregated.top.slice(0, 5);
-      const smaller = JSON.stringify(aggregated);
-      if (smaller.length <= MAX_TOOL_OUTPUT_CHARS) return smaller;
     }
 
     // Fallback: simple slice
@@ -3168,7 +3178,7 @@ function truncateToolOutput(json: string): string {
   } catch {
     // fall through
   }
-  return truncatedToolOutputNotice(json.length);
+  return sampledTruncationNotice(parsed, json.length);
 }
 
 function stringifyWithinToolOutputBudget(value: unknown): string | null {
@@ -3184,14 +3194,99 @@ function truncatedToolOutputNotice(totalChars: number): string {
   });
 }
 
-function smartAggregate(rows: unknown[]): {
+/**
+ * Last-resort truncation for payloads with no single flat array (nested
+ * structures, arrays of arrays). The model always receives a real data sample
+ * plus per-array counts, never a bare "something was cut" notice.
+ */
+function sampledTruncationNotice(parsed: unknown, totalChars: number): string {
+  for (const sampleSize of [5, 2, 1]) {
+    const serialized = stringifyWithinToolOutputBudget({
+      truncated: true,
+      total_chars: totalChars,
+      notice: 'Tool output exceeded the size budget; structure kept with per-array counts and samples.',
+      sample: buildBoundedSample(parsed, sampleSize),
+    });
+    if (serialized) return serialized;
+  }
+  return truncatedToolOutputNotice(totalChars);
+}
+
+function buildBoundedSample(value: unknown, sampleSize: number): unknown {
+  if (typeof value === 'string') {
+    return value.length > 300 ? `${value.slice(0, 300)}…[${value.length} chars total]` : value;
+  }
+  if (Array.isArray(value)) {
+    return {
+      truncated_count: value.length,
+      sample: value.slice(0, sampleSize).map((entry) => buildBoundedSample(entry, sampleSize)),
+    };
+  }
+  if (value && typeof value === 'object') {
+    const record: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      record[key] = buildBoundedSample(entry, sampleSize);
+    }
+    return record;
+  }
+  return value;
+}
+
+// Field names that carry a meaningful magnitude for ranking, best first.
+// Chosen by name — never by position — so a leading id column can't silently
+// become the ranking key.
+const SORT_FIELD_PRIORITY = [
+  'total_value',
+  'value',
+  'price',
+  'unit_price',
+  'amount',
+  'balance',
+  'volume_remain',
+  'volume_sold',
+  'volume',
+  'quantity',
+  'total',
+] as const;
+
+const SORT_FIELD_SUFFIXES = ['_price', '_value', '_amount', '_total'] as const;
+
+function pickSortKey(numericFields: ReadonlyMap<string, unknown>): string | null {
+  for (const name of SORT_FIELD_PRIORITY) {
+    if (numericFields.has(name)) return name;
+  }
+  for (const key of numericFields.keys()) {
+    if (SORT_FIELD_SUFFIXES.some((suffix) => key.endsWith(suffix))) return key;
+  }
+  return null;
+}
+
+function numericFieldValue(row: unknown, key: string): number {
+  if (!row || typeof row !== 'object') return 0;
+  const value = (row as Record<string, unknown>)[key];
+  return typeof value === 'number' ? value : 0;
+}
+
+type SmartAggregation = {
   count: number;
   aggregates: Record<string, { min: number; max: number; sum: number }>;
-  top: unknown[];
-} {
+  sort_key: string | null;
+  top: unknown[] | null;
+  bottom: unknown[] | null;
+  sample: unknown[] | null;
+};
+
+function smartAggregate(rows: unknown[]): SmartAggregation {
+  const empty: Omit<SmartAggregation, 'count' | 'aggregates'> = {
+    sort_key: null,
+    top: null,
+    bottom: null,
+    sample: null,
+  };
   const first = rows[0];
   if (!first || typeof first !== 'object' || Array.isArray(first)) {
-    return { count: rows.length, aggregates: {}, top: rows.slice(0, 10) };
+    // Not rankable rows — an unsorted "top" would be misread as the answer.
+    return { count: rows.length, aggregates: {}, ...empty, sample: rows.slice(0, 10) };
   }
 
   // Detect numeric fields and compute min/max/sum
@@ -3223,20 +3318,32 @@ function smartAggregate(rows: unknown[]): {
     aggregates[key] = agg;
   }
 
-  // Sort by first numeric field (usually price) to get best top-N
-  const sortKey = keys.find((k) => numericFields.has(k));
-  const sorted = sortKey
-    ? [...rows].sort((a, b) => {
-        const av = (a as Record<string, unknown>)[sortKey];
-        const bv = (b as Record<string, unknown>)[sortKey];
-        return (typeof av === 'number' ? av : 0) - (typeof bv === 'number' ? bv : 0);
-      })
-    : rows;
+  const sortKey = pickSortKey(numericFields);
+  if (!sortKey) {
+    // No meaningful ranking field — report an honest positional sample instead
+    // of a "top" that would actually be arbitrary rows.
+    return { count: rows.length, aggregates, ...empty, sample: rows.slice(0, 10) };
+  }
+
+  // Descending: top holds the LARGEST values, bottom the smallest.
+  const sorted = [...rows].sort((a, b) => numericFieldValue(b, sortKey) - numericFieldValue(a, sortKey));
 
   return {
     count: rows.length,
     aggregates,
+    sort_key: sortKey,
     top: sorted.slice(0, 10),
+    bottom: sorted.length > 10 ? sorted.slice(-10).reverse() : [],
+    sample: null,
+  };
+}
+
+function shrinkSmartAggregate(aggregated: SmartAggregation): SmartAggregation {
+  return {
+    ...aggregated,
+    bottom: null,
+    top: aggregated.top ? aggregated.top.slice(0, 5) : null,
+    sample: aggregated.sample ? aggregated.sample.slice(0, 5) : null,
   };
 }
 
