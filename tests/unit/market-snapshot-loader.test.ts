@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import Database from 'better-sqlite3';
 import type { Db } from '../../src/db/sqlite.js';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
+import { acquireRuntimeLock } from '../../src/runtime/process-lock.js';
 import {
+  acquireMarketSnapshotLoaderLock,
   createEsiOrdersPageFetcher,
   getMarketSnapshotMeta,
   getMarketSnapshotRegionStates,
@@ -43,7 +48,8 @@ function makeOrder(orderId: number, overrides: Record<string, unknown> = {}): Re
 }
 
 type BookSpec = {
-  pages: number;
+  /** Static x-pages, or per-page for books whose page count grows mid-walk. */
+  pages: number | ((page: number) => number);
   orders?: (regionId: number, page: number) => unknown[];
   expires?: string | null;
   lastModified?: string | null | ((page: number) => string | null);
@@ -52,18 +58,21 @@ type BookSpec = {
 
 function makeFetcher(books: Record<number, BookSpec>) {
   const calls: Array<{ regionId: number; page: number }> = [];
+  const maxReportedPages: Record<number, number> = {};
   const fetchPage: MarketOrdersPageFetcher = async (regionId, page) => {
     calls.push({ regionId, page });
     const book = books[regionId];
     if (!book) throw new Error(`no stub for region ${regionId}`);
     if (book.failOnPage === page) throw new Error(`page ${page} exploded`);
-    if (page > book.pages) throw new Error(`unexpected page ${page} for region ${regionId}`);
+    const reported = typeof book.pages === 'function' ? book.pages(page) : book.pages;
+    maxReportedPages[regionId] = Math.max(maxReportedPages[regionId] ?? 0, reported);
+    if (page > maxReportedPages[regionId]) throw new Error(`unexpected page ${page} for region ${regionId}`);
     const lastModified = typeof book.lastModified === 'function'
       ? book.lastModified(page)
       : book.lastModified ?? null;
     return {
       orders: book.orders?.(regionId, page) ?? [makeOrder(regionId * 1000 + page)],
-      pages: book.pages,
+      pages: reported,
       expires: book.expires ?? null,
       lastModified,
     };
@@ -107,6 +116,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   db.close();
 });
@@ -226,6 +237,67 @@ describe('loadMarketSnapshotFromEsi', () => {
     expect(orderIdsFor(FORGE)[0]).toBe(500_001);
   });
 
+  it('yields to the event loop between region carry-overs instead of one synchronous block', async () => {
+    // The minor tier carries over with one synchronous INSERT SELECT per
+    // region (~40ms each; the whole tier measured ~2.6s). Run back to back
+    // that is a single multi-second event-loop block every major tick, so the
+    // loader yields after every carried region. Measured here with a gate
+    // counter on setImmediate: carrying N regions means >= N-1 yields.
+    const minorIds = Array.from({ length: 11 }, (_, i) => 20000000 + i);
+    const regions: SnapshotRegion[] = [
+      { region_id: FORGE, name: 'The Forge' },
+      ...minorIds.map((id) => ({ region_id: id, name: `Region ${id}` })),
+    ];
+    const books: Record<number, BookSpec> = { [FORGE]: { pages: 100 } };
+    for (const id of minorIds) books[id] = { pages: 1 };
+    const intervals = { majorMinPages: 100, majorIntervalMinutes: 30, minorIntervalMinutes: 360 };
+
+    const first = makeFetcher(books);
+    await loadMarketSnapshotFromEsi(db as Db, baseOptions(first.fetchPage, { regions, ...intervals }));
+
+    // 31 minutes later only the 100-page region is due; the 11 minor regions
+    // carry over. The fetch stub itself never touches setImmediate.
+    const second = makeFetcher({ [FORGE]: { pages: 100 } });
+    const immediateSpy = vi.spyOn(globalThis, 'setImmediate');
+    await loadMarketSnapshotFromEsi(db as Db, baseOptions(second.fetchPage, {
+      regions,
+      ...intervals,
+      now: new Date(T0.getTime() + 31 * MINUTES),
+    }));
+
+    expect(immediateSpy.mock.calls.length).toBeGreaterThanOrEqual(minorIds.length - 1);
+  });
+
+  it('keeps a region that legitimately holds zero orders when its refetch fails', async () => {
+    // Domain commits an EMPTY book: zero rows is a legal state. A later ESI
+    // failure on it carries zero rows over, and reading that as a cold region
+    // would abort every sweep until the endpoint recovered.
+    const first = makeFetcher({
+      [FORGE]: { pages: 1, orders: () => [makeOrder(1)] },
+      [DOMAIN]: { pages: 1, orders: () => [] },
+    });
+    await loadMarketSnapshotFromEsi(db as Db, baseOptions(first.fetchPage));
+    expect(tableCount()).toBe(1);
+
+    const later = new Date(T0.getTime() + 400 * MINUTES);
+    const second = makeFetcher({
+      [FORGE]: { pages: 1, orders: () => [makeOrder(2)] },
+      [DOMAIN]: { pages: 1, failOnPage: 1 },
+    });
+    const result = await loadMarketSnapshotFromEsi(db as Db, baseOptions(second.fetchPage, { now: later }));
+
+    expect(result.swept).toBe(true);
+    expect(result.regionErrors).toHaveLength(1);
+    expect(result.regionErrors[0].regionId).toBe(DOMAIN);
+    expect(result.regionErrors[0].error).toContain('exploded');
+    expect(orderIdsFor(FORGE)).toEqual([2]); // the rest of the book still committed
+    expect(orderIdsFor(DOMAIN)).toEqual([]); // zero rows, as legitimately committed
+
+    const domain = getMarketSnapshotRegionStates(db as Db).find((row) => row.region_id === DOMAIN);
+    expect(domain?.last_error).toContain('exploded');
+    expect(domain?.fetched_at).toBe(T0.toISOString()); // stays due on the next tick
+  });
+
   it('returns swept:false and makes zero ESI calls when no region is due', async () => {
     const first = makeFetcher({ [FORGE]: { pages: 1 }, [DOMAIN]: { pages: 1 } });
     await loadMarketSnapshotFromEsi(db as Db, baseOptions(first.fetchPage));
@@ -314,8 +386,11 @@ describe('loadMarketSnapshotFromEsi', () => {
     expect(getMarketSnapshotState(db as Db)).toBeNull();
   });
 
-  it('aborts when the order book changes mid-sweep (last-modified mismatch)', async () => {
-    const { fetchPage } = makeFetcher({
+  it('aborts the whole sweep when the book keeps changing across the re-walk (last-modified mismatch)', async () => {
+    // Every walk straddles a flip (page 1 LM-A, later pages LM-B): one re-walk
+    // is granted, the second consecutive drift is fatal for the region — and a
+    // cold region still aborts the swap instead of serving a stitched book.
+    const { fetchPage, calls } = makeFetcher({
       [FORGE]: {
         pages: 2,
         lastModified: (page) => (page === 1 ? 'Wed, 27 Jul 2026 10:00:00 GMT' : 'Wed, 27 Jul 2026 10:05:00 GMT'),
@@ -327,6 +402,137 @@ describe('loadMarketSnapshotFromEsi', () => {
       .rejects.toThrow(/changed mid-sweep/);
     expect(tableCount()).toBe(0);
     expect(stagingExists()).toBe(false);
+    // Exactly one re-walk was attempted before giving up: p1,p2 then p1,p2.
+    expect(calls).toEqual([
+      { regionId: FORGE, page: 1 },
+      { regionId: FORGE, page: 2 },
+      { regionId: FORGE, page: 1 },
+      { regionId: FORGE, page: 2 },
+    ]);
+  });
+
+  it('cold start keeps committing across ticks even when the 5-minute cache window flips mid-walk', async () => {
+    // Production failure mode (2026-07-27): a sequential walk of a large
+    // region outlives ESI's 5-minute order-book cache, last-modified flips
+    // mid-walk, the cold region aborts every swap, and the next tick is cold
+    // again — forever. Simulated here with a virtual wall clock: each page
+    // takes latencyMs, pages in flight together complete at the same virtual
+    // instant (a pool of N is N times faster), and last-modified follows the
+    // virtual 5-minute window. 40 pages x 8s/page models The Forge's 409
+    // pages at ~800ms/page: sequential = 320s > window, pool of 8 = ~48s.
+    const WINDOW_MS = 300_000;
+    const LATENCY_MS = 8_000;
+    const PAGES = 40;
+    let virtualNow = new Date('2026-07-27T10:04:40Z').getTime(); // 20s before a window flip
+    const windowOf = (ms: number) => new Date(Math.floor(ms / WINDOW_MS) * WINDOW_MS).toUTCString();
+    const fetchPage: MarketOrdersPageFetcher = async (regionId, page) => {
+      const started = virtualNow;
+      await new Promise((resolve) => { setImmediate(resolve); });
+      virtualNow = Math.max(virtualNow, started + LATENCY_MS);
+      return {
+        orders: [makeOrder(regionId * 1000 + page)],
+        pages: PAGES,
+        expires: new Date(Math.ceil(virtualNow / WINDOW_MS) * WINDOW_MS).toUTCString(),
+        lastModified: windowOf(virtualNow),
+      };
+    };
+
+    // Tick after tick the sweep must commit: no drift abort, no eternal refusal.
+    for (let tick = 0; tick < 3; tick += 1) {
+      const tickStart = virtualNow;
+      const result = await loadMarketSnapshotFromEsi(db as Db, baseOptions(fetchPage, {
+        regions: [REGIONS[0]],
+        now: new Date(T0.getTime() + tick * 400 * MINUTES),
+      }));
+      expect(result.swept).toBe(true);
+      expect(result.regionErrors).toEqual([]);
+      expect(tableCount()).toBe(PAGES);
+      // The pooled walk itself fits well inside the cache window.
+      expect(virtualNow - tickStart).toBeLessThan(WINDOW_MS);
+    }
+  });
+
+  it('fetches region pages through a bounded pool instead of strictly sequentially', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const fetchPage: MarketOrdersPageFetcher = async (regionId, page) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => { setImmediate(resolve); });
+      active -= 1;
+      return {
+        orders: [makeOrder(regionId * 1000 + page)],
+        pages: 12,
+        expires: null,
+        lastModified: 'Wed, 27 Jul 2026 10:00:00 GMT',
+      };
+    };
+
+    const result = await loadMarketSnapshotFromEsi(db as Db, baseOptions(fetchPage, {
+      regions: [REGIONS[0]],
+      pageConcurrency: 4,
+    }));
+
+    expect(result.rowsLoaded).toBe(12);
+    expect(maxActive).toBeGreaterThan(1); // actually parallel...
+    expect(maxActive).toBeLessThanOrEqual(4); // ...but never above the pool size
+  });
+
+  it('re-walks once on a mid-walk cache flip and commits the fresh book instead of falling back', async () => {
+    const LM_A = 'Wed, 27 Jul 2026 10:00:00 GMT';
+    const LM_B = 'Wed, 27 Jul 2026 10:05:00 GMT';
+    const first = makeFetcher({
+      [FORGE]: { pages: 5, orders: (_region, page) => [makeOrder(1000 + page)], lastModified: LM_A },
+    });
+    await loadMarketSnapshotFromEsi(db as Db, baseOptions(first.fetchPage, { regions: [REGIONS[0]] }));
+    expect(orderIdsFor(FORGE)).toEqual([1001, 1002, 1003, 1004, 1005]);
+
+    // The next sweep straddles a cache flip on its first walk (page 3+ carry
+    // the new last-modified); the re-walk sees a consistent book again.
+    let walks = 0;
+    const flipFetch: MarketOrdersPageFetcher = async (regionId, page) => {
+      if (page === 1) walks += 1;
+      return {
+        orders: [makeOrder(2000 + page)],
+        pages: 5,
+        expires: null,
+        lastModified: walks === 1 && page >= 3 ? LM_B : LM_A,
+      };
+    };
+    const later = new Date(T0.getTime() + 400 * MINUTES);
+    const result = await loadMarketSnapshotFromEsi(db as Db, baseOptions(flipFetch, {
+      regions: [REGIONS[0]],
+      now: later,
+    }));
+
+    expect(walks).toBe(2); // one re-walk, no fallback
+    expect(result.regionErrors).toEqual([]);
+    expect(orderIdsFor(FORGE)).toEqual([2001, 2002, 2003, 2004, 2005]); // fresh rows, not previous
+    const forge = getMarketSnapshotRegionStates(db as Db).find((row) => row.region_id === FORGE);
+    expect(forge?.fetched_at).toBe(later.toISOString());
+    expect(forge?.last_error).toBeNull();
+  });
+
+  it('extends the walk when a later page reports more x-pages without an LM signal', async () => {
+    // The pool sizes the walk from page 1's x-pages, but the book can still
+    // grow mid-walk when ESI omits Last-Modified: a later page reporting more
+    // pages extends the walk (capped), it must not strand the extra pages.
+    const { fetchPage, calls } = makeFetcher({
+      [FORGE]: { pages: (page) => (page === 1 ? 2 : 3), lastModified: null },
+    });
+
+    const result = await loadMarketSnapshotFromEsi(db as Db, baseOptions(fetchPage, {
+      regions: [REGIONS[0]],
+    }));
+
+    expect(result.rowsLoaded).toBe(3);
+    expect(calls).toEqual([
+      { regionId: FORGE, page: 1 },
+      { regionId: FORGE, page: 2 },
+      { regionId: FORGE, page: 3 },
+    ]);
+    const forge = getMarketSnapshotRegionStates(db as Db).find((row) => row.region_id === FORGE);
+    expect(forge?.pages).toBe(3);
   });
 
   it('skips malformed rows within budget and aborts beyond it', async () => {
@@ -444,6 +650,14 @@ describe('loadMarketSnapshotFromEsi', () => {
 });
 
 describe('snapshot freshness and meta', () => {
+  // Mirrors the loader defaults used by sweeps that pass no explicit intervals.
+  const DEFAULT_FRESHNESS = {
+    staleMinutes: 75,
+    majorMinPages: 100,
+    majorIntervalMinutes: 30,
+    minorIntervalMinutes: 360,
+  };
+
   async function sweepPartialFailure(): Promise<Date> {
     const first = makeFetcher({
       [FORGE]: { pages: 2, orders: (_region, page) => [makeOrder(page * 111)] },
@@ -476,10 +690,12 @@ describe('snapshot freshness and meta', () => {
 
     expect(getMarketSnapshotState(db as Db)?.snapshot_time).toBe(T0.toISOString());
 
-    const meta = getMarketSnapshotMeta(db as Db, 15, later);
+    const meta = getMarketSnapshotMeta(db as Db, { staleMinutes: 75, ...intervals }, later);
     expect(meta.snapshot_time).toBe(T0.toISOString());
     expect(meta.age_minutes).toBe(31);
-    expect(meta.stale).toBe(true);
+    // 31-minute-old minor rows sit far inside their 360-minute tier interval
+    // plus the grace allowance: the age is reported, but the book is not stale.
+    expect(meta.stale).toBe(false);
   });
 
   it('keeps partial-sweep region errors visible in the committed snapshot state and meta', async () => {
@@ -494,20 +710,24 @@ describe('snapshot freshness and meta', () => {
     // Forge's rows in the book are the T0 fetch: the snapshot's age is Forge's age.
     expect(state?.snapshot_time).toBe(T0.toISOString());
 
-    const meta = getMarketSnapshotMeta(db as Db, 75, later);
+    const meta = getMarketSnapshotMeta(db as Db, DEFAULT_FRESHNESS, later);
     expect(meta.last_error).toContain('exploded');
     expect(meta.age_minutes).toBe(400);
-    expect(meta.stale).toBe(true);
+    // Forge is 400 minutes old and failing, but still inside its 360-minute
+    // tier interval plus the 75-minute grace: overdue, not yet stale. The
+    // failure stays visible through last_error regardless.
+    expect(meta.stale).toBe(false);
   });
 
   it('exposes per-region freshness in the meta so tool answers can cite the data age', async () => {
     const later = await sweepPartialFailure();
 
-    const meta = getMarketSnapshotMeta(db as Db, 75, later);
+    const meta = getMarketSnapshotMeta(db as Db, DEFAULT_FRESHNESS, later);
     expect(meta.regions).toHaveLength(2);
     const forge = meta.regions.find((row) => row.region_id === FORGE);
     const domain = meta.regions.find((row) => row.region_id === DOMAIN);
-    expect(forge).toMatchObject({ fetched_at: T0.toISOString(), age_minutes: 400, stale: true });
+    // Forge: 400 minutes old, inside its minor-tier 360 + 75 grace — not stale.
+    expect(forge).toMatchObject({ fetched_at: T0.toISOString(), age_minutes: 400, stale: false });
     expect(forge?.last_error).toContain('exploded');
     expect(domain).toMatchObject({
       fetched_at: later.toISOString(),
@@ -515,6 +735,39 @@ describe('snapshot freshness and meta', () => {
       stale: false,
       last_error: null,
     });
+  });
+
+  it('marks a region stale only past its own tier interval plus the grace allowance', async () => {
+    const intervals = { majorMinPages: 100, majorIntervalMinutes: 30, minorIntervalMinutes: 360 };
+    const freshness = { staleMinutes: 75, ...intervals };
+    const first = makeFetcher({
+      [FORGE]: { pages: 150 }, // major tier
+      [DOMAIN]: { pages: 5, orders: (_region, page) => [makeOrder(43_000 + page)] }, // minor tier
+    });
+    await loadMarketSnapshotFromEsi(db as Db, baseOptions(first.fetchPage, intervals));
+
+    // +300 minutes: the major region refetches, the minor one carries over —
+    // a fully healthy book whose oldest rows are a 5-hour-old minor region,
+    // exactly what the two-tier schedule is designed to serve.
+    const fiveHours = new Date(T0.getTime() + 300 * MINUTES);
+    const second = makeFetcher({ [FORGE]: { pages: 150 } });
+    await loadMarketSnapshotFromEsi(db as Db, baseOptions(second.fetchPage, { ...intervals, now: fiveHours }));
+
+    const healthy = getMarketSnapshotMeta(db as Db, freshness, fiveHours);
+    expect(healthy.stale).toBe(false);
+    const healthyDomain = healthy.regions.find((row) => row.region_id === DOMAIN);
+    expect(healthyDomain).toMatchObject({ age_minutes: 300, stale: false });
+
+    // Minor interval (360) + grace (75) + 1 minute of Domain age: past both,
+    // and one stale region marks the whole book stale.
+    const pastGrace = new Date(T0.getTime() + 436 * MINUTES);
+    const aged = getMarketSnapshotMeta(db as Db, freshness, pastGrace);
+    const agedDomain = aged.regions.find((row) => row.region_id === DOMAIN);
+    expect(agedDomain).toMatchObject({ age_minutes: 436, stale: true });
+    // The major tier's own deadline is 30 + 75: Forge went stale long before.
+    const agedForge = aged.regions.find((row) => row.region_id === FORGE);
+    expect(agedForge?.stale).toBe(true);
+    expect(aged.stale).toBe(true);
   });
 });
 
@@ -550,5 +803,56 @@ describe('createEsiOrdersPageFetcher', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
     const fetchPage = createEsiOrdersPageFetcher();
     await expect(fetchPage(FORGE, 1)).rejects.toThrow(/HTTP 404/);
+  });
+
+  it('paces itself when ESI reports the error budget nearly exhausted', async () => {
+    // The pool fires pages in parallel, but every response still goes through
+    // throttleIfNeeded: x-esi-error-limit-remain <= 1 must park the worker for
+    // ESI's own reset window (5s here) instead of hammering on.
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0); // kill backoff jitter: exactly 5000ms
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', {
+      status: 200,
+      headers: {
+        'x-pages': '1',
+        'x-esi-error-limit-remain': '1',
+        'x-esi-error-limit-reset': '5',
+      },
+    })));
+
+    const fetchPage = createEsiOrdersPageFetcher();
+    let settled = false;
+    const pending = fetchPage(FORGE, 1).then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(settled).toBe(true);
+  });
+});
+
+describe('manual loader runtime lock', () => {
+  it('refuses to run next to the live bot with a message naming the owner', () => {
+    // The manual entry point and the bot service rebuild the same staging
+    // table; the loader takes the same runtime lock so a busy production DB
+    // fails fast with the owner's identity instead of "no such table" errors.
+    const dir = mkdtempSync(path.join(tmpdir(), 'market-snapshot-lock-'));
+    try {
+      const dbPath = path.join(dir, 'eve-agent.db');
+      const botLock = acquireRuntimeLock(dbPath, 'bot service');
+      try {
+        expect(() => acquireMarketSnapshotLoaderLock(dbPath)).toThrowError(
+          /already owned by bot service \(pid \d+\)\. Stop it before starting market snapshot loader\./,
+        );
+      } finally {
+        botLock.release();
+      }
+
+      // Once the owner is gone the manual run takes the lock normally.
+      const lock = acquireMarketSnapshotLoaderLock(dbPath);
+      lock.release();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

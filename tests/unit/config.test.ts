@@ -233,6 +233,27 @@ describe('OpenAI runtime configuration', () => {
     expect(timeoutStopSec * 1000).toBeGreaterThan(config.shutdown.drainMs);
   });
 
+  it('documents every market snapshot knob in .env.example', async () => {
+    // Reads the shipped template so a MARKET_SNAPSHOT_* knob cannot land in
+    // config.ts without its .env.example documentation.
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync(new URL('../../src/config.ts', import.meta.url), 'utf8');
+    const knobs = [...new Set(source.match(/MARKET_SNAPSHOT_[A-Z_]+/g) ?? [])].sort();
+    expect(knobs).toEqual([
+      'MARKET_SNAPSHOT_BATCH_SIZE',
+      'MARKET_SNAPSHOT_ENABLED',
+      'MARKET_SNAPSHOT_MAJOR_INTERVAL_MINUTES',
+      'MARKET_SNAPSHOT_MAJOR_MIN_PAGES',
+      'MARKET_SNAPSHOT_MINOR_INTERVAL_MINUTES',
+      'MARKET_SNAPSHOT_PAGE_CONCURRENCY',
+      'MARKET_SNAPSHOT_STALE_MINUTES',
+    ]);
+    const example = readFileSync(new URL('../../.env.example', import.meta.url), 'utf8');
+    for (const knob of knobs) {
+      expect(example, knob).toMatch(new RegExp(`^${knob}=`, 'm'));
+    }
+  });
+
   it('rejects trust-all proxy mode and parses only explicit trusted CIDRs', async () => {
     setRequiredEnv();
     process.env.WEB_TRUST_PROXY = 'true';
