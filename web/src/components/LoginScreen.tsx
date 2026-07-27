@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Brand } from './Brand';
-import { ShieldIcon, TargetIcon } from '../icons';
+import { ChartIcon, ShieldIcon, TargetIcon } from '../icons';
 import { LocaleSwitch, useI18n } from '../i18n';
 import { TurnstileWidget } from './TurnstileWidget';
 
@@ -12,6 +12,7 @@ type LoginScreenProps = {
   turnstileSiteKey: string | null;
   onConnect: (turnstileToken?: string) => void;
   onGuest: (turnstileToken?: string) => void;
+  onShowSupport: () => void;
 };
 
 export function LoginScreen({
@@ -21,6 +22,7 @@ export function LoginScreen({
   turnstileSiteKey,
   onConnect,
   onGuest,
+  onShowSupport,
 }: LoginScreenProps) {
   const { t } = useI18n();
   const [privacyOpen, setPrivacyOpen] = useState(false);
@@ -82,6 +84,10 @@ export function LoginScreen({
       <footer className="login__footer">
         <button type="button" onClick={() => setPrivacyOpen(true)}>
           <ShieldIcon size={19} /> {t('privacy')}
+        </button>
+        <span className="login__footer-divider" />
+        <button type="button" onClick={onShowSupport}>
+          <ChartIcon size={19} /> {t('supportTransparencyLink')}
         </button>
         <span className="login__footer-divider" />
         <a href="/health" target="_blank" rel="noreferrer">{t('serviceStatus')}</a>

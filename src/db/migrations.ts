@@ -52,6 +52,7 @@ export function runMigrations(db: Db): void {
     db.exec('DROP INDEX IF EXISTS idx_market_price_history_type_date');
     db.exec('DROP INDEX IF EXISTS idx_market_alerts_active');
     createIndexIfMissing(db, 'idx_market_price_alerts_user_status', 'market_price_alerts', 'user_id, status');
+    ensureUsageTables(db);
   });
 
   migrate();
@@ -414,6 +415,52 @@ function ensureProcessedUpdates(db: Db): void {
     `);
     db.exec('CREATE INDEX idx_telegram_processed_updates_at ON telegram_processed_updates(processed_at)');
   }
+}
+
+/**
+ * Token spend accounting. Raw per-response events live in usage_events and are
+ * pruned by age after rollup; usage_daily keeps compact aggregates forever.
+ * Money is integer microdollars, never REAL. cost_micros is NULL when the
+ * model had no configured tariff — an unknown cost must never read as 0
+ * ("free"). usage_daily carries user_id so the logged-in "my spend" row stays
+ * answerable after raw events are gone; public reads always aggregate over
+ * every user and never expose a per-user row.
+ */
+function ensureUsageTables(db: Db): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS usage_events (
+      event_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at_ms      INTEGER NOT NULL,
+      user_id            INTEGER NOT NULL,
+      thread_id          TEXT NOT NULL,
+      channel            TEXT NOT NULL CHECK (channel IN ('web', 'telegram', 'discord', 'cli')),
+      model              TEXT NOT NULL,
+      input_tokens       INTEGER NOT NULL CHECK (input_tokens >= 0),
+      output_tokens      INTEGER NOT NULL CHECK (output_tokens >= 0),
+      cached_tokens      INTEGER NOT NULL CHECK (cached_tokens >= 0),
+      cache_write_tokens INTEGER NOT NULL CHECK (cache_write_tokens >= 0),
+      reasoning_tokens   INTEGER NOT NULL CHECK (reasoning_tokens >= 0),
+      cost_micros        INTEGER CHECK (cost_micros >= 0)
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_events_time ON usage_events(created_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_user ON usage_events(user_id, created_at_ms);
+
+    CREATE TABLE IF NOT EXISTS usage_daily (
+      day                 TEXT NOT NULL,
+      channel             TEXT NOT NULL,
+      model               TEXT NOT NULL,
+      user_id             INTEGER NOT NULL,
+      events              INTEGER NOT NULL CHECK (events > 0),
+      input_tokens        INTEGER NOT NULL,
+      output_tokens       INTEGER NOT NULL,
+      cached_tokens       INTEGER NOT NULL,
+      cache_write_tokens  INTEGER NOT NULL,
+      reasoning_tokens    INTEGER NOT NULL,
+      cost_micros         INTEGER NOT NULL,
+      unknown_cost_events INTEGER NOT NULL,
+      PRIMARY KEY (day, channel, model, user_id)
+    );
+  `);
 }
 
 function clearLegacyOauthStates(db: Db): void {

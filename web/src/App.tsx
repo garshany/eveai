@@ -13,6 +13,7 @@ import { Sidebar, type AppView } from './components/Sidebar';
 import { ChatScreen } from './components/ChatScreen';
 import { MarketScreen } from './components/MarketScreen';
 import { PilotProfileScreen } from './components/PilotProfileScreen';
+import { SupportScreen } from './components/SupportScreen';
 import { useI18n } from './i18n';
 import type { ChatMessage, Conversation, SessionPayload, WebAgentRequest } from './types';
 
@@ -341,6 +342,9 @@ export default function App() {
   }
 
   if (!session) {
+    if (activeView === 'support') {
+      return <SupportScreen hasSession={false} onBackToLogin={() => setActiveView('chat')} />;
+    }
     return (
       <LoginScreen
         busy={busy}
@@ -349,6 +353,7 @@ export default function App() {
         error={error}
         onConnect={(token) => void connectEve(token)}
         onGuest={(token) => void continueAsGuest(token)}
+        onShowSupport={() => setActiveView('support')}
       />
     );
   }
@@ -375,6 +380,7 @@ export default function App() {
       {activeView === 'chat' ? <ChatScreen title={activeTitle} messages={messages} busy={busy} request={activeRequest} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} onDismissError={() => setError(null)} /> : null}
       {activeView === 'market' ? <MarketScreen onMenu={() => setSidebarOpen(true)} csrfToken={session.csrfToken} /> : null}
       {activeView === 'profile' ? <PilotProfileScreen character={session.character} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} /> : null}
+      {activeView === 'support' ? <SupportScreen hasSession onMenu={() => setSidebarOpen(true)} /> : null}
     </main>
   );
 }

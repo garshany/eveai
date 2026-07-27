@@ -14,8 +14,10 @@ import type {
   MarketSnapshotMeta,
   MarketTypeSearchRow,
   MarketWatchlistItem,
+  MyTransparency,
   PilotProfile,
   SessionPayload,
+  TransparencyPayload,
   WebAgentRequest,
 } from './types';
 import type { Locale } from './i18n';
@@ -204,4 +206,6 @@ export const webApi = {
       events: () => request<{ events: MarketAlertEvent[] }>('/api/web/market/alerts/events'),
     },
   },
+  getTransparency: () => request<TransparencyPayload>('/api/web/transparency'),
+  getMyTransparency: () => request<MyTransparency>('/api/web/transparency/me'),
 };

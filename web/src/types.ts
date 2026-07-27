@@ -233,3 +233,58 @@ export type MarketAlertEvent = {
   triggered_at: string;
   delivered_at: string | null;
 };
+
+export type UsageSums = {
+  events: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  costMicros: number;
+  unknownCostEvents: number;
+};
+
+export type UsageTotals = UsageSums & {
+  totalTokens: number;
+  costComplete: boolean;
+  since: string | null;
+};
+
+export type ModelPricing = { input: number; output: number; cached: number; reasoning: number };
+
+export type UsageDailyRow = { day: string } & UsageSums;
+export type UsageMonthlyRow = { month: string } & UsageSums;
+export type UsageModelRow = { model: string; tariff: ModelPricing | null } & UsageSums;
+
+export type TransparencyInfrastructure = {
+  status: 'not_configured' | 'misconfigured' | 'ok' | 'error';
+  monthToDateUsd: number | null;
+  byService: Array<{ service: string; costUsd: number }>;
+  asOf: string | null;
+  error: string | null;
+  actualsNote: string | null;
+  estimate: { monthlyUsd: number; components: string[]; note: string } | null;
+};
+
+export type TransparencyPayload = {
+  generatedAt: string;
+  currency: 'USD';
+  currentModel: string;
+  totals: UsageTotals;
+  daily: UsageDailyRow[];
+  monthly: UsageMonthlyRow[];
+  models: UsageModelRow[];
+  infrastructure: TransparencyInfrastructure;
+  fx: { usdRubRate: number; date: string } | null;
+  donations: { boostyUrl: string | null };
+};
+
+export type MyTransparency = {
+  generatedAt: string;
+  currency: 'USD';
+  totals: UsageTotals;
+  daily: UsageDailyRow[];
+  monthly: UsageMonthlyRow[];
+  models: UsageModelRow[];
+};
