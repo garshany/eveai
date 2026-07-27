@@ -8,6 +8,7 @@ import {
   toNativeMessage,
   type NativeFunctionTool,
   type NativeInputItem,
+  type NativeUsage,
 } from './native-responses.js';
 import {
   isProgrammaticToolName,
@@ -92,6 +93,17 @@ type ReadSubagentOptions = {
   responseFactory?: typeof createNativeResponse;
   concurrency?: number;
   reasoningEffort?: ReasoningEffort;
+  /**
+   * The model resolved for the owning user's turn (per-user setting or config
+   * default). Subagent calls spend against the same tariff as the rest of the
+   * turn, so they must run on — and be billed as — this model.
+   */
+  model?: string;
+  /**
+   * Spend accounting hook, invoked once per subagent model call that returned
+   * usage. Wired by the caller to usage_events; must be non-fatal.
+   */
+  recordUsage?: (usage: NativeUsage) => void;
   safetyIdentifier?: string;
   signal?: AbortSignal;
   budget?: ReadSubagentSharedBudget;
@@ -206,6 +218,7 @@ async function runReadSubagent(
       tools,
       parallelToolCalls: true,
       truncation: 'auto',
+      model: options.model,
       reasoningEffort: options.reasoningEffort,
       safetyIdentifier: options.safetyIdentifier,
       maxOutputTokens: 1_200,
@@ -213,6 +226,7 @@ async function runReadSubagent(
       streamToActivity: false,
       signal: options.signal,
     });
+    if (response.usage) options.recordUsage?.(response.usage);
     if (response.error || response.status !== 'completed') {
       return partialOrFailed(task.id, evidence, gaps, iteration + 1, 'Subagent model response failed');
     }

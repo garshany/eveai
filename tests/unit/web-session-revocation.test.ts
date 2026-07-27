@@ -50,6 +50,12 @@ describe('browser session revocation', () => {
     const userId = 10;
     const chatId = -2_000_000_010;
     db.prepare("INSERT INTO users (user_id, display_name) VALUES (?, 'Expired capsuleer')").run(userId);
+    // FK regression guard: user_model_settings references users without
+    // CASCADE, so the purge must delete the settings row before the user row.
+    db.prepare(`
+      INSERT INTO user_model_settings (user_id, model, reasoning_effort, verbosity)
+      VALUES (?, 'gpt-5.6-luna', 'low', 'high')
+    `).run(userId);
     db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, 'web')").run(chatId);
     db.prepare(`
       INSERT INTO web_sessions (session_hash, csrf_hash, user_id, chat_id, expires_at)
@@ -64,6 +70,7 @@ describe('browser session revocation', () => {
 
     expect(db.prepare('SELECT 1 FROM web_sessions WHERE chat_id = ?').get(chatId)).toBeUndefined();
     expect(db.prepare('SELECT 1 FROM route_monitors WHERE chat_id = ?').get(chatId)).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM user_model_settings WHERE user_id = ?').get(userId)).toBeUndefined();
     expect(db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(userId)).toBeUndefined();
   });
 

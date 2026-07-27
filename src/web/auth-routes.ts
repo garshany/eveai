@@ -447,6 +447,18 @@ function applyBrowserSsoOwnerPlan(db: Db, plan: BrowserSsoOwnerPlan): number {
     .run(plan.existingUserId, plan.requestedUserId);
   db.prepare('UPDATE auth_requests SET user_id = ? WHERE user_id = ? AND chat_id = ?')
     .run(plan.existingUserId, plan.requestedUserId, plan.chatId);
+  // Migrate the discarded guest identity's model settings to the surviving
+  // owner. ON CONFLICT DO NOTHING keeps the owner's own row when both exist —
+  // the authenticated identity's choice wins. The guest row is then removed:
+  // it would otherwise block the users delete below (FK, no cascade).
+  db.prepare(`
+    INSERT INTO user_model_settings (user_id, model, reasoning_effort, verbosity, updated_at)
+    SELECT ?, model, reasoning_effort, verbosity, updated_at
+    FROM user_model_settings
+    WHERE user_id = ?
+    ON CONFLICT(user_id) DO NOTHING
+  `).run(plan.existingUserId, plan.requestedUserId);
+  db.prepare('DELETE FROM user_model_settings WHERE user_id = ?').run(plan.requestedUserId);
   db.prepare('DELETE FROM users WHERE user_id = ?').run(plan.requestedUserId);
   return plan.existingUserId;
 }

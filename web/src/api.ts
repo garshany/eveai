@@ -14,6 +14,7 @@ import type {
   MarketSnapshotMeta,
   MarketTypeSearchRow,
   MarketWatchlistItem,
+  ModelSettingsPayload,
   MyTransparency,
   PilotProfile,
   SessionPayload,
@@ -30,10 +31,13 @@ export class AmbiguousApiRequestError extends Error {
 
 export class ApiRequestError extends Error {
   readonly status: number;
+  /** Machine-readable error code when the server sent one (e.g. settings routes). */
+  readonly code?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -74,7 +78,13 @@ async function request<T>(
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as ErrorPayload;
-    throw new ApiRequestError(response.status, httpErrorMessage(response.status, payload.error));
+    // A snake_case token is a machine-readable error code, not a user-facing
+    // sentence — localized screens map it themselves; anything else stays a
+    // server-provided message.
+    const code = typeof payload.error === 'string' && /^[a-z][a-z0-9_]*$/.test(payload.error)
+      ? payload.error
+      : undefined;
+    throw new ApiRequestError(response.status, httpErrorMessage(response.status, code ? undefined : payload.error), code);
   }
   if (response.status === 204) return undefined as T;
   try {
@@ -208,4 +218,15 @@ export const webApi = {
   },
   getTransparency: () => request<TransparencyPayload>('/api/web/transparency'),
   getMyTransparency: () => request<MyTransparency>('/api/web/transparency/me'),
+  getModelSettings: () => request<ModelSettingsPayload>('/api/web/settings/model'),
+  saveModelSettings: (
+    body: { model: string; reasoning_effort: string; verbosity: string },
+    csrfToken: string,
+  ) => request<ModelSettingsPayload>('/api/web/settings/model', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  }, csrfToken),
+  resetModelSettings: (csrfToken: string) => request<ModelSettingsPayload>('/api/web/settings/model', {
+    method: 'DELETE',
+  }, csrfToken),
 };

@@ -65,6 +65,7 @@ describe('recordModelUsageSafe', () => {
       { userId: 7, chatId: -2_000_000_000 },
       'thread-x',
       { input: 5000, output: 600, cached: 400, cacheWrite: 100, reasoning: 60 },
+      'gpt-5.6-sol',
     );
     const row = db.prepare('SELECT * FROM usage_events').get() as Record<string, unknown>;
     expect(row).toMatchObject({
@@ -88,6 +89,7 @@ describe('recordModelUsageSafe', () => {
       { userId: 1, chatId: 1 },
       'thread-x',
       { input: 1, output: 1, cached: 0, cacheWrite: 0, reasoning: 0 },
+      'gpt-5.6-sol',
     )).not.toThrow();
     bareDb.close();
   });
