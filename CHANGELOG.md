@@ -1,5 +1,33 @@
 # Changelog
 
+## [4.1.0] - 2026-07-28
+
+### Browser market, profile, and transparency
+
+- Added the browser market workspace: regional order books from a local snapshot sweep, full SDE item cards, market history and alerts, and a natural-language AI item picker (`/api/web/market/ai-search`) running a tightly budgeted tool loop on the shared admission and quota layer.
+- Added the live pilot profile: location-grouped assets appraised against the local order book (SQL aggregation, so a 40k-item hangar still answers fast), orders, wallet, clones, skills, granted scopes, and per-block freshness markers.
+- Added a public transparency page with real model tariffs, localized dates, an integrations section, and per-request token usage.
+
+### Per-user model settings
+
+- Users pick the model (Sol/Terra/Luna), reasoning effort, and text verbosity; the choice applies across browser, Telegram, Discord, and CLI, with guest gating and reset to operator defaults.
+- Read subagents and compaction are billed under the same honest accounting as the root turn.
+
+### Community integrations
+
+- Added bounded community tools with schemas verified against live responses: EVE Ref industry cost, item appraisal (local order book with optional Janice), zKillboard pilot intel, and MutaMarket abyssal prices.
+
+### Chat platforms and reliability
+
+- Telegram answers render agent Markdown (fenced blocks, inline code, mixed HTML/Markdown answers) and survive restarts without loss or replay; graceful shutdown drains in-flight turns instead of killing them.
+- Re-login no longer loses data: linked characters survive session expiry, multi-character support, token revocation from the profile, Turnstile on the login form, and seven chat fixes.
+- Fixed the market AI search dead end: the final allowed model call offers no tools, so the model assembles the answer from gathered data instead of requesting a tool round the budget cannot grant; every degradation path now logs a category, and the model-call budget floor is 2 by construction.
+- Fixed the composing timer starting at the viewer's UTC offset.
+
+### Operations
+
+- Added Cloudflare zone automation scripts (idempotent hardening and a read-only drift audit), off-host R2 backups with a systemd timer, an agent latency bench, and 30-day immutable caching for hashed web assets with a no-cache app shell.
+
 ## [4.0.0] - 2026-07-16
 
 ### Agent orchestration

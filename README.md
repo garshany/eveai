@@ -1,4 +1,5 @@
 <p align="center">
+  <a href="https://eveonline-ai.ru/app"><img src="https://img.shields.io/badge/Live%20instance-eveonline--ai.ru-2ea44f?style=for-the-badge" alt="Live instance" /></a>
   <img src="https://img.shields.io/badge/EVE%20Online-AI%20Assistant-1a1a2e?style=for-the-badge" alt="EVE AI" />
   <img src="https://img.shields.io/badge/Telegram-Long%20Polling-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram" />
   <img src="https://img.shields.io/badge/Discord-Bot-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord" />
@@ -9,14 +10,34 @@
 
 > **Landing-page source:** [`index.html`](./index.html). GitHub Pages is optional and is not currently a deployed product endpoint.
 
+**Live instance:** [eveonline-ai.ru/app](https://eveonline-ai.ru/app) — the operator's public deployment. Open the browser workspace, link a character over EVE SSO, and try the market AI search; the UI and the agent are bilingual (Russian/English).
+
 Self-hosted, chat-first AI assistant for EVE Online. Run it through the browser, Telegram, Discord DMs, or the terminal CLI; it combines local EVE SDE data, live ESI data, killboard intelligence, route planning, and a Responses-compatible model loop with tool calling.
 
 The optional same-origin browser app uses the same backend agent and SQLite state. The project does not require Redis, Postgres, queues, workers, or webhooks.
 
-## v4.0.0 public release
+## v4.1 public release
 
 v4 turns EVE AI Agent into a durable multi-user agent service while preserving
-the self-hosted single-process and SQLite architecture:
+the self-hosted single-process and SQLite architecture. v4.1 grows the browser
+workspace into a full pilot hub:
+
+- **Market workspace.** Regional order books from a local snapshot sweep, full
+  SDE item cards, market history and alerts, and a natural-language AI item
+  picker running a tightly budgeted tool loop on the shared admission/quota layer.
+- **Live pilot profile.** Location-grouped assets appraised against the local
+  order book, orders, wallet, clones, skills, and granted scopes — every block
+  with its own freshness marker.
+- **Per-user model settings.** Model (Sol/Terra/Luna), reasoning effort, and
+  verbosity per user, applied across browser, Telegram, Discord, and CLI, with
+  guest gating and honest usage accounting for subagents and compaction.
+- **Community integrations.** Bounded tools with schemas verified against live
+  responses: EVE Ref industry cost, item appraisal (local book with optional
+  Janice), zKillboard pilot intel, and MutaMarket abyssal prices.
+- **Transparency.** A public page shows real model tariffs and per-request
+  token usage; re-login no longer loses linked characters, sessions, or chats.
+
+The v4.0 foundation underneath:
 
 - A root agent builds and maintains a dependency-aware plan, tracks required
   outcomes, discovers deferred tools, and keeps working until the requested
@@ -50,6 +71,10 @@ For a public SSO callback, use HTTPS, set the callback URL exactly in the EVE De
 
 - Natural-language Telegram and Discord assistant for EVE Online questions and workflows.
 - Same-origin browser chat with anonymous sessions, conversation history, optional EVE SSO, and the same guarded agent/tool loop.
+- Browser market workspace: regional order books, SDE item cards, market history and alerts, and a natural-language AI item search.
+- Live pilot profile with local-book asset appraisal, orders, wallet, clones, skills, and per-block freshness markers.
+- Per-user model, reasoning-effort, and verbosity preferences honored across browser, Telegram, Discord, and CLI.
+- Community data integrations: EVE Ref industry cost, local/Janice item appraisal, zKillboard pilot intel, and MutaMarket abyssal prices.
 - Durable multi-user browser execution with idempotent `202` acceptance, SSE/poll recovery, cancellation, per-user lanes, and bounded shared capacity.
 - Dependency-aware root-agent planning, effective tool discovery, goal-ledger completion checks, parallel public reads, and sandboxed read subagents.
 - EVE SSO linking for private character data, with scope-aware capability gating.
@@ -211,7 +236,7 @@ npm run cli
 ```
 
 ```text
-┌─ EVE AI Agent v4.0.0 · CLI ────────────────────────┐
+┌─ EVE AI Agent v4.1.0 · CLI ────────────────────────┐
 │ Talk to the agent in your terminal. Commands:      │
 │   /login   link an EVE character (opens SSO)       │
 │   /whoami  show the active character               │
