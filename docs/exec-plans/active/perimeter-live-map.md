@@ -387,6 +387,29 @@ and what was not.
 - Manual: browser preview against the dev server for the renderer, camera, and
   the chat panel.
 
+## 8a. Delivered beyond the original plan
+
+The first real flight and two external consultations changed the shape of this:
+
+- **A separate Perimeter assistant.** The plan assumed the workspace agent with
+  map tools attached. In flight that was wrong: it answered with the workspace
+  prompt and the full trading catalog. A thread's `kind` now selects the
+  assistant, and the flight one carries a focused catalog.
+- **Whole-cluster view.** The plan scoped a bubble. The owner wanted all of New
+  Eden, and it turned out the bubble was never the limit — the per-viewer intel
+  model was. A shared static payload plus one shared live rollup made it
+  affordable (`src/eve-map/universe.ts`).
+- **Long-term accumulation.** Two ESI endpoints each return the whole cluster
+  per response, so two requests an hour cover everything. Hourly buckets, an
+  hour-of-week profile that outlives them, and per-gate camp history with the
+  pilots who keep appearing.
+- **A standing avoid list**, per pilot rather than per request.
+- **Autopilot from the map**, which the plan listed as optional and which turned
+  out to be the cheapest missing piece.
+- **Level rules instead of cooldowns** for advisories. Cooldowns re-announced a
+  persisting condition every minute; production showed the same warning eight
+  times in ten minutes.
+
 ## 9. Out of scope
 
 Corporation or fleet map sharing, in-game overlay, flight replay export, mobile
