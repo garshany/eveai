@@ -134,12 +134,21 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   }, [targetLayout]);
 
   // --- Вспышки килов --------------------------------------------------------
+  // Очередь потока накопительная, поэтому берём только то, чего ещё не видели:
+  // иначе каждый новый кил заново поджигал десяток старых.
+  const flashedRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     if (live.killEvents.length === 0) return;
+    const fresh = live.killEvents.filter((kill) => !flashedRef.current.has(kill.killmailId));
+    if (fresh.length === 0) return;
+    for (const kill of fresh) flashedRef.current.add(kill.killmailId);
+    if (flashedRef.current.size > 500) {
+      flashedRef.current = new Set([...flashedRef.current].slice(-250));
+    }
     const now = Date.now();
     setFlashes((previous) => [
       ...previous.filter((flash) => now - flash.startedAt < 2000),
-      ...live.killEvents.slice(-10).map((kill) => ({
+      ...fresh.slice(-10).map((kill) => ({
         systemId: kill.systemId,
         startedAt: now,
         value: kill.totalValue,

@@ -19,6 +19,7 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { callEsiOperation } from '../eve/esi-client.js';
+import { getEveCapabilities, hasFreshCapabilitySnapshot } from '../eve/capabilities.js';
 import type { UserContext } from '../auth/user-resolver.js';
 
 export type LiveLocation = {
@@ -238,6 +239,13 @@ async function poll(session: Session): Promise<void> {
 
   session.polling = true;
   try {
+    // Private ESI is gated on a fresh capability snapshot (ten-minute TTL) and
+    // answers 428 without one. A long-lived poller outlives that window by
+    // definition, so it refreshes rather than counting 428s as ESI failures and
+    // stopping a session whose scopes were valid all along.
+    if (!hasFreshCapabilitySnapshot(session.ctx, session.characterId)) {
+      await getEveCapabilities(session.db, 'perimeter live position', session.ctx);
+    }
     if (now - session.lastOnlineCheckMs >= ONLINE_CHECK_INTERVAL_MS) {
       session.lastOnlineCheckMs = now;
       const online = await callEsiOperation<{ online?: boolean }>(

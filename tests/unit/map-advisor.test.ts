@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   createAdvisorState,
   evaluateAdvisories,
+  getSharedAdvisorState,
   markModelCall,
+  releaseSharedAdvisorState,
+  resetSharedAdvisorStatesForTests,
   shouldEscalateToModel,
   type AdvisorContext,
 } from '../../src/eve-map/advisor.js';
@@ -375,5 +378,35 @@ describe('danger band ordering used by the advisor', () => {
       }));
       expect(advisories.find((advisory) => advisory.rule === 'threat_rise')).toBeDefined();
     }
+  });
+});
+
+describe('shared advisor state', () => {
+  it('gives every tab of one character the same state', () => {
+    // Иначе три вкладки трижды запишут одно и то же предупреждение в один тред.
+    const first = getSharedAdvisorState(90_000_001, NOW);
+    const second = getSharedAdvisorState(90_000_001, NOW);
+    expect(second).toBe(first);
+    resetSharedAdvisorStatesForTests();
+  });
+
+  it('keeps characters apart', () => {
+    const a = getSharedAdvisorState(90_000_001, NOW);
+    const b = getSharedAdvisorState(90_000_002, NOW);
+    expect(b).not.toBe(a);
+    resetSharedAdvisorStatesForTests();
+  });
+
+  it('drops the state when the last watcher leaves', () => {
+    const first = getSharedAdvisorState(90_000_003, NOW);
+    getSharedAdvisorState(90_000_003, NOW);
+    releaseSharedAdvisorState(90_000_003);
+    // Ещё один наблюдатель остался — состояние то же.
+    expect(getSharedAdvisorState(90_000_003, NOW)).toBe(first);
+    releaseSharedAdvisorState(90_000_003);
+    releaseSharedAdvisorState(90_000_003);
+    // Новый полёт начинается с чистого листа.
+    expect(getSharedAdvisorState(90_000_003, NOW)).not.toBe(first);
+    resetSharedAdvisorStatesForTests();
   });
 });

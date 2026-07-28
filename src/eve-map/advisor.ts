@@ -72,6 +72,39 @@ const MAX_TRAIL = 20;
 
 const SEVERITY_ORDER: Record<AdvisorySeverity, number> = { info: 0, warn: 1, danger: 2 };
 
+/**
+ * One advisor state per character, shared by every stream watching them.
+ *
+ * Per-stream state meant three open tabs each evaluated the same rules against
+ * the same position and each persisted the same warning into the same thread —
+ * the pilot got the camp warning three times and paid three bubble rebuilds
+ * for it. Cooldowns only mean something when they are shared.
+ */
+const sharedStates = new Map<number, { state: AdvisorState; refs: number }>();
+
+export function getSharedAdvisorState(characterId: number, now = Date.now()): AdvisorState {
+  const existing = sharedStates.get(characterId);
+  if (existing) {
+    existing.refs += 1;
+    return existing.state;
+  }
+  const state = createAdvisorState(now);
+  sharedStates.set(characterId, { state, refs: 1 });
+  return state;
+}
+
+/** Drops the state once the last watcher leaves, so a new flight starts clean. */
+export function releaseSharedAdvisorState(characterId: number): void {
+  const existing = sharedStates.get(characterId);
+  if (!existing) return;
+  existing.refs -= 1;
+  if (existing.refs <= 0) sharedStates.delete(characterId);
+}
+
+export function resetSharedAdvisorStatesForTests(): void {
+  sharedStates.clear();
+}
+
 export function createAdvisorState(now = Date.now()): AdvisorState {
   return {
     trail: [],

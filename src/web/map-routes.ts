@@ -30,19 +30,16 @@ import {
   type LiveLocation,
 } from '../eve-map/live-session.js';
 import {
-  createAdvisorState,
   evaluateAdvisories,
-  markModelCall,
-  shouldEscalateToModel,
+  getSharedAdvisorState,
+  releaseSharedAdvisorState,
   type Advisory,
-  type AdvisorState,
 } from '../eve-map/advisor.js';
 import {
   appendAdvisory,
   getOrCreatePerimeterThread,
   readPerimeterHistory,
 } from '../eve-map/thread.js';
-import { admitWebEvent } from './web-admission.js';
 import type { WebAgentRequestCoordinator } from './agent-requests.js';
 import { requireMutationSession, requireSession } from './web-route-guards.js';
 import { buildWebClientIpKey } from './web-session.js';
@@ -264,21 +261,9 @@ export function registerMapRoutes(
     if (!message) return reply.status(400).send({ error: 'Пустое сообщение.' });
     if (message.length > 4000) return reply.status(400).send({ error: 'Слишком длинное сообщение.' });
 
-    // The map is not a bypass around the operator's spend controls: the same
-    // admission gate the chat lane uses applies here, with the same event kind.
-    const admission = admitWebEvent(db, {
-      eventKind: 'chat',
-      userId: session.userId,
-      ipKey: buildWebClientIpKey(clientIp(request)),
-      costUnits: 1,
-    });
-    if (!admission.ok) {
-      return reply
-        .status(admission.statusCode)
-        .header('Retry-After', String(admission.retryAfterSeconds))
-        .send({ error: admission.error });
-    }
-
+    // Admission is charged exactly once, inside enqueue: the map uses the same
+    // gate and the same budget as chat. Charging here as well halved the
+    // question allowance and could bill a request that enqueue then rejected.
     const linked = getLinkedCharacter(db, sessionContext(session));
     const threadId = getOrCreatePerimeterThread(
       db, session.chatId, session.userId, linked?.characterId ?? null,
@@ -339,7 +324,9 @@ export function registerMapRoutes(
     // arrives: the stream always rebuilt at the operator default.
     const radius = parseRadius(request.query.radius);
     const stream = openStream(reply, request);
-    const state = createAdvisorState();
+    // One advisor state per character, not per tab: three windows must not
+    // persist the same warning into the same thread three times.
+    const state = getSharedAdvisorState(linked.characterId);
     const threadId = getOrCreatePerimeterThread(
       db, session.chatId, session.userId, linked.characterId,
     );
@@ -378,7 +365,7 @@ export function registerMapRoutes(
         });
         pendingKills = [];
         for (const advisory of advisories) {
-          publishAdvisory(db, threadId, advisory, locale, state, stream);
+          publishAdvisory(db, threadId, advisory, locale, stream);
         }
       } catch (error) {
         stream.send('warning', { message: (error as Error).message });
@@ -430,6 +417,7 @@ export function registerMapRoutes(
     stream.onClose(() => {
       clearInterval(intelTimer);
       unsubscribeKills();
+      releaseSharedAdvisorState(linked.characterId);
       attached.detach();
     });
 
@@ -457,16 +445,15 @@ function publishAdvisory(
   threadId: string,
   advisory: Advisory,
   locale: 'ru' | 'en',
-  state: AdvisorState,
   stream: SseStream,
 ): void {
-  const now = Date.now();
-  // The rule text is already complete and correct; escalation only buys tone,
-  // so it is rationed and never blocks the warning itself.
-  const escalate = shouldEscalateToModel(state, [advisory], now);
-  if (escalate) markModelCall(state, now);
+  // The rule text is complete on its own. Model-authored prose is deliberately
+  // not wired here yet: the previous version consumed the escalation cooldown
+  // and then persisted the rule text anyway, which is worse than not having the
+  // feature — it burned the budget and reported an escalation that never
+  // happened. `shouldEscalateToModel` stays as the gate for when it lands.
   const message = appendAdvisory(db, threadId, advisory, locale, 'rule');
-  stream.send('advisory', { advisory, message, escalated: escalate });
+  stream.send('advisory', { advisory, message, escalated: false });
 }
 
 // ---------------------------------------------------------------------------
