@@ -976,6 +976,19 @@ CREATE TABLE IF NOT EXISTS map_system_profile (
 -- Gate-camp memory: kills already attributed to a stargate, bucketed by hour of
 -- the week, with the attackers who keep showing up. Survives the short kill
 -- retention so "this gate is camped on weekday evenings" becomes answerable.
+-- Which hours have actually been observed, cluster wide. The denominator has to
+-- live outside map_system_profile: ESI omits systems with no activity entirely,
+-- so counting only the hours a system appeared in the payload would report
+-- "average when busy" and label it "average". One row per (hour, endpoint) makes
+-- a re-poll inside the same hour idempotent by primary key.
+CREATE TABLE IF NOT EXISTS map_sampled_hours (
+  hour_start_ms INTEGER NOT NULL,
+  kind          TEXT NOT NULL,
+  hour_of_week  INTEGER NOT NULL,
+  PRIMARY KEY (hour_start_ms, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_map_sampled_hours_how ON map_sampled_hours(hour_of_week);
+
 CREATE TABLE IF NOT EXISTS map_gate_camp_history (
   gate_id      INTEGER NOT NULL,
   system_id    INTEGER NOT NULL,

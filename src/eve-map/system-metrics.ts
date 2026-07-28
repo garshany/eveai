@@ -172,6 +172,10 @@ export function writeBucket(
   /** Which endpoint produced these rows; each owns its own columns. */
   kind: 'jumps' | 'kills' | 'both' = 'both',
 ): number {
+  // A system missing from the payload contributed a real zero for this hour and
+  // must dilute its own average, so the hour is counted regardless of which
+  // systems appeared in it.
+  markHourSampled(db, hourStartMs, kind);
   const hourOfWeek = hourOfWeekFor(hourStartMs);
   const writesJumps = kind === 'jumps' || kind === 'both';
   const writesKills = kind === 'kills' || kind === 'both';
@@ -234,6 +238,8 @@ export function writeBucket(
       upsertProfile.run(
         row.systemId,
         hourOfWeek,
+        // The denominator is global now; per-system sample counts stay only as
+        // a record of how often this system had anything at all.
         before ? 0 : 1,
         writesJumps ? row.shipJumps - (before?.shipJumps ?? 0) : 0,
         writesKills ? row.shipKills - (before?.shipKills ?? 0) : 0,
@@ -246,6 +252,24 @@ export function writeBucket(
   });
 
   return write(rows);
+}
+
+/**
+ * Records that this hour has been observed. Idempotent by primary key, so a
+ * re-poll inside the same hour costs nothing and cannot inflate the denominator.
+ */
+function markHourSampled(db: Db, hourStartMs: number, kind: 'jumps' | 'kills' | 'both'): void {
+  db.prepare(
+    'INSERT OR IGNORE INTO map_sampled_hours (hour_start_ms, kind, hour_of_week) VALUES (?, ?, ?)',
+  ).run(hourStartMs, kind, hourOfWeekFor(hourStartMs));
+}
+
+/** How many distinct hours of this weekday-hour have been observed. */
+export function sampledHoursFor(db: Db, hourOfWeek: number): number {
+  const row = db.prepare(
+    'SELECT COUNT(DISTINCT hour_start_ms) AS n FROM map_sampled_hours WHERE hour_of_week = ?',
+  ).get(hourOfWeek) as { n: number };
+  return row.n;
 }
 
 export function pruneHourly(db: Db, now = Date.now()): number {
@@ -270,13 +294,16 @@ export function getSystemProfile(
     hour_of_week: number; samples: number;
     sum_ship_jumps: number; sum_ship_kills: number; sum_npc_kills: number;
   } | undefined;
-  if (!row || row.samples === 0) return null;
+  if (!row) return null;
+  // Divide by hours observed, not by hours this system happened to be busy.
+  const denominator = Math.max(sampledHoursFor(db, hourOfWeek), row.samples);
+  if (denominator === 0) return null;
   return {
     hourOfWeek: row.hour_of_week,
-    samples: row.samples,
-    avgShipJumps: row.sum_ship_jumps / row.samples,
-    avgShipKills: row.sum_ship_kills / row.samples,
-    avgNpcKills: row.sum_npc_kills / row.samples,
+    samples: denominator,
+    avgShipJumps: row.sum_ship_jumps / denominator,
+    avgShipKills: row.sum_ship_kills / denominator,
+    avgNpcKills: row.sum_npc_kills / denominator,
   };
 }
 

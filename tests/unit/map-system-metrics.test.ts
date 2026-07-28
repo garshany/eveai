@@ -12,6 +12,7 @@ const {
   pruneHourly,
   resetSystemMetricsForTests,
   runTick,
+  sampledHoursFor,
   writeBucket,
 } = await import('../../src/eve-map/system-metrics.js');
 
@@ -210,5 +211,42 @@ describe('system metrics accumulation', () => {
     expect(result.error).toContain('ESI down');
     const rows = db.prepare('SELECT COUNT(*) AS n FROM map_system_hourly').get() as { n: number };
     expect(rows.n).toBe(0);
+  });
+});
+
+describe('quiet hours dilute the average', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.exec(SCHEMA_SQL);
+    resetSystemMetricsForTests();
+  });
+  afterEach(() => { resetSystemMetricsForTests(); db.close(); });
+
+  it('counts an observed hour even when the system was absent from the payload', () => {
+    const WEEK = 7 * 24 * 3_600_000;
+    // Неделя 1: система активна. Недели 2 и 3: ESI её вообще не вернул —
+    // это настоящие нули, а не отсутствие наблюдения.
+    writeBucket(db, HOUR, [{ systemId: SYSTEM, shipJumps: 900, shipKills: 3, npcKills: 0, podKills: 0 }], 'jumps');
+    writeBucket(db, HOUR + WEEK, [{ systemId: 30000144, shipJumps: 10, shipKills: 0, npcKills: 0, podKills: 0 }], 'jumps');
+    writeBucket(db, HOUR + 2 * WEEK, [{ systemId: 30000144, shipJumps: 10, shipKills: 0, npcKills: 0, podKills: 0 }], 'jumps');
+
+    const profile = getSystemProfile(db, SYSTEM, hourOfWeekFor(HOUR))!;
+    expect(profile.samples).toBe(3);
+    // 900 за три наблюдённых часа, а не 900 за один «когда было шумно».
+    expect(profile.avgShipJumps).toBe(300);
+  });
+
+  it('does not inflate the denominator on a re-poll of the same hour', () => {
+    writeBucket(db, HOUR, [{ systemId: SYSTEM, shipJumps: 900, shipKills: 0, npcKills: 0, podKills: 0 }], 'jumps');
+    writeBucket(db, HOUR, [{ systemId: SYSTEM, shipJumps: 900, shipKills: 0, npcKills: 0, podKills: 0 }], 'jumps');
+    expect(sampledHoursFor(db, hourOfWeekFor(HOUR))).toBe(1);
+  });
+
+  it('counts an hour once even though two endpoints report it', () => {
+    writeBucket(db, HOUR, [{ systemId: SYSTEM, shipJumps: 900, shipKills: 0, npcKills: 0, podKills: 0 }], 'jumps');
+    writeBucket(db, HOUR, [{ systemId: SYSTEM, shipJumps: 0, shipKills: 4, npcKills: 0, podKills: 0 }], 'kills');
+    expect(sampledHoursFor(db, hourOfWeekFor(HOUR))).toBe(1);
   });
 });

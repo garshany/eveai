@@ -285,7 +285,11 @@ export function registerMapRoutes(
       threadId,
       characterId: identity?.active_character_id ?? null,
       characterVersion: identity?.active_character_version ?? 0,
-      message: withMapContext(message, request.body?.context),
+      // The transcript stores what the pilot typed. Map context used to be
+      // appended here and `enqueue` persists the message verbatim, so people
+      // saw "[perimeter context] current_system_id=..." glued to their own
+      // words. The agent reads the situation through map_bubble_intel instead.
+      message,
       idempotencyKey: readIdempotencyKey(request.body?.idempotencyKey),
       ipKey: buildWebClientIpKey(clientIp(request)),
     });
@@ -336,11 +340,21 @@ export function registerMapRoutes(
     let lastShipTypeId: number | null = null;
     let pendingKills: Array<{ killmailId: number; systemId: number }> = [];
     let refreshing = false;
+    // A jump that lands while a build is in flight used to be dropped: the old
+    // system's bubble was published while advisories were already evaluated
+    // against the new position, and the map stayed on the previous system until
+    // the next periodic tick.
+    let refreshQueued: { shipTypeId: number | null; reason: 'jump' | 'tick' } | null = null;
 
     const bubbleSystemIds = new Set<number>();
 
     const refresh = async (shipTypeId: number | null, reason: 'jump' | 'tick'): Promise<void> => {
-      if (currentSystemId === null || refreshing || stream.closed) return;
+      if (currentSystemId === null || stream.closed) return;
+      if (refreshing) {
+        // A queued jump always wins over a queued tick.
+        if (reason === 'jump' || refreshQueued === null) refreshQueued = { shipTypeId, reason };
+        return;
+      }
       refreshing = true;
       try {
         const next = await buildBubble(db, currentSystemId, {
@@ -371,6 +385,9 @@ export function registerMapRoutes(
         stream.send('warning', { message: (error as Error).message });
       } finally {
         refreshing = false;
+        const queued = refreshQueued;
+        refreshQueued = null;
+        if (queued && !stream.closed) void refresh(queued.shipTypeId, queued.reason);
       }
     };
 
@@ -612,34 +629,6 @@ function parseAvoid(raw: unknown): number[] | null {
   return ids;
 }
 
-/**
- * Attaches what the pilot is looking at to their question. Bounded and
- * whitelisted: this text reaches the model, so it carries a few numbers the map
- * already showed, never free-form client input.
- */
-function withMapContext(message: string, raw: unknown): string {
-  if (typeof raw !== 'object' || raw === null) return message;
-  const context = raw as Record<string, unknown>;
-  const parts: string[] = [];
-  if (typeof context.systemId === 'number' && Number.isSafeInteger(context.systemId)) {
-    parts.push(`current_system_id=${context.systemId}`);
-  }
-  if (typeof context.selectedSystemId === 'number' && Number.isSafeInteger(context.selectedSystemId)) {
-    parts.push(`selected_system_id=${context.selectedSystemId}`);
-  }
-  if (typeof context.shipTypeId === 'number' && Number.isSafeInteger(context.shipTypeId)) {
-    parts.push(`ship_type_id=${context.shipTypeId}`);
-  }
-  if (typeof context.radius === 'number' && Number.isFinite(context.radius)) {
-    parts.push(`bubble_radius=${Math.trunc(context.radius)}`);
-  }
-  if (typeof context.band === 'string' && /^[a-z]{3,10}$/.test(context.band)) {
-    parts.push(`perimeter_band=${context.band}`);
-  }
-  if (parts.length === 0) return message;
-  return `${message}\n\n[perimeter context] ${parts.join(' ')}`;
-}
-
 function readIdempotencyKey(raw: unknown): string {
   return typeof raw === 'string' && /^[A-Za-z0-9_-]{16,96}$/.test(raw) ? raw : randomUUID();
 }
@@ -661,5 +650,5 @@ function sessionContext(session: WebSession) {
 /** Exported for tests that need a synthetic advisory publication. */
 export const __testables = {
   publishAdvisory, parseRisk, parseAvoid, parseRadius,
-  rememberRoute, routeAheadOf, withMapContext, readIdempotencyKey,
+  rememberRoute, routeAheadOf, readIdempotencyKey,
 };

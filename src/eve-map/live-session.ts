@@ -265,8 +265,15 @@ async function poll(session: Session): Promise<void> {
         } else if (isOnline) {
           session.online = true;
         }
-        if (!isOnline) return;
       }
+    }
+    // Between online checks the flag is the only thing that knows. Falling
+    // through here used to publish a position with online:true for the next
+    // minute, so the UI flipped back from "offline" to "live" while the pilot
+    // was still logged out.
+    if (!session.online) {
+      session.polling = false;
+      return;
     }
 
     const location = await callEsiOperation<{
@@ -313,7 +320,12 @@ async function poll(session: Session): Promise<void> {
       at: new Date(now).toISOString(),
     };
     session.lastLocation = next;
-    session.lastActivityMs = now;
+    // Only a jump renews the lease. Renewing on every successful poll meant a
+    // healthy poller extended its own deadline forever, so a viewer whose
+    // socket stayed open but who was long gone held a global slot indefinitely.
+    if (previousSystemId !== null && previousSystemId !== solarSystemId) {
+      session.lastActivityMs = now;
+    }
 
     emit(session, {
       type: 'location',

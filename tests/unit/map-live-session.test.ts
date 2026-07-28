@@ -9,6 +9,12 @@ const esiMock = vi.hoisted(() => vi.fn());
 vi.mock('../../src/eve/esi-client.js', () => ({
   callEsiOperation: esiMock,
 }));
+// Private ESI is gated on a fresh capability snapshot; the poller refreshes it
+// itself, so the test has to let that succeed.
+vi.mock('../../src/eve/capabilities.js', () => ({
+  getEveCapabilities: vi.fn(async () => ({ linked: true })),
+  hasFreshCapabilitySnapshot: vi.fn(() => true),
+}));
 
 const {
   attachLiveSession,
@@ -196,5 +202,39 @@ describe('map live session', () => {
     expect(drained).toBe(1);
     expect(getLiveSessionStats().sessions).toBe(0);
     expect(events.some((event) => event.message === 'server shutting down')).toBe(true);
+  });
+});
+
+describe('offline stays offline', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.exec(SCHEMA_SQL);
+    esiMock.mockReset();
+    resetLiveSessionsForTests();
+  });
+  afterEach(() => { resetLiveSessionsForTests(); db.close(); });
+
+  it('does not publish a live position between online checks while logged out', async () => {
+    esiReturns({ online: false });
+    const events: string[] = [];
+    const attached = attachLiveSession(db, ctx(), CHARACTER_ID, (event) => events.push(event.type));
+    if (!attached.ok) throw new Error('attach failed');
+    await settle();
+    expect(events).toEqual(['offline']);
+
+    // Следующие опросы внутри минутного окна пропускают проверку онлайна.
+    // Раньше они всё равно шли за позицией и публиковали её как live —
+    // интерфейс возвращался из «офлайн» в «в сети» на пятьдесят пять секунд.
+    esiReturns({ online: true, systemId: 30000142 });
+    esiMock.mockImplementation(async (_db: unknown, operation: string) => {
+      if (operation === 'get_characters_character_id_online') {
+        throw new Error('online must not be re-checked inside the interval');
+      }
+      return { ok: true, status: 200, data: { solar_system_id: 30000142 }, headers: {} };
+    });
+    await settle();
+    expect(events).toEqual(['offline']);
   });
 });

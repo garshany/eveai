@@ -12,12 +12,16 @@
 
 import { config } from '../src/config.js';
 import { initDb } from '../src/db/sqlite.js';
+import { runMigrations } from '../src/db/migrations.js';
 import { buildMapGraph, MapGraphBuildError } from '../src/eve/map-graph.js';
 
 type SystemRow = { system_id: number; name: string; data_json: string };
 
 function main(): void {
   const db = initDb(config.db.path);
+  // The map tables may not exist yet on a database the new code has never
+  // started against — which is precisely when this check is worth running.
+  runMigrations(db);
 
   const total = (db.prepare('SELECT COUNT(*) AS n FROM sde_systems').get() as { n: number }).n;
   const gates = (db.prepare('SELECT COUNT(*) AS n FROM sde_stargates').get() as { n: number }).n;
