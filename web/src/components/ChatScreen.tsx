@@ -4,6 +4,7 @@ import { AlertIcon, ArrowDownIcon, CheckIcon, CloseIcon, CompassMark, MarketIcon
 import type { ChatMessage, WebAgentRequest } from '../types';
 import { decideScrollBehavior, isPinnedToBottom, scrollToBottom } from '../chat-scroll';
 import { LocaleSwitch, useI18n } from '../i18n';
+import { parseSqlUtcDate, parseSqlUtcMs } from '../sql-utc';
 import { MarkdownMessage } from './MarkdownMessage';
 
 const MAX_MESSAGE_LENGTH = 2000;
@@ -165,9 +166,7 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMe
 });
 
 function formatMessageTime(value: string, locale: 'ru' | 'en'): { iso: string; label: string } | null {
-  // SQLite хранит datetime('now') как «YYYY-MM-DD HH:MM:SS» в UTC.
-  const normalized = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`;
-  const date = new Date(normalized);
+  const date = parseSqlUtcDate(value);
   if (Number.isNaN(date.getTime())) return null;
   return {
     iso: date.toISOString(),
@@ -193,7 +192,9 @@ function StreamingMessage({ text, onCancel }: { text: string; onCancel: () => vo
 
 function ThinkingMessage({ request, onCancel }: { request: WebAgentRequest | null; onCancel: () => void }) {  const { t } = useI18n();
   const [now, setNow] = useState(() => Date.now());
-  const createdAt = request ? Date.parse(request.createdAt) : Number.NaN;
+  // createdAt приходит из SQLite в UTC без метки зоны — Date.parse прочёл бы
+  // его как локальное время и таймер стартовал бы с оффсета пояса (180:00 у MSK).
+  const createdAt = request ? parseSqlUtcMs(request.createdAt) : Number.NaN;
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
