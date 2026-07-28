@@ -7,6 +7,8 @@
  * them to UTC avoids an off-by-one shift for users east of Greenwich.
  * Timestamps (ISO with time) render in the viewer's local timezone.
  */
+import { parseSqlUtcDate } from './sql-utc';
+
 export type DateLocale = 'ru' | 'en';
 
 function intlLocale(locale: DateLocale): string {
@@ -22,6 +24,30 @@ export function formatDay(value: string, locale: DateLocale): string {
   const date = parseUtcDayKey(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat(intlLocale(locale), { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(date);
+}
+
+/**
+ * Timestamp for the session list: today collapses to «11:07», yesterday to a
+ * word, anything older to «26.07». The value arrives as a SQLite UTC string
+ * without a zone marker, so it goes through parseSqlUtcDate — Date.parse would
+ * read it as local time and shift every row by the viewer's offset.
+ */
+export function formatRelativeDay(value: string, locale: DateLocale): string {
+  const date = parseSqlUtcDate(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  const days = calendarDaysBetween(date, now);
+  if (days === 0) {
+    return new Intl.DateTimeFormat(intlLocale(locale), { hour: '2-digit', minute: '2-digit' }).format(date);
+  }
+  if (days === 1) return locale === 'ru' ? 'вчера' : 'yesterday';
+  return new Intl.DateTimeFormat(intlLocale(locale), { day: '2-digit', month: '2-digit' }).format(date);
+}
+
+/** Whole calendar days between two instants in the viewer's own timezone. */
+function calendarDaysBetween(from: Date, to: Date): number {
+  const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  return Math.round((startOfDay(to) - startOfDay(from)) / 86_400_000);
 }
 
 /** Month bucket label: "июль 2026" / "July 2026". */

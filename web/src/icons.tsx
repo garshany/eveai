@@ -21,17 +21,6 @@ function IconBase({ size = 22, children, ...props }: IconProps) {
   );
 }
 
-export function CompassMark({ size = 38, ...props }: IconProps) {
-  return (
-    <IconBase size={size} {...props}>
-      <circle cx="12" cy="12" r="8.4" />
-      <path d="m12 2 2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2L12 2Z" />
-      <path d="m7.4 7.4 2.2 4.9 4.8 4.3-2.1-4.9-4.9-4.3Z" />
-      <circle cx="12" cy="12" r="1.15" />
-    </IconBase>
-  );
-}
-
 export function MenuIcon(props: IconProps) {
   return <IconBase {...props}><path d="M4 6h16M4 12h16M4 18h16" /></IconBase>;
 }

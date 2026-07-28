@@ -130,6 +130,28 @@ const RU = {
   settingsErrorInvalidEffort: 'Недопустимая глубина размышлений.',
   settingsErrorInvalidVerbosity: 'Недопустимая детализация ответа.',
   settingsErrorCharacterRequired: 'Выбор модели доступен после привязки персонажа EVE Online.',
+  brandTagline: 'Лоцман капсулёра', newThread: 'Новый тред', sessions: 'Сессии', threadKicker: 'Тред',
+  statusEsiOnline: 'ESI online', statusMarketFresh: 'маркет свежий', statusMarketAge: 'маркет {age} мин',
+  statusMarketStale: 'снапшот устарел', statusMarketOffline: 'снапшот не загружен',
+  statusChecking: 'проверяем', statusUnknown: 'статус неизвестен',
+  composerHintSend: 'Enter — отправить', composerHintNewline: 'Shift+Enter — новая строка',
+  dockTabMarket: 'Маркет', dockTabRoute: 'Маршрут', dockTabPilot: 'Капсулёр',
+  dockOpen: 'Открыть дата-док', dockClose: 'Закрыть дата-док', dockOpenMarket: 'Открыть маркет-док ↑',
+  dockRegion: 'Регион', dockChangeRegion: 'спросить', dockItem: 'Товар', dockSell: 'Sell', dockDelta: 'Спред',
+  dockWatchlistEmpty: 'Вотчлист пуст — добавьте товар на экране «Маркет», и он появится здесь.',
+  dockHistoryEmpty: 'История цен по этому товару ещё не накоплена.',
+  dockMyOrders: 'Мои ордера', dockEscrow: 'Эскроу',
+  dockAlertsEmpty: 'Сработавших алертов нет.', dockAlertCrossed: '{name} прошёл порог {price}',
+  dockRouteEmpty: 'Инструменты в этом ответе не оставили данных для дока. Спросите про маршрут или рынок — чипы появятся здесь.',
+  dockRouteTitle: 'Вызовы инструментов', dockRouteHint: 'Данные последнего ответа агента.',
+  dockPilotGuest: 'Подключите персонажа EVE Online, чтобы увидеть здесь кошелёк, клон и корабль.',
+  dockEsiLinked: 'ESI linked', dockWallet: 'Кошелёк', dockClone: 'Клон', dockActiveShip: 'Активный корабль',
+  dockSp: '{sp} M SP',
+  dockPromptLosses: 'Разбери мои потери', dockPromptRefit: 'Пересобери фит',
+  dockPromptMarket: 'Что выгодно везти отсюда?',
+  mobileTabChat: 'Чат', mobileTabMarket: 'Маркет', mobileTabPilot: 'Пилот',
+  toolChipOpen: 'Открыть результат инструмента в доке',
+  answerOpenInDock: 'Открыть в доке',
 } as const;
 
 const EN: Record<keyof typeof RU, string> = {
@@ -260,6 +282,28 @@ const EN: Record<keyof typeof RU, string> = {
   settingsErrorInvalidEffort: 'Invalid reasoning effort.',
   settingsErrorInvalidVerbosity: 'Invalid answer verbosity.',
   settingsErrorCharacterRequired: 'Model selection unlocks after you link an EVE Online character.',
+  brandTagline: 'Capsuleer navigator', newThread: 'New thread', sessions: 'Sessions', threadKicker: 'Thread',
+  statusEsiOnline: 'ESI online', statusMarketFresh: 'market fresh', statusMarketAge: 'market {age} min',
+  statusMarketStale: 'snapshot stale', statusMarketOffline: 'snapshot not loaded',
+  statusChecking: 'checking', statusUnknown: 'status unknown',
+  composerHintSend: 'Enter to send', composerHintNewline: 'Shift+Enter for a new line',
+  dockTabMarket: 'Market', dockTabRoute: 'Route', dockTabPilot: 'Capsuleer',
+  dockOpen: 'Open the data dock', dockClose: 'Close the data dock', dockOpenMarket: 'Open the market dock ↑',
+  dockRegion: 'Region', dockChangeRegion: 'ask', dockItem: 'Item', dockSell: 'Sell', dockDelta: 'Spread',
+  dockWatchlistEmpty: 'The watchlist is empty — add an item on the Market screen and it shows up here.',
+  dockHistoryEmpty: 'No price history stored for this item yet.',
+  dockMyOrders: 'My orders', dockEscrow: 'Escrow',
+  dockAlertsEmpty: 'No triggered alerts.', dockAlertCrossed: '{name} crossed {price}',
+  dockRouteEmpty: 'The tools in this answer left no dock payload. Ask about a route or the market and the chips appear here.',
+  dockRouteTitle: 'Tool calls', dockRouteHint: 'From the agent’s latest answer.',
+  dockPilotGuest: 'Connect an EVE Online character to see wallet, clone and ship here.',
+  dockEsiLinked: 'ESI linked', dockWallet: 'Wallet', dockClone: 'Clone', dockActiveShip: 'Active ship',
+  dockSp: '{sp} M SP',
+  dockPromptLosses: 'Analyze my losses', dockPromptRefit: 'Refit my ship',
+  dockPromptMarket: 'What is worth hauling from here?',
+  mobileTabChat: 'Chat', mobileTabMarket: 'Market', mobileTabPilot: 'Pilot',
+  toolChipOpen: 'Open this tool result in the dock',
+  answerOpenInDock: 'Open in the dock',
 };
 
 type I18nValue = { locale: Locale; setLocale: (locale: Locale) => void; t: (key: keyof typeof RU) => string };
@@ -282,7 +326,23 @@ export function useI18n(): I18nValue {
   return value;
 }
 
+const LOCALE_OPTIONS: Array<{ id: Locale; label: string; aria: string }> = [
+  { id: 'ru', label: 'RU', aria: 'Переключить на русский' },
+  { id: 'en', label: 'EN', aria: 'Switch to English' },
+];
+
+/** Дорожка 999px с солнечным активным сегментом — обе локали видны сразу,
+ *  вместо одной кнопки-тумблера, по которой не понять текущий язык. */
 export function LocaleSwitch() {
   const { locale, setLocale } = useI18n();
-  return <button className="locale-switch" type="button" onClick={() => setLocale(locale === 'ru' ? 'en' : 'ru')} aria-label={locale === 'ru' ? 'Switch to English' : 'Переключить на русский'}>{locale === 'ru' ? 'EN' : 'RU'}</button>;
+  return <div className="locale-switch" role="group" aria-label="Language">
+    {LOCALE_OPTIONS.map(({ id, label, aria }) => <button
+      className={`locale-switch__option${locale === id ? ' locale-switch__option--active' : ''}`}
+      type="button"
+      key={id}
+      aria-label={aria}
+      aria-pressed={locale === id}
+      onClick={() => setLocale(id)}
+    >{label}</button>)}
+  </div>;
 }
