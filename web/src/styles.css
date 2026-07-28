@@ -4894,3 +4894,9 @@ a {
   .perimeter__route { inset-inline: var(--space-3); width: auto; }
   .perimeter__route { inset-block-end: auto; inset-block-start: var(--space-3); }
 }
+
+.perimeter-chat__pending {
+  margin: 0 var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}

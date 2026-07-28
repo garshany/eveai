@@ -47,7 +47,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   const [flashes, setFlashes] = useState<KillFlash[]>([]);
 
   const liveEnabled = status?.character?.hasLocationScope === true && status.graph.ready;
-  const live = useMapLive(liveEnabled === true);
+  const live = useMapLive(liveEnabled === true, radius);
 
   // Живой пузырь всегда побеждает статический: поток свежее любого снимка.
   const bubble = live.bubble ?? staticBubble;
@@ -292,6 +292,13 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
       <PerimeterChat
         csrfToken={csrfToken}
         advisories={live.advisories}
+        context={{
+          systemId: live.location?.solarSystemId ?? bubble?.originId ?? null,
+          selectedSystemId: selected,
+          shipTypeId: live.location?.shipTypeId ?? null,
+          radius,
+          band: bubble?.verdict.band ?? null,
+        }}
         onFocusSystem={focusSystem}
       />
     </div>

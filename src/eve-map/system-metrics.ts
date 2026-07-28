@@ -127,27 +127,29 @@ export async function runTick(db: Db, now = Date.now()): Promise<{
       fetchMetric(db, 'get_universe_system_kills'),
     ]);
 
-    // The two endpoints publish on their own boundaries; the older one wins so
-    // a bucket is never written from half-fresh data.
-    const hourStartMs = pickBucket(jumps.hourStartMs, kills.hourStartMs, now);
-    const merged = new Map<number, HourlyRow>();
-    for (const row of jumps.rows) merged.set(row.systemId, row);
-    for (const row of kills.rows) {
-      const existing = merged.get(row.systemId);
-      if (existing) {
-        existing.shipKills = row.shipKills;
-        existing.npcKills = row.npcKills;
-        existing.podKills = row.podKills;
-      } else {
-        merged.set(row.systemId, row);
-      }
+    // Each endpoint publishes on its own boundary, and during that window they
+    // report different hours. Merging them under one bucket would permanently
+    // fold, say, 11:00 traffic into the 10:00 profile — so each is written into
+    // the bucket its own Last-Modified names. When they agree, which is almost
+    // always, this is exactly one bucket.
+    let written = 0;
+    const buckets = new Set<number>();
+
+    if (jumps.rows.length > 0) {
+      const bucket = jumps.hourStartMs ?? truncateToHour(now);
+      written += writeBucket(db, bucket, jumps.rows, 'jumps');
+      buckets.add(bucket);
+    }
+    if (kills.rows.length > 0) {
+      const bucket = kills.hourStartMs ?? truncateToHour(now);
+      written += writeBucket(db, bucket, kills.rows, 'kills');
+      buckets.add(bucket);
     }
 
-    const written = writeBucket(db, hourStartMs, [...merged.values()]);
     bucketsWritten += written;
     lastError = jumps.error ?? kills.error;
     pruneHourly(db, now);
-    return { written, hourStartMs, error: lastError };
+    return { written, hourStartMs: buckets.size > 0 ? Math.max(...buckets) : null, error: lastError };
   } catch (error) {
     lastError = (error as Error).message;
     console.warn('[map-metrics] tick failed: %s', lastError);
@@ -163,19 +165,29 @@ export async function runTick(db: Db, now = Date.now()): Promise<{
  * would quietly inflate the profile that later gets presented as "how busy this
  * system usually is". Re-writing identical values is a no-op by construction.
  */
-export function writeBucket(db: Db, hourStartMs: number, rows: HourlyRow[]): number {
+export function writeBucket(
+  db: Db,
+  hourStartMs: number,
+  rows: HourlyRow[],
+  /** Which endpoint produced these rows; each owns its own columns. */
+  kind: 'jumps' | 'kills' | 'both' = 'both',
+): number {
   const hourOfWeek = hourOfWeekFor(hourStartMs);
+  const writesJumps = kind === 'jumps' || kind === 'both';
+  const writesKills = kind === 'kills' || kind === 'both';
   const existing = db.prepare(
     'SELECT system_id, ship_jumps, ship_kills, npc_kills, pod_kills FROM map_system_hourly WHERE hour_start_ms = ?',
   );
+  // Only the owning endpoint's columns are touched, so a jumps write cannot
+  // zero the kills already recorded for the same hour, and vice versa.
   const upsertHourly = db.prepare(`
     INSERT INTO map_system_hourly (system_id, hour_start_ms, ship_jumps, ship_kills, npc_kills, pod_kills)
     VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_id, hour_start_ms) DO UPDATE SET
-      ship_jumps = excluded.ship_jumps,
-      ship_kills = excluded.ship_kills,
-      npc_kills  = excluded.npc_kills,
-      pod_kills  = excluded.pod_kills
+      ship_jumps = CASE WHEN ? THEN excluded.ship_jumps ELSE ship_jumps END,
+      ship_kills = CASE WHEN ? THEN excluded.ship_kills ELSE ship_kills END,
+      npc_kills  = CASE WHEN ? THEN excluded.npc_kills  ELSE npc_kills  END,
+      pod_kills  = CASE WHEN ? THEN excluded.pod_kills  ELSE pod_kills  END
   `);
   const upsertProfile = db.prepare(`
     INSERT INTO map_system_profile (
@@ -207,19 +219,26 @@ export function writeBucket(db: Db, hourStartMs: number, rows: HourlyRow[]): num
     for (const row of batch) {
       // Systems with nothing at all are the overwhelming majority; storing them
       // would multiply the table by six for no information.
-      if (row.shipJumps === 0 && row.shipKills === 0 && row.npcKills === 0 && row.podKills === 0) {
-        continue;
-      }
+      const carriesData = (writesJumps && row.shipJumps > 0)
+        || (writesKills && (row.shipKills > 0 || row.npcKills > 0 || row.podKills > 0));
+      if (!carriesData) continue;
       const before = previous.get(row.systemId);
-      upsertHourly.run(row.systemId, hourStartMs, row.shipJumps, row.shipKills, row.npcKills, row.podKills);
+      upsertHourly.run(
+        row.systemId, hourStartMs,
+        writesJumps ? row.shipJumps : 0,
+        writesKills ? row.shipKills : 0,
+        writesKills ? row.npcKills : 0,
+        writesKills ? row.podKills : 0,
+        writesJumps ? 1 : 0, writesKills ? 1 : 0, writesKills ? 1 : 0, writesKills ? 1 : 0,
+      );
       upsertProfile.run(
         row.systemId,
         hourOfWeek,
         before ? 0 : 1,
-        row.shipJumps - (before?.shipJumps ?? 0),
-        row.shipKills - (before?.shipKills ?? 0),
-        row.npcKills - (before?.npcKills ?? 0),
-        row.podKills - (before?.podKills ?? 0),
+        writesJumps ? row.shipJumps - (before?.shipJumps ?? 0) : 0,
+        writesKills ? row.shipKills - (before?.shipKills ?? 0) : 0,
+        writesKills ? row.npcKills - (before?.npcKills ?? 0) : 0,
+        writesKills ? row.podKills - (before?.podKills ?? 0) : 0,
       );
       count += 1;
     }
@@ -328,11 +347,6 @@ async function fetchMetric(
   };
 }
 
-function pickBucket(a: number | null, b: number | null, now: number): number {
-  if (a !== null && b !== null) return Math.min(a, b);
-  return a ?? b ?? truncateToHour(now);
-}
-
 function truncateToHour(timeMs: number): number {
   return Math.floor(timeMs / HOUR_MS) * HOUR_MS;
 }
@@ -341,4 +355,4 @@ function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
-export const __testables = { truncateToHour, pickBucket, WEEK_HOURS };
+export const __testables = { truncateToHour, WEEK_HOURS };

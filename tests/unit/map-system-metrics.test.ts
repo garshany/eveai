@@ -23,15 +23,21 @@ function esiReturns(options: {
   jumps?: Array<{ system_id: number; ship_jumps: number }>;
   kills?: Array<{ system_id: number; ship_kills: number; npc_kills: number; pod_kills: number }>;
   lastModified?: string;
+  killsLastModified?: string;
   fail?: boolean;
 }): void {
   esiMock.mockImplementation(async (_db: unknown, operation: string) => {
     if (options.fail) return { ok: false, status: 503, error: 'ESI down' };
-    const headers = { 'last-modified': options.lastModified ?? 'Wed, 29 Jul 2026 19:00:00 GMT' };
+    const jumpsHeader = options.lastModified ?? 'Wed, 29 Jul 2026 19:00:00 GMT';
     if (operation === 'get_universe_system_jumps') {
-      return { ok: true, status: 200, data: options.jumps ?? [], headers };
+      return { ok: true, status: 200, data: options.jumps ?? [], headers: { 'last-modified': jumpsHeader } };
     }
-    return { ok: true, status: 200, data: options.kills ?? [], headers };
+    return {
+      ok: true,
+      status: 200,
+      data: options.kills ?? [],
+      headers: { 'last-modified': options.killsLastModified ?? jumpsHeader },
+    };
   });
 }
 
@@ -143,7 +149,8 @@ describe('system metrics accumulation', () => {
 
     const result = await runTick(db, HOUR + 12 * 60_000);
     expect(result.error).toBeNull();
-    expect(result.written).toBe(1);
+    // Оба эндпоинта пишут свои колонки в один и тот же бакет.
+    expect(result.written).toBe(2);
     // Ключ бакета — заголовок ответа, а не настенные часы.
     expect(result.hourStartMs).toBe(HOUR);
 
@@ -164,6 +171,36 @@ describe('system metrics accumulation', () => {
     const profile = getSystemProfile(db, SYSTEM, hourOfWeekFor(HOUR))!;
     expect(profile.samples).toBe(1);
     expect(profile.avgShipJumps).toBe(900);
+  });
+
+  it('never folds one endpoint\'s hour into the other\'s bucket', async () => {
+    // Эндпоинты публикуются на своих границах. Раньше более новый складывался
+    // в более старый бакет, и трафик 20:00 навсегда становился частью профиля
+    // 19:00.
+    esiReturns({
+      jumps: [{ system_id: SYSTEM, ship_jumps: 900 }],
+      kills: [{ system_id: SYSTEM, ship_kills: 7, npc_kills: 0, pod_kills: 0 }],
+      lastModified: 'Wed, 29 Jul 2026 19:00:00 GMT',
+      killsLastModified: 'Wed, 29 Jul 2026 20:00:00 GMT',
+    });
+    await runTick(db, HOUR + 61 * 60_000);
+
+    const evening = getSystemProfile(db, SYSTEM, hourOfWeekFor(HOUR))!;
+    expect(evening.avgShipJumps).toBe(900);
+    expect(evening.avgShipKills).toBe(0);
+
+    const later = getSystemProfile(db, SYSTEM, hourOfWeekFor(HOUR + 3_600_000))!;
+    expect(later.avgShipKills).toBe(7);
+    expect(later.avgShipJumps).toBe(0);
+  });
+
+  it('a jumps write does not erase kills already recorded for that hour', () => {
+    writeBucket(db, HOUR, [{ systemId: SYSTEM, shipJumps: 0, shipKills: 5, npcKills: 2, podKills: 0 }], 'kills');
+    writeBucket(db, HOUR, [{ systemId: SYSTEM, shipJumps: 900, shipKills: 0, npcKills: 0, podKills: 0 }], 'jumps');
+
+    const row = db.prepare('SELECT ship_jumps, ship_kills FROM map_system_hourly WHERE system_id = ?')
+      .get(SYSTEM) as { ship_jumps: number; ship_kills: number };
+    expect(row).toEqual({ ship_jumps: 900, ship_kills: 5 });
   });
 
   it('survives an ESI failure without writing a partial bucket', async () => {

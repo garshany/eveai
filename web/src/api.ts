@@ -298,9 +298,19 @@ export const webApi = {
       body: JSON.stringify(params),
     }, csrfToken),
     chat: () => request<{ threadId: string; messages: PerimeterMessage[] }>('/api/web/map/chat'),
-    ask: (message: string, csrfToken: string) => request<{ threadId: string; accepted: true }>(
+    ask: (
+      message: string,
+      csrfToken: string,
+      context?: {
+        systemId: number | null;
+        selectedSystemId: number | null;
+        shipTypeId: number | null;
+        radius: number | null;
+        band: string | null;
+      },
+    ) => request<{ threadId: string; request: WebAgentRequest; pollUrl: string; eventsUrl: string }>(
       '/api/web/map/ask',
-      { method: 'POST', body: JSON.stringify({ message }) },
+      { method: 'POST', body: JSON.stringify({ message, context }) },
       csrfToken,
     ),
   },

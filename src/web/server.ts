@@ -39,13 +39,13 @@ export async function createServer(db: Db) {
   registerHealthRoute(app, { db });
   registerAuthRoutes(app, db);
   if (config.web.chatEnabled) {
-    registerWebChatRoutes(app, db);
+    const agentRequests = registerWebChatRoutes(app, db);
     registerMarketRoutes(app, db);
     registerMarketAiSearchRoutes(app, db);
     registerMarketAlertRoutes(app, db);
     registerSettingsRoutes(app, db);
     registerProfileRoutes(app, db);
-    registerMapRoutes(app, db);
+    registerMapRoutes(app, db, agentRequests);
     registerExamplesRoutes(app);
     await registerWebApp(app);
   }

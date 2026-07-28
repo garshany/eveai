@@ -61,7 +61,12 @@ type RequestParams = { requestId: string };
 type ActiveRequestQuery = { threadId?: string };
 const MAX_WEB_CONVERSATIONS = 40;
 
-export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
+/**
+ * Returns the request coordinator so other lanes (the Perimeter map) can enqueue
+ * into the same durable queue. A second coordinator would mean a second set of
+ * concurrency limits and a second shutdown path over one SQLite file.
+ */
+export function registerWebChatRoutes(app: FastifyInstance, db: Db): WebAgentRequestCoordinator {
   const agentRequests = new WebAgentRequestCoordinator(db);
   agentRequests.start();
   const sessionCleanupTimer = setInterval(() => {
@@ -479,6 +484,8 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): void {
       eventsUrl: `/api/web/chat/requests/${encodeURIComponent(requestId)}/events`,
     });
   });
+
+  return agentRequests;
 }
 
 function buildSessionPayload(db: Db, session: WebSession, csrfToken: string) {

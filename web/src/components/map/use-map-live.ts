@@ -43,7 +43,7 @@ export type MapLiveState = {
 const MAX_RETRY_MS = 60_000;
 const BASE_RETRY_MS = 5_000;
 
-export function useMapLive(enabled: boolean): MapLiveState & { reconnect: () => void } {
+export function useMapLive(enabled: boolean, radius: number | null): MapLiveState & { reconnect: () => void } {
   const [state, setState] = useState<MapLiveState>({
     status: 'idle',
     location: null,
@@ -75,8 +75,14 @@ export function useMapLive(enabled: boolean): MapLiveState & { reconnect: () => 
     let closed = false;
     setState((previous) => ({ ...previous, status: 'connecting', warning: null }));
 
-    const source = new EventSource('/api/web/map/live', { withCredentials: true });
+    const query = radius === null ? '' : `?radius=${encodeURIComponent(radius)}`;
+    const source = new EventSource(`/api/web/map/live${query}`, { withCredentials: true });
     sourceRef.current = source;
+    // Set by a fatal server-side stop. EventSource reconnects on its own after a
+    // plain EOF, which would recreate the session and reset its failure counter
+    // every few seconds through an outage — exactly the storm the server-side
+    // backoff exists to prevent.
+    let fatal = false;
 
     const on = <T,>(name: string, handler: (payload: T) => void): void => {
       source.addEventListener(name, (event) => {
@@ -126,6 +132,12 @@ export function useMapLive(enabled: boolean): MapLiveState & { reconnect: () => 
     });
 
     on<{ message: string; fatal?: boolean }>('warning', (payload) => {
+      if (payload.fatal) {
+        fatal = true;
+        // Closing here is the only thing that actually stops the browser from
+        // retrying; readyState after a server EOF is CONNECTING, not CLOSED.
+        source.close();
+      }
       setState((previous) => ({
         ...previous,
         warning: payload.message,
@@ -135,10 +147,10 @@ export function useMapLive(enabled: boolean): MapLiveState & { reconnect: () => 
 
     source.onerror = () => {
       if (closed) return;
-      // EventSource переподключается сам, пока соединение не закрыто сервером
-      // окончательно. Здесь только отражаем состояние и планируем редкий
-      // ручной повтор для окончательно закрытого потока.
-      if (source.readyState === EventSource.CLOSED) {
+      // A fatal stop, or a stream the browser has given up on: reconnect on our
+      // own schedule rather than the browser's few-second default.
+      if (fatal || source.readyState === EventSource.CLOSED) {
+        source.close();
         setState((previous) => ({ ...previous, status: 'stopped' }));
         const attempts = retryRef.current.attempts + 1;
         retryRef.current.attempts = attempts;
@@ -158,7 +170,7 @@ export function useMapLive(enabled: boolean): MapLiveState & { reconnect: () => 
         retryRef.current.timer = null;
       }
     };
-  }, [enabled, manualNonce]);
+  }, [enabled, manualNonce, radius]);
 
   return { ...state, reconnect };
 }

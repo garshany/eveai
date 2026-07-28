@@ -12,6 +12,7 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { getLinkedCharacter } from '../eve/sso.js';
@@ -42,11 +43,47 @@ import {
   readPerimeterHistory,
 } from '../eve-map/thread.js';
 import { admitWebEvent } from './web-admission.js';
+import type { WebAgentRequestCoordinator } from './agent-requests.js';
 import { requireMutationSession, requireSession } from './web-route-guards.js';
 import { buildWebClientIpKey } from './web-session.js';
 import type { WebSession } from './web-session.js';
 
 const LOCATION_SCOPE = 'esi-location.read_location.v1';
+
+/**
+ * The route the pilot is actually flying, remembered per chat lane.
+ *
+ * The advisory rules need it: without a route "ahead" degrades to "everything
+ * one jump away", and `route_degraded` can never fire at all. The route is
+ * computed here, so keeping it here costs nothing and avoids trusting a
+ * client-supplied path.
+ */
+const activeRoutes = new Map<number, { systemIds: number[]; setAtMs: number }>();
+/** A route nobody has refreshed in this long is no longer what they are flying. */
+const ACTIVE_ROUTE_TTL_MS = 2 * 60 * 60_000;
+
+function rememberRoute(chatId: number, systemIds: number[], now = Date.now()): void {
+  if (systemIds.length < 2) activeRoutes.delete(chatId);
+  else activeRoutes.set(chatId, { systemIds, setAtMs: now });
+}
+
+/** The part of the route still ahead of the pilot, newest position first. */
+function routeAheadOf(chatId: number, currentSystemId: number, now = Date.now()): number[] {
+  const entry = activeRoutes.get(chatId);
+  if (!entry) return [];
+  if (now - entry.setAtMs > ACTIVE_ROUTE_TTL_MS) {
+    activeRoutes.delete(chatId);
+    return [];
+  }
+  const index = entry.systemIds.indexOf(currentSystemId);
+  // Off the planned route entirely: better to say nothing about it than to warn
+  // about hops the pilot is no longer heading for.
+  return index < 0 ? [] : entry.systemIds.slice(index + 1);
+}
+
+export function resetActiveRoutesForTests(): void {
+  activeRoutes.clear();
+}
 const HEARTBEAT_MS = 15_000;
 const MAX_ROUTE_AVOID = 100;
 
@@ -60,9 +97,18 @@ type RouteBody = {
   avoid?: unknown;
   useWormholes?: unknown;
 };
-type AskBody = { message?: unknown };
+type AskBody = {
+  message?: unknown;
+  idempotencyKey?: unknown;
+  /** What the pilot is looking at, so a bare "стоит ли лететь?" is answerable. */
+  context?: unknown;
+};
 
-export function registerMapRoutes(app: FastifyInstance, db: Db): void {
+export function registerMapRoutes(
+  app: FastifyInstance,
+  db: Db,
+  agentRequests: WebAgentRequestCoordinator,
+): void {
   app.addHook('onRequest', async (request, reply) => {
     if (request.url.startsWith('/api/web/map/')) {
       reply.header('Cache-Control', 'no-store');
@@ -180,6 +226,8 @@ export function registerMapRoutes(app: FastifyInstance, db: Db): void {
         : [],
     });
 
+    rememberRoute(session.chatId, route.ok ? route.systemIds : []);
+
     return {
       route,
       systems: route.systemIds.map((systemId) => {
@@ -235,16 +283,45 @@ export function registerMapRoutes(app: FastifyInstance, db: Db): void {
     const threadId = getOrCreatePerimeterThread(
       db, session.chatId, session.userId, linked?.characterId ?? null,
     );
-    db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, 'user', ?)")
-      .run(threadId, message);
-    db.prepare("UPDATE agent_threads SET updated_at = datetime('now') WHERE thread_id = ?")
-      .run(threadId);
 
-    return reply.status(202).send({ threadId, accepted: true });
+    // The map lane enqueues into the same durable queue as chat rather than
+    // writing the question and hoping: without this the composer accepts a
+    // message and no answer can ever be produced.
+    const identity = db.prepare(
+      'SELECT active_character_id, active_character_version FROM users WHERE user_id = ?',
+    ).get(session.userId) as {
+      active_character_id: number | null;
+      active_character_version: number;
+    } | undefined;
+
+    const accepted = agentRequests.enqueue({
+      userId: session.userId,
+      chatId: session.chatId,
+      threadId,
+      characterId: identity?.active_character_id ?? null,
+      characterVersion: identity?.active_character_version ?? 0,
+      message: withMapContext(message, request.body?.context),
+      idempotencyKey: readIdempotencyKey(request.body?.idempotencyKey),
+      ipKey: buildWebClientIpKey(clientIp(request)),
+    });
+    if (!accepted.ok) {
+      if (accepted.retryAfterSeconds > 0) {
+        reply.header('Retry-After', String(accepted.retryAfterSeconds));
+      }
+      return reply.status(accepted.statusCode).send({ error: accepted.error });
+    }
+
+    const requestId = accepted.request.requestId;
+    return reply.status(202).send({
+      threadId,
+      request: accepted.request,
+      pollUrl: `/api/web/chat/requests/${encodeURIComponent(requestId)}`,
+      eventsUrl: `/api/web/chat/requests/${encodeURIComponent(requestId)}/events`,
+    });
   });
 
   // -- Live stream --------------------------------------------------------
-  app.get('/api/web/map/live', async (request, reply) => {
+  app.get<{ Querystring: BubbleQuery }>('/api/web/map/live', async (request, reply) => {
     const session = requireSession(db, request, reply);
     if (!session) return;
     const linked = getLinkedCharacter(db, sessionContext(session));
@@ -258,6 +335,9 @@ export function registerMapRoutes(app: FastifyInstance, db: Db): void {
       });
     }
 
+    // Without this the radius slider silently does nothing once a live bubble
+    // arrives: the stream always rebuilt at the operator default.
+    const radius = parseRadius(request.query.radius);
     const stream = openStream(reply, request);
     const state = createAdvisorState();
     const threadId = getOrCreatePerimeterThread(
@@ -277,6 +357,7 @@ export function registerMapRoutes(app: FastifyInstance, db: Db): void {
       refreshing = true;
       try {
         const next = await buildBubble(db, currentSystemId, {
+          radius,
           shipTypeId,
           // A five-second tick must never pay for a cold-start fan-out; only a
           // jump into new space is allowed to backfill.
@@ -289,7 +370,7 @@ export function registerMapRoutes(app: FastifyInstance, db: Db): void {
         const advisories = evaluateAdvisories(state, {
           bubble: next,
           currentSystemId,
-          routeAhead: [],
+          routeAhead: routeAheadOf(session.chatId, currentSystemId),
           newKills: next.recentKills.filter(
             (kill) => pendingKills.some((pending) => pending.killmailId === kill.killmailId),
           ),
@@ -355,6 +436,7 @@ export function registerMapRoutes(app: FastifyInstance, db: Db): void {
     stream.send('ready', {
       characterId: linked.characterId,
       threadId,
+      radius,
       pollSeconds: config.map.locationPollSeconds,
     });
     return reply;
@@ -543,6 +625,38 @@ function parseAvoid(raw: unknown): number[] | null {
   return ids;
 }
 
+/**
+ * Attaches what the pilot is looking at to their question. Bounded and
+ * whitelisted: this text reaches the model, so it carries a few numbers the map
+ * already showed, never free-form client input.
+ */
+function withMapContext(message: string, raw: unknown): string {
+  if (typeof raw !== 'object' || raw === null) return message;
+  const context = raw as Record<string, unknown>;
+  const parts: string[] = [];
+  if (typeof context.systemId === 'number' && Number.isSafeInteger(context.systemId)) {
+    parts.push(`current_system_id=${context.systemId}`);
+  }
+  if (typeof context.selectedSystemId === 'number' && Number.isSafeInteger(context.selectedSystemId)) {
+    parts.push(`selected_system_id=${context.selectedSystemId}`);
+  }
+  if (typeof context.shipTypeId === 'number' && Number.isSafeInteger(context.shipTypeId)) {
+    parts.push(`ship_type_id=${context.shipTypeId}`);
+  }
+  if (typeof context.radius === 'number' && Number.isFinite(context.radius)) {
+    parts.push(`bubble_radius=${Math.trunc(context.radius)}`);
+  }
+  if (typeof context.band === 'string' && /^[a-z]{3,10}$/.test(context.band)) {
+    parts.push(`perimeter_band=${context.band}`);
+  }
+  if (parts.length === 0) return message;
+  return `${message}\n\n[perimeter context] ${parts.join(' ')}`;
+}
+
+function readIdempotencyKey(raw: unknown): string {
+  return typeof raw === 'string' && /^[A-Za-z0-9_-]{16,96}$/.test(raw) ? raw : randomUUID();
+}
+
 function readLocale(request: FastifyRequest): 'ru' | 'en' {
   const header = request.headers['accept-language'];
   if (typeof header === 'string' && /^en/i.test(header.trim())) return 'en';
@@ -558,4 +672,7 @@ function sessionContext(session: WebSession) {
 }
 
 /** Exported for tests that need a synthetic advisory publication. */
-export const __testables = { publishAdvisory, parseRisk, parseAvoid, parseRadius };
+export const __testables = {
+  publishAdvisory, parseRisk, parseAvoid, parseRadius,
+  rememberRoute, routeAheadOf, withMapContext, readIdempotencyKey,
+};

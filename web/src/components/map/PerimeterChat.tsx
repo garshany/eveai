@@ -14,10 +14,20 @@ import type { PerimeterMessage } from '../../types';
 import type { LiveAdvisory } from './use-map-live';
 import { advisoryRuleKey } from './labels';
 
+export type MapAskContext = {
+  systemId: number | null;
+  selectedSystemId: number | null;
+  shipTypeId: number | null;
+  radius: number | null;
+  band: string | null;
+};
+
 type Props = {
   csrfToken: string;
   /** Живые советы приходят потоком и дописываются к загруженной истории. */
   advisories: LiveAdvisory[];
+  /** Что пилот сейчас видит — уходит вместе с вопросом, без уточнений. */
+  context: MapAskContext;
   onFocusSystem: (systemId: number) => void;
 };
 
@@ -25,14 +35,16 @@ export type SeverityFilter = 'all' | 'important' | 'quiet';
 
 const SEVERITY_RANK = { info: 0, warn: 1, danger: 2 } as const;
 
-export function PerimeterChat({ csrfToken, advisories, onFocusSystem }: Props) {
+export function PerimeterChat({ csrfToken, advisories, context, onFocusSystem }: Props) {
   const { t, locale } = useI18n();
   const [messages, setMessages] = useState<PerimeterMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<SeverityFilter>('all');
+  const [awaiting, setAwaiting] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const pollRef = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,6 +77,50 @@ export function PerimeterChat({ csrfToken, advisories, onFocusSystem }: Props) {
     if (list) list.scrollTop = list.scrollHeight;
   }, [messages.length]);
 
+  useEffect(() => () => {
+    if (pollRef.current !== null) window.clearTimeout(pollRef.current);
+  }, []);
+
+  const reloadHistory = async (): Promise<void> => {
+    try {
+      const payload = await webApi.map.chat();
+      setMessages(payload.messages);
+    } catch {
+      // История обновится на следующем открытии панели.
+    }
+  };
+
+  /**
+   * Ответ приходит через ту же durable-очередь, что и обычный чат: ждём, пока
+   * запрос дойдёт до терминального состояния, и перечитываем тред — сообщение агента к тому
+   * моменту уже сохранено.
+   */
+  const awaitAnswer = (requestId: string, attempt = 0): void => {
+    if (attempt > 240) {
+      setAwaiting(false);
+      return;
+    }
+    pollRef.current = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const payload = await webApi.getAgentRequest(requestId);
+          if (payload.request.status === 'queued' || payload.request.status === 'running') {
+            awaitAnswer(requestId, attempt + 1);
+            return;
+          }
+          if (payload.request.status === 'failed' && payload.request.error) {
+            setError(payload.request.error);
+          }
+          await reloadHistory();
+        } catch {
+          // Разрыв опроса не должен ломать панель: история подтянется позже.
+        } finally {
+          setAwaiting(false);
+        }
+      })();
+    }, attempt === 0 ? 800 : 2000);
+  };
+
   const visible = useMemo(() => {
     if (filter === 'all') return messages;
     const floor = filter === 'important' ? SEVERITY_RANK.warn : SEVERITY_RANK.danger;
@@ -91,7 +147,9 @@ export function PerimeterChat({ csrfToken, advisories, onFocusSystem }: Props) {
     setMessages((previous) => [...previous, optimistic]);
     setDraft('');
     try {
-      await webApi.map.ask(text, csrfToken);
+      const accepted = await webApi.map.ask(text, csrfToken, context);
+      setAwaiting(true);
+      awaitAnswer(accepted.request.requestId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('requestFailed'));
       setMessages((previous) => previous.filter((message) => message.id !== optimistic.id));
@@ -125,6 +183,7 @@ export function PerimeterChat({ csrfToken, advisories, onFocusSystem }: Props) {
         />)}
     </div>
 
+    {awaiting ? <p className="perimeter-chat__pending">{t('perimeterThinking')}</p> : null}
     {error ? <p className="perimeter-chat__error" role="alert">{error}</p> : null}
 
     <form
