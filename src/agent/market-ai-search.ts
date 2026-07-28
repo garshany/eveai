@@ -20,7 +20,9 @@ import { SDE_SCHEMA } from './tools/sde-schema.js';
  * Лёгкий исполнитель для /api/web/market/ai-search: один запрос пользователя →
  * список подходящих type_id. По образцу runReadSubagent (read-subagents.ts),
  * но ещё жёстче по бюджету: до config.web.aiSearchMaxModelCalls вызовов модели
- * (бриф — «одна итерация»: раунд тулов + финальный ответ), максимум
+ * (дефолт 3 — до двух тул-раундов + финальный ответ; на последнем вызове тулы
+ * не предлагаются, чтобы модель гарантированно отдала JSON, а не просила раунд,
+ * на который бюджета нет), максимум
  * config.web.aiSearchMaxResults предметов, внешний таймаут через AbortSignal.
  * Тулы только публичные: sde_sql (статика) и batch_market_prices (публичные
  * цены ESI). Фан-аут ограничен листовым бюджетом MAX_TOOL_CALLS на весь поиск,
@@ -98,14 +100,29 @@ export async function runMarketAiSearch(
     usage: sawUsage ? usageTotal : null,
   });
 
+  // Деградации логируем с категорией: раньше эти пути были молчаливыми — роут
+  // отдавал 503, а в журнале не было ни строки для диагностики.
+  const fail = (category: string, detail?: string): MarketAiSearchOutcome => {
+    console.warn(
+      '[market-ai-search] search degraded category=%s%s',
+      category,
+      detail ? ` detail=${detail}` : '',
+    );
+    return finish(false, []);
+  };
+
   for (let call = 0; call < maxModelCalls; call += 1) {
-    if (signal.aborted) return finish(false, []);
+    if (signal.aborted) return fail('aborted');
+    // Последний разрешённый вызов — без тулов: модель обязана собрать финальный
+    // JSON из уже полученных данных, а не просить ещё один тул-раунд, на который
+    // бюджета всё равно нет.
+    const isFinalCall = call + 1 >= maxModelCalls;
     let response: Awaited<ReturnType<typeof createNativeResponse>>;
     try {
       response = await responseFactory({
         instructions: systemPrompt(maxResults),
         items: pendingItems,
-        tools,
+        tools: isFinalCall ? [] : tools,
         parallelToolCalls: true,
         truncation: 'auto',
         reasoningEffort: 'low',
@@ -123,7 +140,7 @@ export async function runMarketAiSearch(
       );
       return finish(false, []);
     }
-    if (signal.aborted) return finish(false, []);
+    if (signal.aborted) return fail('aborted');
     if (response.usage) {
       sawUsage = true;
       usageTotal.input += response.usage.input;
@@ -133,23 +150,24 @@ export async function runMarketAiSearch(
       usageTotal.reasoning += response.usage.reasoning;
     }
     if (response.error || response.status !== 'completed') {
-      return finish(false, []);
+      return fail('provider_error', response.error ? String(response.error) : `status=${response.status}`);
     }
 
     const calls = extractFunctionCalls(response.output);
     const rawCallCount = response.output.filter((item) => item.type === 'function_call').length;
-    if (rawCallCount !== calls.length) return finish(false, []);
+    if (rawCallCount !== calls.length) return fail('output_shape_mismatch');
 
     if (calls.length === 0) {
       const text = extractFinalAssistantText(response.output) ?? response.outputText;
       const picks = parsePicks(text, maxResults);
-      return picks === null ? finish(false, []) : finish(true, picks);
+      return picks === null ? fail('unparseable_final_text') : finish(true, picks);
     }
-    // Финальный текст обязателен: это последний разрешённый вызов модели.
-    if (call + 1 >= maxModelCalls) return finish(false, []);
+    // Финальный текст обязателен: это последний разрешённый вызов модели. Тулов
+    // на нём не предлагалось, так что вызовы здесь — мусорный выход модели.
+    if (isFinalCall) return fail('tool_calls_on_final_call');
 
     const validation = validateEffectiveToolCalls(registry, calls, seenCallIds);
-    if (!validation.ok) return finish(false, []);
+    if (!validation.ok) return fail('invalid_tool_calls');
     for (const toolCall of calls) seenCallIds.add(toolCall.callId);
 
     let outputs: Array<{ callId: string; output: string }>;
@@ -160,7 +178,7 @@ export async function runMarketAiSearch(
       }));
     } else {
       // Отмена между ответом модели и диспатчем: новые листы не стартуют.
-      if (signal.aborted) return finish(false, []);
+      if (signal.aborted) return fail('aborted');
       const remaining = Math.max(0, MARKET_AI_SEARCH_MAX_TOOL_CALLS - toolCallsUsed);
       const executable = calls.slice(0, remaining);
       toolCallsUsed += executable.length;

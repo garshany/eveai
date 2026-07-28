@@ -353,7 +353,7 @@ export const config = {
     // АИ-подбор предметов (/api/web/market/ai-search): отдельный выключатель и
     // бюджеты, чтобы оператор мог удешевить или погасить фичу, не трогая чат.
     aiSearchEnabled: optionalBoolean('WEB_AI_SEARCH_ENABLED', true),
-    aiSearchMaxModelCalls: boundedPositiveInt('WEB_AI_SEARCH_MAX_MODEL_CALLS', 2, 1, 5),
+    aiSearchMaxModelCalls: boundedPositiveInt('WEB_AI_SEARCH_MAX_MODEL_CALLS', 3, 1, 5),
     aiSearchTimeoutMs: boundedPositiveInt('WEB_AI_SEARCH_TIMEOUT_MS', 30_000, 5_000, 120_000),
     aiSearchMaxResults: boundedPositiveInt('WEB_AI_SEARCH_MAX_RESULTS', 20, 1, 50),
     turnstileSiteKey: optional('TURNSTILE_SITE_KEY', ''),
