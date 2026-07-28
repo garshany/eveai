@@ -1010,6 +1010,19 @@ CREATE TABLE IF NOT EXISTS map_gate_campers (
 );
 CREATE INDEX IF NOT EXISTS idx_map_gate_campers_last ON map_gate_campers(last_kill_ms);
 
+-- Systems the pilot has told the map to route around. Per user, not per
+-- session: an avoid decision ("I am never flying through Uedama again") is a
+-- standing preference and would be worthless if it died with the tab. Every
+-- route this user plans, from the map or from the agent, subtracts these.
+CREATE TABLE IF NOT EXISTS map_avoid_systems (
+  user_id       INTEGER NOT NULL,
+  system_id     INTEGER NOT NULL,
+  note          TEXT,
+  created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (user_id, system_id)
+);
+CREATE INDEX IF NOT EXISTS idx_map_avoid_user ON map_avoid_systems(user_id);
+
 -- Bounded backfill bookkeeping: one row per system whose recent history has
 -- been pulled from the EVE-KILL search API, so opening the same bubble in a
 -- second tab does not repeat the fan-out.

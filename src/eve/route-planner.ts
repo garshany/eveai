@@ -793,7 +793,12 @@ async function fetchRoute(
   return result.data;
 }
 
-async function setAutopilotRoute(
+/**
+ * Shared with the Perimeter map, which plans its own risk-weighted routes and
+ * needs the same in-game waypoint write — including its abort guards, so an
+ * abandoned request never keeps rewriting the player's autopilot.
+ */
+export async function setAutopilotRoute(
   db: Db,
   systemIds: number[],
   destinationId: number,

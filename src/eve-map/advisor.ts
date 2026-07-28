@@ -38,6 +38,12 @@ export type Advisory = {
   killmailId: number | null;
   /** Collapsed repeats of the same condition inside one cooldown window. */
   repeats: number;
+  /**
+   * Identity of the *situation*, not of the message. Two warnings with the same
+   * key are the same ongoing fact and must not be said twice; a changed key
+   * (a different camped system, a different hunter) is genuinely new news.
+   */
+  stateKey: string;
   at: string;
 };
 
@@ -53,6 +59,12 @@ export type AdvisorState = {
   lastModelCallMs: number;
   seenKillIds: Set<number>;
   quietSinceMs: number | null;
+  /**
+   * Level rules currently holding: rule -> the situation key and when it was
+   * last observed. This is what stops "ОН ТЕБЯ ДОГОНИТ" from arriving every
+   * minute for ten minutes while nothing about the situation changed.
+   */
+  held: Map<AdvisoryRule, { key: string; lastSeenMs: number }>;
 };
 
 export type AdvisorContext = {
@@ -71,6 +83,30 @@ const ALL_CLEAR_QUIET_MS = 15 * 60_000;
 const MAX_TRAIL = 20;
 
 const SEVERITY_ORDER: Record<AdvisorySeverity, number> = { info: 0, warn: 1, danger: 2 };
+
+/**
+ * Level rules describe a condition that persists — you are outgunned here, this
+ * gate is camped, your route is red. Announcing a persisting condition on a
+ * timer is how a useful warning turns into noise the pilot learns to ignore: in
+ * one real flight the same capability-gap line arrived eight times in ten
+ * minutes. They are said once when they become true, and again only when the
+ * situation itself changes or has been gone long enough to be news again.
+ *
+ * Everything else is an edge: a specific kill, a band crossing, a transition.
+ * Those are already one-shot by construction.
+ */
+const LEVEL_RULES: ReadonlySet<AdvisoryRule> = new Set<AdvisoryRule>([
+  'pursuit',
+  'camp_next_hop',
+  'capability_gap',
+  'route_degraded',
+]);
+
+/**
+ * A level rule that stops holding is only re-armed after this long, so a
+ * condition flickering across the threshold cannot re-announce itself.
+ */
+const REARM_AFTER_MS = 10 * 60_000;
 
 /**
  * One advisor state per character, shared by every stream watching them.
@@ -137,6 +173,7 @@ export function createAdvisorState(now = Date.now()): AdvisorState {
     lastModelCallMs: 0,
     seenKillIds: new Set(),
     quietSinceMs: now,
+    held: new Map(),
   };
 }
 
@@ -177,9 +214,26 @@ export function evaluateAdvisories(state: AdvisorState, ctx: AdvisorContext): Ad
   const clear = detectAllClear(state, ctx);
   if (clear) candidates.push(clear);
 
+  // A level rule that produced nothing this pass has stopped holding. It is not
+  // forgotten immediately: re-arming instantly would let a condition sitting on
+  // the threshold announce itself every other tick.
+  const firedRules = new Set(candidates.map((advisory) => advisory.rule));
+  for (const [rule, entry] of state.held) {
+    if (firedRules.has(rule)) continue;
+    if (ctx.now - entry.lastSeenMs >= REARM_AFTER_MS) state.held.delete(rule);
+  }
+
   const emitted: Advisory[] = [];
   for (const advisory of candidates) {
-    if (!passesCooldown(state, advisory, ctx.now)) {
+    if (LEVEL_RULES.has(advisory.rule)) {
+      const held = state.held.get(advisory.rule);
+      state.held.set(advisory.rule, { key: advisory.stateKey, lastSeenMs: ctx.now });
+      if (held && held.key === advisory.stateKey) {
+        // Same fact, still true. Already said.
+        state.suppressed.set(advisory.rule, (state.suppressed.get(advisory.rule) ?? 0) + 1);
+        continue;
+      }
+    } else if (!passesCooldown(state, advisory, ctx.now)) {
       state.suppressed.set(advisory.rule, (state.suppressed.get(advisory.rule) ?? 0) + 1);
       continue;
     }
@@ -257,6 +311,7 @@ function detectIdentityPursuit(state: AdvisorState, ctx: AdvisorContext): Adviso
     systemId: ctx.currentSystemId,
     killmailId: null,
     repeats: 0,
+    stateKey: `pursuit:${hunters.slice(0, 3).sort().join('|')}`,
     at: new Date(ctx.now).toISOString(),
   };
 }
@@ -291,6 +346,7 @@ function detectCampAhead(
     systemId: worst.system.systemId,
     killmailId: null,
     repeats: 0,
+    stateKey: `camp:${worst.system.systemId}`,
     at: new Date(ctx.now).toISOString(),
   };
 }
@@ -315,6 +371,7 @@ function detectThreatRise(state: AdvisorState, ctx: AdvisorContext): Advisory | 
     systemId: worst?.systemId ?? null,
     killmailId: null,
     repeats: 0,
+    stateKey: `rise:${previous}->${band}`,
     at: new Date(ctx.now).toISOString(),
   };
 }
@@ -343,6 +400,7 @@ function detectValueSpike(
     systemId: biggest.systemId,
     killmailId: biggest.killmailId,
     repeats: 0,
+    stateKey: `value:${biggest.killmailId}`,
     at: new Date(ctx.now).toISOString(),
   };
 }
@@ -375,6 +433,7 @@ function detectCapabilityGap(
     systemId: worst.systemId,
     killmailId: null,
     repeats: 0,
+    stateKey: `gap:${ship.shipTypeId}:${worst.systemId}`,
     at: new Date(ctx.now).toISOString(),
   };
 }
@@ -406,6 +465,7 @@ function detectRouteDegraded(
     systemId: worst.systemId,
     killmailId: null,
     repeats: 0,
+    stateKey: `route:${worst.systemId}`,
     at: new Date(ctx.now).toISOString(),
   };
 }
@@ -434,6 +494,7 @@ function detectSecurityBand(
       systemId: current.systemId,
       killmailId: null,
       repeats: 0,
+      stateKey: `security:high->${band}`,
       at: new Date(ctx.now).toISOString(),
     };
   }
@@ -448,6 +509,7 @@ function detectSecurityBand(
       systemId: current.systemId,
       killmailId: null,
       repeats: 0,
+      stateKey: 'security:low->null',
       at: new Date(ctx.now).toISOString(),
     };
   }
@@ -477,6 +539,7 @@ function detectAllClear(state: AdvisorState, ctx: AdvisorContext): Advisory | nu
     systemId: ctx.currentSystemId,
     killmailId: null,
     repeats: 0,
+    stateKey: 'clear',
     at: new Date(ctx.now).toISOString(),
   };
 }

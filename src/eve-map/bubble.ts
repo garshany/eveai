@@ -25,11 +25,14 @@ import {
   getRecentKillsForSystems,
   getSystemKillRollups,
   resolveShipNames,
+  applyCharacterNames,
+  missingCharacterIds,
   backfillSystems,
   type IndexedKill,
   type SystemKillRollup,
 } from './kill-index.js';
 import { scoreBubble, scoreSystemDanger, type DangerScore } from './danger.js';
+import { resolveCharacterNames } from './names.js';
 
 export type LayerFreshness = {
   layer: string;
@@ -191,6 +194,17 @@ export async function buildBubble(
 
   const verdict = scoreBubble(dangerScores, jumpsBySystem);
 
+  // Ship names come from the local SDE for free. Pilot names cost one bulk
+  // lookup, and skipping it here was why the activity feed and every advisory
+  // said "неизвестный" while the inspector — the only place that resolved
+  // them — showed the real attacker.
+  let recentKills = resolveShipNames(db, getRecentKillsForSystems(db, systemIds, {
+    limit: RECENT_KILL_FEED_LIMIT,
+    sinceMs: now - GATE_CAMP_WINDOW_MS,
+  }));
+  const pilotNames = await resolveCharacterNames(db, missingCharacterIds(recentKills));
+  recentKills = applyCharacterNames(recentKills, pilotNames);
+
   return {
     originId,
     radius: bubble.radius,
@@ -199,12 +213,7 @@ export async function buildBubble(
     systems,
     edges: bubble.edges,
     wormholes: wormholes.links,
-    // Ship names resolved locally: the feed stores type ids, and an activity
-    // list of "неизвестный" tells the pilot nothing.
-    recentKills: resolveShipNames(db, getRecentKillsForSystems(db, systemIds, {
-      limit: RECENT_KILL_FEED_LIMIT,
-      sinceMs: now - GATE_CAMP_WINDOW_MS,
-    })),
+    recentKills,
     verdict: { score: verdict.score, band: verdict.band, worstSystemId: verdict.worst?.systemId ?? null },
     pilotShip,
     freshness: [

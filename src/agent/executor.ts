@@ -1,7 +1,7 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import type { ApiReasoningEffort, ReasoningEffort } from '../openai-options.js';
-import { buildDeveloperPrompt } from './prompts.js';
+import { buildDeveloperPrompt, type PromptMode } from './prompts.js';
 import { getEveCapabilities } from '../eve/capabilities.js';
 import {
   buildNativeAgentTools,
@@ -513,7 +513,13 @@ export async function handleAgentMessage(
   await runPreTurnCompactSafe(db, threadId, rootDeadlineAt);
   throwIfDeadlineExceeded();
 
-  const promptMode = isSimpleStaticAggregateCountGoal(userText) ? 'static_aggregate' : 'full';
+  // Which assistant is answering is a property of the thread, not a guess at
+  // the wording: a Perimeter thread is always the flight assistant, even when
+  // the pilot types something that looks like an ordinary question.
+  const threadKind = readThreadKind(db, threadId);
+  const promptMode: PromptMode = threadKind === 'perimeter'
+    ? 'perimeter'
+    : isSimpleStaticAggregateCountGoal(userText) ? 'static_aggregate' : 'full';
 
   // Rebuild the developer prompt from current thread state. Called once up front
   // and again after mid-turn compaction so `instructions` always carries the
@@ -546,6 +552,7 @@ export async function handleAgentMessage(
     createNativeResponse,
     turnIdentity,
     Math.max(1, rootDeadlineAt - Date.now()),
+    promptMode,
   );
 
   // Advance the pre-turn compaction counter. Stateless prompts are rebuilt from
@@ -804,6 +811,8 @@ async function runNativeAgentLoop(
   responseFactory: typeof createNativeResponse = createNativeResponse,
   turnIdentity: TurnIdentitySnapshot = captureTurnIdentity(db, ctx),
   deadlineMs: number = config.openai.turnDeadlineMs,
+  /** Set when the thread already decided which assistant is answering. */
+  toolMode?: 'full' | 'static_aggregate' | 'perimeter',
 ): Promise<AgentResult> {
   const requestId = createRequestId();
   const terminalFailure = (
@@ -842,7 +851,7 @@ async function runNativeAgentLoop(
     throw new Error(TURN_DEADLINE_MESSAGE);
   };
   const builtTools = await buildNativeAgentTools(
-    isSimpleStaticAggregateCountGoal(goal) ? 'static_aggregate' : 'full',
+    toolMode ?? (isSimpleStaticAggregateCountGoal(goal) ? 'static_aggregate' : 'full'),
     { notificationCapability: ctx.notificationCapability ?? 'all' },
   );
   const clientToolSearch = config.openai.toolSearchExecution === 'client'
@@ -3605,5 +3614,19 @@ function ensureThreadOwnership(db: Db, threadId: string, ctx: UserContext): void
   // Backfill user_id if missing
   if (ctx.userId && !existing.user_id) {
     db.prepare('UPDATE agent_threads SET user_id = ? WHERE thread_id = ?').run(ctx.userId, threadId);
+  }
+}
+
+/**
+ * A thread's assistant identity. A missing or unknown value reads as 'chat', so
+ * every legacy thread keeps the workspace agent it has always had.
+ */
+function readThreadKind(db: Db, threadId: string): 'chat' | 'perimeter' {
+  try {
+    const row = db.prepare('SELECT kind FROM agent_threads WHERE thread_id = ?')
+      .get(threadId) as { kind: string | null } | undefined;
+    return row?.kind === 'perimeter' ? 'perimeter' : 'chat';
+  } catch {
+    return 'chat';
   }
 }

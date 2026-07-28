@@ -268,13 +268,15 @@ describe('perimeter advisor', () => {
     const second = evaluateAdvisories(state, ctx({ bubble: campBubble, now: NOW + 1000 }));
     expect(second.find((advisory) => advisory.rule === 'camp_next_hop')).toBeUndefined();
 
+    // И после кулдауна тоже молчит: кемп — это состояние, а не событие.
+    // Пересказывать его по таймеру — ровно тот спам, из-за которого пилот
+    // перестаёт читать панель (в реальном полёте одно и то же предупреждение
+    // прилетело восемь раз за десять минут).
     const later = evaluateAdvisories(state, ctx({
       bubble: campBubble,
       now: NOW + config.map.advisorCooldownSeconds * 1000 + 1000,
     }));
-    const repeated = later.find((advisory) => advisory.rule === 'camp_next_hop');
-    expect(repeated).toBeDefined();
-    expect(repeated!.repeats).toBe(1);
+    expect(later.find((advisory) => advisory.rule === 'camp_next_hop')).toBeUndefined();
   });
 
   it('orders the loudest advisory first', () => {

@@ -23,6 +23,7 @@ import {
   type RouteMode,
 } from '../eve/map-graph.js';
 import { buildBubble } from '../eve-map/bubble.js';
+import { setAutopilotRoute } from '../eve/route-planner.js';
 import {
   applyCharacterNames,
   getKillIndexStatus,
@@ -49,6 +50,13 @@ import {
   readPerimeterHistory,
 } from '../eve-map/thread.js';
 import { rememberRoute, routeAheadOf } from '../eve-map/active-route.js';
+import {
+  addAvoided,
+  clearAvoided,
+  effectiveAvoidSet,
+  listAvoided,
+  removeAvoided,
+} from '../eve-map/avoid.js';
 export { resetActiveRoutesForTests } from '../eve-map/active-route.js';
 import type { WebAgentRequestCoordinator } from './agent-requests.js';
 import { requireMutationSession, requireSession } from './web-route-guards.js';
@@ -56,6 +64,7 @@ import { buildWebClientIpKey } from './web-session.js';
 import type { WebSession } from './web-session.js';
 
 const LOCATION_SCOPE = 'esi-location.read_location.v1';
+const WAYPOINT_SCOPE = 'esi-ui.write_waypoint.v1';
 
 const HEARTBEAT_MS = 15_000;
 const MAX_ROUTE_AVOID = 100;
@@ -69,6 +78,8 @@ type RouteBody = {
   risk?: unknown;
   avoid?: unknown;
   useWormholes?: unknown;
+  /** Push the planned route into the game client's autopilot. */
+  setAutopilot?: unknown;
 };
 type AskBody = {
   message?: unknown;
@@ -198,10 +209,15 @@ export function registerMapRoutes(
     });
     const dangerBySystem = new Map(bubble.systems.map((system) => [system.systemId, system.danger.score]));
 
+    // The stored avoid list applies to every route this account plans, not just
+    // the ones where the client remembered to resend it. Origin and destination
+    // are exempt: flying *to* a system you once avoided must still be routable.
+    const effectiveAvoid = effectiveAvoidSet(db, session.userId, avoid, [origin, destination]);
+
     const route = routeWithRisk(db, origin, destination, {
       mode,
       riskWeight: risk,
-      avoid,
+      avoid: effectiveAvoid,
       dangerOf: (systemId) => dangerBySystem.get(systemId) ?? 0,
       extraEdges: body.useWormholes === true
         ? bubble.wormholes.map((link) => [link.fromSystemId, link.toSystemId] as [number, number])
@@ -214,8 +230,36 @@ export function registerMapRoutes(
       riskWeight: risk,
     });
 
+    // Planning a route on the map and then retyping it into the client is the
+    // gap that makes a planner useless in flight. Same ESI write, same abort
+    // guards, same scope check as the chat planner.
+    let autopilot: { requested: boolean; ok: boolean; mode: string; error: string | null } = {
+      requested: false, ok: false, mode: 'none', error: null,
+    };
+    if (body.setAutopilot === true && route.ok) {
+      const linked = getLinkedCharacter(db, sessionContext(session));
+      if (!linked) {
+        autopilot = { requested: true, ok: false, mode: 'none', error: 'Персонаж не связан.' };
+      } else if (!linked.scopes.includes(WAYPOINT_SCOPE)) {
+        autopilot = {
+          requested: true, ok: false, mode: 'none', error: `Нет разрешения ${WAYPOINT_SCOPE}.`,
+        };
+      } else {
+        try {
+          const written = await setAutopilotRoute(
+            db, route.systemIds, destination, sessionContext(session), () => true,
+          );
+          autopilot = { requested: true, ok: written.ok, mode: written.mode, error: null };
+        } catch (error) {
+          autopilot = { requested: true, ok: false, mode: 'none', error: (error as Error).message };
+        }
+      }
+    }
+
     return {
       route,
+      autopilot,
+      avoided: [...effectiveAvoid],
       systems: route.systemIds.map((systemId) => {
         const system = getMapSystem(db, systemId);
         return {
@@ -230,6 +274,51 @@ export function registerMapRoutes(
         totalSystems: route.systemIds.length,
       },
     };
+  });
+
+  // -- Avoid list ---------------------------------------------------------
+  app.get('/api/web/map/avoid', async (request, reply) => {
+    const session = requireSession(db, request, reply);
+    if (!session) return;
+    return { systems: listAvoided(db, session.userId) };
+  });
+
+  app.post<{ Body: { systemId?: unknown; note?: unknown } }>(
+    '/api/web/map/avoid',
+    async (request, reply) => {
+      const session = requireMutationSession(db, request, reply);
+      if (!session) return;
+      const systemId = Number(request.body?.systemId);
+      if (!Number.isSafeInteger(systemId) || systemId <= 0) {
+        return reply.status(400).send({ error: 'systemId должен быть числовым ID системы.' });
+      }
+      const note = typeof request.body?.note === 'string'
+        ? request.body.note.trim().slice(0, 200)
+        : null;
+      const result = addAvoided(db, session.userId, systemId, note || null);
+      if (!result.ok) return reply.status(400).send({ error: result.error });
+      return { entry: result.entry, alreadyPresent: result.alreadyPresent, systems: listAvoided(db, session.userId) };
+    },
+  );
+
+  app.delete<{ Params: { systemId: string } }>(
+    '/api/web/map/avoid/:systemId',
+    async (request, reply) => {
+      const session = requireMutationSession(db, request, reply);
+      if (!session) return;
+      const systemId = Number(request.params.systemId);
+      if (!Number.isSafeInteger(systemId) || systemId <= 0) {
+        return reply.status(400).send({ error: 'systemId должен быть числовым ID системы.' });
+      }
+      const removed = removeAvoided(db, session.userId, systemId);
+      return { removed, systems: listAvoided(db, session.userId) };
+    },
+  );
+
+  app.delete('/api/web/map/avoid', async (request, reply) => {
+    const session = requireMutationSession(db, request, reply);
+    if (!session) return;
+    return { removed: clearAvoided(db, session.userId), systems: [] };
   });
 
   // -- Perimeter chat -----------------------------------------------------

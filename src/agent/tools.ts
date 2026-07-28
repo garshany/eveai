@@ -273,6 +273,19 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
   },
 ];
 
+/**
+ * The always-on tools the flight assistant keeps: static lookups, its own
+ * character's data, and route planning with autopilot. Market, industry and
+ * doctrine tooling is deliberately absent — see buildNativeAgentTools.
+ */
+const PERIMETER_ALWAYS_ON = new Set<string>([
+  SDE_SQL_TOOL_NAME,
+  CHARACTER_SQL_TOOL_NAME,
+  UNIVERSE_COUNT_TOOL_NAME,
+  'plan_route',
+  'get_eve_capabilities',
+]);
+
 const ROUTE_MONITOR_TOOL_NAME = 'route_monitor';
 
 const ROUTE_MONITOR_TOOL: NativeFunctionTool = {
@@ -530,9 +543,26 @@ export function isSetActiveFitTool(name: string): boolean {
 }
 
 export async function buildNativeAgentTools(
-  mode: 'full' | 'static_aggregate' = 'full',
+  mode: 'full' | 'static_aggregate' | 'perimeter' = 'full',
   options: { notificationCapability?: 'all' | 'feed' | 'web' | 'none' } = {},
 ): Promise<NativeTool[]> {
+  // The Perimeter assistant flies; it does not trade, manufacture or research.
+  // A focused catalog is not only cheaper per turn — it stops the model from
+  // wandering into market sweeps when the pilot asked whether to jump.
+  if (mode === 'perimeter') {
+    return withProgrammaticPilot([
+      { type: 'tool_search' },
+      ...PERIMETER_TOOLS,
+      ...ALWAYS_ON_FUNCTION_TOOLS.filter((tool) => PERIMETER_ALWAYS_ON.has(tool.name)),
+      SYSTEM_METRIC_SNAPSHOT_TOOL,
+      ANALYZE_LOCAL_TOOL,
+      ANALYZE_SCAN_TOOL,
+      INTEL_NOTE_TOOL,
+      SET_ACTIVE_FIT_TOOL,
+      buildEveKillNamespace({ includeWatch: false }),
+      buildEveScoutNamespace(),
+    ]);
+  }
   if (mode === 'static_aggregate') {
     return withProgrammaticPilot(ALWAYS_ON_FUNCTION_TOOLS.flatMap((tool) => {
       if (tool.name === UNIVERSE_COUNT_TOOL_NAME) return [tool];
