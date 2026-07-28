@@ -77,6 +77,18 @@ export function PerimeterChat({ csrfToken, advisories, context, onFocusSystem }:
     if (list) list.scrollTop = list.scrollHeight;
   }, [messages.length]);
 
+  // The thread is the source of truth, and the answer may land after the poll
+  // chain for one request has ended — a navigation, a reload, a lost socket.
+  // Production had an answer sitting in the thread thirteen seconds after the
+  // question while the panel still showed nothing. A slow background refresh
+  // costs one small query and makes the panel converge regardless.
+  useEffect(() => {
+    const timer = window.setInterval(() => { void reloadHistory(); }, 20_000);
+    return () => window.clearInterval(timer);
+    // reloadHistory closes over setMessages only, which is stable.
+     
+  }, []);
+
   useEffect(() => () => {
     if (pollRef.current !== null) window.clearTimeout(pollRef.current);
   }, []);
@@ -84,9 +96,18 @@ export function PerimeterChat({ csrfToken, advisories, context, onFocusSystem }:
   const reloadHistory = async (): Promise<void> => {
     try {
       const payload = await webApi.map.chat();
-      setMessages(payload.messages);
+      setMessages((previous) => {
+        // Оптимистичные строки живут с отрицательным id и пропадают, только
+        // когда сервер вернул то же сообщение — иначе оно мигало бы.
+        const serverIds = new Set(payload.messages.map((message) => message.id));
+        const pending = previous.filter(
+          (message) => message.id < 0
+            && !payload.messages.some((saved) => saved.role === 'user' && saved.content === message.content),
+        );
+        return [...payload.messages.filter((message) => !serverIds.has(-message.id)), ...pending];
+      });
     } catch {
-      // История обновится на следующем открытии панели.
+      // История обновится на следующем тике.
     }
   };
 

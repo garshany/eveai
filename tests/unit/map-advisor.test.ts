@@ -397,16 +397,20 @@ describe('shared advisor state', () => {
     resetSharedAdvisorStatesForTests();
   });
 
-  it('drops the state when the last watcher leaves', () => {
+  it('survives a reconnect so cooldowns are not reset', () => {
     const first = getSharedAdvisorState(90_000_003, NOW);
-    getSharedAdvisorState(90_000_003, NOW);
-    releaseSharedAdvisorState(90_000_003);
-    // Ещё один наблюдатель остался — состояние то же.
-    expect(getSharedAdvisorState(90_000_003, NOW)).toBe(first);
-    releaseSharedAdvisorState(90_000_003);
-    releaseSharedAdvisorState(90_000_003);
-    // Новый полёт начинается с чистого листа.
-    expect(getSharedAdvisorState(90_000_003, NOW)).not.toBe(first);
+    releaseSharedAdvisorState(90_000_003, NOW);
+    // Переподключение SSE (смена радиуса, обрыв сокета) не должно обнулять
+    // кулдауны: на бою из-за этого одно и то же предупреждение пришло трижды
+    // за восемьдесят секунд.
+    expect(getSharedAdvisorState(90_000_003, NOW + 30_000)).toBe(first);
+    resetSharedAdvisorStatesForTests();
+  });
+
+  it('starts clean once nobody has watched for a long time', () => {
+    const first = getSharedAdvisorState(90_000_004, NOW);
+    releaseSharedAdvisorState(90_000_004, NOW);
+    expect(getSharedAdvisorState(90_000_004, NOW + 20 * 60_000)).not.toBe(first);
     resetSharedAdvisorStatesForTests();
   });
 });

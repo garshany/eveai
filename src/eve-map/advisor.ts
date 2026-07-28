@@ -80,25 +80,47 @@ const SEVERITY_ORDER: Record<AdvisorySeverity, number> = { info: 0, warn: 1, dan
  * the pilot got the camp warning three times and paid three bubble rebuilds
  * for it. Cooldowns only mean something when they are shared.
  */
-const sharedStates = new Map<number, { state: AdvisorState; refs: number }>();
+const sharedStates = new Map<number, { state: AdvisorState; refs: number; idleSinceMs: number | null }>();
+
+/**
+ * How long a state survives with nobody attached.
+ *
+ * Dropping it the instant the last stream closed looked tidy and was wrong: an
+ * SSE reconnect — a radius change, a dropped socket, a page navigation — built a
+ * fresh state with empty cooldowns, and the same warning fired again seconds
+ * later. Production showed the identical capability-gap advisory three times in
+ * eighty seconds. Cooldowns only work if they outlive the connection.
+ */
+const STATE_GRACE_MS = 15 * 60_000;
 
 export function getSharedAdvisorState(characterId: number, now = Date.now()): AdvisorState {
   const existing = sharedStates.get(characterId);
-  if (existing) {
+  if (existing && (existing.idleSinceMs === null || now - existing.idleSinceMs < STATE_GRACE_MS)) {
     existing.refs += 1;
+    existing.idleSinceMs = null;
     return existing.state;
   }
   const state = createAdvisorState(now);
-  sharedStates.set(characterId, { state, refs: 1 });
+  sharedStates.set(characterId, { state, refs: 1, idleSinceMs: null });
   return state;
 }
 
-/** Drops the state once the last watcher leaves, so a new flight starts clean. */
-export function releaseSharedAdvisorState(characterId: number): void {
+/** Marks the state idle rather than deleting it, so a reconnect keeps its cooldowns. */
+export function releaseSharedAdvisorState(characterId: number, now = Date.now()): void {
   const existing = sharedStates.get(characterId);
   if (!existing) return;
   existing.refs -= 1;
-  if (existing.refs <= 0) sharedStates.delete(characterId);
+  if (existing.refs <= 0) {
+    existing.refs = 0;
+    existing.idleSinceMs = now;
+  }
+  // Opportunistic sweep: this map is keyed by character and would otherwise
+  // grow for the lifetime of the process.
+  for (const [key, entry] of sharedStates) {
+    if (entry.refs === 0 && entry.idleSinceMs !== null && now - entry.idleSinceMs > STATE_GRACE_MS) {
+      sharedStates.delete(key);
+    }
+  }
 }
 
 export function resetSharedAdvisorStatesForTests(): void {
