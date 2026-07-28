@@ -121,11 +121,26 @@ The design reference showed values the browser API does not expose. Where that
 happened the layout was kept and the data was made honest:
 
 - the sidebar status pill reads the market snapshot (`/api/web/market/status`)
-  rather than an `SDE 21.09` build string, which no endpoint returns;
+  rather than an `SDE 21.09` build string, which no endpoint returns; a failed
+  poll clears the snapshot to "status unknown" instead of holding the last good
+  reading, so an API outage cannot look green;
 - tool chips show `name · detail`, because `ActivityStep` carries no per-call
   duration;
 - the dock's second stat card shows order **escrow** instead of "outbid", which
   is not derivable from `/api/web/profile/orders`;
 - the watchlist delta column shows the **sell/buy spread**, the only change the
   watchlist contract exposes without a history call per row;
+- the capsuleer card shows **online/offline and the current system**, not
+  "Omega" and "docked/in space": `profile.online` means logged into EVE rather
+  than subscribed, and `profile.location` is populated whether the pilot is
+  docked or in space;
 - the `⌘K` composer hint was dropped: the tool palette has not shipped.
+
+## Data isolation
+
+Dock state is per-thread and per-character, and none of it may outlive a
+boundary. The retained tool trace is recomputed (to `null` when empty) on every
+thread switch, and cleared on logout together with the dock tab and the cached
+profile; character-scoped dock reads (orders, clones) are keyed on the active
+character ID and clear their previous values before refetching, so switching
+pilot A → B never leaves A's numbers on screen.

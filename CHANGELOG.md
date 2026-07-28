@@ -10,6 +10,8 @@
 - New design tokens, self-hosted IBM Plex Sans/Mono (latin, latin-ext, cyrillic, cyrillic-ext subsets), solar identity accent and cold cyan data accent, star field and solar limb environment, and a sun disc as the shared brand/agent mark. Every other screen re-skins from the same token block.
 - The sidebar status pill now reflects the live market snapshot instead of a decorative label, and session rows carry a relative timestamp parsed as SQLite UTC rather than local time.
 - Fixed a layout bug the redesign surfaced: the decorative solar limb, positioned at `right: -130px`, extended the scrollable area inside the `overflow: hidden` chat column, so focusing the composer scrolled the whole column 130 px sideways. Environment layers are backgrounds now, which never contribute to scrollable overflow.
+- Dock state respects thread, character, and session boundaries: the retained tool trace is recomputed on every thread switch and cleared on logout, and character-scoped dock reads (orders, clones) are keyed on the active character ID so switching pilots never leaves the previous pilot's numbers on screen.
+- The capsuleer card no longer infers "Omega" from `profile.online` or "in space" from a populated location — neither is derivable from the profile contract; it shows online/offline and the current system instead. A failed market-status poll now reports "status unknown" rather than holding the last good reading, and the model pill refetches when returning to chat so it cannot disagree with saved settings.
 
 ## [4.1.0] - 2026-07-28
 

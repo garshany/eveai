@@ -20,14 +20,18 @@ type Props = {
   trace: ActivityStep[] | null;
   /** Owned by App so the sidebar caption and the dock share one ESI read. */
   profile: PilotProfile | null;
-  hasCharacter: boolean;
+  /**
+   * Активный капсулёр, а не «есть ли он вообще»: переключение A → B оставляет
+   * булев признак истинным, и док продолжил бы показывать ордера и клон A.
+   */
+  characterId: number | null;
   onTab: (tab: DockTab) => void;
   onClose: () => void;
   /** Dock rows seed the composer, mirroring the examples screen's draft path. */
   onAsk: (question: string) => void;
 };
 
-export function DataDock({ tab, trace, profile, hasCharacter, onTab, onClose, onAsk }: Props) {
+export function DataDock({ tab, trace, profile, characterId, onTab, onClose, onAsk }: Props) {
   const { t } = useI18n();
   const tabs: Array<{ id: DockTab; label: string }> = [
     { id: 'market', label: t('dockTabMarket') },
@@ -47,16 +51,16 @@ export function DataDock({ tab, trace, profile, hasCharacter, onTab, onClose, on
     </div>
     <button className="icon-button dock__close" type="button" onClick={onClose} aria-label={t('dockClose')}><CloseIcon size={18} /></button>
     <div className="dock__body" role="tabpanel">
-      {tab === 'market' ? <MarketTab hasCharacter={hasCharacter} onAsk={onAsk} /> : null}
+      {tab === 'market' ? <MarketTab characterId={characterId} onAsk={onAsk} /> : null}
       {tab === 'route' ? <RouteTab trace={trace} /> : null}
-      {tab === 'pilot' ? <PilotTab profile={profile} hasCharacter={hasCharacter} onAsk={onAsk} /> : null}
+      {tab === 'pilot' ? <PilotTab profile={profile} characterId={characterId} onAsk={onAsk} /> : null}
     </div>
   </aside>;
 }
 
 /* --- Маркет --------------------------------------------------------------- */
 
-function MarketTab({ hasCharacter, onAsk }: { hasCharacter: boolean; onAsk: (question: string) => void }) {
+function MarketTab({ characterId, onAsk }: { characterId: number | null; onAsk: (question: string) => void }) {
   const { t, locale } = useI18n();
   const [regions, setRegions] = useState<MarketRegion[]>([]);
   const [regionId, setRegionId] = useState<number | null>(null);
@@ -89,14 +93,17 @@ function MarketTab({ hasCharacter, onAsk }: { hasCharacter: boolean; onAsk: (que
     return () => { cancelled = true; };
   }, []);
 
+  // Ключ — сам капсулёр: при переключении A → B прежние итоги гасим до того,
+  // как уйдёт запрос, иначе чужие счётчики висят до ответа сервера.
   useEffect(() => {
-    if (!hasCharacter) return;
+    setOrders(null);
+    if (characterId === null) return;
     let cancelled = false;
     void webApi.profile.orders(0, 1)
       .then((result) => { if (!cancelled) setOrders(result); })
       .catch(() => { /* нет скоупа или синка — счётчики просто не показываем */ });
     return () => { cancelled = true; };
-  }, [hasCharacter]);
+  }, [characterId]);
 
   const leadItem = watchlist.find((item) => regionId === null || item.region_id === regionId) ?? watchlist[0] ?? null;
   const leadTypeId = leadItem?.type_id ?? null;
@@ -231,26 +238,32 @@ function RouteTab({ trace }: { trace: ActivityStep[] | null }) {
 
 /* --- Капсулёр ------------------------------------------------------------- */
 
-function PilotTab({ profile, hasCharacter, onAsk }: { profile: PilotProfile | null; hasCharacter: boolean; onAsk: (question: string) => void }) {
+function PilotTab({ profile, characterId, onAsk }: { profile: PilotProfile | null; characterId: number | null; onAsk: (question: string) => void }) {
   const { t, locale } = useI18n();
   const [clones, setClones] = useState<ProfileClonesResponse | null>(null);
 
   // Профиль приезжает из App; здесь дочитываем только клоны — их не нужно
-  // держать в общем состоянии ради одной строки в карточке.
+  // держать в общем состоянии ради одной строки в карточке. Ключ — капсулёр:
+  // домашний клон строго персональный, показать чужой нельзя.
   useEffect(() => {
-    if (!hasCharacter) return;
+    setClones(null);
+    if (characterId === null) return;
     let cancelled = false;
     void webApi.profile.clones()
       .then((result) => { if (!cancelled) setClones(result); })
       .catch(() => { /* нет скоупа clones — покажем прочерк */ });
     return () => { cancelled = true; };
-  }, [hasCharacter]);
+  }, [characterId]);
 
-  if (!hasCharacter || !profile) return <p className="dock-empty">{t('dockPilotGuest')}</p>;
+  if (characterId === null || !profile) return <p className="dock-empty">{t('dockPilotGuest')}</p>;
 
   const sp = profile.skills ? (profile.skills.totalSp / 1_000_000).toFixed(1) : null;
-  const inSpace = profile.location?.solarSystemName ?? null;
-  const meta = [sp ? t('dockSp').replace('{sp}', sp) : null, profile.online ? t('dockOmega') : null]
+  // profile.online — «сейчас в игре», а не статус подписки; profile.location
+  // одинаково заполнен и в доке, и в космосе. Ни Omega, ни «в космосе» из
+  // этого контракта не выводятся, поэтому подписываем ровно то, что есть.
+  const location = profile.location?.solarSystemName ?? null;
+  const presence = profile.online === null ? null : profile.online ? t('online') : t('offline');
+  const meta = [sp ? t('dockSp').replace('{sp}', sp) : null, presence]
     .filter((part): part is string => Boolean(part)).join(' · ');
 
   return <>
@@ -280,7 +293,7 @@ function PilotTab({ profile, hasCharacter, onAsk }: { profile: PilotProfile | nu
       <div className="dock-ship">
         <div className="dock-ship__head">
           <span className="dock-label">{t('dockActiveShip')}</span>
-          <span className={`dock-ship__state${inSpace ? ' dock-ship__state--space' : ''}`}>{inSpace ? `${t('dockInSpace')} · ${inSpace}` : t('dockDocked')}</span>
+          {location ? <span className="dock-ship__state">{location}</span> : null}
         </div>
         <div className="dock-ship__row">
           <span className="dock-ship__thumb" aria-hidden="true">

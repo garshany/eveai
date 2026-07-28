@@ -3,7 +3,8 @@ import { ApiRequestError } from '../api';
 import { ChevronIcon, CloseIcon, LogOutIcon, TrashIcon } from '../icons';
 import { useI18n } from '../i18n';
 import { formatRelativeDay } from '../dates';
-import type { Character, Conversation, MarketSnapshotMeta } from '../types';
+import type { SnapshotProbe } from '../App';
+import type { Character, Conversation } from '../types';
 
 export type AppView = 'chat' | 'profile' | 'market' | 'settings' | 'support' | 'examples';
 type Props = {
@@ -14,7 +15,7 @@ type Props = {
   busy: boolean;
   character: Character | null;
   characters: Character[];
-  snapshot: MarketSnapshotMeta | null;
+  snapshot: SnapshotProbe | null;
   portraitUrl: string | null;
   skillPoints: number | null;
   locationName: string | null;
@@ -130,13 +131,18 @@ export function Sidebar({
 
 type StatusTone = 'ok' | 'warn' | 'down';
 
+type StatusKey = 'statusChecking' | 'statusUnknown' | 'statusMarketOffline' | 'statusMarketStale' | 'statusMarketFresh' | 'statusMarketAge';
+
 /** Статус-пилюля питается снапшотом рынка — единственным живым индикатором
  *  здоровья ESI, который браузерный API уже отдаёт. Пока статус не приехал,
- *  показываем «проверяем», а не оптимистичный ESI ONLINE. */
-function describeSnapshot(snapshot: MarketSnapshotMeta | null, t: (key: 'statusChecking' | 'statusMarketOffline' | 'statusMarketStale' | 'statusMarketFresh' | 'statusMarketAge') => string): { tone: StatusTone; label: string } {
+ *  показываем «проверяем», а не оптимистичный ESI ONLINE; если опрос упал —
+ *  честное «статус неизвестен», а не последнее удачное значение. */
+function describeSnapshot(snapshot: SnapshotProbe | null, t: (key: StatusKey) => string): { tone: StatusTone; label: string } {
   if (!snapshot) return { tone: 'warn', label: t('statusChecking') };
-  if (!snapshot.loaded) return { tone: 'down', label: t('statusMarketOffline') };
-  if (snapshot.stale) return { tone: 'warn', label: t('statusMarketStale') };
-  if (snapshot.age_minutes === null) return { tone: 'ok', label: t('statusMarketFresh') };
-  return { tone: 'ok', label: t('statusMarketAge').replace('{age}', String(Math.max(0, Math.round(snapshot.age_minutes)))) };
+  if (!snapshot.ok || !snapshot.meta) return { tone: 'down', label: t('statusUnknown') };
+  const meta = snapshot.meta;
+  if (!meta.loaded) return { tone: 'down', label: t('statusMarketOffline') };
+  if (meta.stale) return { tone: 'warn', label: t('statusMarketStale') };
+  if (meta.age_minutes === null) return { tone: 'ok', label: t('statusMarketFresh') };
+  return { tone: 'ok', label: t('statusMarketAge').replace('{age}', String(Math.max(0, Math.round(meta.age_minutes)))) };
 }

@@ -29,6 +29,13 @@ import type {
   WebAgentRequest,
 } from './types';
 
+/**
+ * Результат последнего опроса `/api/web/market/status`. Отличать «снапшот не
+ * приехал» от «снапшот свежий» обязательно: без флага провал опроса выглядел
+ * бы в статус-пилюле как последнее удачное, сколь угодно старое, значение.
+ */
+export type SnapshotProbe = { ok: boolean; meta: MarketSnapshotMeta | null };
+
 const DOCK_STORAGE_KEY = 'eveai.dock.v1';
 /** Ниже этой ширины док не помещается рядом с тредом и живёт листом. */
 const DOCK_DESKTOP_WIDTH = 1180;
@@ -66,7 +73,7 @@ export default function App() {
   const [dockOpen, setDockOpen] = useState(initialDockOpen);
   const [dockTab, setDockTab] = useState<DockTab>('market');
   const [dockTrace, setDockTrace] = useState<ActivityStep[] | null>(null);
-  const [snapshot, setSnapshot] = useState<MarketSnapshotMeta | null>(null);
+  const [snapshot, setSnapshot] = useState<SnapshotProbe | null>(null);
   const [profile, setProfile] = useState<PilotProfile | null>(null);
   const [modelLabel, setModelLabel] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
@@ -149,8 +156,10 @@ export default function App() {
     let cancelled = false;
     const load = () => {
       void webApi.market.status()
-        .then((payload) => { if (!cancelled) setSnapshot(payload.snapshot); })
-        .catch(() => { /* пилюля покажет «проверяем», тред это не касается */ });
+        .then((payload) => { if (!cancelled) setSnapshot({ ok: true, meta: payload.snapshot }); })
+        // Провалившийся опрос обнуляет снапшот, а не оставляет предыдущий:
+        // иначе пилюля светилась бы зелёным «маркет 2 мин» весь простой API.
+        .catch(() => { if (!cancelled) setSnapshot({ ok: false, meta: null }); });
     };
     load();
     const timer = window.setInterval(load, SNAPSHOT_POLL_MS);
@@ -169,8 +178,11 @@ export default function App() {
     return () => { cancelled = true; };
   }, [characterId]);
 
+  // Пилюля модели перечитывается при каждом возврате в чат: «Настройки» —
+  // отдельный экран, и после сохранения шапка иначе показывала бы модель,
+  // выбранную на входе, пока запросы уже идут по новой.
   useEffect(() => {
-    if (!sessionActive) return;
+    if (!sessionActive || activeView !== 'chat') return;
     let cancelled = false;
     void webApi.getModelSettings()
       .then((payload) => {
@@ -180,15 +192,17 @@ export default function App() {
       })
       .catch(() => { /* пилюля модели просто не появится */ });
     return () => { cancelled = true; };
-  }, [sessionActive]);
+  }, [sessionActive, activeView]);
 
-  // Док показывает инструментарий последнего ответа. Пустую активность не
-  // записываем: иначе ответ без вызовов затирал бы предыдущий разбор.
+  // Док показывает инструментарий последнего ответа ЭТОГО треда — и только
+  // его. Пустую активность обязательно записываем как null: иначе при смене
+  // треда (и после перелогина в той же вкладке) в доке остался бы разбор
+  // чужого разговора.
   useEffect(() => {
     const lastAssistant = findLastAssistantIndex(messages);
     const activity = lastAssistant >= 0 ? messages[lastAssistant]?.activity ?? null : null;
-    if (activity?.length) setDockTrace(activity);
-  }, [messages]);
+    setDockTrace(activity?.length ? activity : null);
+  }, [messages, activeId]);
 
   const toggleDock = useCallback(() => {
     setDockOpen((current) => {
@@ -464,6 +478,11 @@ export default function App() {
       messageLoadGeneration.current += 1;
       setActiveConversation(null);
       setActiveView('chat');
+      // Док переживает выход из сессии вместе со вкладкой — гасим его руками,
+      // иначе следующий вошедший в этом браузере увидит чужой разбор.
+      setDockTrace(null);
+      setDockTab('market');
+      setProfile(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось завершить сессию.');
     } finally {
@@ -559,7 +578,7 @@ export default function App() {
         tab={dockTab}
         trace={dockTrace}
         profile={profile}
-        hasCharacter={characterId !== null}
+        characterId={characterId}
         onTab={setDockTab}
         onClose={toggleDock}
         onAsk={seedComposer}
