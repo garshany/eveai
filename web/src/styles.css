@@ -4900,3 +4900,11 @@ a {
   font-size: var(--text-xs);
   color: var(--muted);
 }
+
+/* Метка треда «Периметра» в списке диалогов: тред карты — разговор с лётным
+   ассистентом, и без отметки он выглядел как ещё один безымянный чат. */
+.conversation-row__badge {
+  margin-right: 0.4em;
+  color: var(--accent, #6ee7ff);
+  font-size: 0.9em;
+}

@@ -183,6 +183,8 @@ export type Conversation = {
   id: string;
   title: string;
   characterId: number | null;
+  /** 'perimeter' threads belong to the live map's flight assistant. */
+  kind?: 'chat' | 'perimeter';
   updatedAt: string;
 };
 

@@ -45,6 +45,7 @@ type ConversationRow = {
   character_id: number | null;
   updated_at: string;
   title: string | null;
+  kind: string | null;
 };
 
 type ChatBody = {
@@ -571,6 +572,7 @@ function listConversations(db: Db, session: WebSession) {
     SELECT
       t.thread_id,
       t.character_id,
+      t.kind,
       COALESCE(MAX(m.created_at), t.updated_at) AS updated_at,
       (
         SELECT substr(content, 1, 72)
@@ -588,12 +590,21 @@ function listConversations(db: Db, session: WebSession) {
     ORDER BY updated_at DESC
     LIMIT 40
   `).all(session.chatId, session.userId, characterId) as ConversationRow[];
-  return rows.map((row) => ({
-    id: row.thread_id,
-    characterId: row.character_id,
-    title: row.title?.trim() || 'Новый диалог',
-    updatedAt: row.updated_at,
-  }));
+  return rows.map((row) => {
+    // A Perimeter thread routinely opens with an unprompted advisory rather
+    // than a user message, so the usual "first thing you typed" title left it
+    // sitting in the sidebar as an anonymous "Новый диалог" — which is exactly
+    // why the map's chat read as a mysterious second conversation.
+    const kind = row.kind === 'perimeter' ? 'perimeter' : 'chat';
+    const fallback = kind === 'perimeter' ? 'Периметр' : 'Новый диалог';
+    return {
+      id: row.thread_id,
+      characterId: row.character_id,
+      kind,
+      title: row.title?.trim() || fallback,
+      updatedAt: row.updated_at,
+    };
+  });
 }
 
 function createConversation(db: Db, session: WebSession): string {

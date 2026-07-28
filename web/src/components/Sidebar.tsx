@@ -79,7 +79,14 @@ export function Sidebar({
     }
     return <div className={className} key={conversation.id}>
       <button className="conversation-row__main" type="button" onClick={() => onSelect(conversation.id)} disabled={busy} aria-current={active ? 'page' : undefined}>
-        <span className="conversation-row__title">{conversation.title}</span>
+        <span className="conversation-row__title">
+          {/* Тред карты — это разговор с лётным ассистентом, а не «ещё один
+              диалог»: без пометки он читался как загадочный второй чат. */}
+          {conversation.kind === 'perimeter'
+            ? <span className="conversation-row__badge" title={t('perimeterThread')}>◈</span>
+            : null}
+          {conversation.title}
+        </span>
         <span className="conversation-row__time">{formatRelativeDay(conversation.updatedAt, locale)}</span>
       </button>
       <button className="icon-button conversation-row__delete" type="button" disabled={busy} aria-label={t('deleteConversation')} onClick={(event) => { event.stopPropagation(); setDeleteError(null); setConfirmDeleteId(conversation.id); }}><TrashIcon size={16} /></button>

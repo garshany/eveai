@@ -582,6 +582,8 @@ describe('web chat routes', () => {
       conversations: [{
         id: secondId,
         characterId: 9102,
+        // Тред карты помечается отдельно, поэтому вид треда теперь виден клиенту.
+        kind: 'chat',
         title: 'Новый диалог',
         updatedAt: expect.any(String),
       }],
