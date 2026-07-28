@@ -1,7 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
-import { AlertIcon, ArrowDownIcon, CheckIcon, CloseIcon, CompassMark, MarketIcon, MenuIcon, RouteIcon, SendIcon, TargetIcon } from '../icons';
-import type { ChatMessage, WebAgentRequest } from '../types';
+import { AlertIcon, ArrowDownIcon, CloseIcon, MarketIcon, MenuIcon, RouteIcon, SendIcon, TargetIcon } from '../icons';
+import type { ActivityStep, ChatMessage, WebAgentRequest } from '../types';
 import { decideScrollBehavior, isPinnedToBottom, scrollToBottom } from '../chat-scroll';
 import { LocaleSwitch, useI18n } from '../i18n';
 import { parseSqlUtcDate, parseSqlUtcMs } from '../sql-utc';
@@ -17,16 +16,26 @@ type ChatScreenProps = {
   busy: boolean;
   request: WebAgentRequest | null;
   error: string | null;
+  modelLabel: string | null;
+  portraitUrl: string | null;
+  pilotInitial: string;
+  dockOpen: boolean;
   onMenu: () => void;
   onSend: (message: string) => Promise<void>;
   onCancel: () => void;
   onDismissError: () => void;
+  onToggleDock: () => void;
+  /** Chip click / "open in the dock": routes a tool payload into the data dock. */
+  onInspectTools: (steps: ActivityStep[]) => void;
   /** Seeds the composer once (e.g. "try in chat" from the examples screen). */
   initialDraft?: string | null;
   onInitialDraftConsumed?: () => void;
 };
 
-export function ChatScreen({ title, conversationId, messages, busy, request, error, onMenu, onSend, onCancel, onDismissError, initialDraft, onInitialDraftConsumed }: ChatScreenProps) {
+export function ChatScreen({
+  title, conversationId, messages, busy, request, error, modelLabel, portraitUrl, pilotInitial, dockOpen,
+  onMenu, onSend, onCancel, onDismissError, onToggleDock, onInspectTools, initialDraft, onInitialDraftConsumed,
+}: ChatScreenProps) {
   const { t } = useI18n();
   const [draft, setDraft] = useState('');
   // Deliberately keyed to initialDraft alone: the consume callback identity
@@ -56,7 +65,6 @@ export function ChatScreen({ title, conversationId, messages, busy, request, err
       done: false,
     };
   }
-  const routeImage = `${import.meta.env.BASE_URL}assets/orbit-route.png`;
   const suggestions = [
     { text: t('suggestionRoute'), Icon: RouteIcon },
     { text: t('suggestionMarket'), Icon: MarketIcon },
@@ -118,23 +126,38 @@ export function ChatScreen({ title, conversationId, messages, busy, request, err
 
   const thread = (
     <div className="message-thread" role="log" aria-busy={busy}>
-      {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
-      {busy ? (streamText
-        ? <StreamingMessage text={streamText} onCancel={onCancel} />
-        : <ThinkingMessage request={request} onCancel={onCancel} />) : null}
+      {messages.map((message) => <MessageBubble
+        key={message.id}
+        message={message}
+        portraitUrl={portraitUrl}
+        pilotInitial={pilotInitial}
+        onInspectTools={onInspectTools}
+      />)}
+      {busy ? <LiveTurn request={request} streamText={streamText} onCancel={onCancel} /> : null}
     </div>
   );
 
   const showIntro = messages.length === 0 && !busy && !streamText;
 
-  return <section className="chat-canvas" style={{ '--chat-route-image': `url(${routeImage})` } as CSSProperties}>
-    <header className="chat-header"><button className="icon-button chat-header__menu" type="button" onClick={onMenu} aria-label={t('openMenu')}><MenuIcon /></button><h1>{title}</h1><div className="chat-header__actions"><LocaleSwitch /></div></header>
+  return <section className="chat-canvas">
+    <header className="chat-header">
+      <button className="icon-button chat-header__menu" type="button" onClick={onMenu} aria-label={t('openMenu')}><MenuIcon size={20} /></button>
+      <div className="chat-header__copy">
+        <span className="chat-header__kicker">{t('threadKicker')}</span>
+        <h1>{title}</h1>
+      </div>
+      <div className="chat-header__actions">
+        {modelLabel ? <span className="model-pill">{modelLabel}</span> : null}
+        <LocaleSwitch />
+        <button className="icon-button" type="button" onClick={onToggleDock} aria-pressed={dockOpen} aria-label={dockOpen ? t('dockClose') : t('dockOpen')}><MarketIcon size={20} /></button>
+      </div>
+    </header>
     <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll} aria-live="polite">
-      {showIntro ? <section className="chat-intro"><div className="chat-intro__orbit" aria-hidden="true" /><h2>{t('introTitle')}</h2><p>{t('introLead')}</p><div className="suggestions">{suggestions.map(({ text, Icon }) => <button type="button" key={text} onClick={() => void submit(text)} disabled={busy}><Icon size={23} /><span>{text}</span></button>)}</div></section> : null}
+      {showIntro ? <section className="chat-intro"><div className="chat-intro__orbit" aria-hidden="true" /><h2>{t('introTitle')}</h2><p>{t('introLead')}</p><div className="suggestions">{suggestions.map(({ text, Icon }) => <button type="button" key={text} onClick={() => void submit(text)} disabled={busy}><Icon size={20} /><span>{text}</span></button>)}</div></section> : null}
       {messages.length > 0 || busy ? thread : null}
     </div>
-    {pinnedToBottom ? null : <button className="scroll-latest" type="button" onClick={scrollToLatest} aria-label={t('scrollToLatest')}><ArrowDownIcon size={18} /><span>{t('scrollToLatest')}</span></button>}
     <div className="composer-region">
+      {pinnedToBottom ? null : <button className="scroll-latest" type="button" onClick={scrollToLatest} aria-label={t('scrollToLatest')}><ArrowDownIcon size={16} /><span>{t('scrollToLatest')}</span></button>}
       {error ? <div className="composer-error" role="alert"><AlertIcon size={15} /><span>{error}</span><button className="composer-error__dismiss" type="button" onClick={onDismissError} aria-label={t('dismissError')}><CloseIcon size={14} /></button></div> : null}
       <div className="composer">
         <textarea
@@ -148,22 +171,68 @@ export function ChatScreen({ title, conversationId, messages, busy, request, err
           maxLength={MAX_MESSAGE_LENGTH}
           enterKeyHint="send"
         />
-        <button className="send-button" type="button" onClick={() => void submit()} disabled={!draft.trim() || busy} aria-label={t('send')}><SendIcon size={25} /></button>
+        <button className="send-button" type="button" onClick={() => void submit()} disabled={!draft.trim() || busy} aria-label={t('send')}><SendIcon size={20} /></button>
       </div>
       <div className="composer-meta">
-        <span className="composer-meta__hint">{t('composerHint')}</span>
-        {draft.length >= COUNTER_VISIBLE_FROM ? <span className="composer-meta__counter">{draft.length}/{MAX_MESSAGE_LENGTH}</span> : null}
+        <span className="composer-meta__hint">{t('composerHintSend')}</span>
+        <span className="composer-meta__hint">{t('composerHintNewline')}</span>
+        {draft.length >= COUNTER_VISIBLE_FROM ? <span className="composer-meta__counter">{draft.length} / {MAX_MESSAGE_LENGTH}</span> : null}
       </div>
     </div>
   </section>;
 }
 
-const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMessage }) {
-  const { t, locale } = useI18n();
+type BubbleProps = {
+  message: ChatMessage;
+  portraitUrl: string | null;
+  pilotInitial: string;
+  onInspectTools: (steps: ActivityStep[]) => void;
+};
+
+const MessageBubble = memo(function MessageBubble({ message, portraitUrl, pilotInitial, onInspectTools }: BubbleProps) {
+  const { locale } = useI18n();
   const isUser = message.role === 'user';
   const timestamp = formatMessageTime(message.created_at, locale);
-  return <article className={`message message--${message.role}`}>{!isUser ? <div className="assistant-mark"><CompassMark size={24} /></div> : null}<div className="message__body"><div className="message__content"><MarkdownMessage content={message.content} /></div>{message.activity?.length ? <details className="activity-trace"><summary>{t('checkedSources')}: {message.activity.length}</summary><div className="activity-trace__steps">{message.activity.map((step, index) => <div key={`${step.name}-${index}`}><CheckIcon size={18} /><span>{humanizeToolName(step.name)}</span><small>{step.detail || t('completed')}</small></div>)}</div></details> : null}{timestamp ? <time className="message__time" dateTime={timestamp.iso}>{timestamp.label}</time> : null}</div></article>;
+  if (isUser) {
+    return <article className="message message--user">
+      <div className="message__body">
+        <div className="message__content"><MarkdownMessage content={message.content} /></div>
+        {timestamp ? <time className="message__time" dateTime={timestamp.iso}>{timestamp.label}</time> : null}
+      </div>
+      <span className="pilot-mark" aria-hidden="true">{portraitUrl ? <img src={portraitUrl} alt="" /> : pilotInitial}</span>
+    </article>;
+  }
+  return <article className="message message--assistant">
+    <span className="assistant-mark" aria-hidden="true" />
+    <div className="message__body">
+      {message.activity?.length ? <ToolChips steps={message.activity} onInspect={onInspectTools} /> : null}
+      <div className="message__content"><MarkdownMessage content={message.content} /></div>
+      {timestamp ? <time className="message__time" dateTime={timestamp.iso}>{timestamp.label}</time> : null}
+    </div>
+  </article>;
 });
+
+/**
+ * Инструментарий агента вынесен из скрытого <details> в видимую строку чипов:
+ * что он трогал, видно до того, как читаешь ответ. Клик по чипу открывает
+ * сырой результат этого инструмента в доке.
+ */
+function ToolChips({ steps, onInspect }: { steps: ActivityStep[]; onInspect: (steps: ActivityStep[]) => void }) {
+  const { t } = useI18n();
+  return <div className="tool-chips">
+    {steps.map((step, index) => <button
+      className="tool-chip"
+      type="button"
+      key={`${step.name}-${index}`}
+      title={t('toolChipOpen')}
+      onClick={() => onInspect(steps)}
+    >
+      {step.name}
+      {step.detail ? <span className="tool-chip__detail">· {step.detail}</span> : null}
+    </button>)}
+    <span className="tool-chips__total">{steps.length}</span>
+  </div>;
+}
 
 function formatMessageTime(value: string, locale: 'ru' | 'en'): { iso: string; label: string } | null {
   const date = parseSqlUtcDate(value);
@@ -174,23 +243,13 @@ function formatMessageTime(value: string, locale: 'ru' | 'en'): { iso: string; l
   };
 }
 
-function StreamingMessage({ text, onCancel }: { text: string; onCancel: () => void }) {
+/**
+ * Живой ход: пока текста нет — одна пилюля ожидания; как только приходит
+ * streamText, над ней появляется панель ответа с кареткой в 1 знакоместо.
+ * Таймер тикает раз в секунду от createdAt, разобранного как UTC.
+ */
+function LiveTurn({ request, streamText, onCancel }: { request: WebAgentRequest | null; streamText: string; onCancel: () => void }) {
   const { t } = useI18n();
-  return (
-    <article className="message message--assistant message--streaming">
-      <div className="assistant-mark"><CompassMark size={24} /></div>
-      <div className="message__body">
-        <div className="message__content" aria-live="polite" aria-atomic="false" aria-label={t('agentComposing')}>
-          <MarkdownMessage content={text} />
-          <span className="stream-cursor" aria-hidden="true" />
-        </div>
-        <button className="thinking-cancel" type="button" onClick={onCancel}>{t('cancelRequest')}</button>
-      </div>
-    </article>
-  );
-}
-
-function ThinkingMessage({ request, onCancel }: { request: WebAgentRequest | null; onCancel: () => void }) {  const { t } = useI18n();
   const [now, setNow] = useState(() => Date.now());
   // createdAt приходит из SQLite в UTC без метки зоны — Date.parse прочёл бы
   // его как локальное время и таймер стартовал бы с оффсета пояса (180:00 у MSK).
@@ -205,20 +264,22 @@ function ThinkingMessage({ request, onCancel }: { request: WebAgentRequest | nul
   const latestStep = request?.activity.length ? request.activity[request.activity.length - 1] : null;
   const elapsed = Number.isFinite(createdAt) ? Math.max(0, now - createdAt) : 0;
 
-  return (
-    <article className="message message--assistant message--thinking">
-      <div className="assistant-mark"><CompassMark size={24} /></div>
-      <div className="thinking-body" role="status" aria-label={t('thinking')}>
-        <div className="thinking-body__status">
-          <span className="thinking-dots" aria-hidden="true"><span /><span /><span /></span>
-          <strong>{queued ? t('requestQueued') : t('requestRunning')}</strong>
-          <time>{formatElapsed(elapsed)}</time>
-        </div>
-        {latestStep ? <div className="thinking-body__step"><span>{humanizeToolName(latestStep.name)}</span><small>{t('toolCalls')}: {request?.activity.length ?? 0}</small></div> : null}
+  return <article className="message message--assistant" aria-label={t('thinking')}>
+    <span className="assistant-mark" aria-hidden="true" />
+    <div className="message__body">
+      {streamText ? <div className="message__content" aria-live="polite" aria-atomic="false" aria-label={t('agentComposing')}>
+        <MarkdownMessage content={streamText} />
+        <span className="stream-cursor" aria-hidden="true" />
+      </div> : null}
+      <div className="thinking-pill thinking-pill--inline" role="status">
+        <span className="thinking-pill__dot" aria-hidden="true" />
+        <span className="thinking-pill__label">{queued ? t('requestQueued') : t('requestRunning')}</span>
+        {latestStep ? <span className="thinking-pill__tool">{latestStep.name}</span> : null}
+        <time className="thinking-pill__elapsed">{formatElapsed(elapsed)}</time>
         <button className="thinking-cancel" type="button" onClick={onCancel}>{t('cancelRequest')}</button>
       </div>
-    </article>
-  );
+    </div>
+  </article>;
 }
 
 function formatElapsed(ms: number): string {
@@ -227,5 +288,3 @@ function formatElapsed(ms: number): string {
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
-
-function humanizeToolName(name: string) { return name.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()); }

@@ -11,6 +11,7 @@ import {
 import { LoginScreen } from './components/LoginScreen';
 import { Sidebar, type AppView } from './components/Sidebar';
 import { ChatScreen } from './components/ChatScreen';
+import { DataDock, type DockTab } from './components/DataDock';
 import { ExamplesScreen } from './components/ExamplesScreen';
 import { MarketScreen } from './components/MarketScreen';
 import { PilotProfileScreen } from './components/PilotProfileScreen';
@@ -18,13 +19,35 @@ import { SettingsScreen } from './components/SettingsScreen';
 import { SupportScreen } from './components/SupportScreen';
 import { clearMarketStaticCache } from './components/market/static-cache';
 import { useI18n } from './i18n';
-import type { ChatMessage, Conversation, SessionPayload, WebAgentRequest } from './types';
+import type {
+  ActivityStep,
+  ChatMessage,
+  Conversation,
+  MarketSnapshotMeta,
+  PilotProfile,
+  SessionPayload,
+  WebAgentRequest,
+} from './types';
+
+const DOCK_STORAGE_KEY = 'eveai.dock.v1';
+/** Ниже этой ширины док не помещается рядом с тредом и живёт листом. */
+const DOCK_DESKTOP_WIDTH = 1180;
+/** Снапшот рынка обновляется раз в минуту — статус-пилюля не должна врать. */
+const SNAPSHOT_POLL_MS = 60_000;
 
 function authResultMessage(): string | null {
   const result = new URLSearchParams(window.location.search).get('auth');
   if (result === 'denied') return 'Вход через EVE отменён.';
   if (result === 'error') return 'Не удалось подключить персонажа. Попробуйте ещё раз.';
   return null;
+}
+
+/** По умолчанию док открыт только там, где для него есть колонка. */
+function initialDockOpen(): boolean {
+  const stored = localStorage.getItem(DOCK_STORAGE_KEY);
+  if (stored === 'open') return true;
+  if (stored === 'closed') return false;
+  return window.matchMedia(`(min-width: ${DOCK_DESKTOP_WIDTH}px)`).matches;
 }
 
 export default function App() {
@@ -40,6 +63,12 @@ export default function App() {
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [activeRequest, setActiveRequest] = useState<WebAgentRequest | null>(null);
+  const [dockOpen, setDockOpen] = useState(initialDockOpen);
+  const [dockTab, setDockTab] = useState<DockTab>('market');
+  const [dockTrace, setDockTrace] = useState<ActivityStep[] | null>(null);
+  const [snapshot, setSnapshot] = useState<MarketSnapshotMeta | null>(null);
+  const [profile, setProfile] = useState<PilotProfile | null>(null);
+  const [modelLabel, setModelLabel] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(null);
   const messageLoadGeneration = useRef(0);
   const pendingSubmissionRef = useRef<PendingSubmission | null>(null);
@@ -106,6 +135,74 @@ export default function App() {
     if (window.location.search) window.history.replaceState({}, '', '/app');
     return () => { cancelled = true; };
   }, [loadConversations, recoverActiveRequest]);
+
+  const sessionActive = Boolean(session);
+  const characterId = session?.character?.id ?? null;
+
+  // Статус-пилюля сайдбара и док читают один и тот же снапшот: опрос живёт
+  // здесь, а не в двух компонентах, и гасится вместе с сессией.
+  useEffect(() => {
+    if (!sessionActive) {
+      setSnapshot(null);
+      return;
+    }
+    let cancelled = false;
+    const load = () => {
+      void webApi.market.status()
+        .then((payload) => { if (!cancelled) setSnapshot(payload.snapshot); })
+        .catch(() => { /* пилюля покажет «проверяем», тред это не касается */ });
+    };
+    load();
+    const timer = window.setInterval(load, SNAPSHOT_POLL_MS);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [sessionActive]);
+
+  useEffect(() => {
+    if (characterId === null) {
+      setProfile(null);
+      return;
+    }
+    let cancelled = false;
+    void webApi.getProfile()
+      .then((payload) => { if (!cancelled) setProfile(payload.profile); })
+      .catch(() => { if (!cancelled) setProfile(null); });
+    return () => { cancelled = true; };
+  }, [characterId]);
+
+  useEffect(() => {
+    if (!sessionActive) return;
+    let cancelled = false;
+    void webApi.getModelSettings()
+      .then((payload) => {
+        if (cancelled) return;
+        const { model, reasoningEffort } = payload.settings;
+        setModelLabel(reasoningEffort === 'auto' ? model : `${model} · ${reasoningEffort}`);
+      })
+      .catch(() => { /* пилюля модели просто не появится */ });
+    return () => { cancelled = true; };
+  }, [sessionActive]);
+
+  // Док показывает инструментарий последнего ответа. Пустую активность не
+  // записываем: иначе ответ без вызовов затирал бы предыдущий разбор.
+  useEffect(() => {
+    const lastAssistant = findLastAssistantIndex(messages);
+    const activity = lastAssistant >= 0 ? messages[lastAssistant]?.activity ?? null : null;
+    if (activity?.length) setDockTrace(activity);
+  }, [messages]);
+
+  const toggleDock = useCallback(() => {
+    setDockOpen((current) => {
+      const next = !current;
+      localStorage.setItem(DOCK_STORAGE_KEY, next ? 'open' : 'closed');
+      return next;
+    });
+  }, []);
+
+  const openDock = useCallback((tab: DockTab) => {
+    setDockTab(tab);
+    setDockOpen(true);
+    localStorage.setItem(DOCK_STORAGE_KEY, 'open');
+  }, []);
 
   const observedRequestId = activeRequest?.requestId ?? null;
   const observedRequestStatus = activeRequest?.status ?? null;
@@ -396,8 +493,22 @@ export default function App() {
   }
 
   const activeTitle = conversations.find((item) => item.id === activeId)?.title ?? t('newChat');
+  const inChat = activeView === 'chat';
+  const dockVisible = inChat && dockOpen;
+  const seedComposer = (question: string) => {
+    setPendingDraft(question);
+    setActiveView('chat');
+    // На узких экранах док лежит поверх композера — освобождаем его.
+    if (!window.matchMedia(`(min-width: ${DOCK_DESKTOP_WIDTH}px)`).matches) setDockOpen(false);
+  };
+  const mobileTabs: Array<{ id: 'chat' | DockTab; label: string; active: boolean; onSelect: () => void }> = [
+    { id: 'chat', label: t('mobileTabChat'), active: !dockVisible, onSelect: () => { setActiveView('chat'); setDockOpen(false); } },
+    { id: 'market', label: t('mobileTabMarket'), active: dockVisible && dockTab === 'market', onSelect: () => { setActiveView('chat'); openDock('market'); } },
+    { id: 'pilot', label: t('mobileTabPilot'), active: dockVisible && dockTab === 'pilot', onSelect: () => { setActiveView('chat'); openDock('pilot'); } },
+  ];
+
   return (
-    <main className="chat-app">
+    <main className={`chat-app${dockVisible ? ' chat-app--docked' : ''}`}>
       <Sidebar
         open={sidebarOpen}
         activeView={activeView}
@@ -406,21 +517,62 @@ export default function App() {
         busy={busy}
         character={session.character}
         characters={session.characters}
+        snapshot={snapshot}
+        portraitUrl={profile?.character.portraitUrl ?? null}
+        skillPoints={profile?.skills?.totalSp ?? null}
+        locationName={profile?.location?.solarSystemName ?? null}
         onClose={() => setSidebarOpen(false)}
         onView={(view) => { setActiveView(view); setSidebarOpen(false); }}
         onNew={() => { setActiveView('chat'); void createConversation(); }}
         onSelect={(id) => { setActiveView('chat'); void selectConversation(id); }}
         onDelete={deleteConversation}
         onConnect={() => void connectEve()}
-        onActivate={(characterId) => void activateCharacter(characterId)}
+        onActivate={(id) => void activateCharacter(id)}
         onLogout={() => void logout()}
       />
-      {activeView === 'chat' ? <ChatScreen title={activeTitle} conversationId={activeId} messages={messages} busy={busy} request={activeRequest} error={error} onMenu={() => setSidebarOpen(true)} onSend={sendMessage} onCancel={() => void cancelActiveRequest()} onDismissError={() => setError(null)} initialDraft={pendingDraft} onInitialDraftConsumed={() => setPendingDraft(null)} /> : null}
+      {inChat ? <ChatScreen
+        title={activeTitle}
+        conversationId={activeId}
+        messages={messages}
+        busy={busy}
+        request={activeRequest}
+        error={error}
+        modelLabel={modelLabel}
+        portraitUrl={profile?.character.portraitUrl ?? null}
+        pilotInitial={(session.character?.name ?? session.displayName).slice(0, 1).toUpperCase()}
+        dockOpen={dockOpen}
+        onMenu={() => setSidebarOpen(true)}
+        onSend={sendMessage}
+        onCancel={() => void cancelActiveRequest()}
+        onDismissError={() => setError(null)}
+        onToggleDock={toggleDock}
+        onInspectTools={(steps) => { setDockTrace(steps); openDock('route'); }}
+        initialDraft={pendingDraft}
+        onInitialDraftConsumed={() => setPendingDraft(null)}
+      /> : null}
       {activeView === 'market' ? <MarketScreen onMenu={() => setSidebarOpen(true)} csrfToken={session.csrfToken} /> : null}
       {activeView === 'profile' ? <PilotProfileScreen character={session.character} csrfToken={session.csrfToken} busy={busy} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} onUnlink={unlinkCharacter} /> : null}
       {activeView === 'settings' ? <SettingsScreen csrfToken={session.csrfToken} onMenu={() => setSidebarOpen(true)} /> : null}
-      {activeView === 'examples' ? <ExamplesScreen onMenu={() => setSidebarOpen(true)} onTryInChat={(question) => { setPendingDraft(question); setActiveView('chat'); }} /> : null}
+      {activeView === 'examples' ? <ExamplesScreen onMenu={() => setSidebarOpen(true)} onTryInChat={seedComposer} /> : null}
       {activeView === 'support' ? <SupportScreen hasSession onMenu={() => setSidebarOpen(true)} /> : null}
+      {dockVisible ? <DataDock
+        tab={dockTab}
+        trace={dockTrace}
+        profile={profile}
+        hasCharacter={characterId !== null}
+        onTab={setDockTab}
+        onClose={toggleDock}
+        onAsk={seedComposer}
+      /> : null}
+      {inChat ? <nav className="mobile-tabs" aria-label={t('chat')}>
+        {mobileTabs.map(({ id, label, active, onSelect }) => <button
+          className={`mobile-tabs__tab${active ? ' mobile-tabs__tab--active' : ''}`}
+          type="button"
+          key={id}
+          aria-current={active ? 'page' : undefined}
+          onClick={onSelect}
+        >{label}</button>)}
+      </nav> : null}
     </main>
   );
 }

@@ -1,9 +1,11 @@
-The font families hosted in this directory (Exo 2, Manrope, JetBrains Mono)
-are each licensed under the SIL Open Font License, Version 1.1:
+The font families hosted in this directory (Exo 2, Manrope, JetBrains Mono,
+IBM Plex Sans, IBM Plex Mono) are each licensed under the SIL Open Font
+License, Version 1.1:
 
 Copyright 2013 The Exo 2 Project Authors (https://github.com/googlefonts/Exo-2.0)
 Copyright 2018 The Manrope Project Authors (https://github.com/sharanda/manrope)
 Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+Copyright 2017 IBM Corp. (https://github.com/IBM/plex)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
