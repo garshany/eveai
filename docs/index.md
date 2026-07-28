@@ -33,6 +33,7 @@ Read the smallest document that answers the current question. Start here, then d
 - [community-apis.md](./community-apis.md): EVE Ref industry cost, zKillboard stats, MutaMarket abyssal listings, and the local-first appraisal tool
 - [openai-integration.md](./openai-integration.md): stateless Responses loop, exact nine-tool Programmatic Tool Calling boundary, and local function/MCP privacy model
 - [product-specs/browser-sso.md](./product-specs/browser-sso.md): browser chat, opaque sessions, SSO, provider, and isolation contract
+- [product-specs/perimeter.md](./product-specs/perimeter.md): the Perimeter live map, its proactive agent chat, and what it is honest about not knowing
 - [product-specs/update-management.md](./product-specs/update-management.md): bounded release checks and the local-operator update boundary
 
 ## Indexed Subtrees

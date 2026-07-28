@@ -507,3 +507,193 @@ export type ShowcaseExample = {
   answer: string;
   tools: string[];
 };
+
+/* --- Периметр: живая карта -------------------------------------------------- */
+
+export type MapGeometrySource = 'position2D' | 'position3D' | 'unknown';
+
+export type MapStatus = {
+  graph:
+    | { ready: true; systemCount: number; edgeCount: number; geometrySource: MapGeometrySource; builtAt: string }
+    | { ready: false; reason: string };
+  character: {
+    characterId: number;
+    characterName: string;
+    hasLocationScope: boolean;
+    missingScope: string | null;
+  } | null;
+  limits: { defaultRadius: number; maxRadius: number; maxNodes: number; pollSeconds: number };
+  live: { sessions: number; subscribers: number };
+  killIndex: {
+    running: boolean;
+    rows: number;
+    ingested: number;
+    oldestAtMs: number | null;
+    newestAtMs: number | null;
+    lastSweepAt: string | null;
+  };
+};
+
+export type DangerTerm = { key: string; value: number; detail?: string };
+export type DangerBand = 'calm' | 'watch' | 'elevated' | 'hostile' | 'lethal';
+
+export type MapKillEvent = {
+  killmailId: number;
+  systemId: number;
+  regionId: number | null;
+  killmailTime: string | null;
+  killmailTimeMs: number;
+  totalValue: number;
+  attackerCount: number;
+  isNpc: boolean;
+  isSolo: boolean;
+  victimShipTypeId: number | null;
+  victimShipName: string | null;
+  victimShipGroupName: string | null;
+  victimCharacterId: number | null;
+  victimCharacterName: string | null;
+  victimCorporationName: string | null;
+  finalBlowCharacterId: number | null;
+  finalBlowCharacterName: string | null;
+  finalBlowShipTypeId: number | null;
+  finalBlowShipName: string | null;
+  position: { x: number; y: number; z: number } | null;
+  url?: string;
+};
+
+export type MapGateCamp = {
+  systemId: number;
+  systemName: string;
+  stargateId: number;
+  connectedSystemName: string;
+  killCount: number;
+  recentKills: number;
+};
+
+export type MapSystemActivity = {
+  systemId: number;
+  kills15m: number;
+  kills1h: number;
+  kills24h: number;
+  pvpKills1h: number;
+  npcKills1h: number;
+  valueDestroyed1h: number;
+  soloKills1h: number;
+  lastKillMinutesAgo: number | null;
+  lastKillAtMs: number | null;
+};
+
+export type MapBubbleSystem = {
+  systemId: number;
+  name: string;
+  jumps: number;
+  security: number;
+  securityClass: string | null;
+  regionId: number | null;
+  regionName: string | null;
+  mapX: number;
+  mapY: number;
+  whClass: number | null;
+  activity: MapSystemActivity;
+  baselineShipKills: number;
+  baselineNpcKills: number;
+  baselineJumps: number;
+  sovereigntyAllianceId: number | null;
+  sovereigntyFactionId: number | null;
+  gateCamps: MapGateCamp[];
+  danger: { systemId: number; score: number; band: DangerBand; terms: DangerTerm[] };
+};
+
+export type MapWormhole = {
+  signatureId: string;
+  fromSystemId: number;
+  toSystemId: number;
+  toSystemName: string;
+  whType: string;
+  maxShipSize: string;
+  remainingHours: number;
+  expiresAt: string;
+};
+
+export type MapLayerFreshness = {
+  layer: string;
+  status: 'live' | 'hourly' | 'cached' | 'unavailable';
+  retrievedAt: string | null;
+  error: string | null;
+};
+
+export type MapShipAssessment = {
+  shipTypeId: number;
+  shipName: string;
+  ehp: number;
+  alignTime: number;
+  warpSpeed: number;
+  shipClass: string;
+  isHighValueTarget: boolean;
+  survivalChance: 'DEAD' | 'UNLIKELY' | 'POSSIBLE' | 'SAFE';
+};
+
+export type MapBubble = {
+  originId: number;
+  radius: number;
+  requestedRadius: number;
+  truncated: boolean;
+  systems: MapBubbleSystem[];
+  edges: Array<[number, number]>;
+  wormholes: MapWormhole[];
+  recentKills: MapKillEvent[];
+  verdict: { score: number; band: DangerBand; worstSystemId: number | null };
+  pilotShip: MapShipAssessment | null;
+  freshness: MapLayerFreshness[];
+  builtAt: string;
+};
+
+export type MapLocation = {
+  characterId: number;
+  solarSystemId: number;
+  stationId: number | null;
+  structureId: number | null;
+  shipTypeId: number | null;
+  shipName: string | null;
+  online: boolean;
+  at: string;
+};
+
+export type MapRouteHop = {
+  systemId: number;
+  cost: number;
+  terms: Array<{ label: string; value: number }>;
+};
+
+export type MapRouteResponse = {
+  route: {
+    ok: boolean;
+    mode: 'shortest' | 'secure' | 'insecure';
+    riskWeight: number;
+    systemIds: number[];
+    hops: MapRouteHop[];
+    jumps: number;
+    totalCost: number;
+    error: string | null;
+  };
+  systems: Array<{ systemId: number; name: string; security: number; danger: number | null }>;
+  dangerCoverage: { knownSystems: number; totalSystems: number };
+};
+
+export type PerimeterAdvisoryMeta = {
+  kind: 'advisory';
+  rule: string;
+  severity: 'info' | 'warn' | 'danger';
+  systemId: number | null;
+  killmailId: number | null;
+  repeats: number;
+  authored: 'rule' | 'model';
+};
+
+export type PerimeterMessage = {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+  meta: PerimeterAdvisoryMeta | null;
+};

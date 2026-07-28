@@ -59,6 +59,16 @@ export function runMigrations(db: Db): void {
     // просмотр вкладки «О предмете» сканировал всю таблицу sde_types (~51k строк).
     createIndexIfMissing(db, 'idx_sde_types_group_id', 'sde_types', 'group_id');
     ensureWebAdmissionEventKinds(db);
+    // Perimeter: the map's assistant panel is an ordinary thread, so it needs a
+    // kind marker, and its unprompted messages need an anchor (which system,
+    // which killmail, which rule) to stay clickable.
+    addColumnIfMissing(db, 'agent_threads', 'kind', "TEXT NOT NULL DEFAULT 'chat'");
+    addColumnIfMissing(db, 'messages', 'meta_json', 'TEXT');
+    createIndexIfMissing(db, 'idx_agent_threads_kind', 'agent_threads', 'chat_id, kind');
+    // Gate attribution moved to ingest so camp kills can outlive the short
+    // rolling retention; existing rows keep a NULL gate and age out normally.
+    addColumnIfMissing(db, 'map_kill_events', 'gate_id', 'INTEGER');
+    createIndexIfMissing(db, 'idx_map_kill_events_gate', 'map_kill_events', 'gate_id, killmail_time_ms');
   });
 
   migrate();
@@ -79,9 +89,14 @@ function ensureSchema(db: Db): void {
   // Re-apply statement-by-statement, skipping only the index creations that
   // reference not-yet-added columns. The matching createIndexIfMissing() call
   // recreates them after addColumnIfMissing() runs. All CREATEs use IF NOT
-  // EXISTS, so this stays idempotent. (SCHEMA_SQL contains no ';' inside string
-  // literals, so a naive split is safe.)
-  for (const raw of SCHEMA_SQL.split(';')) {
+  // EXISTS, so this stays idempotent.
+  //
+  // Line comments are stripped before splitting: SCHEMA_SQL contains no ';'
+  // inside string literals, but a stray one inside a `--` comment used to cut a
+  // CREATE TABLE in half here and fail every legacy migration with "incomplete
+  // input" — a trap that is invisible at the point where the comment is written.
+  const withoutComments = SCHEMA_SQL.replace(/--[^\n]*/g, '');
+  for (const raw of withoutComments.split(';')) {
     const stmt = raw.trim();
     if (!stmt) continue;
     try {

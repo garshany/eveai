@@ -80,6 +80,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/web/chat-routes.ts` owns session-bound history, character switching, and the adapter into the shared agent loop.
 - `src/web/auth-routes.ts` validates one-time EVE SSO state and returns browser logins to `/app` without exposing tokens.
 - `src/web/health.ts` exposes runtime and dependency health for both bot platforms.
+- `src/web/map-routes.ts` owns the Perimeter surface: bubble and system reads, risk routing, the map's chat thread, and the SSE stream that holds the only live ESI poll open. It releases that poll the moment the request aborts.
 
 ### Project Update Boundary
 
@@ -97,6 +98,8 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/eve-kill/client.ts` owns the fixed current EVE-KILL REST boundary; `mcp-analytics.ts` owns the fixed public analytics JSON-RPC boundary; `feed-poll.ts` owns one durable global feed cursor.
 - `src/eve-board/route-snapshot.ts` builds the shared route kill baseline; `monitor.ts` consumes the global feed after that baseline.
 - `src/eve-osint/inference.ts` builds residence/staging hypotheses from kill activity, SDE geography, and an optional compact LLM pattern pass.
+- `src/eve/map-graph.ts` derives the Perimeter map graph from the SDE — systems with rendering coordinates and the undirected gate graph — and owns jump-distance BFS and risk-weighted routing.
+- `src/eve-map/` owns the live map: `kill-index.ts` (one shared rolling killmail table fed by the global feed poller), `bubble.ts` (per-frame assembly), `danger.ts` (explainable scoring), `live-session.ts` (the only per-pilot ESI poll), `advisor.ts` (deterministic rules that speak first), `thread.ts` (the map's chat thread), and `tools.ts` (the four bounded agent tools).
 
 ### Persistence Boundary
 
@@ -172,6 +175,15 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 3. A watch event advances the feed cursor only after all active listeners and unmatched-dedup sends for active chat platforms complete; disabled-platform consumers remain stored but suspended.
 4. Route planning builds one one-hour EVE-KILL baseline. A temporary listener captures events during the scan and hands them, plus that exact baseline, to the monitor after autopilot succeeds.
 5. The monitor serializes feed callbacks and atomically records a per-monitor-run killmail marker with ganker/stats updates, so concurrent and post-restart replay is idempotent. ESI owns live/private state and official `(id, hash)` details; SDE owns static names/topology; EVE-KILL owns public discovery and value/fitting enrichment.
+6. The Perimeter kill index is a second consumer of the same feed. It writes every killmail into one shared rolling table, which is what turns "what is happening in the systems around me" into a single indexed local query instead of a per-viewer outbound fan-out — and makes it seconds fresh rather than the hour that ESI's aggregate endpoints offer. Its listener never throws: a failure there would stall the cursor for every other consumer.
+
+### Perimeter Live Map Flow
+
+1. At boot the map graph is derived from the SDE once and cached in memory. A build that cannot resolve coordinates disables only the Perimeter screen; the bots and chat lanes keep running and the screen reports why.
+2. The browser opens one SSE stream. That stream, and only that stream, attaches a live session: one ESI location/ship poll per character at the ESI cache floor of five seconds, shared across every tab, under global and per-user caps, with exponential backoff and a shutdown drain.
+3. Each jump rebuilds the bubble; the periodic intel tick refreshes it without paying for a cold-start backfill. Kills inside the bubble are pushed the instant the index sees them.
+4. Deterministic advisory rules run on every position change and every new bubble kill. They write a finished sentence into the map's chat thread with no model call; the model is asked for prose only for a danger-level situation and only once per its own cooldown.
+5. Persisting an advisory happens before streaming it, so a warning survives a stream that dies between the two.
 
 ## Package Map
 
@@ -183,6 +195,7 @@ The repo knowledge model is progressive disclosure: short map first, then indexe
 - `src/eve/`: EVE integrations and domain logic
 - `src/eve-kill/`: current public EVE-KILL REST, feed, tools, and watches
 - `src/eve-board/`: route threat snapshot, deterministic analysis, briefing, and monitor
+- `src/eve-map/`: Perimeter live map — kill index, bubble intel, danger scoring, live sessions, advisories, and map tools
 - `src/messaging/`: outbound platform-routing dispatcher
 - `src/cli/`: interactive terminal adapter and prompt-safe background output
 - `src/runtime/`: single-process DB ownership

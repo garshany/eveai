@@ -152,6 +152,44 @@ const RU = {
   mobileTabChat: 'Чат', mobileTabMarket: 'Маркет', mobileTabPilot: 'Пилот',
   toolChipOpen: 'Открыть результат инструмента в доке',
   answerOpenInDock: 'Открыть в доке',
+  /* --- Периметр: живая карта --- */
+  perimeter: 'Периметр',
+  perimeterLead: 'Живая карта вокруг тебя и лоцман, который говорит первым',
+  perimeterLayoutEgo: 'Кольца прыжков', perimeterLayoutGeo: 'География', perimeterFollow: 'Следовать',
+  perimeterRadius: 'Радиус: {jumps} пр.', perimeterSystems: 'систем: {count}',
+  perimeterVerdict: 'Периметр',
+  perimeterJumpsAway: '{jumps} пр. от тебя',
+  perimeterTruncated: 'показано {shown} пр. из {asked} — упёрлись в потолок систем',
+  perimeterGuest: 'Войдите через EVE SSO, чтобы увидеть себя на карте. Слои опасности работают и без входа.',
+  perimeterMissingScope: 'Нет разрешения {scope}: позиция не видна. Карта работает в публичном режиме.',
+  perimeterPilotOffline: 'Персонаж не в сети — позиция заморожена и больше не считается актуальной.',
+  perimeterBand_calm: 'спокойно', perimeterBand_watch: 'внимание', perimeterBand_elevated: 'повышенный',
+  perimeterBand_hostile: 'враждебно', perimeterBand_lethal: 'смертельно',
+  perimeterTerm_recent_kills: 'Свежие килы', perimeterTerm_repeat_attackers: 'Повторные стрелки',
+  perimeterTerm_gate_camp: 'Кемп на гейте', perimeterTerm_victim_similarity: 'Убивают таких, как ты',
+  perimeterTerm_capability_gap: 'Разрыв в возможностях', perimeterTerm_high_value_hull: 'Лакомый корпус',
+  perimeterTerm_security_floor: 'Правила боя', perimeterTerm_esi_baseline: 'Часовой фон ESI',
+  perimeterTerm_quiet_discount: 'Скидка за тишину',
+  perimeterLayer_kills: 'Килы', perimeterLayer_esi_kills: 'Фон килов', perimeterLayer_esi_jumps: 'Трафик',
+  perimeterLayer_sovereignty: 'Суверенитет', perimeterLayer_wormholes: 'Червоточины', perimeterLayer_graph: 'Граф',
+  perimeterFresh_live: 'живое', perimeterFresh_hourly: 'час назад', perimeterFresh_cached: 'из кэша',
+  perimeterFresh_unavailable: 'недоступно',
+  perimeterKills15m: 'Килы 15 мин', perimeterKills1h: 'Килы 1 ч', perimeterPvp1h: 'PvP 1 ч', perimeterBaseline: 'Фон ESI',
+  perimeterCamp: 'Кемп на гейте', perimeterCampGate: 'выход на {gate}: {kills} кил(ов)',
+  perimeterRecentKills: 'Последние килы', perimeterNoKills: 'За окно хранения тут никто не умирал.',
+  perimeterNoSignals: 'Сигналов нет — система выглядит тихой.',
+  perimeterUnknownPilot: 'неизвестный', perimeterNpc: 'NPC',
+  perimeterRouteHere: 'Маршрут сюда', perimeterAvoid: 'Избегать', perimeterAskAgent: 'Спросить лоцмана',
+  perimeterRouteJumps: 'Маршрут: {jumps} пр.',
+  perimeterRouteCoverage: 'Данные об опасности есть по {known} из {total} систем; остальные считаются нулевыми, а не безопасными.',
+  perimeterChat: 'Лоцман', perimeterChatEmpty: 'Лоцман молчит, пока в периметре спокойно. Спроси сам или дождись первого события.',
+  perimeterAskPlaceholder: 'Спросить про обстановку…',
+  perimeterFilter: 'Фильтр важности', perimeterFilterAll: 'Всё', perimeterFilterImportant: 'Важное', perimeterFilterQuiet: 'Только опасное',
+  perimeterShowOnMap: 'на карте', perimeterKillmail: 'килмейл',
+  perimeterRule_pursuit: 'Преследование', perimeterRule_camp_next_hop: 'Кемп впереди',
+  perimeterRule_threat_rise: 'Рост угрозы', perimeterRule_value_spike: 'Крупная потеря',
+  perimeterRule_capability_gap: 'Он тебя догонит', perimeterRule_route_degraded: 'Маршрут просел',
+  perimeterRule_all_clear: 'Чисто', perimeterRule_security_band: 'Смена зоны',
 } as const;
 
 const EN: Record<keyof typeof RU, string> = {
@@ -304,9 +342,59 @@ const EN: Record<keyof typeof RU, string> = {
   mobileTabChat: 'Chat', mobileTabMarket: 'Market', mobileTabPilot: 'Pilot',
   toolChipOpen: 'Open this tool result in the dock',
   answerOpenInDock: 'Open in the dock',
+  /* --- Perimeter live map --- */
+  perimeter: 'Perimeter',
+  perimeterLead: 'A live map around you and a pilot that speaks first',
+  perimeterLayoutEgo: 'Jump rings', perimeterLayoutGeo: 'Geography', perimeterFollow: 'Follow',
+  perimeterRadius: 'Radius: {jumps} jumps', perimeterSystems: '{count} systems',
+  perimeterVerdict: 'Perimeter',
+  perimeterJumpsAway: '{jumps} jump(s) out',
+  perimeterTruncated: 'showing {shown} of {asked} jumps — hit the system cap',
+  perimeterGuest: 'Sign in with EVE SSO to see yourself on the map. The danger layers work without it.',
+  perimeterMissingScope: 'Missing {scope}: your position is not visible. The map runs in public mode.',
+  perimeterPilotOffline: 'Character is offline — the position is frozen and no longer counts as current.',
+  perimeterBand_calm: 'calm', perimeterBand_watch: 'watch', perimeterBand_elevated: 'elevated',
+  perimeterBand_hostile: 'hostile', perimeterBand_lethal: 'lethal',
+  perimeterTerm_recent_kills: 'Recent kills', perimeterTerm_repeat_attackers: 'Repeat attackers',
+  perimeterTerm_gate_camp: 'Gate camp', perimeterTerm_victim_similarity: 'They kill hulls like yours',
+  perimeterTerm_capability_gap: 'Capability gap', perimeterTerm_high_value_hull: 'Hunted hull',
+  perimeterTerm_security_floor: 'Rules of engagement', perimeterTerm_esi_baseline: 'Hourly ESI baseline',
+  perimeterTerm_quiet_discount: 'Quiet discount',
+  perimeterLayer_kills: 'Kills', perimeterLayer_esi_kills: 'Kill baseline', perimeterLayer_esi_jumps: 'Traffic',
+  perimeterLayer_sovereignty: 'Sovereignty', perimeterLayer_wormholes: 'Wormholes', perimeterLayer_graph: 'Graph',
+  perimeterFresh_live: 'live', perimeterFresh_hourly: 'an hour old', perimeterFresh_cached: 'cached',
+  perimeterFresh_unavailable: 'unavailable',
+  perimeterKills15m: 'Kills 15m', perimeterKills1h: 'Kills 1h', perimeterPvp1h: 'PvP 1h', perimeterBaseline: 'ESI baseline',
+  perimeterCamp: 'Gate camp', perimeterCampGate: 'gate to {gate}: {kills} kill(s)',
+  perimeterRecentKills: 'Recent kills', perimeterNoKills: 'Nobody has died here inside the retention window.',
+  perimeterNoSignals: 'No signals — this system looks quiet.',
+  perimeterUnknownPilot: 'unknown', perimeterNpc: 'NPC',
+  perimeterRouteHere: 'Route here', perimeterAvoid: 'Avoid', perimeterAskAgent: 'Ask the pilot',
+  perimeterRouteJumps: 'Route: {jumps} jumps',
+  perimeterRouteCoverage: 'Danger data covers {known} of {total} systems; the rest are scored zero, not safe.',
+  perimeterChat: 'Pilot', perimeterChatEmpty: 'Nothing to report while the perimeter is quiet. Ask, or wait for the first event.',
+  perimeterAskPlaceholder: 'Ask about the situation…',
+  perimeterFilter: 'Severity filter', perimeterFilterAll: 'All', perimeterFilterImportant: 'Important', perimeterFilterQuiet: 'Danger only',
+  perimeterShowOnMap: 'on map', perimeterKillmail: 'killmail',
+  perimeterRule_pursuit: 'Pursuit', perimeterRule_camp_next_hop: 'Camp ahead',
+  perimeterRule_threat_rise: 'Threat rising', perimeterRule_value_spike: 'Big loss',
+  perimeterRule_capability_gap: 'It will catch you', perimeterRule_route_degraded: 'Route degraded',
+  perimeterRule_all_clear: 'All clear', perimeterRule_security_band: 'Zone change',
 };
 
-type I18nValue = { locale: Locale; setLocale: (locale: Locale) => void; t: (key: keyof typeof RU) => string };
+export type TranslationKey = keyof typeof RU;
+
+/**
+ * `t` подставляет `{placeholder}` из params. Раньше каждая строка с подстановкой
+ * склеивалась на месте вызова, и один и тот же плейсхолдер жил в двух локалях
+ * и в трёх компонентах — карта добавила достаточно таких строк, чтобы это
+ * перестало быть терпимым.
+ */
+type I18nValue = {
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+  t: (key: TranslationKey, params?: Record<string, string>) => string;
+};
 const I18nContext = createContext<I18nValue | null>(null);
 const STORAGE_KEY = 'eveai.locale.v1';
 
@@ -316,7 +404,15 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(STORAGE_KEY, locale);
     document.documentElement.lang = locale;
   }, [locale]);
-  const value = useMemo<I18nValue>(() => ({ locale, setLocale, t: (key) => (locale === 'ru' ? RU[key] : EN[key]) }), [locale]);
+  const value = useMemo<I18nValue>(() => ({
+    locale,
+    setLocale,
+    t: (key, params) => {
+      const template = locale === 'ru' ? RU[key] : EN[key];
+      if (!params) return template;
+      return template.replace(/\{(\w+)\}/g, (match, name: string) => params[name] ?? match);
+    },
+  }), [locale]);
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
 

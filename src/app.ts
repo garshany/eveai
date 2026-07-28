@@ -117,6 +117,29 @@ async function main() {
     log.warn('SDE data is empty — статические данные EVE недоступны. Запусти: npm run setup');
   }
 
+  // Perimeter map graph. A failure here disables one screen; it must not take
+  // down Telegram, Discord, or the chat lanes, so it is logged loudly and the
+  // map routes report the reason instead of the process exiting.
+  let mapGraphReady = false;
+  if (sdeSystems > 0) {
+    const { buildMapGraph, MapGraphBuildError } = await import('./eve/map-graph.js');
+    try {
+      const graph = buildMapGraph(db);
+      mapGraphReady = true;
+      if (graph.rebuilt) {
+        log.info(
+          'Map graph built (%s): %d systems, %d links, geometry=%s',
+          graph.reason, graph.meta.systemCount, graph.meta.edgeCount, graph.meta.geometrySource,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof MapGraphBuildError
+        ? error.message
+        : error instanceof Error ? error.message : String(error);
+      log.error('Map graph unavailable — the Perimeter screen is disabled: %s', message);
+    }
+  }
+
   // 3. Start Fastify server (EVE SSO callback + health).
   // Mark bot states first so /health never reports a bot healthy before it
   // has actually started.
@@ -170,6 +193,17 @@ async function main() {
     // feed poller only cancels its sleep, so bound it like every other step.
     await withDeadline(stopEveKillFeedPoller(), deadline);
     shutdownRouteMonitors();
+    // Perimeter: drop the feed subscriber, then drain every live map session so
+    // no ESI poller outlives the process and every watcher is told why their
+    // map stopped moving. Both are synchronous timer/listener teardown.
+    stopMapKillIndex?.();
+    const { stopSystemMetricsWorker } = await import('./eve-map/system-metrics.js');
+    stopSystemMetricsWorker();
+    const { stopAllLiveSessions } = await import('./eve-map/live-session.js');
+    const drainedMapSessions = stopAllLiveSessions('server shutting down');
+    if (drainedMapSessions > 0) {
+      log.info('Drained %d live map session(s).', drainedMapSessions);
+    }
     stopHeartbeat();
     // Synchronous and instant: both only clear timers.
     stopUsageRollupScheduler();
@@ -300,6 +334,24 @@ async function main() {
       onReady: () => restoreMonitors(db, routeMonitorSender, canRestoreRouteMonitor),
     });
   }
+  // The Perimeter kill index rides the feed poller that is already running; it
+  // is what makes "what is happening around me" a local query instead of a
+  // per-viewer fan-out, so it must be attached before anyone opens the map.
+  let stopMapKillIndex: (() => void) | null = null;
+  if (mapGraphReady) {
+    // Two ESI requests an hour cover every system in New Eden, so the long-term
+    // traffic and kill baseline accrues regardless of which chat lanes are on.
+    const { startSystemMetricsWorker } = await import('./eve-map/system-metrics.js');
+    startSystemMetricsWorker(db);
+  }
+  if (feedEnabled && mapGraphReady) {
+    const { startMapKillIndex } = await import('./eve-map/kill-index.js');
+    stopMapKillIndex = startMapKillIndex(db);
+    log.info('Perimeter kill index attached to the EVE-KILL feed.');
+  } else if (mapGraphReady) {
+    log.warn('Perimeter map graph is ready but the EVE-KILL feed is disabled — live kills will be missing.');
+  }
+
   if (hasOutboundPlatform) startHeartbeat(db);
   // Local whole-market snapshot: useful in every lane (CLI included), so it is
   // not gated on outbound platforms like push notifications.

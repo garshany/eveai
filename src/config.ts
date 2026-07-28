@@ -470,6 +470,42 @@ export const config = {
     retryMaxAttempts: optionalInt('EVE_SCOUT_RETRY_MAX_ATTEMPTS', 2),
     backoffMaxMs: optionalInt('EVE_SCOUT_BACKOFF_MAX_MS', 5000),
   },
+  // Perimeter live map. The poll interval floor is 5s because that is the ESI
+  // cache on /characters/{id}/location/ — asking faster only burns error budget
+  // and returns the same body.
+  map: {
+    bubbleDefaultRadius: boundedPositiveInt('MAP_BUBBLE_DEFAULT_RADIUS', 5, 1, 10),
+    bubbleMaxRadius: boundedPositiveInt('MAP_BUBBLE_MAX_RADIUS', 10, 1, 15),
+    // A ten-jump highsec bubble can pass a thousand systems. The cap admits
+    // whole rings, so a capped bubble still reports a correct jump distance
+    // for every node it returns.
+    bubbleMaxNodes: boundedPositiveInt('MAP_BUBBLE_MAX_NODES', 1200, 50, 8000),
+    locationPollSeconds: boundedPositiveInt('MAP_LOCATION_POLL_SECONDS', 5, 5, 120),
+    intelRefreshSeconds: boundedPositiveInt('MAP_INTEL_REFRESH_SECONDS', 15, 5, 600),
+    maxLiveSessions: boundedPositiveInt('MAP_MAX_LIVE_SESSIONS', 50, 1, 1000),
+    maxLiveSessionsPerUser: boundedPositiveInt('MAP_MAX_LIVE_SESSIONS_PER_USER', 3, 1, 20),
+    // Stops a stuck poller from holding a slot and an ESI budget forever.
+    liveSessionIdleSeconds: boundedPositiveInt('MAP_LIVE_SESSION_IDLE_SECONDS', 900, 60, 86_400),
+    liveSessionMaxFailures: boundedPositiveInt('MAP_LIVE_SESSION_MAX_FAILURES', 5, 1, 50),
+    killIndexRetentionHours: boundedPositiveInt('MAP_KILL_INDEX_RETENTION_HOURS', 3, 1, 72),
+    killIndexMaxRows: boundedPositiveInt('MAP_KILL_INDEX_MAX_ROWS', 100_000, 1000, 5_000_000),
+    // Backfill is per system, not per tab: a second viewer of the same bubble
+    // reuses the first one's fan-out.
+    killBackfillTtlSeconds: boundedPositiveInt('MAP_KILL_BACKFILL_TTL_SECONDS', 900, 60, 86_400),
+    killBackfillMaxSystems: boundedPositiveInt('MAP_KILL_BACKFILL_MAX_SYSTEMS', 150, 10, 1000),
+    // Long-term accumulation. Two ESI endpoints each return the whole cluster in
+    // one response, so this costs two requests an hour for full coverage of New
+    // Eden — cheap enough to leave on.
+    metricsHistoryEnabled: optionalBoolean('MAP_METRICS_HISTORY_ENABLED', true),
+    metricsHourlyRetentionDays: boundedPositiveInt('MAP_METRICS_HOURLY_RETENTION_DAYS', 14, 1, 365),
+    // Gate kills are the evidence behind camp history, so they outlive the
+    // rolling kill window by a lot; everything else still ages out in hours.
+    gateKillRetentionDays: boundedPositiveInt('MAP_GATE_KILL_RETENTION_DAYS', 30, 1, 365),
+    advisorCooldownSeconds: boundedPositiveInt('MAP_ADVISOR_COOLDOWN_SECONDS', 60, 5, 3600),
+    // Guards model spend for a pilot who flies for an hour: rules still speak,
+    // but prose costs money and is rationed separately.
+    advisorLlmCooldownSeconds: boundedPositiveInt('MAP_ADVISOR_LLM_COOLDOWN_SECONDS', 600, 30, 86_400),
+  },
   compact: {
     maxInputChars: optionalInt('COMPACT_MAX_INPUT_CHARS', 20000),
   },

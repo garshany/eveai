@@ -75,7 +75,20 @@ Use it when you need to find the right file or folder before reading implementat
 - `dynamic-item-summary.ts`: requested dynamic-dogma attributes plus optional local-SDE base/delta evidence without creator/effect leakage
 - `user-profile.ts`: generated user snapshot/profile flow
 - `character-sync.ts`: lazy TTL-based mirror of the private ESI profile (assets, wallet/journal, orders, contracts, skills, clones, standings, presence) into character_* tables
+- `map-graph.ts`: Perimeter map graph derived from the SDE — `map_systems`/`map_edges`, jump-distance BFS with whole-ring node caps, and risk-weighted Dijkstra. Rendering coordinates prefer SDE `position2D` and fall back to the 3D position projected as `(x, -z)`; a build that resolves neither refuses rather than drawing every system at the origin
 - `scopes.ts`, `eve-links.ts`, `http.ts`: support modules
+
+### `src/eve-map/`
+
+Perimeter live map. See `docs/product-specs/perimeter.md`.
+
+- `kill-index.ts`: one shared rolling killmail table fed by the global EVE-KILL feed poller, with age retention, a row cap, and a per-system-deduplicated cold-start backfill
+- `bubble.ts`: per-frame assembly — local topology and activity, plus the hourly ESI baseline, sovereignty, and EVE-Scout wormholes, each with its own freshness marker and independent degradation
+- `danger.ts`: explainable scoring — every score is returned as labelled terms, and it is scored for the pilot's actual hull
+- `live-session.ts`: the only per-pilot ESI poll; runs solely while a stream is attached, one per character across tabs, capped, backed off, and drained on shutdown
+- `advisor.ts`: deterministic rules that speak first, with per-rule cooldowns, repeat collapsing, and a separately rationed model escalation
+- `thread.ts`: the map's chat thread (`agent_threads.kind = 'perimeter'`) and advisory anchors in `messages.meta_json`
+- `tools.ts`: the four bounded agent tools — `map_bubble_intel`, `route_risk`, `compare_ships`, `threat_explain`
 
 ### `src/eve-osint/`
 
@@ -157,6 +170,7 @@ Defensive clients and tool schemas for community APIs (EVE Ref industry cost, zK
 - `market-ai-search-routes.ts`: `/api/web/market/ai-search` natural-language item picking via the light agent runner (`src/agent/market-ai-search.ts`, sde_sql + batch_market_prices, bounded budget), usage recorded to `usage_events` as channel `web`
 - `market-alert-routes.ts`: `/api/web/market/alerts*` price-alert CRUD and fired-event feed
 - `profile-routes.ts` + `profile-data.ts`: `/api/web/profile/` living-profile reads over the character_* datastore (SQL-side asset rollup, regional valuation, price-book age) plus the CSRF-protected manual sync with an overall deadline
+- `map-routes.ts`: `/api/web/map/` — status (graph readiness, missing scope, limits), bubble and system reads, risk-weighted routing, the Perimeter chat thread, and the SSE stream that owns the live position poll and releases it on abort
 - `transparency.ts`: public aggregate spend/infrastructure snapshot and session-gated personal spend
 - `auth-routes.ts`: one-time EVE SSO login redirect, OAuth callback, and `/callback` alias
 - `health.ts`: runtime/dependency health endpoint for both bot platforms
@@ -166,6 +180,7 @@ Defensive clients and tool schemas for community APIs (EVE Ref industry cost, zK
 
 - `src/`: React chat client, safe Markdown rendering, responsive shell, and API adapter
 - `src/components/MarketScreen.tsx` + `src/components/market/`: market browser — search, AI picker, group tree, order book, price chart, region comparison, item info tab, watchlist and price alerts with 60 s auto-refresh; SDE statics cached in-tab (`static-cache.ts`)
+- `src/components/map/`: Perimeter — hand-written Canvas 2D renderer (`renderer.ts`), ego-ring and geographic layouts with an interpolated morph (`layout.ts`), follow camera and hit testing (`MapCanvas.tsx`), system inspector, route ribbon, freshness markers, and the agent chat panel (`PerimeterChat.tsx`). Uses only `d3-zoom`, `d3-quadtree`, `d3-scale`, `d3-interpolate`, and `d3-selection`; no graph library, because the layout is deterministic and a force simulation would destroy the jump-distance metric
 - `public/assets/`: generated production visual assets
 - `vite.config.ts`: `/web-assets/` production base and same-origin development proxy
 

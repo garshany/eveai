@@ -15,6 +15,7 @@ import { registerWebChatRoutes } from './chat-routes.js';
 import { registerHealthRoute } from './health.js';
 import { registerMarketAlertRoutes } from './market-alert-routes.js';
 import { registerMarketAiSearchRoutes } from './market-ai-search-routes.js';
+import { registerMapRoutes } from './map-routes.js';
 import { registerMarketRoutes } from './market-routes.js';
 import { registerProfileRoutes } from './profile-routes.js';
 import { registerSecurityHeaders } from './security.js';
@@ -44,6 +45,7 @@ export async function createServer(db: Db) {
     registerMarketAlertRoutes(app, db);
     registerSettingsRoutes(app, db);
     registerProfileRoutes(app, db);
+    registerMapRoutes(app, db);
     registerExamplesRoutes(app);
     await registerWebApp(app);
   }

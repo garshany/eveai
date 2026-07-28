@@ -13,6 +13,7 @@ import { Sidebar, type AppView } from './components/Sidebar';
 import { ChatScreen } from './components/ChatScreen';
 import { DataDock, type DockTab } from './components/DataDock';
 import { ExamplesScreen } from './components/ExamplesScreen';
+import { MapScreen } from './components/map/MapScreen';
 import { MarketScreen } from './components/MarketScreen';
 import { PilotProfileScreen } from './components/PilotProfileScreen';
 import { SettingsScreen } from './components/SettingsScreen';
@@ -570,6 +571,7 @@ export default function App() {
         onInitialDraftConsumed={() => setPendingDraft(null)}
       /> : null}
       {activeView === 'market' ? <MarketScreen onMenu={() => setSidebarOpen(true)} csrfToken={session.csrfToken} /> : null}
+      {activeView === 'map' ? <MapScreen onMenu={() => setSidebarOpen(true)} csrfToken={session.csrfToken} /> : null}
       {activeView === 'profile' ? <PilotProfileScreen character={session.character} csrfToken={session.csrfToken} busy={busy} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} onUnlink={unlinkCharacter} /> : null}
       {activeView === 'settings' ? <SettingsScreen csrfToken={session.csrfToken} onMenu={() => setSidebarOpen(true)} /> : null}
       {activeView === 'examples' ? <ExamplesScreen onMenu={() => setSidebarOpen(true)} onTryInChat={seedComposer} /> : null}

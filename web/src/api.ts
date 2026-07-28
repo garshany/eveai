@@ -17,7 +17,12 @@ import type {
   MarketTypeInfo,
   MarketTypeSearchRow,
   MarketWatchlistItem,
+  MapBubble,
+  MapKillEvent,
+  MapRouteResponse,
+  MapStatus,
   ModelSettingsPayload,
+  PerimeterMessage,
   MyTransparency,
   PilotProfile,
   ProfileAccessResponse,
@@ -260,6 +265,44 @@ export const webApi = {
       ),
       events: () => request<{ events: MarketAlertEvent[] }>('/api/web/market/alerts/events'),
     },
+  },
+  // Периметр. Живой поток идёт отдельным EventSource (см. use-map-live.ts):
+  // fetch тут только для снимков, маршрута и истории треда.
+  map: {
+    status: () => request<MapStatus>('/api/web/map/status'),
+    bubble: (systemId?: number, radius?: number) => {
+      const params = new URLSearchParams();
+      if (systemId !== undefined) params.set('system_id', String(systemId));
+      if (radius !== undefined) params.set('radius', String(radius));
+      const query = params.toString();
+      return request<{ bubble: MapBubble; origin: { systemId: number; source: string } }>(
+        `/api/web/map/bubble${query ? `?${query}` : ''}`,
+      );
+    },
+    system: (systemId: number) => request<{
+      system: { systemId: number; name: string; security: number; regionName: string | null };
+      kills: MapKillEvent[];
+    }>(`/api/web/map/system?system_id=${encodeURIComponent(systemId)}`),
+    route: (
+      params: {
+        origin: number;
+        destination: number;
+        mode: 'shortest' | 'secure' | 'insecure';
+        risk: number;
+        avoid?: number[];
+        useWormholes?: boolean;
+      },
+      csrfToken: string,
+    ) => request<MapRouteResponse>('/api/web/map/route', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }, csrfToken),
+    chat: () => request<{ threadId: string; messages: PerimeterMessage[] }>('/api/web/map/chat'),
+    ask: (message: string, csrfToken: string) => request<{ threadId: string; accepted: true }>(
+      '/api/web/map/ask',
+      { method: 'POST', body: JSON.stringify({ message }) },
+      csrfToken,
+    ),
   },
   getExamples: () => request<{ examples: ShowcaseExample[] }>('/api/web/examples'),
   getTransparency: () => request<TransparencyPayload>('/api/web/transparency'),

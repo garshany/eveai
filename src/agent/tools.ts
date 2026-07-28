@@ -23,6 +23,7 @@ import { ASSETS_SUMMARY_TOOL, isAssetsSummaryTool } from '../eve/assets-summary.
 import { CHARACTER_ORDERS_SUMMARY_TOOL, isCharacterOrdersSummaryTool } from '../eve/orders-summary.js';
 import { MARKET_WIDE_SUMMARY_TOOL, isMarketWideSummaryTool } from '../eve/market-wide-summary.js';
 import { COMMUNITY_TOOLS, isCommunityToolName } from '../community/tools.js';
+import { PERIMETER_TOOLS, isPerimeterTool } from '../eve-map/tools.js';
 import {
   DOCTRINE_SUMMARY_TOOL,
   isDoctrineSummaryTool,
@@ -575,6 +576,10 @@ export async function buildNativeAgentTools(
     ANALYZE_SCAN_TOOL,
     INTEL_NOTE_TOOL,
     SET_ACTIVE_FIT_TOOL,
+    // Perimeter reads the same local graph and kill index the live map draws,
+    // so the model answers "what is around me" from one prepared payload
+    // instead of fanning out across kill search and ESI metrics.
+    ...PERIMETER_TOOLS,
     ...COMMUNITY_TOOLS,
     buildEveKillNamespace({ includeWatch: includeFeedNotifications }),
     buildEveKillAnalyticsNamespace(),
@@ -659,6 +664,7 @@ export function isDeferredLookupToolName(name: string): boolean {
 }
 
 export { isCommunityToolName } from '../community/tools.js';
+export { isPerimeterTool } from '../eve-map/tools.js';
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
 export { isEveKillAnalyticsToolName } from '../eve-kill/analytics-tools.js';
@@ -700,7 +706,7 @@ export async function getToolPolicy(
     || isAssetsSummaryTool(name) || isCharacterOrdersSummaryTool(name)
     || isMarketWideSummaryTool(name)
     || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)
-    || isCommunityToolName(name)) {
+    || isCommunityToolName(name) || isPerimeterTool(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();

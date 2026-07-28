@@ -6,7 +6,7 @@ import { formatRelativeDay } from '../dates';
 import type { SnapshotProbe } from '../App';
 import type { Character, Conversation } from '../types';
 
-export type AppView = 'chat' | 'profile' | 'market' | 'settings' | 'support' | 'examples';
+export type AppView = 'chat' | 'profile' | 'market' | 'map' | 'settings' | 'support' | 'examples';
 type Props = {
   open: boolean;
   activeView: AppView;
@@ -41,6 +41,7 @@ export function Sidebar({
   const nav: Array<{ id: AppView; label: string; count?: number }> = [
     { id: 'chat', label: t('chat'), count: conversations.length },
     { id: 'market', label: t('market') },
+    { id: 'map', label: t('perimeter') },
     { id: 'profile', label: t('profile') },
     { id: 'examples', label: t('examples') },
     { id: 'settings', label: t('settings') },

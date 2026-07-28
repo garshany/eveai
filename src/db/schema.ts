@@ -110,9 +110,13 @@ CREATE TABLE IF NOT EXISTS agent_threads (
   last_response_id TEXT,
   last_response_message_id INTEGER,
   total_tokens INTEGER DEFAULT 0,
+  -- 'chat' is the ordinary workspace thread. 'perimeter' is the live map's
+  -- assistant panel, which the advisor may write to without a user prompt.
+  kind       TEXT NOT NULL DEFAULT 'chat',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_agent_threads_kind ON agent_threads(chat_id, kind);
 
 CREATE TABLE IF NOT EXISTS messages (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,6 +124,9 @@ CREATE TABLE IF NOT EXISTS messages (
   role       TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
   content    TEXT NOT NULL,
   web_request_id TEXT,
+  -- Anchor for an unprompted Perimeter advisory: {severity, rule, systemId?,
+  -- killmailId?}. NULL for every ordinary chat message.
+  meta_json  TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_messages_web_request ON messages(web_request_id);
@@ -839,4 +846,162 @@ CREATE TABLE IF NOT EXISTS market_alert_events (
 );
 CREATE INDEX IF NOT EXISTS idx_market_alert_events_user
   ON market_alert_events(user_id, triggered_at);
+
+-- Perimeter map graph. Both tables are derived from the local SDE and are
+-- rebuilt whenever the SDE build number changes, so they carry no state worth
+-- preserving across a rebuild. map_x/map_y are the 2D rendering coordinates:
+-- SDE position2D when the export provides it, otherwise the 3D position
+-- projected as (x, -z) per CCP's map-data guide. geometry_source records which
+-- one was used so the client never has to guess what it is drawing.
+CREATE TABLE IF NOT EXISTS map_systems (
+  system_id        INTEGER PRIMARY KEY,
+  name             TEXT NOT NULL,
+  constellation_id INTEGER,
+  region_id        INTEGER,
+  region_name      TEXT,
+  security         REAL NOT NULL DEFAULT 0,
+  security_class   TEXT,
+  x                REAL NOT NULL DEFAULT 0,
+  y                REAL NOT NULL DEFAULT 0,
+  z                REAL NOT NULL DEFAULT 0,
+  map_x            REAL NOT NULL DEFAULT 0,
+  map_y            REAL NOT NULL DEFAULT 0,
+  faction_id       INTEGER,
+  wh_class         INTEGER,
+  geometry_source  TEXT NOT NULL DEFAULT 'unknown'
+);
+CREATE INDEX IF NOT EXISTS idx_map_systems_region ON map_systems(region_id);
+CREATE INDEX IF NOT EXISTS idx_map_systems_name ON map_systems(name COLLATE NOCASE);
+
+-- Undirected gate graph stored as two directed rows per link, so a BFS never
+-- has to union two queries.
+CREATE TABLE IF NOT EXISTS map_edges (
+  from_system_id INTEGER NOT NULL,
+  to_system_id   INTEGER NOT NULL,
+  PRIMARY KEY (from_system_id, to_system_id)
+);
+CREATE INDEX IF NOT EXISTS idx_map_edges_to ON map_edges(to_system_id);
+
+CREATE TABLE IF NOT EXISTS map_graph_meta (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  built_at         TEXT NOT NULL,
+  sde_build_number TEXT,
+  system_count     INTEGER NOT NULL,
+  edge_count       INTEGER NOT NULL,
+  geometry_source  TEXT NOT NULL
+);
+
+-- Rolling live killmail index fed by the global EVE-KILL feed subscriber. One
+-- shared table for every user: bubble rollups are local queries against it
+-- instead of per-user outbound fan-out. Bounded by age retention and a row cap.
+CREATE TABLE IF NOT EXISTS map_kill_events (
+  killmail_id              INTEGER PRIMARY KEY,
+  system_id                INTEGER NOT NULL,
+  region_id                INTEGER,
+  killmail_time            TEXT,
+  killmail_time_ms         INTEGER NOT NULL,
+  received_at_ms           INTEGER NOT NULL,
+  total_value              REAL NOT NULL DEFAULT 0,
+  attacker_count           INTEGER NOT NULL DEFAULT 0,
+  is_npc                   INTEGER NOT NULL DEFAULT 0,
+  is_solo                  INTEGER NOT NULL DEFAULT 0,
+  victim_ship_type_id      INTEGER,
+  victim_ship_name         TEXT,
+  victim_ship_group_name   TEXT,
+  victim_character_id      INTEGER,
+  victim_character_name    TEXT,
+  victim_corporation_name  TEXT,
+  final_blow_character_id  INTEGER,
+  final_blow_character_name TEXT,
+  final_blow_ship_type_id  INTEGER,
+  final_blow_ship_name     TEXT,
+  position_json            TEXT,
+  source                   TEXT NOT NULL DEFAULT 'feed',
+  -- Stargate the kill happened on, resolved at ingest. NULL means "elsewhere in
+  -- the system". Gate kills survive the short rolling retention because they are
+  -- the evidence behind camp history.
+  gate_id                  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_map_kill_events_gate
+  ON map_kill_events(gate_id, killmail_time_ms);
+CREATE INDEX IF NOT EXISTS idx_map_kill_events_system_time
+  ON map_kill_events(system_id, killmail_time_ms);
+CREATE INDEX IF NOT EXISTS idx_map_kill_events_time
+  ON map_kill_events(killmail_time_ms);
+
+-- Stargate positions, derived from the SDE alongside map_systems. Kept as its
+-- own table because kill ingest needs a cheap nearest-gate lookup per killmail,
+-- and re-parsing sde_stargates.data_json for that would be wasteful.
+CREATE TABLE IF NOT EXISTS map_gates (
+  gate_id               INTEGER PRIMARY KEY,
+  system_id             INTEGER NOT NULL,
+  destination_system_id INTEGER,
+  x                     REAL NOT NULL,
+  y                     REAL NOT NULL,
+  z                     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_map_gates_system ON map_gates(system_id);
+
+-- Hourly cluster-wide traffic and kill counts from ESI. One request per
+-- endpoint returns every system at once, so two requests an hour cover all of
+-- New Eden. The bucket key comes from the response's Last-Modified header, which
+-- makes a re-fetch inside the same hour an idempotent no-op rather than a
+-- duplicate. Counts only — no attacker, no victim; those live in map_kill_events.
+CREATE TABLE IF NOT EXISTS map_system_hourly (
+  system_id     INTEGER NOT NULL,
+  hour_start_ms INTEGER NOT NULL,
+  ship_jumps    INTEGER NOT NULL DEFAULT 0,
+  ship_kills    INTEGER NOT NULL DEFAULT 0,
+  npc_kills     INTEGER NOT NULL DEFAULT 0,
+  pod_kills     INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (system_id, hour_start_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_map_system_hourly_time ON map_system_hourly(hour_start_ms);
+
+-- Long-term shape of a system by hour of the week (0..167, UTC, which is EVE
+-- time). Sums plus a sample count rather than averages, so it can be updated
+-- incrementally and still answer "quiet weekday evening or not". Raw hourly rows
+-- are pruned; this survives them, which is the entire point of keeping it.
+CREATE TABLE IF NOT EXISTS map_system_profile (
+  system_id      INTEGER NOT NULL,
+  hour_of_week   INTEGER NOT NULL,
+  samples        INTEGER NOT NULL DEFAULT 0,
+  sum_ship_jumps INTEGER NOT NULL DEFAULT 0,
+  sum_ship_kills INTEGER NOT NULL DEFAULT 0,
+  sum_npc_kills  INTEGER NOT NULL DEFAULT 0,
+  sum_pod_kills  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (system_id, hour_of_week)
+);
+
+-- Gate-camp memory: kills already attributed to a stargate, bucketed by hour of
+-- the week, with the attackers who keep showing up. Survives the short kill
+-- retention so "this gate is camped on weekday evenings" becomes answerable.
+CREATE TABLE IF NOT EXISTS map_gate_camp_history (
+  gate_id      INTEGER NOT NULL,
+  system_id    INTEGER NOT NULL,
+  hour_of_week INTEGER NOT NULL,
+  kills        INTEGER NOT NULL DEFAULT 0,
+  last_kill_ms INTEGER NOT NULL,
+  PRIMARY KEY (gate_id, hour_of_week)
+);
+CREATE INDEX IF NOT EXISTS idx_map_gate_camp_system ON map_gate_camp_history(system_id);
+
+CREATE TABLE IF NOT EXISTS map_gate_campers (
+  gate_id          INTEGER NOT NULL,
+  character_id     INTEGER NOT NULL,
+  character_name   TEXT,
+  corporation_name TEXT,
+  kills            INTEGER NOT NULL DEFAULT 0,
+  last_kill_ms     INTEGER NOT NULL,
+  PRIMARY KEY (gate_id, character_id)
+);
+CREATE INDEX IF NOT EXISTS idx_map_gate_campers_last ON map_gate_campers(last_kill_ms);
+
+-- Bounded backfill bookkeeping: one row per system whose recent history has
+-- been pulled from the EVE-KILL search API, so opening the same bubble in a
+-- second tab does not repeat the fan-out.
+CREATE TABLE IF NOT EXISTS map_kill_backfill (
+  system_id       INTEGER PRIMARY KEY,
+  backfilled_at_ms INTEGER NOT NULL
+);
 `;

@@ -11,6 +11,7 @@ Verified against code: 2026-07-13
 - [update-management.md](./update-management.md)
 - [browser-sso.md](./browser-sso.md)
 - [identity-and-linking.md](./identity-and-linking.md)
+- [perimeter.md](./perimeter.md)
 
 ## Read This Folder When
 

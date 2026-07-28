@@ -28,8 +28,16 @@ import type {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Gate camp proximity threshold: 200 km in meters (EVE uses meters). */
-const GATE_CAMP_RADIUS_M = 200_000_000_000;
+/**
+ * Gate camp proximity threshold: 200 km, in the meters EVE positions use.
+ *
+ * This was 200_000_000_000 — 200 million km, about 1.3 AU, wider than most
+ * systems are across. At that radius practically every kill in a system, ratting
+ * and mission kills included, snapped to whichever gate happened to be nearest,
+ * and "kills clustered on one gate" stopped meaning anything. Observed camp
+ * kills sit within tens of kilometres of the gate.
+ */
+const GATE_CAMP_RADIUS_M = 200_000;
 
 /** Threat level ordering for max-comparison. */
 const THREAT_ORDER: Record<ThreatLevel, number> = {

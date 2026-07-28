@@ -23,6 +23,7 @@ import {
   isIntelNoteTool,
   isSetActiveFitTool,
   isRouteMonitorTool,
+  isPerimeterTool,
   isEveScoutToolName,
   isProgrammaticToolAllowed,
   isLocalParallelBatchTool,
@@ -2757,6 +2758,13 @@ async function executeToolCallUnadmitted(
       dangerEvents: monitor.stats.dangerEvents.length,
       elapsedMinutes: minutes,
     };
+  }
+
+  // Perimeter tools read the local map graph and kill index only: no private
+  // ESI, no outbound fan-out beyond what buildBubble already bounds.
+  if (isPerimeterTool(name)) {
+    const { executePerimeterTool } = await import('../eve-map/tools.js');
+    return await executePerimeterTool(db, name, args);
   }
 
   if (name === 'plan_route') {

@@ -97,8 +97,13 @@ describe('buildDeveloperPrompt', () => {
     expect(prompt.match(/<authorization_boundaries>/g)).toHaveLength(1);
 
     // Track size to avoid drifting back into a process-heavy prompt stack.
+    // Raised from 14000 when the Perimeter map tool family landed: routing the
+    // model to map_bubble_intel instead of a fan-out of kill searches, and
+    // stating that its ESI baseline is hourly, is worth the ~350 characters.
+    // The ceiling stays tight on purpose — grow it only for a real tool family,
+    // never for prose.
     expect(prompt).not.toContain('<hosted_mcp_data_boundary>');
-    expect(prompt.length).toBeLessThan(14000);
+    expect(prompt.length).toBeLessThan(14500);
   });
 
 
