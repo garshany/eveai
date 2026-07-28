@@ -699,3 +699,37 @@ export type PerimeterMessage = {
   createdAt: string;
   meta: PerimeterAdvisoryMeta | null;
 };
+
+/**
+ * The whole cluster as parallel arrays. 8490 systems as one object per system
+ * is about a megabyte of repeated key names; the same data column-wise is a
+ * small fraction of that, and it is what the canvas iterates anyway.
+ */
+export type UniverseStatic = {
+  buildId: string;
+  count: number;
+  systemIds: number[];
+  names: string[];
+  security: number[];
+  regionIds: number[];
+  regionNames: Record<string, string>;
+  x: number[];
+  y: number[];
+  /** Flat pairs: two entries per undirected gate link. */
+  edges: number[];
+  bounds: { minX: number; maxX: number; minY: number; maxY: number };
+};
+
+export type UniverseActivity = {
+  at: string;
+  windowMinutes: number;
+  systemIds: number[];
+  kills1h: number[];
+  kills15m: number[];
+  npcKills1h: number[];
+  valueDestroyed1h: number[];
+  gateKills1h: number[];
+  bands: string[];
+  baselineJumps: Record<string, number>;
+  totals: { activeSystems: number; kills1h: number; campedSystems: number };
+};

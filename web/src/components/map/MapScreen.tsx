@@ -15,12 +15,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { webApi } from '../../api';
 import { LocaleSwitch, useI18n } from '../../i18n';
 import { MenuIcon } from '../../icons';
-import type { MapBubble, MapRouteResponse, MapStatus } from '../../types';
+import type {
+  MapBubble,
+  MapRouteResponse,
+  MapStatus,
+  UniverseActivity,
+  UniverseStatic,
+} from '../../types';
 import { MapCanvas } from './MapCanvas';
 import { PerimeterChat } from './PerimeterChat';
 import { SystemInspector } from './SystemInspector';
 import { bandLabelKey, freshnessKey, layerLabelKey } from './labels';
 import { buildLayout, interpolateLayouts, type Layout, type LayoutMode } from './layout';
+import { UniverseCanvas } from './UniverseCanvas';
 import type { KillFlash } from './renderer';
 import { useMapLive } from './use-map-live';
 
@@ -40,6 +47,13 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   const [staticBubble, setStaticBubble] = useState<MapBubble | null>(null);
   const [radius, setRadius] = useState<number | null>(null);
   const [mode, setMode] = useState<LayoutMode>('ego');
+  // 'universe' is a third view rather than a third layout: it draws the whole
+  // cluster from shared static geometry instead of the pilot-relative bubble.
+  const [universeView, setUniverseView] = useState(false);
+  const [universe, setUniverse] = useState<UniverseStatic | null>(null);
+  const [universeIntel, setUniverseIntel] = useState<UniverseActivity | null>(null);
+  const [showTraffic, setShowTraffic] = useState(false);
+  const [showCamps, setShowCamps] = useState(true);
   const [selected, setSelected] = useState<number | null>(null);
   const [follow, setFollow] = useState(true);
   const [route, setRoute] = useState<MapRouteResponse | null>(null);
@@ -102,6 +116,30 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
     [bubble, mode],
   );
   const [layout, setLayout] = useState<Layout>(new Map());
+
+  // Static geometry is fetched once and kept; the live overlay refreshes on the
+  // same cadence as the bubble intel and is shared server-side across viewers.
+  useEffect(() => {
+    if (!universeView || universe) return;
+    let cancelled = false;
+    void webApi.map.universe()
+      .then((payload) => { if (!cancelled) setUniverse(payload); })
+      .catch(() => { if (!cancelled) setUniverse(null); });
+    return () => { cancelled = true; };
+  }, [universeView, universe]);
+
+  useEffect(() => {
+    if (!universeView) return;
+    let cancelled = false;
+    const pull = (): void => {
+      void webApi.map.universeIntel()
+        .then((payload) => { if (!cancelled) setUniverseIntel(payload); })
+        .catch(() => undefined);
+    };
+    pull();
+    const timer = setInterval(pull, 15_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [universeView]);
   // Текущая раскладка держится ещё и в ref: эффект морфа читает точку старта,
   // но не должен перезапускаться от собственных промежуточных кадров.
   const layoutRef = useRef<Layout>(layout);
@@ -207,7 +245,21 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   return <MapShell onMenu={onMenu} title={t('perimeter')}>
     <div className="perimeter">
       <div className="perimeter__stage">
-        {bubble
+        {universeView
+          ? (universe
+            ? <UniverseCanvas
+              universe={universe}
+              activity={universeIntel}
+              currentSystemId={live.location?.solarSystemId ?? null}
+              routeSystemIds={route?.route.systemIds ?? []}
+              avoidedSystemIds={avoid}
+              showTraffic={showTraffic}
+              showCamps={showCamps}
+              selectedSystemId={selected}
+              onSelect={setSelected}
+            />
+            : <p className="perimeter-notice">{t('loading')}</p>)
+          : bubble
           ? <MapCanvas
             bubble={bubble}
             layout={layout}
@@ -235,14 +287,32 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
               className={`perimeter-chip${mode === 'geo' ? ' perimeter-chip--active' : ''}`}
               onClick={() => setMode('geo')}
             >{t('perimeterLayoutGeo')}</button>
-            {liveEnabled ? <button
+            <button
+              type="button"
+              className={`perimeter-chip${universeView ? ' perimeter-chip--active' : ''}`}
+              onClick={() => setUniverseView((value) => !value)}
+            >{t('perimeterLayoutUniverse')}</button>
+            {liveEnabled && !universeView ? <button
               type="button"
               className={`perimeter-chip${follow ? ' perimeter-chip--active' : ''}`}
               onClick={() => setFollow((value) => !value)}
             >{t('perimeterFollow')}</button> : null}
           </div>
 
-          <label className="perimeter__radius">
+          {universeView ? <div className="perimeter__hud-row">
+            <button
+              type="button"
+              className={`perimeter-chip${showCamps ? ' perimeter-chip--active' : ''}`}
+              onClick={() => setShowCamps((value) => !value)}
+            >{t('perimeterLayerCamps')}</button>
+            <button
+              type="button"
+              className={`perimeter-chip${showTraffic ? ' perimeter-chip--active' : ''}`}
+              onClick={() => setShowTraffic((value) => !value)}
+            >{t('perimeterLayerTraffic')}</button>
+          </div> : null}
+
+          {universeView ? null : <label className="perimeter__radius">
             {t('perimeterRadius', { jumps: String(radius ?? status.limits.defaultRadius) })}
             <input
               type="range"
@@ -251,9 +321,9 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
               value={radius ?? status.limits.defaultRadius}
               onChange={(event) => setRadius(Number(event.target.value))}
             />
-          </label>
+          </label>}
 
-          {bubble ? <MapLegend bubble={bubble} /> : null}
+          <MapLegend bubble={universeView ? null : bubble} universe={universeView ? universeIntel : null} />
         </div>
 
         {/* Честность слоёв — часть продукта, а не подпись мелким шрифтом. */}
@@ -343,11 +413,31 @@ function MapShell({
   </section>;
 }
 
-function MapLegend({ bubble }: { bubble: MapBubble }) {
+/**
+ * Always visible, never behind a hover or an onboarding tour: a legend the
+ * pilot has to go looking for is a legend nobody reads. Each row names one
+ * visual channel, and there are deliberately few of them — every extra channel
+ * is one more thing competing for the same glyph.
+ */
+function MapLegend({ bubble, universe }: { bubble: MapBubble | null; universe: UniverseActivity | null }) {
   const { t } = useI18n();
   return <div className="perimeter__legend">
-    <span>{t('perimeterVerdict')}: {t(bandLabelKey(bubble.verdict.band))}</span>
-    <span>{t('perimeterSystems', { count: String(bubble.systems.length) })}</span>
+    {bubble ? <>
+      <span>{t('perimeterVerdict')}: {t(bandLabelKey(bubble.verdict.band))}</span>
+      <span>{t('perimeterSystems', { count: String(bubble.systems.length) })}</span>
+    </> : null}
+    {universe ? <span>{t('perimeterUniverseTotals', {
+      systems: String(universe.totals.activeSystems),
+      kills: String(universe.totals.kills1h),
+      camps: String(universe.totals.campedSystems),
+    })}</span> : null}
+    <ul className="perimeter__legend-keys">
+      <li><i className="legend-dot legend-dot--sec" />{t('perimeterKeySecurity')}</li>
+      <li><i className="legend-ring" />{t('perimeterKeyThreat')}</li>
+      <li><i className="legend-dot legend-dot--big" />{t('perimeterKeyTraffic')}</li>
+      <li><span className="legend-glyph">☠</span>{t('perimeterKeyCamp')}</li>
+      <li><i className="legend-cross" />{t('perimeterKeyAvoided')}</li>
+    </ul>
   </div>;
 }
 

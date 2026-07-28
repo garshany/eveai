@@ -23,6 +23,7 @@ import {
   type RouteMode,
 } from '../eve/map-graph.js';
 import { buildBubble } from '../eve-map/bubble.js';
+import { getUniverseActivity, getUniverseStatic } from '../eve-map/universe.js';
 import { setAutopilotRoute } from '../eve/route-planner.js';
 import {
   applyCharacterNames,
@@ -154,6 +155,32 @@ export function registerMapRoutes(
       shipTypeId: origin.shipTypeId,
     });
     return { bubble, origin };
+  });
+
+  // -- Whole cluster ------------------------------------------------------
+  // Static geometry for all of New Eden. Computed once for the process and
+  // immutable between SDE builds, so it is safe to cache hard in the browser —
+  // the build id in the payload is the cache key.
+  app.get('/api/web/map/universe', async (request, reply) => {
+    const session = requireSession(db, request, reply);
+    if (!session) return;
+    const universe = getUniverseStatic(db);
+    if (!universe) {
+      return reply.status(503).send({ error: 'Карта недоступна: граф систем не построен.' });
+    }
+    reply.header('Cache-Control', 'private, max-age=3600');
+    return universe;
+  });
+
+  // Live activity for the whole cluster: one shared rollup, not one per viewer.
+  // Ten open tabs cost the same as one.
+  app.get('/api/web/map/universe/intel', async (request, reply) => {
+    const session = requireSession(db, request, reply);
+    if (!session) return;
+    if (!getMapGraphMeta(db)) {
+      return reply.status(503).send({ error: 'Карта недоступна: граф систем не построен.' });
+    }
+    return getUniverseActivity(db);
   });
 
   // -- System inspector ---------------------------------------------------

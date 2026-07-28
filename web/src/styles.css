@@ -4908,3 +4908,56 @@ a {
   color: var(--accent, #6ee7ff);
   font-size: 0.9em;
 }
+
+/* Полная карта Нового Эдема и её легенда. Легенда висит постоянно, а не по
+   наведению: до легенды, которую надо искать, никто не доходит. */
+.perimeter__universe {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.perimeter__legend-keys {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  opacity: 0.85;
+}
+
+.perimeter__legend-keys li {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: linear-gradient(90deg, #2f9bd8, #9fd14f, #e08a3c, #c2452f);
+  flex: none;
+}
+
+.legend-dot--big { width: 13px; height: 13px; background: #9fd14f; }
+
+.legend-ring {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid #e4443c;
+  flex: none;
+}
+
+.legend-cross {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  background:
+    linear-gradient(45deg, transparent 44%, #ff7878 44%, #ff7878 56%, transparent 56%),
+    linear-gradient(-45deg, transparent 44%, #ff7878 44%, #ff7878 56%, transparent 56%);
+}
+
+.legend-glyph { color: #e4443c; font-size: 0.9rem; line-height: 1; }

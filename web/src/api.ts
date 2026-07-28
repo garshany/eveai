@@ -37,6 +37,8 @@ import type {
   SessionPayload,
   TransparencyPayload,
   WebAgentRequest,
+  UniverseActivity,
+  UniverseStatic,
 } from './types';
 import type { Locale } from './i18n';
 
@@ -270,6 +272,10 @@ export const webApi = {
   // fetch тут только для снимков, маршрута и истории треда.
   map: {
     status: () => request<MapStatus>('/api/web/map/status'),
+    // Static geometry for all of New Eden. Immutable between SDE builds, so the
+    // browser is allowed to cache it hard; buildId is the cache key.
+    universe: () => request<UniverseStatic>('/api/web/map/universe'),
+    universeIntel: () => request<UniverseActivity>('/api/web/map/universe/intel'),
     bubble: (systemId?: number, radius?: number) => {
       const params = new URLSearchParams();
       if (systemId !== undefined) params.set('system_id', String(systemId));
