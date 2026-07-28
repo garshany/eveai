@@ -31,6 +31,8 @@ export type RenderInput = {
   transform: ZoomTransform;
   /** Идентификатор системы пилота — рисуется маркером, а не точкой. */
   pilotSystemId: number | null;
+  /** False when the position is a last-known one rather than live movement. */
+  pilotOnline: boolean;
   selectedSystemId: number | null;
   hoveredSystemId: number | null;
   routeSystemIds: number[];
@@ -292,15 +294,18 @@ function drawPilot(
 
   // Пульсация как признак «поток жив»: замерший маркер сразу читается как
   // потерянное соединение.
-  const pulse = input.reducedMotion ? 0.5 : (Math.sin(input.now / 420) + 1) / 2;
+  // A logged-out pilot gets a still, dimmer marker: the pulse is what says
+  // "this is live", and a last-known position must not claim that.
+  const pulse = !input.pilotOnline ? 0 : input.reducedMotion ? 0.5 : (Math.sin(input.now / 420) + 1) / 2;
+  const colour = input.pilotOnline ? '56, 189, 248' : '148, 163, 184';
   ctx.save();
   ctx.beginPath();
-  ctx.fillStyle = `rgba(56, 189, 248, ${0.15 + pulse * 0.15})`;
+  ctx.fillStyle = `rgba(${colour}, ${0.12 + pulse * 0.15})`;
   ctx.arc(node.x, node.y, (14 + pulse * 6) / scale, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.beginPath();
-  ctx.fillStyle = '#38bdf8';
+  ctx.fillStyle = input.pilotOnline ? '#38bdf8' : '#94a3b8';
   ctx.arc(node.x, node.y, 6 / scale, 0, Math.PI * 2);
   ctx.fill();
 

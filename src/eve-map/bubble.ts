@@ -24,6 +24,7 @@ import {
   getRecentKills,
   getRecentKillsForSystems,
   getSystemKillRollups,
+  resolveShipNames,
   backfillSystems,
   type IndexedKill,
   type SystemKillRollup,
@@ -198,10 +199,12 @@ export async function buildBubble(
     systems,
     edges: bubble.edges,
     wormholes: wormholes.links,
-    recentKills: getRecentKillsForSystems(db, systemIds, {
+    // Ship names resolved locally: the feed stores type ids, and an activity
+    // list of "неизвестный" tells the pilot nothing.
+    recentKills: resolveShipNames(db, getRecentKillsForSystems(db, systemIds, {
       limit: RECENT_KILL_FEED_LIMIT,
       sinceMs: now - GATE_CAMP_WINDOW_MS,
-    }),
+    })),
     verdict: { score: verdict.score, band: verdict.band, worstSystemId: verdict.worst?.systemId ?? null },
     pilotShip,
     freshness: [

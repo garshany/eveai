@@ -17,6 +17,7 @@ import { getMapSystem, routeWithRisk, type RouteMode } from '../eve/map-graph.js
 import { assessShip } from '../eve-board/threat.js';
 import { buildBubble } from './bubble.js';
 import { getGateCampHistory, getRecentKills } from './kill-index.js';
+import { getActiveRoute } from './active-route.js';
 import { currentHourOfWeek, getSystemProfile, mortalityPerThousandJumps } from './system-metrics.js';
 
 export const MAP_BUBBLE_INTEL_TOOL_NAME = 'map_bubble_intel';
@@ -122,9 +123,11 @@ export async function executePerimeterTool(
   db: Db,
   name: string,
   rawArgs: Record<string, unknown>,
+  /** Chat lane, so the tool can see the route the pilot planned on the map. */
+  chatId?: number,
 ): Promise<Record<string, unknown>> {
   switch (name) {
-    case MAP_BUBBLE_INTEL_TOOL_NAME: return await bubbleIntel(db, rawArgs);
+    case MAP_BUBBLE_INTEL_TOOL_NAME: return await bubbleIntel(db, rawArgs, chatId);
     case ROUTE_RISK_TOOL_NAME: return await routeRisk(db, rawArgs);
     case COMPARE_SHIPS_TOOL_NAME: return compareShips(db, rawArgs);
     case THREAT_EXPLAIN_TOOL_NAME: return threatExplain(db, rawArgs);
@@ -136,7 +139,11 @@ export async function executePerimeterTool(
 // map_bubble_intel
 // ---------------------------------------------------------------------------
 
-async function bubbleIntel(db: Db, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function bubbleIntel(
+  db: Db,
+  args: Record<string, unknown>,
+  chatId?: number,
+): Promise<Record<string, unknown>> {
   const systemId = readId(args.system_id);
   if (systemId === null) return failure('system_id must be a positive integer.');
   if (!getMapSystem(db, systemId)) return failure(`System ${systemId} is not in the map graph.`);
@@ -156,9 +163,32 @@ async function bubbleIntel(db: Db, args: Record<string, unknown>): Promise<Recor
   const ranked = [...bubble.systems].sort((a, b) => b.danger.score - a.danger.score);
   const shown = ranked.slice(0, MAX_SYSTEMS_IN_PAYLOAD);
 
+  // The route drawn on the pilot's map, so "что по моему маршруту?" is
+  // answerable without asking them to repeat it or checking ESI waypoints they
+  // never set.
+  const active = chatId === undefined ? null : getActiveRoute(chatId);
+
   return {
     ok: true,
     origin_system_id: systemId,
+    active_route: active === null ? null : {
+      jumps: active.jumps,
+      mode: active.mode,
+      risk_weight: active.riskWeight,
+      planned_minutes_ago: Math.round((Date.now() - active.setAtMs) / 60_000),
+      systems: active.systemIds.map((id) => {
+        const system = getMapSystem(db, id);
+        const inBubble = bubble.systems.find((entry) => entry.systemId === id);
+        return {
+          system_id: id,
+          name: system?.name ?? `System ${id}`,
+          security: system?.security ?? null,
+          danger_score: inBubble?.danger.score ?? null,
+          danger_band: inBubble?.danger.band ?? null,
+        };
+      }),
+      note: 'Planned on the Perimeter map by this pilot. Not an ESI autopilot waypoint list.',
+    },
     radius: bubble.radius,
     requested_radius: bubble.requestedRadius,
     truncated: bubble.truncated,

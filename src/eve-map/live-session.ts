@@ -258,22 +258,11 @@ async function poll(session: Session): Promise<void> {
         const isOnline = online.data?.online === true;
         if (!isOnline && session.online) {
           session.online = false;
-          // The last known position is not deleted, but it stops being
-          // presented as current: a frozen dot that claims to be live is worse
-          // than an honest "offline".
           emit(session, { type: 'offline', at: new Date(now).toISOString() });
         } else if (isOnline) {
           session.online = true;
         }
       }
-    }
-    // Between online checks the flag is the only thing that knows. Falling
-    // through here used to publish a position with online:true for the next
-    // minute, so the UI flipped back from "offline" to "live" while the pilot
-    // was still logged out.
-    if (!session.online) {
-      session.polling = false;
-      return;
     }
 
     const location = await callEsiOperation<{
@@ -316,7 +305,12 @@ async function poll(session: Session): Promise<void> {
       structureId: typeof location.data?.structure_id === 'number' ? location.data.structure_id : null,
       shipTypeId,
       shipName,
-      online: true,
+      // ESI answers /location/ for a docked, logged-out character too, and that
+      // is where most people are when they open the map. Suppressing the
+      // position while offline left the map with no pilot at all and recentred
+      // it on a default system — worse than showing where they actually are.
+      // The flag says it is not live; it does not delete the fact.
+      online: session.online,
       at: new Date(now).toISOString(),
     };
     session.lastLocation = next;
@@ -330,7 +324,9 @@ async function poll(session: Session): Promise<void> {
     emit(session, {
       type: 'location',
       location: next,
-      jumped: previousSystemId !== null && previousSystemId !== solarSystemId,
+      // A logged-out character cannot jump; a position change while offline is
+      // a docked move, not travel, and must not drive the follow camera.
+      jumped: session.online && previousSystemId !== null && previousSystemId !== solarSystemId,
       previousSystemId,
     });
   } catch (error) {

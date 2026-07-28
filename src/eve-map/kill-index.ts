@@ -655,6 +655,61 @@ function emptyRollup(systemId: number): SystemKillRollup {
   };
 }
 
+/**
+ * Fills in names the feed did not carry.
+ *
+ * The EVE-KILL feed publishes ESI-shaped killmails: ids, no names. Stored as-is
+ * they render as "неизвестный" for every victim and every attacker, which makes
+ * the whole "кто кого убил" panel worthless. Ship names come from the local SDE
+ * for free; character names need one bulk lookup, so callers resolve them only
+ * for what they are about to show.
+ */
+export function resolveShipNames(db: Db, kills: IndexedKill[]): IndexedKill[] {
+  const typeIds = new Set<number>();
+  for (const kill of kills) {
+    if (kill.victimShipName === null && kill.victimShipTypeId) typeIds.add(kill.victimShipTypeId);
+    if (kill.finalBlowShipName === null && kill.finalBlowShipTypeId) typeIds.add(kill.finalBlowShipTypeId);
+  }
+  if (typeIds.size === 0) return kills;
+
+  const names = new Map<number, string>();
+  for (const chunk of chunked([...typeIds], SQL_CHUNK)) {
+    const rows = db.prepare(
+      `SELECT type_id, name FROM sde_types WHERE type_id IN (${chunk.map(() => '?').join(',')})`,
+    ).all(...chunk) as Array<{ type_id: number; name: string }>;
+    for (const row of rows) names.set(row.type_id, row.name);
+  }
+
+  return kills.map((kill) => ({
+    ...kill,
+    victimShipName: kill.victimShipName
+      ?? (kill.victimShipTypeId === null ? null : names.get(kill.victimShipTypeId) ?? null),
+    finalBlowShipName: kill.finalBlowShipName
+      ?? (kill.finalBlowShipTypeId === null ? null : names.get(kill.finalBlowShipTypeId) ?? null),
+  }));
+}
+
+/** Character ids on these kills whose names are still missing. */
+export function missingCharacterIds(kills: IndexedKill[]): number[] {
+  const ids = new Set<number>();
+  for (const kill of kills) {
+    if (kill.victimCharacterName === null && kill.victimCharacterId) ids.add(kill.victimCharacterId);
+    if (kill.finalBlowCharacterName === null && kill.finalBlowCharacterId) ids.add(kill.finalBlowCharacterId);
+  }
+  return [...ids];
+}
+
+export function applyCharacterNames(kills: IndexedKill[], names: Map<number, string>): IndexedKill[] {
+  if (names.size === 0) return kills;
+  return kills.map((kill) => ({
+    ...kill,
+    victimCharacterName: kill.victimCharacterName
+      ?? (kill.victimCharacterId === null ? null : names.get(kill.victimCharacterId) ?? null),
+    finalBlowCharacterName: kill.finalBlowCharacterName
+      ?? (kill.finalBlowCharacterId === null ? null : names.get(kill.finalBlowCharacterId) ?? null),
+  }));
+}
+
 export type GateCampHistory = {
   gateId: number;
   systemId: number;

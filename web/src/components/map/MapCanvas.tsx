@@ -26,6 +26,7 @@ type Props = {
   bubble: MapBubble;
   layout: Layout;
   pilotSystemId: number | null;
+  pilotOnline: boolean;
   selectedSystemId: number | null;
   routeSystemIds: number[];
   flashes: KillFlash[];
@@ -45,6 +46,7 @@ export function MapCanvas({
   bubble,
   layout,
   pilotSystemId,
+  pilotOnline,
   selectedSystemId,
   routeSystemIds,
   flashes,
@@ -77,11 +79,11 @@ export function MapCanvas({
 
   // Всё, что цикл отрисовки читает покадрово, живёт в одном ref.
   const sceneRef = useRef({
-    nodes, bubble, layout, pilotSystemId, selectedSystemId,
+    nodes, bubble, layout, pilotSystemId, pilotOnline, selectedSystemId,
     hoveredSystemId: hovered, routeSystemIds, flashes,
   });
   sceneRef.current = {
-    nodes, bubble, layout, pilotSystemId, selectedSystemId,
+    nodes, bubble, layout, pilotSystemId, pilotOnline, selectedSystemId,
     hoveredSystemId: hovered, routeSystemIds, flashes,
   };
 
@@ -178,6 +180,7 @@ export function MapCanvas({
         layout: scene.layout,
         transform: transformRef.current,
         pilotSystemId: scene.pilotSystemId,
+        pilotOnline: scene.pilotOnline,
         selectedSystemId: scene.selectedSystemId,
         hoveredSystemId: scene.hoveredSystemId,
         routeSystemIds: scene.routeSystemIds,

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import { config } from '../../src/config.js';
 import type { UserContext } from '../../src/auth/user-resolver.js';
+import type { LiveSessionEvent } from '../../src/eve-map/live-session.js';
 
 const esiMock = vi.hoisted(() => vi.fn());
 
@@ -164,15 +165,24 @@ describe('map live session', () => {
     expect(jumps).toEqual([false]);
   });
 
-  it('stops polling when the pilot goes offline', async () => {
-    esiReturns({ online: false });
-    const events: string[] = [];
-    attachLiveSession(db, ctx(), CHARACTER_ID, (event) => events.push(event.type));
+  it('still reports where an offline pilot is, flagged as not live', async () => {
+    esiReturns({ online: false, systemId: 30002659 });
+    const events: LiveSessionEvent[] = [];
+    attachLiveSession(db, ctx(), CHARACTER_ID, (event) => events.push(event));
     await settle();
 
-    // Замерший маркер, притворяющийся живым, хуже честного «офлайн».
-    expect(events).toContain('offline');
-    expect(events).not.toContain('location');
+    // ESI отдаёт позицию и для залогаутившегося персонажа в доке — а это ровно
+    // то состояние, в котором человек чаще всего открывает карту. Прятать её
+    // значило оставить карту вообще без пилота и центрировать на чужой системе.
+    expect(events.map((event) => event.type)).toContain('offline');
+    const location = events.find((event) => event.type === 'location');
+    expect(location).toBeDefined();
+    if (location?.type === 'location') {
+      expect(location.location.solarSystemId).toBe(30002659);
+      // Флаг говорит, что это не «живое», но факт не удаляет.
+      expect(location.location.online).toBe(false);
+      expect(location.jumped).toBe(false);
+    }
   });
 
   it('backs off on failure and stops after the configured limit', async () => {
@@ -216,25 +226,28 @@ describe('offline stays offline', () => {
   });
   afterEach(() => { resetLiveSessionsForTests(); db.close(); });
 
-  it('does not publish a live position between online checks while logged out', async () => {
-    esiReturns({ online: false });
-    const events: string[] = [];
-    const attached = attachLiveSession(db, ctx(), CHARACTER_ID, (event) => events.push(event.type));
+  it('never marks a position live again until an online check says so', async () => {
+    esiReturns({ online: false, systemId: 30002659 });
+    const events: LiveSessionEvent[] = [];
+    const attached = attachLiveSession(db, ctx(), CHARACTER_ID, (event) => events.push(event));
     if (!attached.ok) throw new Error('attach failed');
     await settle();
-    expect(events).toEqual(['offline']);
 
-    // Следующие опросы внутри минутного окна пропускают проверку онлайна.
-    // Раньше они всё равно шли за позицией и публиковали её как live —
-    // интерфейс возвращался из «офлайн» в «в сети» на пятьдесят пять секунд.
-    esiReturns({ online: true, systemId: 30000142 });
+    // Опросы внутри минутного окна пропускают проверку онлайна. Раньше они
+    // публиковали позицию с online:true, и интерфейс возвращался из «офлайн»
+    // в «в сети» на пятьдесят пять секунд.
     esiMock.mockImplementation(async (_db: unknown, operation: string) => {
       if (operation === 'get_characters_character_id_online') {
         throw new Error('online must not be re-checked inside the interval');
       }
-      return { ok: true, status: 200, data: { solar_system_id: 30000142 }, headers: {} };
+      return { ok: true, status: 200, data: { solar_system_id: 30002659 }, headers: {} };
     });
     await settle();
-    expect(events).toEqual(['offline']);
+
+    const locations = events.filter((event) => event.type === 'location');
+    expect(locations.length).toBeGreaterThan(0);
+    for (const event of locations) {
+      if (event.type === 'location') expect(event.location.online).toBe(false);
+    }
   });
 });

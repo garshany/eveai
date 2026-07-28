@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { __testables, resetActiveRoutesForTests } from '../../src/web/map-routes.js';
+import { __testables } from '../../src/web/map-routes.js';
+import {
+  getActiveRoute,
+  rememberRoute,
+  resetActiveRoutesForTests,
+  routeAheadOf,
+} from '../../src/eve-map/active-route.js';
 
-const { rememberRoute, routeAheadOf, readIdempotencyKey } = __testables;
+const { readIdempotencyKey } = __testables;
 
 const CHAT = -2_000_000_000;
 const ROUTE = [30000142, 30000144, 30000139, 30002187];
@@ -11,34 +17,44 @@ describe('active route', () => {
   afterEach(() => resetActiveRoutesForTests());
 
   it('returns the hops still ahead of the pilot', () => {
-    rememberRoute(CHAT, ROUTE, NOW);
+    rememberRoute(CHAT, { systemIds: ROUTE, mode: 'shortest', riskWeight: 4 }, NOW);
     expect(routeAheadOf(CHAT, 30000142, NOW)).toEqual([30000144, 30000139, 30002187]);
     expect(routeAheadOf(CHAT, 30000139, NOW)).toEqual([30002187]);
   });
 
   it('is empty at the destination', () => {
-    rememberRoute(CHAT, ROUTE, NOW);
+    rememberRoute(CHAT, { systemIds: ROUTE, mode: 'shortest', riskWeight: 4 }, NOW);
     expect(routeAheadOf(CHAT, 30002187, NOW)).toEqual([]);
   });
 
   it('says nothing when the pilot left the planned route', () => {
-    rememberRoute(CHAT, ROUTE, NOW);
+    rememberRoute(CHAT, { systemIds: ROUTE, mode: 'shortest', riskWeight: 4 }, NOW);
     // Предупреждать про прыжки, куда пилот уже не летит, хуже, чем молчать.
     expect(routeAheadOf(CHAT, 30009999, NOW)).toEqual([]);
   });
 
   it('forgets a route nobody refreshed', () => {
-    rememberRoute(CHAT, ROUTE, NOW);
+    rememberRoute(CHAT, { systemIds: ROUTE, mode: 'shortest', riskWeight: 4 }, NOW);
     expect(routeAheadOf(CHAT, 30000142, NOW + 3 * 60 * 60_000)).toEqual([]);
   });
 
   it('ignores a degenerate route', () => {
-    rememberRoute(CHAT, [30000142], NOW);
+    rememberRoute(CHAT, { systemIds: [30000142], mode: 'shortest', riskWeight: 0 }, NOW);
     expect(routeAheadOf(CHAT, 30000142, NOW)).toEqual([]);
   });
 
+  it('is readable by the agent, not only by the stream', () => {
+    rememberRoute(CHAT, { systemIds: ROUTE, mode: 'secure', riskWeight: 4 }, NOW);
+    const active = getActiveRoute(CHAT, NOW)!;
+    // Без этого агент отвечал «активного маршрута у API нет», глядя мимо
+    // маршрута, нарисованного у пилота на экране.
+    expect(active.jumps).toBe(3);
+    expect(active.mode).toBe('secure');
+    expect(active.systemIds).toEqual(ROUTE);
+  });
+
   it('keeps lanes apart', () => {
-    rememberRoute(CHAT, ROUTE, NOW);
+    rememberRoute(CHAT, { systemIds: ROUTE, mode: 'shortest', riskWeight: 4 }, NOW);
     expect(routeAheadOf(CHAT - 1, 30000142, NOW)).toEqual([]);
   });
 });

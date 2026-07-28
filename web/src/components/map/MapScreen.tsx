@@ -212,6 +212,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
             bubble={bubble}
             layout={layout}
             pilotSystemId={live.location?.solarSystemId ?? (liveEnabled ? null : bubble.originId)}
+            pilotOnline={live.location?.online ?? false}
             selectedSystemId={selected}
             routeSystemIds={route?.route.systemIds ?? []}
             flashes={flashes}

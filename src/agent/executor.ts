@@ -2764,7 +2764,7 @@ async function executeToolCallUnadmitted(
   // ESI, no outbound fan-out beyond what buildBubble already bounds.
   if (isPerimeterTool(name)) {
     const { executePerimeterTool } = await import('../eve-map/tools.js');
-    return await executePerimeterTool(db, name, args);
+    return await executePerimeterTool(db, name, args, ctx.chatId);
   }
 
   if (name === 'plan_route') {

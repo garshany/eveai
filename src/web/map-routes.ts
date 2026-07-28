@@ -23,7 +23,15 @@ import {
   type RouteMode,
 } from '../eve/map-graph.js';
 import { buildBubble } from '../eve-map/bubble.js';
-import { getRecentKills, getKillIndexStatus, onIndexedKill } from '../eve-map/kill-index.js';
+import {
+  applyCharacterNames,
+  getKillIndexStatus,
+  getRecentKills,
+  missingCharacterIds,
+  onIndexedKill,
+  resolveShipNames,
+} from '../eve-map/kill-index.js';
+import { resolveCharacterNames } from '../eve-map/names.js';
 import {
   attachLiveSession,
   getLiveSessionStats,
@@ -40,6 +48,8 @@ import {
   getOrCreatePerimeterThread,
   readPerimeterHistory,
 } from '../eve-map/thread.js';
+import { rememberRoute, routeAheadOf } from '../eve-map/active-route.js';
+export { resetActiveRoutesForTests } from '../eve-map/active-route.js';
 import type { WebAgentRequestCoordinator } from './agent-requests.js';
 import { requireMutationSession, requireSession } from './web-route-guards.js';
 import { buildWebClientIpKey } from './web-session.js';
@@ -47,40 +57,6 @@ import type { WebSession } from './web-session.js';
 
 const LOCATION_SCOPE = 'esi-location.read_location.v1';
 
-/**
- * The route the pilot is actually flying, remembered per chat lane.
- *
- * The advisory rules need it: without a route "ahead" degrades to "everything
- * one jump away", and `route_degraded` can never fire at all. The route is
- * computed here, so keeping it here costs nothing and avoids trusting a
- * client-supplied path.
- */
-const activeRoutes = new Map<number, { systemIds: number[]; setAtMs: number }>();
-/** A route nobody has refreshed in this long is no longer what they are flying. */
-const ACTIVE_ROUTE_TTL_MS = 2 * 60 * 60_000;
-
-function rememberRoute(chatId: number, systemIds: number[], now = Date.now()): void {
-  if (systemIds.length < 2) activeRoutes.delete(chatId);
-  else activeRoutes.set(chatId, { systemIds, setAtMs: now });
-}
-
-/** The part of the route still ahead of the pilot, newest position first. */
-function routeAheadOf(chatId: number, currentSystemId: number, now = Date.now()): number[] {
-  const entry = activeRoutes.get(chatId);
-  if (!entry) return [];
-  if (now - entry.setAtMs > ACTIVE_ROUTE_TTL_MS) {
-    activeRoutes.delete(chatId);
-    return [];
-  }
-  const index = entry.systemIds.indexOf(currentSystemId);
-  // Off the planned route entirely: better to say nothing about it than to warn
-  // about hops the pilot is no longer heading for.
-  return index < 0 ? [] : entry.systemIds.slice(index + 1);
-}
-
-export function resetActiveRoutesForTests(): void {
-  activeRoutes.clear();
-}
 const HEARTBEAT_MS = 15_000;
 const MAX_ROUTE_AVOID = 100;
 
@@ -179,9 +155,18 @@ export function registerMapRoutes(
     }
     const system = getMapSystem(db, systemId);
     if (!system) return reply.status(404).send({ error: 'Система не найдена в графе карты.' });
+
+    // The feed carries ids, not names. Ship names come from the local SDE for
+    // free; pilot names cost one bulk lookup, made only for the rows about to be
+    // shown. Without this every line reads "неизвестный" and the panel that was
+    // supposed to answer "кто кого убил" answers nothing.
+    let kills = resolveShipNames(db, getRecentKills(db, systemId, { limit: 30 }));
+    const names = await resolveCharacterNames(db, missingCharacterIds(kills));
+    kills = applyCharacterNames(kills, names);
+
     return {
       system,
-      kills: getRecentKills(db, systemId, { limit: 30 }).map((kill) => ({
+      kills: kills.map((kill) => ({
         ...kill,
         url: `https://eve-kill.com/kill/${kill.killmailId}`,
       })),
@@ -223,7 +208,11 @@ export function registerMapRoutes(
         : [],
     });
 
-    rememberRoute(session.chatId, route.ok ? route.systemIds : []);
+    rememberRoute(session.chatId, {
+      systemIds: route.ok ? route.systemIds : [],
+      mode,
+      riskWeight: risk,
+    });
 
     return {
       route,
@@ -650,5 +639,5 @@ function sessionContext(session: WebSession) {
 /** Exported for tests that need a synthetic advisory publication. */
 export const __testables = {
   publishAdvisory, parseRisk, parseAvoid, parseRadius,
-  rememberRoute, routeAheadOf, readIdempotencyKey,
+  readIdempotencyKey,
 };
