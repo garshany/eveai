@@ -324,7 +324,7 @@ describe('OpenAI runtime configuration', () => {
     expect(config.openai.readSubagentAggregateChars).toBe(60_000);
     expect(config.openai.readSubagentBatchDeadlineMs).toBe(600_000);
     expect(config.web.aiSearchEnabled).toBe(true);
-    expect(config.web.aiSearchMaxModelCalls).toBe(2);
+    expect(config.web.aiSearchMaxModelCalls).toBe(3);
     expect(config.web.aiSearchTimeoutMs).toBe(30_000);
     expect(config.web.aiSearchMaxResults).toBe(20);
   });
@@ -339,7 +339,7 @@ describe('OpenAI runtime configuration', () => {
     const { config } = await import('../../src/config.js');
 
     expect(config.web.aiSearchEnabled).toBe(false);
-    expect(config.web.aiSearchMaxModelCalls).toBe(1);
+    expect(config.web.aiSearchMaxModelCalls).toBe(2);
     expect(config.web.aiSearchTimeoutMs).toBe(15_000);
     expect(config.web.aiSearchMaxResults).toBe(8);
   });

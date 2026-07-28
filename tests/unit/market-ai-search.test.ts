@@ -105,15 +105,44 @@ describe('runMarketAiSearch', () => {
   });
 
   it('stops at the configured model-call budget when the model keeps calling tools', async () => {
-    const factory = vi.fn<ResponseFactory>(async () => sdeCalls('loop', 1));
+    // Уникальные call_id на раунд: повторный id режется replay-валидацией
+    // раньше, чем упирается в бюджет вызовов модели.
+    let round = 0;
+    const factory = vi.fn<ResponseFactory>(async () => sdeCalls(`loop-${round++}`, 1));
 
     const outcome = await runMarketAiSearch(db, 'фрегат', CTX, REGION, { responseFactory: factory });
 
     expect(outcome.ok).toBe(false);
-    // Бюджет по умолчанию — два вызова (раунд тулов + финальный ответ).
-    expect(factory).toHaveBeenCalledTimes(2);
+    // Бюджет по умолчанию — три вызова (пара тул-раундов + финальный ответ).
+    // Модель продолжает просить тулы даже на финальном вызове без тулов — отказ.
+    expect(factory).toHaveBeenCalledTimes(3);
     // Usage потраченных вызовов не теряется даже при неуспехе.
-    expect(outcome.usage).toMatchObject({ input: 200, output: 50 });
+    expect(outcome.usage).toMatchObject({ input: 300, output: 75 });
+  });
+
+  it('withholds tools on the final model call so the model must answer with text', async () => {
+    const original = config.web.aiSearchMaxModelCalls;
+    config.web.aiSearchMaxModelCalls = 2;
+    try {
+      const factory = vi.fn<ResponseFactory>()
+        .mockResolvedValueOnce(sdeCalls('lookup', 1))
+        .mockImplementationOnce(async (input) => {
+          // Финальный вызов идёт без тулов — повторить сценарий из продакшена,
+          // где модель просила второй тул-раунд и поиск молча падал в 503, нельзя.
+          expect(input.tools).toEqual([]);
+          return finalText('[{"type_id": 587, "reason": "Дешёвый фрегат."}]');
+        });
+
+      const outcome = await runMarketAiSearch(db, 'фрегат', CTX, REGION, { responseFactory: factory });
+
+      expect(outcome.ok).toBe(true);
+      expect(outcome.picks).toEqual([{ type_id: 587, reason: 'Дешёвый фрегат.' }]);
+      expect(factory).toHaveBeenCalledTimes(2);
+      // Первый вызов — с полным набором тулов.
+      expect(factory.mock.calls[0]![0].tools.length).toBeGreaterThan(0);
+    } finally {
+      config.web.aiSearchMaxModelCalls = original;
+    }
   });
 
   it('honours WEB_AI_SEARCH_MAX_MODEL_CALLS overrides (config wiring is live)', async () => {
