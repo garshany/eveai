@@ -72,10 +72,13 @@ export function rememberRoute(
 export function getActiveRoute(chatId: number, now = Date.now()): ActiveRoute | null {
   const entry = activeRoutes.get(chatId);
   if (!entry) return null;
-  if (now - entry.setAtMs > ACTIVE_ROUTE_TTL_MS) {
-    activeRoutes.delete(chatId);
-    return null;
-  }
+  // Expired routes are reported as gone but deliberately NOT removed here.
+  // Deleting silently on read let any reader — the agent answering "что вокруг
+  // меня" is the likely one — race ahead of the sweep and consume the entry, so
+  // expireStaleRoutes found nothing, published nothing, and the dead line stayed
+  // on the pilot's screen until they reloaded. The sweep is the only remover, so
+  // the notification always fires exactly once.
+  if (now - entry.setAtMs > ACTIVE_ROUTE_TTL_MS) return null;
   return entry;
 }
 

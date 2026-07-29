@@ -128,6 +128,13 @@ describe('GET /api/web/map/system answers for any system, not just the bubble', 
     expect((await inspect(FAR)).json().system.jumps).toBeNull();
   });
 
+  it('reports no distance when the two systems are not connected', async () => {
+    // Отдельная компонента графа: «неизвестно» честнее, чем любое число.
+    db.prepare('INSERT INTO map_systems (system_id, name, security, map_x, map_y) VALUES (?, ?, ?, ?, ?)')
+      .run(30009999, 'Island', 0.5, 999, 999);
+    expect((await inspect(FAR, 30009999)).json().system.jumps).toBeNull();
+  });
+
   it('still 404s for a system that is not in the graph', async () => {
     expect((await inspect(39999999, NEAR)).statusCode).toBe(404);
   });

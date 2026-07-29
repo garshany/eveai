@@ -20,6 +20,7 @@ import { getGateCampHistory, getRecentKills } from './kill-index.js';
 import { getActiveRoute, rememberRoute } from './active-route.js';
 import { effectiveAvoidSet } from './avoid.js';
 import { resolveUserContextForChat } from '../auth/user-resolver.js';
+import { isTurnAborted } from '../agent/activity.js';
 import { currentHourOfWeek, getSystemProfile, mortalityPerThousandJumps } from './system-metrics.js';
 
 export const MAP_BUBBLE_INTEL_TOOL_NAME = 'map_bubble_intel';
@@ -278,7 +279,10 @@ async function routeRisk(
   //
   // A strict schema is a contract with a cooperative caller, not a guarantee:
   // anything that is not an explicit true leaves the pilot's line alone.
-  if (chatId !== undefined && args.draw_on_map === true) {
+  // An abandoned turn must not redraw the map. The pilot sent another message
+  // (or switched character) while the bubble was being built; the answer this
+  // route belongs to will never be shown to them.
+  if (chatId !== undefined && args.draw_on_map === true && !isTurnAborted()) {
     rememberRoute(chatId, { systemIds: route.systemIds, mode, riskWeight });
   }
 

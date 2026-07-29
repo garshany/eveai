@@ -47,6 +47,15 @@ export type MapLiveState = {
    * он сказал и что выставил в автопилот.
    */
   route: LiveRoute | null;
+  /**
+   * True once the stream has told us what the route is — including "there is
+   * none".
+   *
+   * Without this the screen cannot tell "the server says no route" from "the
+   * server has not spoken yet", and falls back to the last route this tab
+   * planned. That resurrects a line the server has just expired or cleared.
+   */
+  routeKnown: boolean;
   /** Свежие килы для вспышек; потребитель забирает и очищает. */
   killEvents: MapKillEvent[];
   advisories: LiveAdvisory[];
@@ -65,6 +74,7 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
     bubble: null,
     threadId: null,
     route: null,
+    routeKnown: false,
     killEvents: [],
     advisories: [],
     warning: null,
@@ -131,7 +141,7 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
     });
 
     on<{ route: LiveRoute | null }>('route', (payload) => {
-      setState((previous) => ({ ...previous, route: payload.route }));
+      setState((previous) => ({ ...previous, route: payload.route, routeKnown: true }));
     });
 
     on<{ kill: MapKillEvent }>('kill', (payload) => {

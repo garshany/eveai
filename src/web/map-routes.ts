@@ -19,6 +19,7 @@ import { getLinkedCharacter } from '../eve/sso.js';
 import {
   getMapGraphMeta,
   getMapSystem,
+  jumpDistance,
   routeWithRisk,
   type RouteMode,
 } from '../eve/map-graph.js';
@@ -236,15 +237,15 @@ export function registerMapRoutes(
 
     // Distance is measured from wherever the caller says the pilot is. Answering
     // 0 when we simply do not know would read as "you are here".
+    // A breadth-first walk, not the risk router: distance in jumps is
+    // unweighted. Answering it with routeWithRisk ran a full Dijkstra whose
+    // frontier minimum is a linear scan — O(V²) over ~8500 systems, synchronous
+    // on the only thread this process has, on every click of the inspector.
+    // The limit spans New Eden, which is under 100 jumps across.
     const from = Number(request.query.from_system_id);
-    let jumps: number | null = null;
-    if (Number.isSafeInteger(from) && from > 0) {
-      if (from === systemId) jumps = 0;
-      else {
-        const path = routeWithRisk(db, from, systemId, { mode: 'shortest', riskWeight: 0 });
-        jumps = path.ok ? path.systemIds.length - 1 : null;
-      }
-    }
+    const jumps = Number.isSafeInteger(from) && from > 0
+      ? jumpDistance(db, from, systemId, 200)
+      : null;
 
     // The feed carries ids, not names. Ship names come from the local SDE for
     // free; pilot names cost one bulk lookup, made only for the rows about to be

@@ -121,6 +121,25 @@ describe('active route is published, not just stored', () => {
     expect(seen).toEqual([null]);
   });
 
+  it('still announces expiry after a reader has already seen the route go stale', () => {
+    // Ревью Kimi: getActiveRoute удалял истёкшую запись молча, поэтому агент,
+    // заглянувший в маршрут в окне между истечением и подметанием, съедал её —
+    // подметание не находило ничего, событие не уходило, и мёртвая линия
+    // висела до перезагрузки.
+    const planned = Date.parse('2026-07-29T07:00:00.000Z');
+    const later = planned + 3 * 60 * 60_000;
+    rememberRoute(LANE, { systemIds: [1, 2, 3], mode: 'secure', riskWeight: 0 }, planned);
+
+    // Читатель (тул агента) видит «маршрута нет»...
+    expect(getActiveRoute(LANE, later)).toBeNull();
+
+    const seen: Array<number | null> = [];
+    onActiveRouteChange((_chatId, route) => seen.push(route?.jumps ?? null));
+    // ...но карта всё равно узнаёт об этом.
+    expect(expireStaleRoutes(later)).toBe(1);
+    expect(seen).toEqual([null]);
+  });
+
   it('forgets a route nobody refreshed for hours', () => {
     const planned = Date.parse('2026-07-29T07:00:00.000Z');
     rememberRoute(LANE, { systemIds: [1, 2, 3], mode: 'secure', riskWeight: 0 }, planned);

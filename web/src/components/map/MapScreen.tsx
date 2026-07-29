@@ -128,7 +128,15 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
    * screen planned. The agent can reroute from the chat — it publishes the same
    * route it describes and sets in the autopilot — and the map has to agree.
    */
-  const drawnRouteSystemIds = live.route?.systemIds ?? route?.route.systemIds ?? [];
+  // Once the stream has spoken, it is the authority — including when it says
+  // there is no route. Falling through to the last route this tab planned made
+  // expiry and clearing cosmetic: the server dropped the route, the client
+  // redrew it from stale local state, and a two-hour-old line came back looking
+  // authoritative. The local route is only a stand-in until the stream answers
+  // (a guest, or no location scope, never gets one).
+  const drawnRouteSystemIds = live.routeKnown
+    ? live.route?.systemIds ?? []
+    : route?.route.systemIds ?? [];
 
   // How much of that route the bubble physically cannot place. The bubble is
   // radius-limited and a route is not, so this is the normal case, not an edge
@@ -456,6 +464,11 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
             {': '}
             {t(freshnessKey(layerInfo.status))}
           </span>)}
+          {/* An EVE-Scout outage renders as an empty layer, which reads as
+              "there are no exits anywhere in New Eden" — a lie people route by. */}
+          {universeView && wormholes?.error ? <span className="perimeter-fresh perimeter-fresh--unavailable">
+            {t('perimeterLayerWormholes')}: {t('perimeterFresh_unavailable')}
+          </span> : null}
           {bubble.truncated ? <span className="perimeter-fresh perimeter-fresh--hourly">
             {t('perimeterTruncated', { shown: String(bubble.radius), asked: String(bubble.requestedRadius) })}
           </span> : null}
@@ -475,7 +488,11 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
           {t('perimeterPilotOffline')}
         </p> : null}
 
-        {inspected === null && inspectError !== null ? <p
+        {/* Shown whether or not the panel opened. A system already in the bubble
+            seeds the panel, so gating this on an empty panel hid the failure
+            behind stale data and an empty kill list — the same "it lights up
+            and says nothing" this screen was fixed to stop doing. */}
+        {inspectError !== null ? <p
           className="perimeter-notice perimeter-notice--inline"
           role="alert"
         >{inspectError}</p> : null}
@@ -491,7 +508,10 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
           onAsk={focusSystem}
         /> : null}
 
-        {route?.route.ok
+        {/* The stream saying "no route" outranks anything this tab remembers. */}
+        {live.routeKnown && live.route === null
+          ? null
+          : route?.route.ok
           ? <RouteRibbon route={route} onClear={() => void clearDrawnRoute()} />
           : live.route
           // A route the agent planned carries only its system ids, so it gets a

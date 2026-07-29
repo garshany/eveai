@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { UniverseActivity, UniverseStatic, UniverseWormholeLink } from '../../types';
+import { splitRouteRuns } from './route-view';
 import {
   GLYPH_ZOOM_RATIO,
   LABEL_ZOOM_RATIO,
@@ -264,23 +265,25 @@ export function UniverseCanvas({
     }
 
     // --- route ribbon ------------------------------------------------------
+    // Same rule as the bubble canvas: a system this atlas cannot place breaks
+    // the line, it does not get skipped. Skipping joined two systems that share
+    // no gate — a route through Thera, or one planned against an SDE older than
+    // ESI, is exactly where that happens.
     if (routeSystemIds.length > 1) {
       ctx.strokeStyle = 'rgba(110, 231, 255, 0.85)';
       ctx.lineWidth = Math.min(4, 1 + 0.6 * Math.sqrt(zoom));
-      ctx.beginPath();
-      let started = false;
-      for (const systemId of routeSystemIds) {
-        const index = indexById.get(systemId);
-        if (index === undefined) continue;
-        const sx = screenX(index);
-        const sy = screenY(index);
-        if (started) ctx.lineTo(sx, sy);
-        else {
-          ctx.moveTo(sx, sy);
-          started = true;
+      for (const run of splitRouteRuns(routeSystemIds, (id) => indexById.has(id))) {
+        if (run.length < 2) continue;
+        ctx.beginPath();
+        for (let r = 0; r < run.length; r += 1) {
+          const index = indexById.get(run[r]!)!;
+          const sx = screenX(index);
+          const sy = screenY(index);
+          if (r === 0) ctx.moveTo(sx, sy);
+          else ctx.lineTo(sx, sy);
         }
+        ctx.stroke();
       }
-      ctx.stroke();
     }
 
     // --- systems -----------------------------------------------------------
