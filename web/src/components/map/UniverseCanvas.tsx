@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { UniverseActivity, UniverseStatic } from '../../types';
+import type { UniverseActivity, UniverseStatic, UniverseWormholeLink } from '../../types';
 import {
   GLYPH_ZOOM_RATIO,
   LABEL_ZOOM_RATIO,
@@ -38,6 +38,8 @@ export type UniverseCanvasProps = {
   /** Systems on the active route, drawn as a ribbon over the atlas. */
   routeSystemIds: number[];
   avoidedSystemIds: number[];
+  /** EVE-Scout exits, already filtered to links this map can place. */
+  wormholes: UniverseWormholeLink[];
   showTraffic: boolean;
   showCamps: boolean;
   onSelect: (systemId: number) => void;
@@ -58,6 +60,7 @@ export function UniverseCanvas({
   currentSystemId,
   routeSystemIds,
   avoidedSystemIds,
+  wormholes,
   showTraffic,
   showCamps,
   onSelect,
@@ -232,6 +235,33 @@ export function UniverseCanvas({
       ctx.lineTo(bx, by);
     }
     ctx.stroke();
+
+    // --- EVE-Scout exits ---------------------------------------------------
+    // Dashed and indigo, the same language the bubble map already uses for a
+    // wormhole. Never gated behind the zoom threshold: there are a few hundred
+    // of these against fourteen thousand gates, they cost nothing to draw, and
+    // the whole reason to look at the cluster map is to spot one.
+    if (wormholes.length > 0) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(129, 140, 248, 0.75)';
+      ctx.lineWidth = Math.min(2.4, 0.6 + 0.4 * Math.sqrt(zoom));
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      for (const link of wormholes) {
+        const a = indexById.get(link.fromSystemId);
+        const b = indexById.get(link.toSystemId);
+        if (a === undefined || b === undefined) continue;
+        const ax = screenX(a);
+        const ay = screenY(a);
+        const bx = screenX(b);
+        const by = screenY(b);
+        if (!visible(ax, ay) && !visible(bx, by)) continue;
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // --- route ribbon ------------------------------------------------------
     if (routeSystemIds.length > 1) {

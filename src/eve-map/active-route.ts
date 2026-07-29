@@ -79,6 +79,32 @@ export function getActiveRoute(chatId: number, now = Date.now()): ActiveRoute | 
   return entry;
 }
 
+/**
+ * Drop every route whose TTL has run out, and tell the map about each one.
+ *
+ * Expiry used to happen only inside getActiveRoute: the entry vanished for the
+ * next reader, but nobody told the open stream, so a route that aged out
+ * mid-session stayed drawn on screen until the pilot reloaded the page.
+ *
+ * The lazy delete in getActiveRoute stays as a second line of defence and stays
+ * silent — publishing from a getter would make an agent answering "что вокруг
+ * меня" write SSE frames from inside the assembly of a tool response.
+ *
+ * Returns how many lanes were expired, so a caller can log a sweep that did
+ * something. Deleting during iteration is safe; a listener that plans a route
+ * for another lane mid-sweep is simply picked up on the next tick.
+ */
+export function expireStaleRoutes(now = Date.now()): number {
+  let expired = 0;
+  for (const [chatId, entry] of activeRoutes) {
+    if (now - entry.setAtMs <= ACTIVE_ROUTE_TTL_MS) continue;
+    activeRoutes.delete(chatId);
+    publish(chatId, null);
+    expired += 1;
+  }
+  return expired;
+}
+
 /** The part of the route still ahead of the pilot. */
 export function routeAheadOf(chatId: number, currentSystemId: number, now = Date.now()): number[] {
   const entry = getActiveRoute(chatId, now);

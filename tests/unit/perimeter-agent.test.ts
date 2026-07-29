@@ -48,6 +48,35 @@ describe('Perimeter is its own assistant', () => {
     expect(prompt).toContain('map_bubble_intel.active_route');
   });
 
+  /**
+   * Промт описывал один маршрутный инструмент из двух и ни словом не упоминал,
+   * что маршрут рисуется на карте пилота. Ничто не мешало модели собрать список
+   * прыжков из sde_stargates и выдать прозой — маршрут, который на карту не
+   * попадёт никогда.
+   */
+  it('knows plan_route exists and that it takes system names', () => {
+    const prompt = buildDeveloperPrompt(CAPABILITIES, null, null, null, 'perimeter');
+    expect(prompt).toContain('plan_route');
+    expect(prompt).toContain('It takes system names');
+  });
+
+  it('knows route_risk takes numeric ids, never names', () => {
+    const prompt = buildDeveloperPrompt(CAPABILITIES, null, null, null, 'perimeter');
+    expect(prompt).toContain('never names');
+    expect(prompt).toContain('draw_on_map');
+  });
+
+  it('is told that planning a route draws the line the pilot steers by', () => {
+    const prompt = buildDeveloperPrompt(CAPABILITIES, null, null, null, 'perimeter');
+    expect(prompt).toContain('draw the route on the pilot');
+  });
+
+  it('is forbidden from hand-rolling a hop list out of the SDE', () => {
+    const prompt = buildDeveloperPrompt(CAPABILITIES, null, null, null, 'perimeter');
+    expect(prompt).toContain('sde_sql');
+    expect(prompt).toContain('is prose');
+  });
+
   it('carries the map tools', async () => {
     const names = toolNames(await buildNativeAgentTools('perimeter'));
     expect(names).toEqual(expect.arrayContaining([

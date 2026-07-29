@@ -6,38 +6,23 @@
  * сколько это стоило.
  */
 
-import { useEffect, useState } from 'react';
-import { webApi } from '../../api';
 import { useI18n } from '../../i18n';
-import type { MapBubbleSystem, MapKillEvent } from '../../types';
+import type { InspectedSystem, MapKillEvent } from '../../types';
 import { bandColor } from './renderer';
 import { bandLabelKey, dangerTermKey } from './labels';
 
 type Props = {
-  system: MapBubbleSystem;
+  system: InspectedSystem;
+  /** Null while still loading. The screen owns the fetch — see MapScreen. */
+  kills: MapKillEvent[] | null;
   onClose: () => void;
   onRouteTo: (systemId: number) => void;
   onAvoid: (systemId: number) => void;
   onAsk: (systemId: number) => void;
 };
 
-export function SystemInspector({ system, onClose, onRouteTo, onAvoid, onAsk }: Props) {
+export function SystemInspector({ system, kills, onClose, onRouteTo, onAvoid, onAsk }: Props) {
   const { t, locale } = useI18n();
-  const [kills, setKills] = useState<MapKillEvent[] | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setKills(null);
-    void (async () => {
-      try {
-        const payload = await webApi.map.system(system.systemId);
-        if (!cancelled) setKills(payload.kills);
-      } catch {
-        if (!cancelled) setKills([]);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [system.systemId]);
 
   const camp = system.gateCamps.filter((gate) => gate.killCount >= 2);
 
@@ -46,7 +31,9 @@ export function SystemInspector({ system, onClose, onRouteTo, onAvoid, onAsk }: 
       <div>
         <h3>{system.name}</h3>
         <p className="perimeter-inspector__sub">
-          {system.security.toFixed(1)} · {system.regionName ?? '—'} · {t('perimeterJumpsAway', { jumps: String(system.jumps) })}
+          {system.security.toFixed(1)} · {system.regionName ?? '—'} · {system.jumps === null
+            ? t('perimeterJumpsUnknown')
+            : t('perimeterJumpsAway', { jumps: String(system.jumps) })}
         </p>
       </div>
       <button type="button" className="icon-button" onClick={onClose} aria-label={t('dockClose')}>×</button>

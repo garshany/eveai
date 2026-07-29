@@ -15,6 +15,7 @@ import { quadtree, type Quadtree } from 'd3-quadtree';
 import type { ZoomTransform } from 'd3-zoom';
 import type { DangerBand, MapBubble, MapBubbleSystem } from '../../types';
 import type { Layout } from './layout';
+import { routeBreaks, splitRouteRuns } from './route-view';
 
 export type RenderNode = {
   systemId: number;
@@ -173,29 +174,67 @@ function drawWormholes(
   ctx.restore();
 }
 
+/**
+ * The route, drawn only where this bubble can actually place it.
+ *
+ * Each contiguous stretch is its own path. Skipping absent systems while
+ * continuing one path — which is what this used to do — draws a straight line
+ * between two systems that share no gate, inventing a jump the pilot cannot
+ * make. Where the route runs off the edge of the bubble it gets a short dashed
+ * tail instead; the HUD chip carries the number of jumps that are missing.
+ */
 function drawRoute(
   ctx: CanvasRenderingContext2D,
   input: RenderInput,
   byId: Map<number, RenderNode>,
 ): void {
   if (input.routeSystemIds.length < 2) return;
+  const present = (systemId: number): boolean => byId.has(systemId);
+  const runs = splitRouteRuns(input.routeSystemIds, present);
+  if (runs.length === 0) return;
+
+  const scale = input.transform.k;
   ctx.save();
   ctx.strokeStyle = 'rgba(56, 189, 248, 0.9)';
-  ctx.lineWidth = 3 / input.transform.k;
+  ctx.lineWidth = 3 / scale;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  ctx.beginPath();
-  let started = false;
-  for (const systemId of input.routeSystemIds) {
-    const node = byId.get(systemId);
-    if (!node) continue;
-    if (started) ctx.lineTo(node.x, node.y);
-    else {
-      ctx.moveTo(node.x, node.y);
-      started = true;
+
+  for (const run of runs) {
+    // A lone system between two absent ones is a dot, not a segment.
+    if (run.length < 2) continue;
+    ctx.beginPath();
+    for (let index = 0; index < run.length; index += 1) {
+      const node = byId.get(run[index]!)!;
+      if (index === 0) ctx.moveTo(node.x, node.y);
+      else ctx.lineTo(node.x, node.y);
     }
+    ctx.stroke();
   }
-  ctx.stroke();
+
+  // Tails on the systems where the route leaves the bubble: "it continues, but
+  // not here". Direction comes from the last hop travelled, which is the only
+  // direction we honestly have — the next system has no position at all.
+  const { exits } = routeBreaks(input.routeSystemIds, present);
+  if (exits.length > 0) {
+    ctx.setLineDash([5 / scale, 4 / scale]);
+    ctx.lineWidth = 2 / scale;
+    for (const systemId of exits) {
+      const node = byId.get(systemId)!;
+      const index = input.routeSystemIds.indexOf(systemId);
+      const previous = index > 0 ? byId.get(input.routeSystemIds[index - 1]!) : undefined;
+      if (!previous) continue;
+      const dx = node.x - previous.x;
+      const dy = node.y - previous.y;
+      const length = Math.hypot(dx, dy);
+      if (length === 0) continue;
+      ctx.beginPath();
+      ctx.moveTo(node.x, node.y);
+      ctx.lineTo(node.x + (dx / length) * 26, node.y + (dy / length) * 26);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
   ctx.restore();
 }
 

@@ -16,11 +16,14 @@ import { webApi } from '../../api';
 import { LocaleSwitch, useI18n } from '../../i18n';
 import { MenuIcon } from '../../icons';
 import type {
+  InspectedSystem,
   MapBubble,
+  MapKillEvent,
   MapRouteResponse,
   MapStatus,
   UniverseActivity,
   UniverseStatic,
+  UniverseWormholes,
 } from '../../types';
 import { MapCanvas } from './MapCanvas';
 import { PerimeterChat } from './PerimeterChat';
@@ -29,6 +32,7 @@ import { bandLabelKey, freshnessKey, layerLabelKey } from './labels';
 import { buildLayout, interpolateLayouts, type Layout, type LayoutMode } from './layout';
 import { UniverseCanvas } from './UniverseCanvas';
 import type { KillFlash } from './renderer';
+import { hiddenHopCount } from './route-view';
 import { useMapLive } from './use-map-live';
 
 type Props = {
@@ -52,8 +56,10 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   const [universeView, setUniverseView] = useState(false);
   const [universe, setUniverse] = useState<UniverseStatic | null>(null);
   const [universeIntel, setUniverseIntel] = useState<UniverseActivity | null>(null);
+  const [wormholes, setWormholes] = useState<UniverseWormholes | null>(null);
   const [showTraffic, setShowTraffic] = useState(false);
   const [showCamps, setShowCamps] = useState(true);
+  const [showWormholes, setShowWormholes] = useState(true);
   const [selected, setSelected] = useState<number | null>(null);
   const [follow, setFollow] = useState(true);
   const [route, setRoute] = useState<MapRouteResponse | null>(null);
@@ -124,6 +130,15 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
    */
   const drawnRouteSystemIds = live.route?.systemIds ?? route?.route.systemIds ?? [];
 
+  // How much of that route the bubble physically cannot place. The bubble is
+  // radius-limited and a route is not, so this is the normal case, not an edge
+  // one — and a silently shortened line reads as a shorter route.
+  const hiddenJumps = useMemo(() => {
+    if (drawnRouteSystemIds.length < 2 || !bubble) return 0;
+    const inBubble = new Set(bubble.systems.map((system) => system.systemId));
+    return hiddenHopCount(drawnRouteSystemIds, (id) => inBubble.has(id));
+  }, [drawnRouteSystemIds, bubble]);
+
   // Static geometry is fetched once and kept; the live overlay refreshes on the
   // same cadence as the bubble intel and is shared server-side across viewers.
   useEffect(() => {
@@ -145,6 +160,22 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
     };
     pull();
     const timer = setInterval(pull, 15_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [universeView]);
+
+  // EVE-Scout exits. Polled far more slowly than the kill rollup because the
+  // upstream itself is cached for five minutes — asking faster would only
+  // re-fetch the same answer.
+  useEffect(() => {
+    if (!universeView) return;
+    let cancelled = false;
+    const pull = (): void => {
+      void webApi.map.universeWormholes()
+        .then((payload) => { if (!cancelled) setWormholes(payload); })
+        .catch(() => undefined);
+    };
+    pull();
+    const timer = setInterval(pull, 120_000);
     return () => { cancelled = true; clearInterval(timer); };
   }, [universeView]);
   // Текущая раскладка держится ещё и в ref: эффект морфа читает точку старта,
@@ -201,21 +232,83 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
     ]);
   }, [live.killEvents]);
 
-  const selectedSystem = useMemo(
+  const pilotSystemId = live.location?.solarSystemId ?? bubble?.originId ?? null;
+
+  const bubbleSelection = useMemo<InspectedSystem | null>(
     () => bubble?.systems.find((system) => system.systemId === selected) ?? null,
     [bubble, selected],
   );
+
+  /**
+   * The inspector opens from either map, and the whole-cluster map can select
+   * any of the ~8490 systems — almost none of which are in the pilot's bubble.
+   * Looking the selection up only in the bubble is why clicking a nullsec system
+   * on the full map used to draw a selection ring and then say nothing at all.
+   *
+   * A system inside the bubble opens instantly from data already on screen and
+   * is then replaced by the server's rollup; anything else waits for that one
+   * request. Kills are fetched here rather than inside the panel so an
+   * out-of-bubble system costs one round trip instead of two.
+   */
+  const [inspected, setInspected] = useState<InspectedSystem | null>(null);
+  const [inspectedKills, setInspectedKills] = useState<MapKillEvent[] | null>(null);
+  // A failed lookup must say so. Silence here is indistinguishable from the bug
+  // this replaced: the system lights up and nothing ever opens.
+  const [inspectError, setInspectError] = useState<string | null>(null);
+  // Read through a ref: the live bubble is a new object every few seconds, and
+  // depending on it directly would refetch the panel on every frame.
+  const seedRef = useRef<{ system: InspectedSystem | null; pilot: number | null }>(
+    { system: null, pilot: null },
+  );
+  seedRef.current = { system: bubbleSelection, pilot: pilotSystemId };
+
+  useEffect(() => {
+    if (selected === null) {
+      setInspected(null);
+      setInspectedKills(null);
+      setInspectError(null);
+      return;
+    }
+    setInspected(seedRef.current.system);
+    setInspectedKills(null);
+    setInspectError(null);
+    let cancelled = false;
+    void webApi.map.system(selected, seedRef.current.pilot)
+      .then((payload) => {
+        if (cancelled) return;
+        setInspected(payload.system);
+        setInspectedKills(payload.kills);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setInspectedKills([]);
+        setInspectError(error instanceof Error ? error.message : t('requestFailed'));
+      });
+    return () => { cancelled = true; };
+  }, [selected, t]);
 
   const focusSystem = useCallback((systemId: number) => {
     setSelected(systemId);
     setFollow(false);
   }, []);
 
+  const clearDrawnRoute = useCallback(async () => {
+    setRoute(null);
+    try {
+      await webApi.map.clearRoute(csrfToken);
+    } catch {
+      // The line the server holds stays until it answers; nothing local to undo.
+    }
+  }, [csrfToken]);
+
   const planRoute = useCallback(async (destination: number) => {
     if (!bubble) return;
     try {
       const payload = await webApi.map.route({
-        origin: bubble.originId,
+        // Where the pilot actually is, not where the bubble happens to be
+        // centred — on the full map those differ, and for a guest the bubble is
+        // centred on Jita.
+        origin: pilotSystemId ?? bubble.originId,
         destination,
         mode: 'shortest',
         // Ненулевой вес по умолчанию: экран называется «безопасный маршрут»,
@@ -228,7 +321,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
     } catch {
       setRoute(null);
     }
-  }, [bubble, avoid, csrfToken]);
+  }, [bubble, avoid, csrfToken, pilotSystemId]);
 
   // --- Состояния отказа -----------------------------------------------------
   if (statusError) {
@@ -260,6 +353,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
               currentSystemId={live.location?.solarSystemId ?? null}
               routeSystemIds={drawnRouteSystemIds}
               avoidedSystemIds={avoid}
+              wormholes={showWormholes ? wormholes?.links ?? [] : []}
               showTraffic={showTraffic}
               showCamps={showCamps}
               selectedSystemId={selected}
@@ -273,7 +367,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
             pilotSystemId={live.location?.solarSystemId ?? (liveEnabled ? null : bubble.originId)}
             pilotOnline={live.location?.online ?? false}
             selectedSystemId={selected}
-            routeSystemIds={route?.route.systemIds ?? []}
+            routeSystemIds={drawnRouteSystemIds}
             flashes={flashes}
             jumpCounter={live.jumpCounter}
             follow={follow}
@@ -317,6 +411,24 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
               className={`perimeter-chip${showTraffic ? ' perimeter-chip--active' : ''}`}
               onClick={() => setShowTraffic((value) => !value)}
             >{t('perimeterLayerTraffic')}</button>
+            <button
+              type="button"
+              className={`perimeter-chip${showWormholes ? ' perimeter-chip--active' : ''}`}
+              onClick={() => setShowWormholes((value) => !value)}
+            >{t('perimeterLayerWormholes')}</button>
+          </div> : null}
+
+          {/* Пузырь ограничен радиусом, маршрут — нет. Молча обрезать линию
+              значит показать более короткий маршрут, чем назвал лоцман. */}
+          {!universeView && hiddenJumps > 0 ? <div className="perimeter__hud-row">
+            <span className="perimeter-fresh perimeter-fresh--hourly">
+              {t('perimeterRouteBeyond', { jumps: String(hiddenJumps) })}
+            </span>
+            <button
+              type="button"
+              className="perimeter-chip"
+              onClick={() => setUniverseView(true)}
+            >{t('perimeterRouteOpenUniverse')}</button>
           </div> : null}
 
           {universeView ? null : <label className="perimeter__radius">
@@ -363,8 +475,14 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
           {t('perimeterPilotOffline')}
         </p> : null}
 
-        {selectedSystem ? <SystemInspector
-          system={selectedSystem}
+        {inspected === null && inspectError !== null ? <p
+          className="perimeter-notice perimeter-notice--inline"
+          role="alert"
+        >{inspectError}</p> : null}
+
+        {inspected ? <SystemInspector
+          system={inspected}
+          kills={inspectedKills}
           onClose={() => setSelected(null)}
           onRouteTo={(systemId) => void planRoute(systemId)}
           onAvoid={(systemId) => setAvoid((previous) => (
@@ -373,7 +491,26 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
           onAsk={focusSystem}
         /> : null}
 
-        {route?.route.ok ? <RouteRibbon route={route} onClear={() => setRoute(null)} /> : null}
+        {route?.route.ok
+          ? <RouteRibbon route={route} onClear={() => void clearDrawnRoute()} />
+          : live.route
+          // A route the agent planned carries only its system ids, so it gets a
+          // compact banner rather than the per-system ribbon. Without it there
+          // was no jump count and no way to take the line off the map at all.
+          ? <div className="perimeter__route">
+            <div className="perimeter__route-head">
+              <strong>{t('perimeterRouteAgent', {
+                jumps: String(live.route.jumps),
+                mode: live.route.mode,
+              })}</strong>
+              <button
+                type="button"
+                className="perimeter-chip"
+                onClick={() => void clearDrawnRoute()}
+              >{t('perimeterRouteClear')}</button>
+            </div>
+          </div>
+          : null}
       </div>
 
       <PerimeterChat
@@ -444,6 +581,7 @@ function MapLegend({ bubble, universe }: { bubble: MapBubble | null; universe: U
       <li><i className="legend-dot legend-dot--big" />{t('perimeterKeyTraffic')}</li>
       <li><span className="legend-glyph">☠</span>{t('perimeterKeyCamp')}</li>
       <li><i className="legend-cross" />{t('perimeterKeyAvoided')}</li>
+      {universe ? <li><i className="legend-dash" />{t('perimeterKeyWormhole')}</li> : null}
     </ul>
   </div>;
 }

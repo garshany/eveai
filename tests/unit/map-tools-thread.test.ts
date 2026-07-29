@@ -15,6 +15,7 @@ vi.mock('../../src/eve-kill/client.js', () => ({ searchKillmails: searchMock }))
 const { buildMapGraph, invalidateMapGraphCache } = await import('../../src/eve/map-graph.js');
 const { executePerimeterTool, isPerimeterTool, PERIMETER_TOOLS } = await import('../../src/eve-map/tools.js');
 const { recordKillmail } = await import('../../src/eve-map/kill-index.js');
+const { getActiveRoute, resetActiveRoutesForTests } = await import('../../src/eve-map/active-route.js');
 const {
   appendAdvisory,
   getOrCreatePerimeterThread,
@@ -264,5 +265,94 @@ describe('perimeter thread', () => {
     db.prepare("INSERT INTO messages (thread_id, role, content) VALUES (?, 'user', 'привет')").run(threadId);
     const history = readPerimeterHistory(db, threadId);
     expect(history[0]!.meta).toBeNull();
+  });
+});
+
+/**
+ * Регрессия на реальную жалобу: линия на карте показывала не тот маршрут, что
+ * рекомендовал лоцман. route_risk публиковал КАЖДЫЙ вызов, поэтому сравнение
+ * «secure против insecure» оставляло на экране последний сравнённый вариант, а
+ * в ответе стоял первый.
+ */
+describe('route_risk draws only the route it recommends', () => {
+  const LANE = -2_000_000_777;
+  let db: Database.Database;
+
+  beforeEach(() => {
+    resetActiveRoutesForTests();
+    invalidateMapGraphCache();
+    db = new Database(':memory:');
+    db.exec(SCHEMA_SQL);
+    seedGraph(db);
+  });
+
+  afterEach(() => {
+    resetActiveRoutesForTests();
+    db.close();
+    invalidateMapGraphCache();
+  });
+
+  const plan = (draw: unknown): Promise<Record<string, unknown>> => executePerimeterTool(db, 'route_risk', {
+    origin_system_id: 30000001,
+    destination_system_id: 30000002,
+    mode: 'shortest',
+    risk_weight: 0,
+    draw_on_map: draw,
+  }, LANE);
+
+  it('redraws the line when this is the recommendation', async () => {
+    const result = await plan(true);
+    expect(result.ok).toBe(true);
+    expect(getActiveRoute(LANE)?.systemIds).toEqual([30000001, 30000002]);
+  });
+
+  it('leaves the pilot line alone when merely comparing', async () => {
+    const result = await plan(false);
+    expect(result.ok).toBe(true);
+    expect(getActiveRoute(LANE)).toBeNull();
+  });
+
+  it('treats a missing flag as "do not draw"', async () => {
+    // Строгая схема — это договор с добросовестным вызывающим, а не гарантия.
+    await executePerimeterTool(db, 'route_risk', {
+      origin_system_id: 30000001,
+      destination_system_id: 30000002,
+      mode: 'shortest',
+      risk_weight: 0,
+    }, LANE);
+    expect(getActiveRoute(LANE)).toBeNull();
+  });
+
+  it('a later comparison does not overwrite the recommended route', async () => {
+    await plan(true);
+    await executePerimeterTool(db, 'route_risk', {
+      origin_system_id: 30000002,
+      destination_system_id: 30000001,
+      mode: 'shortest',
+      risk_weight: 0,
+      draw_on_map: false,
+    }, LANE);
+    // Именно это и было багом: пилот смотрел на последний сравнённый маршрут.
+    expect(getActiveRoute(LANE)?.systemIds).toEqual([30000001, 30000002]);
+  });
+
+  it('a route that could not be planned never redraws the line', async () => {
+    const result = await executePerimeterTool(db, 'route_risk', {
+      origin_system_id: 30000001,
+      destination_system_id: 39999999,
+      mode: 'shortest',
+      risk_weight: 0,
+      draw_on_map: true,
+    }, LANE);
+    expect(result.ok).toBe(false);
+    expect(getActiveRoute(LANE)).toBeNull();
+  });
+
+  it('declares draw_on_map as a required property, not an optional one', () => {
+    const tool = PERIMETER_TOOLS.find((entry) => entry.name === 'route_risk')!;
+    const parameters = tool.parameters as { properties: Record<string, unknown>; required: string[] };
+    // Свойство вне required в strict-схеме — ошибка контракта, а не стиля.
+    expect(parameters.properties).toHaveProperty('draw_on_map');
+    expect(parameters.required).toContain('draw_on_map');
   });
 });

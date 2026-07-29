@@ -23,7 +23,7 @@ import {
   type RouteMode,
 } from '../eve/map-graph.js';
 import { buildBubble } from '../eve-map/bubble.js';
-import { getUniverseActivity, getUniverseStatic } from '../eve-map/universe.js';
+import { getUniverseActivity, getUniverseStatic, getUniverseWormholes } from '../eve-map/universe.js';
 import { setAutopilotRoute } from '../eve/route-planner.js';
 import {
   applyCharacterNames,
@@ -51,7 +51,14 @@ import {
   readPerimeterHistory,
   startNewPerimeterThread,
 } from '../eve-map/thread.js';
-import { getActiveRoute, onActiveRouteChange, rememberRoute, routeAheadOf } from '../eve-map/active-route.js';
+import {
+  clearActiveRoute,
+  expireStaleRoutes,
+  getActiveRoute,
+  onActiveRouteChange,
+  rememberRoute,
+  routeAheadOf,
+} from '../eve-map/active-route.js';
 import {
   addAvoided,
   clearAvoided,
@@ -72,7 +79,7 @@ const HEARTBEAT_MS = 15_000;
 const MAX_ROUTE_AVOID = 100;
 
 type BubbleQuery = { system_id?: string; radius?: string };
-type SystemQuery = { system_id?: string };
+type SystemQuery = { system_id?: string; from_system_id?: string };
 type RouteBody = {
   origin?: unknown;
   destination?: unknown;
@@ -184,6 +191,19 @@ export function registerMapRoutes(
     return getUniverseActivity(db);
   });
 
+  // EVE-Scout exits for the whole cluster. Its own endpoint rather than a field
+  // on the intel payload: EVE-Scout is cached for five minutes upstream while
+  // the intel rollup refreshes every few seconds, and pinning them together
+  // would make one of the two lie about its age.
+  app.get('/api/web/map/universe/wormholes', async (request, reply) => {
+    const session = requireSession(db, request, reply);
+    if (!session) return;
+    if (!getMapGraphMeta(db)) {
+      return reply.status(503).send({ error: 'Карта недоступна: граф систем не построен.' });
+    }
+    return getUniverseWormholes(db);
+  });
+
   // -- System inspector ---------------------------------------------------
   app.get<{ Querystring: SystemQuery }>('/api/web/map/system', async (request, reply) => {
     const session = requireSession(db, request, reply);
@@ -192,8 +212,28 @@ export function registerMapRoutes(
     if (!Number.isSafeInteger(systemId) || systemId <= 0) {
       return reply.status(400).send({ error: 'system_id обязателен.' });
     }
-    const system = getMapSystem(db, systemId);
-    if (!system) return reply.status(404).send({ error: 'Система не найдена в графе карты.' });
+    const geometry = getMapSystem(db, systemId);
+    if (!geometry) return reply.status(404).send({ error: 'Система не найдена в графе карты.' });
+
+    // The full rollup, not just the geometry. The inspector opens from the whole
+    // cluster map too, where the system is nowhere near the pilot's bubble and
+    // the screen has no score, no activity and no camps to show it. A radius-1
+    // bubble centred on the system reuses the scoring, the kill counters and the
+    // camp detection instead of growing a second, subtly different copy of them.
+    const rollup = await buildBubble(db, systemId, { radius: 1, skipBackfill: true });
+    const scored = rollup.systems.find((entry) => entry.systemId === systemId) ?? null;
+
+    // Distance is measured from wherever the caller says the pilot is. Answering
+    // 0 when we simply do not know would read as "you are here".
+    const from = Number(request.query.from_system_id);
+    let jumps: number | null = null;
+    if (Number.isSafeInteger(from) && from > 0) {
+      if (from === systemId) jumps = 0;
+      else {
+        const path = routeWithRisk(db, from, systemId, { mode: 'shortest', riskWeight: 0 });
+        jumps = path.ok ? path.systemIds.length - 1 : null;
+      }
+    }
 
     // The feed carries ids, not names. Ship names come from the local SDE for
     // free; pilot names cost one bulk lookup, made only for the rows about to be
@@ -204,7 +244,7 @@ export function registerMapRoutes(
     kills = applyCharacterNames(kills, names);
 
     return {
-      system,
+      system: { ...geometry, ...(scored ?? {}), jumps },
       kills: kills.map((kill) => ({
         ...kill,
         url: `https://eve-kill.com/kill/${kill.killmailId}`,
@@ -302,6 +342,21 @@ export function registerMapRoutes(
         totalSystems: route.systemIds.length,
       },
     };
+  });
+
+  /**
+   * Take the drawn route off the map.
+   *
+   * The only way to clear a line used to be to ask for a route that cannot
+   * exist, because a failed plan publishes an empty one. That is not an
+   * interface. Deliberately does not touch the in-game autopilot: erasing a
+   * drawing and erasing the pilot's waypoints are different acts.
+   */
+  app.delete('/api/web/map/route', async (request, reply) => {
+    const session = requireMutationSession(db, request, reply);
+    if (!session) return;
+    clearActiveRoute(session.chatId);
+    return { cleared: true };
   });
 
   // -- Avoid list ---------------------------------------------------------
@@ -561,6 +616,9 @@ export function registerMapRoutes(
     });
 
     const intelTimer = setInterval(() => {
+      // A route that ages out while the pilot is watching has to leave the
+      // screen. Expiry in the store is lazy, so somebody has to go looking.
+      expireStaleRoutes();
       void refresh(lastShipTypeId, 'tick');
     }, config.map.intelRefreshSeconds * 1000);
     intelTimer.unref?.();
@@ -573,17 +631,18 @@ export function registerMapRoutes(
       attached.detach();
     });
 
+    // Sent even when there is no route. The client carries its last drawn line
+    // across a reconnect, so silence here would leave a route that expired (or
+    // was cleared) while the stream was down on screen forever.
     const current = getActiveRoute(session.chatId);
-    if (current) {
-      stream.send('route', {
-        route: {
-          systemIds: current.systemIds,
-          jumps: current.jumps,
-          mode: current.mode,
-          riskWeight: current.riskWeight,
-        },
-      });
-    }
+    stream.send('route', {
+      route: current === null ? null : {
+        systemIds: current.systemIds,
+        jumps: current.jumps,
+        mode: current.mode,
+        riskWeight: current.riskWeight,
+      },
+    });
 
     stream.send('ready', {
       characterId: linked.characterId,

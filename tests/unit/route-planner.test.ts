@@ -4,6 +4,7 @@ import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 const callEsiOperationMock = vi.fn();
 const getLinkedCharacterMock = vi.fn();
+const rememberRouteMock = vi.hoisted(() => vi.fn());
 const {
   buildRouteThreatSnapshotMock,
   generateBriefingFromSnapshotMock,
@@ -61,6 +62,15 @@ vi.mock('../../src/eve-kill/feed-poll.js', () => ({
 }));
 vi.mock('../../src/eve/thera-scout.js', () => ({
   findBestTheraShortcut: findBestTheraShortcutMock,
+}));
+
+// Файл делает vi.resetModules() перед каждым тестом и импортирует planRoute
+// динамически. Статический импорт active-route.js здесь был бы ДРУГИМ
+// экземпляром модуля, и утверждения «маршрут не опубликован» проходили бы,
+// даже когда он публикуется.
+vi.mock('../../src/eve-map/active-route.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/eve-map/active-route.js')>()),
+  rememberRoute: rememberRouteMock,
 }));
 
 let db: Database.Database;
@@ -659,6 +669,185 @@ describe('route planner', () => {
     expect(result.formatted_summary).toContain('нельзя считать подтверждением безопасности');
     expect(result.formatted_summary).not.toContain('киллов/ч: 0');
     expect(callEsiOperationMock.mock.calls.some((call) => call[1] === 'post_ui_autopilot_waypoint')).toBe(false);
+  });
+
+  /**
+   * Регрессия на реальную жалобу: «на карте маршруты не обновились после его
+   * ответа, а должны были». Выбор маршрута считался дважды — один раз внутри
+   * ветки автопилота и ещё раз ниже для брифинга, — и rememberRoute был закопан
+   * в первой. Поэтому «проложи маршрут, автопилот не ставь» рисовал ровно
+   * ничего, а ветка Thera не рисовала никогда.
+   */
+  it('draws the route on the map even when no autopilot was asked for', async () => {
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      { origin: 'current', destination: 'Jita', prefer: 'secure' },
+      { userId: 1, chatId: 1 },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(rememberRouteMock).toHaveBeenCalledTimes(1);
+    expect(rememberRouteMock.mock.calls[0]?.[0]).toBe(1);
+    expect(rememberRouteMock.mock.calls[0]?.[1]).toEqual({
+      systemIds: [30002659, 30002660, 30000142],
+      mode: 'secure',
+      riskWeight: 0,
+    });
+    // Именно то, о чём просил пилот: линия есть, путевые точки не тронуты.
+    expect(result.autopilot_set).toBe(false);
+    expect(callEsiOperationMock.mock.calls.some((call) => call[1] === 'post_ui_autopilot_waypoint')).toBe(false);
+  });
+
+  it('draws exactly the route it goes on to monitor', async () => {
+    const { planRoute, setRouteMonitorSender } = await import('../../src/eve/route-planner.js');
+    setRouteMonitorSender(async () => {});
+    await planRoute(
+      db,
+      { origin: 'current', destination: 'Jita', set_autopilot: true, prefer: 'insecure' },
+      { userId: 1, chatId: 1, notificationCapability: 'web' },
+    );
+
+    // Один источник истины: разъехавшись, нарисованный и отслеживаемый маршрут
+    // дают предупреждения про прыжки, которых нет на экране.
+    expect(rememberRouteMock.mock.calls[0]?.[1].systemIds)
+      .toEqual(startRouteMonitorMock.mock.calls[0]?.[3]);
+  });
+
+  it('draws the route before the autopilot write, so a refused ESI call still leaves the map right', async () => {
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string, args: unknown) => {
+      if (operation === 'get_route_origin_destination') {
+        const flag = String((args as Record<string, unknown>).flag);
+        if (flag === 'secure') {
+          return { ok: true, status: 200, cached: false, headers: {}, data: [30002659, 30002660, 30000142] };
+        }
+        return { ok: true, status: 200, cached: false, headers: {}, data: [30002659, 30000142] };
+      }
+      if (operation === 'post_ui_autopilot_waypoint') {
+        return { ok: false, status: 403, error: 'no autopilot scope' };
+      }
+      return { ok: false, status: 404, error: `Unexpected operation: ${operation}` };
+    });
+
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      { origin: 'current', destination: 'Jita', set_autopilot: true, prefer: 'secure' },
+      { userId: 1, chatId: 1 },
+    );
+
+    expect(result.autopilot_set).toBe(false);
+    expect(rememberRouteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('draws the Thera shortcut instead of leaving the old line up', async () => {
+    const entrySystemId = 30002662;
+    const exitSystemId = 30002663;
+    const hubSystemId = 31000005;
+    const longRoute = [30002659, 30002660, 30002661, entrySystemId, 30002664, 30002665, 30002666, 30002667, 30000142];
+    findBestTheraShortcutMock.mockResolvedValue({
+      hub_system: 'Thera', hub_system_id: hubSystemId,
+      entry_system: 'Thera Entry', entry_system_id: entrySystemId,
+      entry_class: 'lowsec', entry_region: 'The Forge', entry_jumps: 1,
+      exit_system: 'Thera Exit', exit_system_id: exitSystemId,
+      exit_class: 'lowsec', exit_region: 'The Forge', exit_jumps: 1,
+      total_jumps: 4, direct_jumps: 8, saved_jumps: 4, max_ship_size: 'large',
+      entry_remaining_hours: 6, exit_remaining_hours: 5,
+      entry_wh_type: 'K162', exit_wh_type: 'K162',
+    });
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string, args: unknown) => {
+      const input = args as Record<string, unknown>;
+      if (operation === 'get_route_origin_destination') {
+        if (input.destination === entrySystemId) {
+          return { ok: true, status: 200, cached: false, headers: {}, data: [30002659, entrySystemId] };
+        }
+        if (input.origin === exitSystemId) {
+          return { ok: true, status: 200, cached: false, headers: {}, data: [exitSystemId, 30000142] };
+        }
+        return { ok: true, status: 200, cached: false, headers: {}, data: longRoute };
+      }
+      return { ok: false, status: 404, error: `Unexpected operation: ${operation}` };
+    });
+
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      { origin: 'current', destination: 'Jita', prefer: 'thera_shortcut' },
+      { userId: 1, chatId: 1 },
+    );
+
+    expect(result.ok).toBe(true);
+    // Ветка шортката не публиковала маршрут вообще — карта всегда оставалась
+    // на предыдущем.
+    expect(rememberRouteMock).toHaveBeenCalledTimes(1);
+    expect(rememberRouteMock.mock.calls[0]?.[1]).toEqual({
+      systemIds: [30002659, entrySystemId, hubSystemId, exitSystemId, 30000142],
+      mode: 'thera_shortcut',
+      riskWeight: 0,
+    });
+  });
+
+  it('draws nothing when the destination is not a system', async () => {
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      { origin: 'current', destination: 'Nowhere At All', set_autopilot: true, prefer: 'secure' },
+      { userId: 1, chatId: 1 },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(rememberRouteMock).not.toHaveBeenCalled();
+  });
+
+  it('draws nothing when ESI has no route at all', async () => {
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string) => {
+      if (operation === 'get_route_origin_destination') {
+        return { ok: true, status: 200, cached: false, headers: {}, data: [] };
+      }
+      return { ok: false, status: 404, error: `Unexpected operation: ${operation}` };
+    });
+
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      { origin: 'current', destination: 'Jita', set_autopilot: true, prefer: 'secure' },
+      { userId: 1, chatId: 1 },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(rememberRouteMock).not.toHaveBeenCalled();
+  });
+
+  it('draws nothing when the EVE-KILL baseline is unavailable', async () => {
+    buildRouteThreatSnapshotMock.mockResolvedValue({
+      ...routeSnapshot([]),
+      error: 'upstream timeout',
+      requestCount: 0,
+    });
+
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      { origin: 'current', destination: 'Jita', set_autopilot: true, prefer: 'secure' },
+      { userId: 1, chatId: 1 },
+    );
+
+    expect(result.ok).toBe(false);
+    // Худший из возможных исходов: линия на карте под текстом «маршрут и
+    // автопилот не выставлены».
+    expect(rememberRouteMock).not.toHaveBeenCalled();
+  });
+
+  it('draws nothing for a context with no chat lane', async () => {
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      { origin: 'current', destination: 'Jita', prefer: 'secure' },
+      { userId: 1 },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(rememberRouteMock).not.toHaveBeenCalled();
   });
 
   it('reads securityStatus from SDE when building route data', async () => {

@@ -606,6 +606,31 @@ export type MapBubbleSystem = {
   danger: { systemId: number; score: number; band: DangerBand; terms: DangerTerm[] };
 };
 
+/**
+ * A system opened in the inspector, from either map.
+ *
+ * The whole-cluster map can select any of the ~8490 systems, most of which are
+ * nowhere near the pilot, so "how many jumps away" is genuinely unknown rather
+ * than zero — answering 0 would read as "you are here".
+ */
+export type InspectedSystem = Omit<MapBubbleSystem, 'jumps'> & { jumps: number | null };
+
+export type UniverseWormholeLink = {
+  signatureId: string;
+  fromSystemId: number;
+  toSystemId: number;
+  toSystemName: string;
+  whType: string;
+  maxShipSize: string;
+  remainingHours: number;
+};
+
+export type UniverseWormholes = {
+  at: string;
+  links: UniverseWormholeLink[];
+  error: string | null;
+};
+
 export type MapWormhole = {
   signatureId: string;
   fromSystemId: number;

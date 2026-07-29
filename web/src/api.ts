@@ -39,6 +39,8 @@ import type {
   WebAgentRequest,
   UniverseActivity,
   UniverseStatic,
+  UniverseWormholes,
+  InspectedSystem,
 } from './types';
 import type { Locale } from './i18n';
 
@@ -285,10 +287,18 @@ export const webApi = {
         `/api/web/map/bubble${query ? `?${query}` : ''}`,
       );
     },
-    system: (systemId: number) => request<{
-      system: { systemId: number; name: string; security: number; regionName: string | null };
-      kills: MapKillEvent[];
-    }>(`/api/web/map/system?system_id=${encodeURIComponent(systemId)}`),
+    universeWormholes: () => request<UniverseWormholes>('/api/web/map/universe/wormholes'),
+    // fromSystemId is where the pilot is, so the panel can say how far away this
+    // system is. Omitted when nobody knows — the answer is then "unknown", never 0.
+    system: (systemId: number, fromSystemId?: number | null) => {
+      const params = new URLSearchParams({ system_id: String(systemId) });
+      if (fromSystemId !== undefined && fromSystemId !== null) {
+        params.set('from_system_id', String(fromSystemId));
+      }
+      return request<{ system: InspectedSystem; kills: MapKillEvent[] }>(
+        `/api/web/map/system?${params.toString()}`,
+      );
+    },
     route: (
       params: {
         origin: number;
@@ -303,6 +313,13 @@ export const webApi = {
       method: 'POST',
       body: JSON.stringify(params),
     }, csrfToken),
+    // Takes the drawn line off the map. Deliberately does not touch the in-game
+    // autopilot: erasing a drawing and erasing waypoints are different acts.
+    clearRoute: (csrfToken: string) => request<{ cleared: boolean }>(
+      '/api/web/map/route',
+      { method: 'DELETE' },
+      csrfToken,
+    ),
     chat: () => request<{ threadId: string; messages: PerimeterMessage[] }>('/api/web/map/chat'),
     resetChat: (csrfToken: string) => request<{ threadId: string; messages: PerimeterMessage[] }>(
       '/api/web/map/chat/reset',

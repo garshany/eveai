@@ -58,7 +58,7 @@ export const PERIMETER_TOOLS: NativeFunctionTool[] = [
     description:
       'Plan a route weighted by live danger rather than by jumps alone. Returns the path with a per-hop cost breakdown explaining every detour. '
       + 'risk_weight 0 is the plain shortest path; raising it trades jumps for safety. Use this when the pilot asks how to get somewhere safely, '
-      + 'and quote the breakdown rather than asserting a route is safe.',
+      + 'and quote the breakdown rather than asserting a route is safe. Takes numeric system IDs only — resolve names first.',
     strict: true,
     parameters: {
       type: 'object',
@@ -67,8 +67,15 @@ export const PERIMETER_TOOLS: NativeFunctionTool[] = [
         destination_system_id: { type: 'integer' },
         mode: { type: 'string', enum: ['shortest', 'secure', 'insecure'] },
         risk_weight: { type: 'number', description: '0..20. Roughly "how many extra jumps am I willing to fly to avoid one maximally dangerous system".' },
+        draw_on_map: {
+          type: 'boolean',
+          description: 'True redraws the route line on the pilot\'s map with this route, replacing whatever is drawn now. '
+            + 'Pass true only for the route you are actually recommending. When you call this tool more than once to compare '
+            + 'modes or risk weights, every comparison call passes false — otherwise the pilot ends up looking at the last '
+            + 'route you considered instead of the one you told them to fly.',
+        },
       },
-      required: ['origin_system_id', 'destination_system_id', 'mode', 'risk_weight'],
+      required: ['origin_system_id', 'destination_system_id', 'mode', 'risk_weight', 'draw_on_map'],
       additionalProperties: false,
     },
   },
@@ -250,11 +257,14 @@ async function routeRisk(
   });
   if (!route.ok) return failure(route.error ?? 'No route found.');
 
-  // The route the agent just planned *is* the pilot's route. Without this the
-  // assistant would describe a reroute, set the autopilot, and the line on the
-  // map would still be the old one — the map only ever learned about routes it
-  // had planned itself.
-  if (chatId !== undefined) {
+  // The route the agent recommends *is* the pilot's route — but only the one it
+  // recommends. Publishing on every call meant that weighing "secure" against
+  // "insecure" left the map drawn with whichever happened to be compared last,
+  // while the answer on screen recommended the other one.
+  //
+  // A strict schema is a contract with a cooperative caller, not a guarantee:
+  // anything that is not an explicit true leaves the pilot's line alone.
+  if (chatId !== undefined && args.draw_on_map === true) {
     rememberRoute(chatId, { systemIds: route.systemIds, mode, riskWeight });
   }
 

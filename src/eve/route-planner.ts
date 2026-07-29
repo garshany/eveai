@@ -309,48 +309,59 @@ export async function planRoute(
     ? buildRouteVariant('shortest', shortcutMonitorSystemIds, systemInfoMap, dangerMap)
     : null;
 
-  // 6. Set autopilot for the preferred route (skip for thera_shortcut — handled below)
+  // 7. The one route this call is about.
+  //
+  //    Autopilot, the line on the pilot's map, the pre-flight briefing and the
+  //    monitor must all describe the same route. This selection used to be made
+  //    twice — once inside the autopilot branch and once again further down for
+  //    the briefing — and only the first one ever reached the map. Compute it
+  //    once, here, above everything that consumes it.
+  let preferredRoute: RouteVariant | null = null;
+  let monitorSystemIds: number[] = [];
+  let selectedMode: RouteFlag = 'shortest';
+  if (effectivePrefer === 'thera_shortcut' && theraShortcut) {
+    preferredRoute = routes.find((r) => r.flag === 'shortest') ?? routes[0] ?? null;
+    monitorSystemIds = shortcutMonitorSystemIds ?? [];
+    selectedMode = 'thera_shortcut';
+  } else if (routes.length > 0) {
+    preferredRoute = effectivePrefer
+      ? routes.find((r) => r.flag === effectivePrefer) ?? routes[0]!
+      : routes.find((r) => r.flag === 'secure') ?? routes[0]!;
+    monitorSystemIds = routeResults[flags.indexOf(preferredRoute.flag)] ?? [];
+    selectedMode = preferredRoute.flag;
+  }
+
+  // 7a. Draw it. A route the pilot was told about but cannot see on their map is
+  //     the same as no route — they retype it into the client by hand while
+  //     aligning. This runs whether or not waypoints were asked for, and before
+  //     the in-game write, so a refused ESI waypoint still leaves the map honest.
+  //     Fewer than two systems is not a route, and publishing one would blank a
+  //     good line: rememberRoute reads a short list as "no route".
+  if (ctx.chatId !== undefined && monitorSystemIds.length >= 2) {
+    rememberRoute(ctx.chatId, {
+      systemIds: monitorSystemIds,
+      mode: selectedMode,
+      riskWeight: 0,
+    });
+  }
+
+  // 7b. Waypoints only when the pilot actually asked for them.
   let autopilotSet = false;
   let autopilotMode: AutopilotMode = 'none';
   let monitorStarted = false;
-  if (args.set_autopilot === true && effectivePrefer !== 'thera_shortcut' && routes.length > 0) {
+  if (args.set_autopilot === true && monitorSystemIds.length > 0) {
     if (!identityCurrent()) throw new Error('Turn identity changed before route mutation');
-    const preferred = effectivePrefer
-      ? routes.find((r) => r.flag === effectivePrefer) ?? routes[0]
-      : routes.find((r) => r.flag === 'secure') ?? routes[0];
-
-    // Find the system IDs for the preferred route
-    const prefIndex = flags.indexOf(preferred.flag);
-    const prefSystemIds = routeResults[prefIndex];
-    if (prefSystemIds && prefSystemIds.length > 0) {
-      // Publish before the in-game write: the map should draw the chosen route
-      // whether or not the autopilot call succeeds, and whether or not the pilot
-      // asked for waypoints at all.
-      if (ctx.chatId !== undefined) {
-        rememberRoute(ctx.chatId, {
-          systemIds: prefSystemIds,
-          mode: preferred.flag,
-          riskWeight: 0,
-        });
-      }
-      const autopilot = await setAutopilotRoute(
-        db, prefSystemIds, destInfo.id, ctx, identityCurrent, signal,
+    const autopilot = selectedMode === 'thera_shortcut' && theraShortcut
+      ? await setShortcutAutopilot(
+        db, originInfo.id, theraShortcut.entry_system_id, theraShortcut.exit_system_id, destInfo.id, ctx,
+        identityCurrent,
+        signal,
+      )
+      : await setAutopilotRoute(
+        db, monitorSystemIds, destInfo.id, ctx, identityCurrent, signal,
       );
-      autopilotSet = autopilot.ok;
-      autopilotMode = autopilot.mode;
-    }
-  }
-
-  // 7b. If prefer=thera_shortcut, set autopilot waypoints for the WH route
-  if (effectivePrefer === 'thera_shortcut' && args.set_autopilot === true && theraShortcut) {
-    if (!identityCurrent()) throw new Error('Turn identity changed before route mutation');
-    const shortcutAutopilot = await setShortcutAutopilot(
-      db, originInfo.id, theraShortcut.entry_system_id, theraShortcut.exit_system_id, destInfo.id, ctx,
-      identityCurrent,
-      signal,
-    );
-    autopilotSet = shortcutAutopilot.ok;
-    autopilotMode = shortcutAutopilot.mode;
+    autopilotSet = autopilot.ok;
+    autopilotMode = autopilot.mode;
   }
 
   let formattedSummary = formatRouteSummary(
@@ -369,20 +380,6 @@ export async function planRoute(
   const linked = getLinkedCharacter(db, ctx);
   const characterId = linked?.characterId ?? 0;
   const chatId = ctx.chatId ?? ctx.userId;
-
-  // Get the preferred route's system IDs for monitoring
-  let monitorSystemIds: number[];
-  let preferredRoute: RouteVariant;
-  if (effectivePrefer === 'thera_shortcut' && theraShortcut) {
-    preferredRoute = routes.find((r) => r.flag === 'shortest') ?? routes[0];
-    monitorSystemIds = shortcutMonitorSystemIds ?? [];
-  } else {
-    preferredRoute = effectivePrefer
-      ? routes.find((r) => r.flag === effectivePrefer) ?? routes[0]
-      : routes.find((r) => r.flag === 'secure') ?? routes[0];
-    const prefIndex = flags.indexOf(preferredRoute.flag);
-    monitorSystemIds = routeResults[prefIndex] ?? [];
-  }
 
   if (characterId > 0 && monitorSystemIds.length > 0) {
     // Fetch current ship info for threat assessment
@@ -408,7 +405,7 @@ export async function planRoute(
       if (dangerScan.error) throw new Error('route kill baseline unavailable');
       const briefingDangerSystems = effectivePrefer === 'thera_shortcut' && theraRiskRoute
         ? theraRiskRoute.danger_systems
-        : preferredRoute.danger_systems;
+        : preferredRoute?.danger_systems ?? [];
       const briefingSnapshot = briefingDangerSystems.map((system) => ({
         systemId: system.systemId,
         name: system.name,

@@ -23,6 +23,7 @@
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { getMapGraphMeta } from '../eve/map-graph.js';
+import { getSignatures } from '../eve/eve-scout-client.js';
 import { bandFor, type DangerBand } from './danger.js';
 
 export type UniverseStatic = {
@@ -62,12 +63,94 @@ export type UniverseActivity = {
 const WINDOW_MS = 60 * 60_000;
 const WINDOW_15M_MS = 15 * 60_000;
 
+/**
+ * EVE-Scout's Thera/Turnur exits, for the whole cluster rather than one bubble.
+ *
+ * The bubble builder already fetches these but throws away every link that does
+ * not touch the pilot's radius — which on the full map is nearly all of them,
+ * and they are the whole point of the layer.
+ */
+export type UniverseWormhole = {
+  signatureId: string;
+  /** The K-space side, where a pilot would actually enter. */
+  fromSystemId: number;
+  /** The Thera/Turnur side. */
+  toSystemId: number;
+  toSystemName: string;
+  whType: string;
+  maxShipSize: string;
+  remainingHours: number;
+};
+
+export type UniverseWormholes = {
+  at: string;
+  links: UniverseWormhole[];
+  /** Null when EVE-Scout answered; the reason when it did not. */
+  error: string | null;
+};
+
+const WORMHOLE_TTL_MS = 60_000;
+
 let staticCache: UniverseStatic | null = null;
 let activityCache: { payload: UniverseActivity; expiresAtMs: number } | null = null;
+let wormholeCache: { payload: UniverseWormholes; expiresAtMs: number } | null = null;
 
 export function resetUniverseCachesForTests(): void {
   staticCache = null;
   activityCache = null;
+  wormholeCache = null;
+}
+
+/**
+ * Shared across viewers like the activity rollup: EVE-Scout is one upstream and
+ * ten open tabs must not become ten fetches. The client itself is already cached
+ * for 300s in `esi_cache`; this shorter cache exists to avoid re-filtering and
+ * re-serialising the list on every poll.
+ */
+export async function getUniverseWormholes(
+  db: Db,
+  now = Date.now(),
+): Promise<UniverseWormholes> {
+  if (wormholeCache && wormholeCache.expiresAtMs > now) return wormholeCache.payload;
+
+  const universe = getUniverseStatic(db);
+  const placeable = universe === null ? null : new Set(universe.systemIds);
+
+  let payload: UniverseWormholes;
+  try {
+    const response = await getSignatures(db);
+    if (!response.ok) {
+      payload = { at: new Date(now).toISOString(), links: [], error: response.error };
+    } else {
+      const links: UniverseWormhole[] = [];
+      for (const signature of response.data) {
+        // An expired signature is a hole that has already collapsed.
+        const expiresAt = Date.parse(signature.expires_at);
+        if (Number.isFinite(expiresAt) && expiresAt <= now) continue;
+        if (signature.signature_type && signature.signature_type !== 'wormhole') continue;
+        // A link with an end we cannot place would be drawn from the origin of
+        // the coordinate system — a line to nowhere, pointing at nothing.
+        if (placeable && (!placeable.has(signature.in_system_id) || !placeable.has(signature.out_system_id))) {
+          continue;
+        }
+        links.push({
+          signatureId: signature.id,
+          fromSystemId: signature.out_system_id,
+          toSystemId: signature.in_system_id,
+          toSystemName: signature.in_system_name,
+          whType: signature.wh_type,
+          maxShipSize: signature.max_ship_size,
+          remainingHours: signature.remaining_hours,
+        });
+      }
+      payload = { at: new Date(now).toISOString(), links, error: null };
+    }
+  } catch (error) {
+    payload = { at: new Date(now).toISOString(), links: [], error: (error as Error).message };
+  }
+
+  wormholeCache = { payload, expiresAtMs: now + WORMHOLE_TTL_MS };
+  return payload;
 }
 
 /**

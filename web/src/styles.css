@@ -4962,6 +4962,14 @@ a {
 
 .legend-glyph { color: #e4443c; font-size: 0.9rem; line-height: 1; }
 
+/* Червоточина в легенде — тот же пунктир, что и на холсте. */
+.legend-dash {
+  width: 14px;
+  height: 0;
+  flex: none;
+  border-top: 2px dashed rgba(129, 140, 248, 0.9);
+}
+
 /* Кнопка очистки в шапке чата «Периметра» прижата вправо, чтобы не разъезжаться
    с фильтром важности. */
 .perimeter-chat__reset { margin-left: auto; }
