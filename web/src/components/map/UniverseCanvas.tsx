@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { UniverseActivity, UniverseStatic } from '../../types';
+import {
+  GLYPH_ZOOM_RATIO,
+  LABEL_ZOOM_RATIO,
+  fitView,
+  zoomAt,
+  zoomRatio,
+  type View,
+} from './universe-view';
 
 /**
  * The whole of New Eden on one canvas.
@@ -36,13 +44,6 @@ export type UniverseCanvasProps = {
   selectedSystemId: number | null;
 };
 
-type View = { x: number; y: number; k: number };
-
-const LABEL_ZOOM = 2.2;
-const GLYPH_ZOOM = 0.9;
-const MIN_ZOOM = 0.25;
-const MAX_ZOOM = 40;
-
 const BAND_COLOURS: Record<string, string> = {
   calm: '#2f6f52',
   watch: '#8a8a2f',
@@ -65,6 +66,8 @@ export function UniverseCanvas({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<View>({ x: 0, y: 0, k: 1 });
+  /** Scale at which the whole cluster fits; every zoom limit is a multiple of it. */
+  const fitKRef = useRef<number>(1);
   const [, forceRedraw] = useState(0);
 
   // Index by system id once: the activity payload is column arrays, and looking
@@ -97,15 +100,9 @@ export function UniverseCanvas({
   useEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return;
-    const { minX, maxX, minY, maxY } = universe.bounds;
-    const width = Math.max(1, maxX - minX);
-    const height = Math.max(1, maxY - minY);
-    const k = Math.min(wrap.clientWidth / width, wrap.clientHeight / height) * 0.9;
-    viewRef.current = {
-      k: Number.isFinite(k) && k > 0 ? k : 1,
-      x: wrap.clientWidth / 2 - ((minX + maxX) / 2) * k,
-      y: wrap.clientHeight / 2 - ((minY + maxY) / 2) * k,
-    };
+    const view = fitView(universe.bounds, wrap.clientWidth, wrap.clientHeight);
+    fitKRef.current = view.k;
+    viewRef.current = view;
     forceRedraw((value) => value + 1);
   }, [universe]);
 
@@ -151,15 +148,7 @@ export function UniverseCanvas({
       const rect = canvas.getBoundingClientRect();
       const px = event.clientX - rect.left;
       const py = event.clientY - rect.top;
-      const view = viewRef.current;
-      const factor = Math.exp(-event.deltaY * 0.0015);
-      const k = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, view.k * factor));
-      // Zoom about the cursor, not the origin.
-      viewRef.current = {
-        k,
-        x: px - ((px - view.x) / view.k) * k,
-        y: py - ((py - view.y) / view.k) * k,
-      };
+      viewRef.current = zoomAt(viewRef.current, fitKRef.current, px, py, event.deltaY);
       forceRedraw((value) => value + 1);
     };
 
@@ -224,10 +213,11 @@ export function UniverseCanvas({
 
     const screenX = (i: number): number => universe.x[i]! * view.k + view.x;
     const screenY = (i: number): number => universe.y[i]! * view.k + view.y;
+    const zoom = zoomRatio(view, fitKRef.current);
 
     // --- gate links, one path, one stroke ---------------------------------
     ctx.strokeStyle = 'rgba(150, 170, 200, 0.18)';
-    ctx.lineWidth = Math.min(1.4, 0.35 * Math.sqrt(view.k));
+    ctx.lineWidth = Math.min(1.4, 0.3 + 0.25 * Math.sqrt(zoom));
     ctx.beginPath();
     for (let e = 0; e < universe.edges.length; e += 2) {
       const a = indexById.get(universe.edges[e]!);
@@ -246,7 +236,7 @@ export function UniverseCanvas({
     // --- route ribbon ------------------------------------------------------
     if (routeSystemIds.length > 1) {
       ctx.strokeStyle = 'rgba(110, 231, 255, 0.85)';
-      ctx.lineWidth = Math.min(4, 1.2 * Math.sqrt(view.k) + 1);
+      ctx.lineWidth = Math.min(4, 1 + 0.6 * Math.sqrt(zoom));
       ctx.beginPath();
       let started = false;
       for (const systemId of routeSystemIds) {
@@ -264,8 +254,8 @@ export function UniverseCanvas({
     }
 
     // --- systems -----------------------------------------------------------
-    const showGlyphs = view.k >= GLYPH_ZOOM;
-    const showLabels = view.k >= LABEL_ZOOM;
+    const showGlyphs = zoom >= GLYPH_ZOOM_RATIO;
+    const showLabels = zoom >= LABEL_ZOOM_RATIO;
 
     for (let i = 0; i < universe.systemIds.length; i += 1) {
       const sx = screenX(i);
@@ -278,7 +268,7 @@ export function UniverseCanvas({
 
       // Size carries traffic when the layer is on, so a busy pipe reads as a
       // bigger dot without stealing the colour channel from danger.
-      let radius = 1.6 + Math.min(1.6, view.k * 0.12);
+      let radius = 1.6 + Math.min(1.8, zoom * 0.35);
       if (showTraffic && live && live.jumps > 0) {
         radius += Math.min(3.2, Math.log10(live.jumps + 1) * 1.4);
       }
@@ -312,7 +302,7 @@ export function UniverseCanvas({
 
       if (showGlyphs && showCamps && live && live.gateKills >= 2) {
         ctx.fillStyle = '#e4443c';
-        ctx.font = `${Math.min(14, 8 + view.k)}px sans-serif`;
+        ctx.font = `${Math.min(14, 8 + zoom)}px sans-serif`;
         ctx.textAlign = 'center';
         ctx.fillText('☠', sx, sy - radius - 4);
       }

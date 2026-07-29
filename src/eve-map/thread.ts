@@ -63,6 +63,29 @@ export function getOrCreatePerimeterThread(
   return threadId;
 }
 
+/**
+ * Begin a new Perimeter conversation.
+ *
+ * Deliberately not a delete. The advisor writes into this thread without being
+ * asked, so removing rows would race with it; and the warnings a pilot received
+ * during a flight are evidence, not clutter. `getOrCreatePerimeterThread` picks
+ * the most recently updated thread, so the new one simply becomes the active
+ * one and the old transcript stays reachable.
+ */
+export function startNewPerimeterThread(
+  db: Db,
+  chatId: number,
+  userId: number,
+  characterId: number | null,
+): string {
+  const threadId = randomUUID();
+  db.prepare(`
+    INSERT INTO agent_threads (thread_id, chat_id, character_id, user_id, kind)
+    VALUES (?, ?, ?, ?, 'perimeter')
+  `).run(threadId, chatId, characterId, userId);
+  return threadId;
+}
+
 /** Append an unprompted advisory as an assistant message. */
 export function appendAdvisory(
   db: Db,

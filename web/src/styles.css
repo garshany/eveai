@@ -4961,3 +4961,7 @@ a {
 }
 
 .legend-glyph { color: #e4443c; font-size: 0.9rem; line-height: 1; }
+
+/* Кнопка очистки в шапке чата «Периметра» прижата вправо, чтобы не разъезжаться
+   с фильтром важности. */
+.perimeter-chat__reset { margin-left: auto; }

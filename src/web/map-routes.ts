@@ -49,6 +49,7 @@ import {
   appendAdvisory,
   getOrCreatePerimeterThread,
   readPerimeterHistory,
+  startNewPerimeterThread,
 } from '../eve-map/thread.js';
 import { rememberRoute, routeAheadOf } from '../eve-map/active-route.js';
 import {
@@ -357,6 +358,19 @@ export function registerMapRoutes(
       db, session.chatId, session.userId, linked?.characterId ?? null,
     );
     return { threadId, messages: readPerimeterHistory(db, threadId) };
+  });
+
+  app.post('/api/web/map/chat/reset', async (request, reply) => {
+    const session = requireMutationSession(db, request, reply);
+    if (!session) return;
+    const linked = getLinkedCharacter(db, sessionContext(session));
+    // A fresh thread, not a delete: the advisor may be writing into the current
+    // one at this exact moment, and the pilot's earlier warnings are evidence
+    // worth keeping.
+    const threadId = startNewPerimeterThread(
+      db, session.chatId, session.userId, linked?.characterId ?? null,
+    );
+    return { threadId, messages: [] };
   });
 
   app.post<{ Body: AskBody }>('/api/web/map/ask', async (request, reply) => {

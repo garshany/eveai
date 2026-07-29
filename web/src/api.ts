@@ -304,6 +304,11 @@ export const webApi = {
       body: JSON.stringify(params),
     }, csrfToken),
     chat: () => request<{ threadId: string; messages: PerimeterMessage[] }>('/api/web/map/chat'),
+    resetChat: (csrfToken: string) => request<{ threadId: string; messages: PerimeterMessage[] }>(
+      '/api/web/map/chat/reset',
+      { method: 'POST' },
+      csrfToken,
+    ),
     ask: (
       message: string,
       csrfToken: string,

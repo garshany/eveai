@@ -42,6 +42,15 @@ export function PerimeterChat({ csrfToken, advisories, context, onFocusSystem }:
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<SeverityFilter>('all');
+  const [resetting, setResetting] = useState(false);
+  /**
+   * Highest message id present when the pilot cleared the panel.
+   *
+   * The live stream keeps handing back the advisories it has already sent, so
+   * without this the warnings the pilot just dismissed would reappear on the
+   * very next tick and the clear button would look broken.
+   */
+  const clearedBeforeIdRef = useRef(0);
   const [awaiting, setAwaiting] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -67,7 +76,7 @@ export function PerimeterChat({ csrfToken, advisories, context, onFocusSystem }:
       const known = new Set(previous.map((message) => message.id));
       const additions = advisories
         .map((entry) => entry.message)
-        .filter((message) => !known.has(message.id));
+        .filter((message) => !known.has(message.id) && message.id > clearedBeforeIdRef.current);
       return additions.length > 0 ? [...previous, ...additions] : previous;
     });
   }, [advisories]);
@@ -191,6 +200,28 @@ export function PerimeterChat({ csrfToken, advisories, context, onFocusSystem }:
           onClick={() => setFilter(value)}
         >{t(value === 'all' ? 'perimeterFilterAll' : value === 'important' ? 'perimeterFilterImportant' : 'perimeterFilterQuiet')}</button>)}
       </div>
+      <button
+        type="button"
+        className="perimeter-chip perimeter-chat__reset"
+        disabled={resetting}
+        title={t('perimeterChatResetHint')}
+        onClick={() => {
+          setResetting(true);
+          setError(null);
+          void webApi.map.resetChat(csrfToken)
+            .then((payload) => {
+              // Everything already on screen belongs to the old thread; the
+              // stream's replay must not drag it back in.
+              clearedBeforeIdRef.current = messages.reduce(
+                (max, message) => Math.max(max, message.id),
+                clearedBeforeIdRef.current,
+              );
+              setMessages(payload.messages);
+            })
+            .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+            .finally(() => setResetting(false));
+        }}
+      >{t('perimeterChatReset')}</button>
     </header>
 
     <div className="perimeter-chat__list" ref={listRef}>
