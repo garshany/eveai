@@ -337,7 +337,18 @@ export async function planRoute(
   //     the in-game write, so a refused ESI waypoint still leaves the map honest.
   //     Fewer than two systems is not a route, and publishing one would blank a
   //     good line: rememberRoute reads a short list as "no route".
-  if (ctx.chatId !== undefined && monitorSystemIds.length >= 2) {
+  //
+  //     Identity is checked first, exactly as the waypoint write below does. The
+  //     routes and the danger baseline take seconds to fetch, and if the pilot
+  //     switched characters or cancelled the turn in that window this route
+  //     belongs to somebody else — drawing it on the new pilot's map is no less
+  //     a mutation than writing their waypoints.
+  if (
+    ctx.chatId !== undefined
+    && monitorSystemIds.length >= 2
+    && identityCurrent()
+    && !isTurnAborted()
+  ) {
     rememberRoute(ctx.chatId, {
       systemIds: monitorSystemIds,
       mode: selectedMode,

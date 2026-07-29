@@ -18,6 +18,8 @@ import { assessShip } from '../eve-board/threat.js';
 import { buildBubble } from './bubble.js';
 import { getGateCampHistory, getRecentKills } from './kill-index.js';
 import { getActiveRoute, rememberRoute } from './active-route.js';
+import { effectiveAvoidSet } from './avoid.js';
+import { resolveUserContextForChat } from '../auth/user-resolver.js';
 import { currentHourOfWeek, getSystemProfile, mortalityPerThousandJumps } from './system-metrics.js';
 
 export const MAP_BUBBLE_INTEL_TOOL_NAME = 'map_bubble_intel';
@@ -250,9 +252,21 @@ async function routeRisk(
   });
   const dangerBySystem = new Map(bubble.systems.map((system) => [system.systemId, system.danger.score]));
 
+  // The prompt promises the pilot that their stored avoid list applies to every
+  // route. It did not apply here, so the assistant could recommend — and draw —
+  // a route straight through a system that pilot had permanently marked. The
+  // HTTP planner has always applied it; the agent's planner must agree.
+  // Origin and destination stay exempt: flying *to* a system you once avoided
+  // must remain routable.
+  const owner = chatId === undefined ? null : resolveUserContextForChat(db, chatId);
+  const avoid = owner === null
+    ? new Set<number>()
+    : effectiveAvoidSet(db, owner.userId, [], [origin, destination]);
+
   const route = routeWithRisk(db, origin, destination, {
     mode,
     riskWeight,
+    avoid,
     dangerOf: (systemId) => dangerBySystem.get(systemId) ?? 0,
   });
   if (!route.ok) return failure(route.error ?? 'No route found.');

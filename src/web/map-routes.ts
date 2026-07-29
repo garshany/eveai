@@ -97,6 +97,17 @@ type AskBody = {
   context?: unknown;
 };
 
+/**
+ * The identity token a long mutation pins itself to. Bumped by every character
+ * switch and every unlink, so comparing it before and during a multi-call write
+ * catches a pilot swapping characters mid-flight.
+ */
+function readActiveCharacterVersion(db: Db, userId: number): number {
+  const row = db.prepare('SELECT active_character_version FROM users WHERE user_id = ?')
+    .get(userId) as { active_character_version: number } | undefined;
+  return row?.active_character_version ?? 0;
+}
+
 export function registerMapRoutes(
   app: FastifyInstance,
   db: Db,
@@ -292,11 +303,13 @@ export function registerMapRoutes(
         : [],
     });
 
-    rememberRoute(session.chatId, {
-      systemIds: route.ok ? route.systemIds : [],
-      mode,
-      riskWeight: risk,
-    });
+    // Only a route that exists replaces the drawn one. Publishing an empty list
+    // on failure deleted the line the pilot was actually following, so asking
+    // for an impossible destination — or one their own avoid list blocks — wiped
+    // a good route. Clearing is now an explicit act: DELETE /api/web/map/route.
+    if (route.ok && route.systemIds.length >= 2) {
+      rememberRoute(session.chatId, { systemIds: route.systemIds, mode, riskWeight: risk });
+    }
 
     // Planning a route on the map and then retyping it into the client is the
     // gap that makes a planner useless in flight. Same ESI write, same abort
@@ -314,8 +327,15 @@ export function registerMapRoutes(
         };
       } else {
         try {
+          // Waypoints are written one ESI call per hop. A character switch
+          // partway through would send the rest of them to the new pilot,
+          // leaving two autopilots half-set. Pin the identity we started with
+          // and let setAutopilotRoute stop the moment it changes — the same
+          // guard the chat planner has always used.
+          const startedWith = readActiveCharacterVersion(db, session.userId);
           const written = await setAutopilotRoute(
-            db, route.systemIds, destination, sessionContext(session), () => true,
+            db, route.systemIds, destination, sessionContext(session),
+            () => readActiveCharacterVersion(db, session.userId) === startedWith,
           );
           autopilot = { requested: true, ok: written.ok, mode: written.mode, error: null };
         } catch (error) {

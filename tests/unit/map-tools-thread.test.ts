@@ -16,6 +16,8 @@ const { buildMapGraph, invalidateMapGraphCache } = await import('../../src/eve/m
 const { executePerimeterTool, isPerimeterTool, PERIMETER_TOOLS } = await import('../../src/eve-map/tools.js');
 const { recordKillmail } = await import('../../src/eve-map/kill-index.js');
 const { getActiveRoute, resetActiveRoutesForTests } = await import('../../src/eve-map/active-route.js');
+const { addAvoided } = await import('../../src/eve-map/avoid.js');
+const { createWebSession } = await import('../../src/web/web-session.js');
 const {
   appendAdvisory,
   getOrCreatePerimeterThread,
@@ -274,6 +276,30 @@ describe('perimeter thread', () => {
  * «secure против insecure» оставляло на экране последний сравнённый вариант, а
  * в ответе стоял первый.
  */
+/** Alpha — Beta — Gamma. Нужна средняя система, чтобы «избегать» могло сработать. */
+function seedChain(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sde_meta (build_number TEXT, loaded_at TEXT);
+    CREATE TABLE IF NOT EXISTS sde_systems (system_id INTEGER PRIMARY KEY, name TEXT, constellation_id INTEGER, data_json TEXT);
+    CREATE TABLE IF NOT EXISTS sde_constellations (constellation_id INTEGER PRIMARY KEY, name TEXT, region_id INTEGER, data_json TEXT);
+    CREATE TABLE IF NOT EXISTS sde_regions (region_id INTEGER PRIMARY KEY, name TEXT, data_json TEXT);
+    CREATE TABLE IF NOT EXISTS sde_stargates (stargate_id INTEGER PRIMARY KEY, system_id INTEGER, destination_system_id INTEGER, destination_stargate_id INTEGER, data_json TEXT);
+  `);
+  db.prepare('INSERT INTO sde_meta (build_number, loaded_at) VALUES (?, ?)').run('1', '2026-01-01');
+  db.prepare('INSERT INTO sde_regions (region_id, name, data_json) VALUES (?, ?, ?)').run(1, 'R', '{}');
+  db.prepare('INSERT INTO sde_constellations (constellation_id, name, region_id, data_json) VALUES (?, ?, ?, ?)').run(1, 'C', 1, '{}');
+  const insert = db.prepare('INSERT INTO sde_systems (system_id, name, constellation_id, data_json) VALUES (?, ?, ?, ?)');
+  insert.run(30000001, 'Alpha', 1, JSON.stringify({ securityStatus: 0.9, position2D: { x: 0, y: 0 } }));
+  insert.run(30000002, 'Beta', 1, JSON.stringify({ securityStatus: 0.4, position2D: { x: 10, y: 0 } }));
+  insert.run(30000003, 'Gamma', 1, JSON.stringify({ securityStatus: 0.2, position2D: { x: 20, y: 0 } }));
+  const gate = db.prepare('INSERT INTO sde_stargates (stargate_id, system_id, destination_system_id, destination_stargate_id, data_json) VALUES (?, ?, ?, ?, ?)');
+  gate.run(1, 30000001, 30000002, null, '{}');
+  gate.run(2, 30000002, 30000001, null, '{}');
+  gate.run(3, 30000002, 30000003, null, '{}');
+  gate.run(4, 30000003, 30000002, null, '{}');
+  buildMapGraph(db, { force: true });
+}
+
 describe('route_risk draws only the route it recommends', () => {
   const LANE = -2_000_000_777;
   let db: Database.Database;
@@ -283,7 +309,8 @@ describe('route_risk draws only the route it recommends', () => {
     invalidateMapGraphCache();
     db = new Database(':memory:');
     db.exec(SCHEMA_SQL);
-    seedGraph(db);
+    runMigrations(db);
+    seedChain(db);
   });
 
   afterEach(() => {
@@ -346,6 +373,48 @@ describe('route_risk draws only the route it recommends', () => {
     }, LANE);
     expect(result.ok).toBe(false);
     expect(getActiveRoute(LANE)).toBeNull();
+  });
+
+  it('honours the stored avoid list the prompt promises is always applied', async () => {
+    // Ревью: агент мог рекомендовать И нарисовать маршрут прямо через систему,
+    // которую пилот сам пометил «избегать», хотя промт обещает обратное.
+    const session = createWebSession(db);
+    const lane = (db.prepare('SELECT chat_id FROM web_sessions ORDER BY rowid DESC LIMIT 1')
+      .get() as { chat_id: number }).chat_id;
+    addAvoided(db, session.userId, 30000002, null);
+
+    const result = await executePerimeterTool(db, 'route_risk', {
+      origin_system_id: 30000001,
+      destination_system_id: 30000002,
+      mode: 'shortest',
+      risk_weight: 0,
+      draw_on_map: true,
+    }, lane);
+
+    // Beta — и единственный сосед, и пункт назначения, поэтому она остаётся
+    // достижимой: лететь *в* систему, которую однажды пометил, must remain
+    // possible. Проверяем, что список вообще доехал до планировщика.
+    expect(result.ok).toBe(true);
+    expect(getActiveRoute(lane)?.systemIds).toEqual([30000001, 30000002]);
+  });
+
+  it('refuses to route through a system the pilot marked, instead of drawing it', async () => {
+    const session = createWebSession(db);
+    const lane = (db.prepare('SELECT chat_id FROM web_sessions ORDER BY rowid DESC LIMIT 1')
+      .get() as { chat_id: number }).chat_id;
+    // Beta — единственный путь Alpha→Gamma. Молча провести через помеченную
+    // систему хуже, чем сказать, что маршрута нет.
+    addAvoided(db, session.userId, 30000002, null);
+
+    const result = await executePerimeterTool(db, 'route_risk', {
+      origin_system_id: 30000001,
+      destination_system_id: 30000003,
+      mode: 'shortest',
+      risk_weight: 0,
+      draw_on_map: true,
+    }, lane);
+    expect(result.ok).toBe(false);
+    expect(getActiveRoute(lane)).toBeNull();
   });
 
   it('declares draw_on_map as a required property, not an optional one', () => {

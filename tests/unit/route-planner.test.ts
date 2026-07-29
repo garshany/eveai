@@ -787,6 +787,21 @@ describe('route planner', () => {
     });
   });
 
+  it('draws nothing when the pilot switched characters while it was thinking', async () => {
+    // Ревью нашло это как регрессию подъёма: публикация уехала выше проверки
+    // личности, и маршрут прошлого персонажа рисовался на карте нового.
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      { origin: 'current', destination: 'Jita', prefer: 'secure' },
+      { userId: 1, chatId: 1 },
+      () => false,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(rememberRouteMock).not.toHaveBeenCalled();
+  });
+
   it('draws nothing when the destination is not a system', async () => {
     const { planRoute } = await import('../../src/eve/route-planner.js');
     const result = await planRoute(
