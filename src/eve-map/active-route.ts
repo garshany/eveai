@@ -22,6 +22,32 @@ export const ACTIVE_ROUTE_TTL_MS = 2 * 60 * 60_000;
 
 const activeRoutes = new Map<number, ActiveRoute>();
 
+/**
+ * Notified whenever the route for a lane changes, so an open map can redraw
+ * without a reload.
+ *
+ * Without this the agent could plan a route, set the autopilot, describe it in
+ * the chat — and the line on the map would still show the old one, because the
+ * map only ever learned about routes it had planned itself.
+ */
+type RouteListener = (chatId: number, route: ActiveRoute | null) => void;
+const listeners = new Set<RouteListener>();
+
+export function onActiveRouteChange(listener: RouteListener): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
+function publish(chatId: number, route: ActiveRoute | null): void {
+  for (const listener of listeners) {
+    try {
+      listener(chatId, route);
+    } catch (error) {
+      console.warn('[map-route] listener failed: %s', (error as Error).message);
+    }
+  }
+}
+
 export function rememberRoute(
   chatId: number,
   route: { systemIds: number[]; mode: string; riskWeight: number },
@@ -29,15 +55,18 @@ export function rememberRoute(
 ): void {
   if (route.systemIds.length < 2) {
     activeRoutes.delete(chatId);
+    publish(chatId, null);
     return;
   }
-  activeRoutes.set(chatId, {
+  const entry: ActiveRoute = {
     systemIds: route.systemIds,
     mode: route.mode,
     riskWeight: route.riskWeight,
     jumps: route.systemIds.length - 1,
     setAtMs: now,
-  });
+  };
+  activeRoutes.set(chatId, entry);
+  publish(chatId, entry);
 }
 
 export function getActiveRoute(chatId: number, now = Date.now()): ActiveRoute | null {
@@ -61,9 +90,11 @@ export function routeAheadOf(chatId: number, currentSystemId: number, now = Date
 }
 
 export function clearActiveRoute(chatId: number): void {
+  publish(chatId, null);
   activeRoutes.delete(chatId);
 }
 
 export function resetActiveRoutesForTests(): void {
+  listeners.clear();
   activeRoutes.clear();
 }

@@ -13,6 +13,7 @@ import type { FeedEvent } from '../eve-kill/types.js';
 import type { GateKill, ThreatKillmail } from '../eve-board/types.js';
 import { findBestTheraShortcut, type TheraShortcut } from './thera-scout.js';
 import { escapeHtml, escapeHtmlAttribute } from './route-formatting.js';
+import { rememberRoute } from '../eve-map/active-route.js';
 
 type EsiRouteFlag = 'secure' | 'shortest' | 'insecure';
 type RouteFlag = EsiRouteFlag | 'thera_shortcut';
@@ -322,6 +323,16 @@ export async function planRoute(
     const prefIndex = flags.indexOf(preferred.flag);
     const prefSystemIds = routeResults[prefIndex];
     if (prefSystemIds && prefSystemIds.length > 0) {
+      // Publish before the in-game write: the map should draw the chosen route
+      // whether or not the autopilot call succeeds, and whether or not the pilot
+      // asked for waypoints at all.
+      if (ctx.chatId !== undefined) {
+        rememberRoute(ctx.chatId, {
+          systemIds: prefSystemIds,
+          mode: preferred.flag,
+          riskWeight: 0,
+        });
+      }
       const autopilot = await setAutopilotRoute(
         db, prefSystemIds, destInfo.id, ctx, identityCurrent, signal,
       );

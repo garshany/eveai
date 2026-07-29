@@ -51,7 +51,7 @@ import {
   readPerimeterHistory,
   startNewPerimeterThread,
 } from '../eve-map/thread.js';
-import { rememberRoute, routeAheadOf } from '../eve-map/active-route.js';
+import { getActiveRoute, onActiveRouteChange, rememberRoute, routeAheadOf } from '../eve-map/active-route.js';
 import {
   addAvoided,
   clearAvoided,
@@ -539,6 +539,21 @@ export function registerMapRoutes(
 
     // Live kills inside the bubble are pushed the moment the index sees them,
     // rather than waiting for the next intel tick.
+    // A route planned by the agent must appear on the map without a reload:
+    // the assistant reroutes, sets the autopilot and says so in the chat, and
+    // the line on screen has to agree with all three.
+    const unsubscribeRoute = onActiveRouteChange((laneId, route) => {
+      if (stream.closed || laneId !== session.chatId) return;
+      stream.send('route', {
+        route: route === null ? null : {
+          systemIds: route.systemIds,
+          jumps: route.jumps,
+          mode: route.mode,
+          riskWeight: route.riskWeight,
+        },
+      });
+    });
+
     const unsubscribeKills = onIndexedKill((kill) => {
       if (stream.closed || !bubbleSystemIds.has(kill.systemId)) return;
       pendingKills.push({ killmailId: kill.killmailId, systemId: kill.systemId });
@@ -552,10 +567,23 @@ export function registerMapRoutes(
 
     stream.onClose(() => {
       clearInterval(intelTimer);
+      unsubscribeRoute();
       unsubscribeKills();
       releaseSharedAdvisorState(linked.characterId);
       attached.detach();
     });
+
+    const current = getActiveRoute(session.chatId);
+    if (current) {
+      stream.send('route', {
+        route: {
+          systemIds: current.systemIds,
+          jumps: current.jumps,
+          mode: current.mode,
+          riskWeight: current.riskWeight,
+        },
+      });
+    }
 
     stream.send('ready', {
       characterId: linked.characterId,

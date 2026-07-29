@@ -17,7 +17,7 @@ import { getMapSystem, routeWithRisk, type RouteMode } from '../eve/map-graph.js
 import { assessShip } from '../eve-board/threat.js';
 import { buildBubble } from './bubble.js';
 import { getGateCampHistory, getRecentKills } from './kill-index.js';
-import { getActiveRoute } from './active-route.js';
+import { getActiveRoute, rememberRoute } from './active-route.js';
 import { currentHourOfWeek, getSystemProfile, mortalityPerThousandJumps } from './system-metrics.js';
 
 export const MAP_BUBBLE_INTEL_TOOL_NAME = 'map_bubble_intel';
@@ -128,7 +128,7 @@ export async function executePerimeterTool(
 ): Promise<Record<string, unknown>> {
   switch (name) {
     case MAP_BUBBLE_INTEL_TOOL_NAME: return await bubbleIntel(db, rawArgs, chatId);
-    case ROUTE_RISK_TOOL_NAME: return await routeRisk(db, rawArgs);
+    case ROUTE_RISK_TOOL_NAME: return await routeRisk(db, rawArgs, chatId);
     case COMPARE_SHIPS_TOOL_NAME: return compareShips(db, rawArgs);
     case THREAT_EXPLAIN_TOOL_NAME: return threatExplain(db, rawArgs);
     default: return failure(`Unknown Perimeter tool: ${name}`);
@@ -224,7 +224,11 @@ async function bubbleIntel(
 // route_risk
 // ---------------------------------------------------------------------------
 
-async function routeRisk(db: Db, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function routeRisk(
+  db: Db,
+  args: Record<string, unknown>,
+  chatId?: number,
+): Promise<Record<string, unknown>> {
   const origin = readId(args.origin_system_id);
   const destination = readId(args.destination_system_id);
   if (origin === null || destination === null) {
@@ -245,6 +249,14 @@ async function routeRisk(db: Db, args: Record<string, unknown>): Promise<Record<
     dangerOf: (systemId) => dangerBySystem.get(systemId) ?? 0,
   });
   if (!route.ok) return failure(route.error ?? 'No route found.');
+
+  // The route the agent just planned *is* the pilot's route. Without this the
+  // assistant would describe a reroute, set the autopilot, and the line on the
+  // map would still be the old one — the map only ever learned about routes it
+  // had planned itself.
+  if (chatId !== undefined) {
+    rememberRoute(chatId, { systemIds: route.systemIds, mode, riskWeight });
+  }
 
   // A comparison the model would otherwise have to invent: what the pilot
   // actually pays for the safer path.

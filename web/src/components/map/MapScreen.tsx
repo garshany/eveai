@@ -117,6 +117,13 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   );
   const [layout, setLayout] = useState<Layout>(new Map());
 
+  /**
+   * The line on screen follows the server's active route, not just the one this
+   * screen planned. The agent can reroute from the chat — it publishes the same
+   * route it describes and sets in the autopilot — and the map has to agree.
+   */
+  const drawnRouteSystemIds = live.route?.systemIds ?? route?.route.systemIds ?? [];
+
   // Static geometry is fetched once and kept; the live overlay refreshes on the
   // same cadence as the bubble intel and is shared server-side across viewers.
   useEffect(() => {
@@ -251,7 +258,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
               universe={universe}
               activity={universeIntel}
               currentSystemId={live.location?.solarSystemId ?? null}
-              routeSystemIds={route?.route.systemIds ?? []}
+              routeSystemIds={drawnRouteSystemIds}
               avoidedSystemIds={avoid}
               showTraffic={showTraffic}
               showCamps={showCamps}

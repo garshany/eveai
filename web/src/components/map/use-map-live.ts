@@ -27,11 +27,26 @@ export type LiveAdvisory = {
   message: PerimeterMessage;
 };
 
+export type LiveRoute = {
+  systemIds: number[];
+  jumps: number;
+  mode: string;
+  riskWeight: number;
+};
+
 export type MapLiveState = {
   status: LiveStatus;
   location: MapLocation | null;
   bubble: MapBubble | null;
   threadId: string | null;
+  /**
+   * Маршрут, который сейчас считается активным на сервере.
+   *
+   * Он приходит потоком, а не только из ответа на построение: маршрут может
+   * проложить агент в чате, и линия на карте обязана согласоваться с тем, что
+   * он сказал и что выставил в автопилот.
+   */
+  route: LiveRoute | null;
   /** Свежие килы для вспышек; потребитель забирает и очищает. */
   killEvents: MapKillEvent[];
   advisories: LiveAdvisory[];
@@ -49,6 +64,7 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
     location: null,
     bubble: null,
     threadId: null,
+    route: null,
     killEvents: [],
     advisories: [],
     warning: null,
@@ -112,6 +128,10 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
 
     on<{ bubble: MapBubble }>('intel', (payload) => {
       setState((previous) => ({ ...previous, bubble: payload.bubble }));
+    });
+
+    on<{ route: LiveRoute | null }>('route', (payload) => {
+      setState((previous) => ({ ...previous, route: payload.route }));
     });
 
     on<{ kill: MapKillEvent }>('kill', (payload) => {
