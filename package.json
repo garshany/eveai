@@ -54,18 +54,18 @@
     "update:check": "tsx src/update/check-cli.ts"
   },
   "dependencies": {
-    "@fastify/cookie": "^11.1.1",
-    "@fastify/static": "^10.1.0",
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/static": "^10.1.2",
     "better-sqlite3": "^12.11.1",
     "croner": "^10.0.1",
-    "discord.js": "^14.26.4",
+    "discord.js": "^14.27.0",
     "dotenv": "^17.4.2",
-    "fastify": "^5.10.0",
-    "grammy": "^1.44.0",
+    "fastify": "^5.11.0",
+    "grammy": "^1.45.1",
     "https-proxy-agent": "^9.1.0",
-    "jose": "^6.2.3",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
+    "jose": "^6.2.5",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "socks-proxy-agent": "^10.1.0"
   },
   "overrides": {
@@ -73,16 +73,16 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
-    "@types/node": "^26.1.0",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@typescript-eslint/eslint-plugin": "^8.63.0",
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
     "@typescript-eslint/parser": "^8.63.0",
-    "@vitejs/plugin-react": "^6.0.3",
-    "eslint": "^10.6.0",
-    "tsx": "^4.23.0",
+    "@vitejs/plugin-react": "^6.0.5",
+    "eslint": "^10.8.0",
+    "tsx": "^4.23.1",
     "typescript": "^6.0.3",
-    "vite": "^8.1.4",
+    "vite": "^8.2.0",
     "vitest": "^4.1.10"
   }
 }
