@@ -19,7 +19,7 @@
 
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
-import { subscribeEveKillFeed } from '../eve-kill/feed-poll.js';
+import { getEveKillFeedRuntimeStatus, subscribeEveKillFeed } from '../eve-kill/feed-poll.js';
 import { searchKillmails } from '../eve-kill/client.js';
 import type { NormalizedKillmail } from '../eve-kill/types.js';
 import { nearestGate } from '../eve/map-graph.js';
@@ -104,6 +104,46 @@ export function getKillIndexStatus(db: Db): {
     newestAtMs: row.newest,
     lastSweepAt,
   };
+}
+
+/**
+ * The feed polls every second and backs off to at most thirty; a last success
+ * older than this means the index is no longer live, whatever it last held.
+ */
+const FEED_STALE_AFTER_MS = 90_000;
+
+export type KillFeedFreshness = {
+  status: 'live' | 'cached' | 'unavailable';
+  retrievedAt: string | null;
+  error: string | null;
+};
+
+/**
+ * How live the kill layer really is. The bubble used to label it 'live'
+ * unconditionally, so a dead or stalled feed left the radar silently quiet —
+ * which reads as "all clear", the most dangerous thing a radar can say wrongly.
+ */
+export function getKillFeedFreshness(now = Date.now()): KillFeedFreshness {
+  const feed = getEveKillFeedRuntimeStatus();
+  if (unsubscribeFeed === null || !feed.running) {
+    return {
+      status: 'unavailable',
+      retrievedAt: feed.lastSuccessAt,
+      error: 'Live kill feed is not running; kill activity is not being updated.',
+    };
+  }
+  const lastSuccessMs = feed.lastSuccessAt ? Date.parse(feed.lastSuccessAt) : Number.NaN;
+  if (!Number.isFinite(lastSuccessMs)) {
+    return { status: 'cached', retrievedAt: null, error: feed.lastError ?? 'Live kill feed has not answered yet.' };
+  }
+  if (now - lastSuccessMs > FEED_STALE_AFTER_MS) {
+    return {
+      status: 'cached',
+      retrievedAt: feed.lastSuccessAt,
+      error: `Live kill feed is stale${feed.lastError ? `: ${feed.lastError}` : ''}.`,
+    };
+  }
+  return { status: 'live', retrievedAt: feed.lastSuccessAt, error: null };
 }
 
 /**

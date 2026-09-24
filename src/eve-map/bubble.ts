@@ -28,6 +28,7 @@ import {
   applyCharacterNames,
   missingCharacterIds,
   backfillSystems,
+  getKillFeedFreshness,
   type IndexedKill,
   type SystemKillRollup,
 } from './kill-index.js';
@@ -217,7 +218,7 @@ export async function buildBubble(
     verdict: { score: verdict.score, band: verdict.band, worstSystemId: verdict.worst?.systemId ?? null },
     pilotShip,
     freshness: [
-      { layer: 'kills', status: 'live', retrievedAt: new Date(now).toISOString(), error: null },
+      { layer: 'kills', ...getKillFeedFreshness(now) },
       baseline.freshness,
       jumpsBaseline.freshness,
       sovereignty.freshness,
@@ -400,7 +401,13 @@ function collectVictimGroups(db: Db, systemId: number, now: number): string[] {
 
 function safeAssessShip(db: Db, shipTypeId: number): ShipAssessment | null {
   try {
-    return assessShip(db, shipTypeId);
+    const assessment = assessShip(db, shipTypeId);
+    // A hull with no dogma rows (a type newer than the loaded SDE, or a
+    // partial SDE) assesses as zero EHP — "survival: dead". That is not a fact
+    // about the pilot, it is missing data, and it used to raise a danger
+    // advisory and inflate every system's score. Unknown is not doomed.
+    if (!(assessment.ehp > 0)) return null;
+    return assessment;
   } catch {
     return null;
   }

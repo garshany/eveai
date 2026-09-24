@@ -56,7 +56,13 @@ conversation list.
 - **The agent speaks first.** On a position change or a new kill inside the
   bubble, deterministic rules fire: pursuit, camp on the next hop, threat-level
   rise, value spike, capability gap, route degraded, security-band change, and
-  all-clear. Each produces a finished, localized sentence.
+  all-clear. Each produces a finished, localized sentence. A kill inside the
+  bubble is pushed to the map at once and re-judged within about 1.5 s (bursts
+  share one rebuild), not at the next 15 s intel tick. Kills that land before
+  the first bubble or mid-jump are held and sorted by the next build rather than
+  dropped; a bubble the pilot jumped out of while it was building is never
+  published. Every open tab of the same pilot hears each advisory, which is
+  persisted once.
 - Every proactive message is anchored to what it is about; clicking it moves the
   camera to that system and highlights the killmail.
 - Severity filter and mute are honoured server-side. Repeats inside a cooldown
@@ -92,6 +98,11 @@ Shown in the interface, not buried here:
   layer, never as live.
 - **Killmails arrive with a publisher delay** of seconds to minutes; each event
   shows its age.
+- **A stalled kill feed is not "all clear".** The bubble's `kills` layer is
+  `live` only while the EVE-KILL feed is attached and answered within 90 s;
+  otherwise it is `cached` (stale, with the feed error) or `unavailable`.
+- **An unknown hull is not a doomed hull.** A ship type without dogma rows in the
+  loaded SDE gets no capability assessment instead of "survival: dead".
 - **Position cannot be fresher than five seconds** — that is the ESI cache, and
   it is exactly the poll interval.
 - **Nothing reads the game client.** ESI only.

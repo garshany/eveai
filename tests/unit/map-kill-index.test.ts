@@ -26,9 +26,15 @@ const feedMocks = vi.hoisted(() => {
 });
 
 const searchMock = vi.hoisted(() => vi.fn());
+const feedStatus = vi.hoisted(() => ({
+  value: { running: false, lastPollAt: null, lastSuccessAt: null, lastError: null } as {
+    running: boolean; lastPollAt: string | null; lastSuccessAt: string | null; lastError: string | null;
+  },
+}));
 
 vi.mock('../../src/eve-kill/feed-poll.js', () => ({
   subscribeEveKillFeed: feedMocks.subscribe,
+  getEveKillFeedRuntimeStatus: () => feedStatus.value,
 }));
 vi.mock('../../src/eve-kill/client.js', () => ({
   searchKillmails: searchMock,
@@ -37,6 +43,7 @@ vi.mock('../../src/eve-kill/client.js', () => ({
 const {
   backfillSystems,
   getAttackerActivity,
+  getKillFeedFreshness,
   getRecentKills,
   getRecentKillsForSystems,
   getSystemKillRollups,
@@ -124,6 +131,31 @@ describe('map kill index', () => {
 
     const rows = db.prepare('SELECT killmail_id FROM map_kill_events').all() as Array<{ killmail_id: number }>;
     expect(rows).toEqual([{ killmail_id: 20 }]);
+  });
+
+  it('reports the kill layer honestly: live, stale, or not running', () => {
+    // Раньше слой убийств всегда был «live»: мёртвая лента выглядела как
+    // спокойный периметр — худшее, что может соврать радар.
+    feedStatus.value = { running: true, lastPollAt: null, lastSuccessAt: null, lastError: null };
+    expect(getKillFeedFreshness(NOW).status).toBe('unavailable');
+
+    startMapKillIndex(db);
+    feedStatus.value = {
+      running: true,
+      lastPollAt: new Date(NOW).toISOString(),
+      lastSuccessAt: new Date(NOW - 5_000).toISOString(),
+      lastError: null,
+    };
+    expect(getKillFeedFreshness(NOW)).toMatchObject({ status: 'live', error: null });
+
+    feedStatus.value = { ...feedStatus.value, lastSuccessAt: new Date(NOW - 120_000).toISOString(), lastError: 'HTTP 503' };
+    const stale = getKillFeedFreshness(NOW);
+    expect(stale.status).toBe('cached');
+    expect(stale.error).toContain('HTTP 503');
+
+    feedStatus.value = { ...feedStatus.value, running: false };
+    expect(getKillFeedFreshness(NOW).status).toBe('unavailable');
+    feedStatus.value = { running: false, lastPollAt: null, lastSuccessAt: null, lastError: null };
   });
 
   it('subscribes only once even if started twice', () => {

@@ -159,6 +159,11 @@ export function releaseSharedAdvisorState(characterId: number, now = Date.now())
   }
 }
 
+/** Live references held on a character's shared state, or null when none exists. */
+export function sharedAdvisorRefsForTests(characterId: number): number | null {
+  return sharedStates.get(characterId)?.refs ?? null;
+}
+
 export function resetSharedAdvisorStatesForTests(): void {
   sharedStates.clear();
 }
@@ -182,10 +187,16 @@ export function createAdvisorState(now = Date.now()): AdvisorState {
  * cooldown. A rule that fires while still cooling down increments a counter
  * instead of producing a second message: the pilot gets "×4", not four lines.
  */
-export function evaluateAdvisories(state: AdvisorState, ctx: AdvisorContext): Advisory[] {
-  recordTrail(state, ctx.currentSystemId);
-  for (const kill of ctx.newKills) state.seenKillIds.add(kill.killmailId);
+export function evaluateAdvisories(state: AdvisorState, input: AdvisorContext): Advisory[] {
+  recordTrail(state, input.currentSystemId);
+  // The state is shared by every tab watching this pilot, and each tab hands
+  // the same pushed kill to its own evaluation. Judging it twice used to feed
+  // the second pass into the cooldown as a "suppressed repeat", so the next
+  // genuine warning arrived as "×2" for something that happened once.
+  const freshKills = input.newKills.filter((kill) => !state.seenKillIds.has(kill.killmailId));
+  for (const kill of freshKills) state.seenKillIds.add(kill.killmailId);
   trimSeen(state);
+  const ctx: AdvisorContext = { ...input, newKills: freshKills };
 
   const systemsById = new Map(ctx.bubble.systems.map((system) => [system.systemId, system]));
   const candidates: Advisory[] = [];
