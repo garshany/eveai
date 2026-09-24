@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
 import { handleAgentMessage } from '../agent/executor.js';
+import { runWithActivitySink, TURN_ABORTED_MESSAGE } from '../agent/activity.js';
 import { finalizeThreadMessage } from '../agent/finalizer.js';
 import { getLinkedCharacter } from '../eve/sso.js';
 import {
@@ -67,6 +68,53 @@ export function resolveThreadForChat(db: Db, chatId: number, ctx: UserContext): 
   return threadId;
 }
 
+/**
+ * /clear for the bots. Their turns run detached from the update loop, so a
+ * clear can arrive mid-turn; deleting the thread under it would make the
+ * turn's later message writes fail on the thread foreign key after the tokens
+ * are spent. Ask the running turn to abort, wait for it to leave, then clear.
+ * Returns null (nothing cleared) if the turn did not stop within the timeout.
+ */
+export async function clearChatConversationAfterInFlight(
+  db: Db,
+  chatId: number,
+  timeoutMs = 20_000,
+  pollMs = 100,
+): Promise<number | null> {
+  const running = inFlightRequests.get(chatId);
+  if (running) {
+    running.abortRequested = true;
+    const deadline = Date.now() + timeoutMs;
+    while (inFlightRequests.get(chatId)?.token === running.token) {
+      if (Date.now() >= deadline) return null;
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  }
+  return clearChatConversation(db, chatId);
+}
+
+/** Runs a bot turn that /clear can abort (see clearChatConversationAfterInFlight). */
+export async function runInFlightAgentTurn(
+  db: Db,
+  chatId: number,
+  requestToken: string,
+  threadId: string,
+  ctx: UserContext,
+  text: string,
+): Promise<string> {
+  return await runWithActivitySink({
+    emit: () => {},
+    aborted: () => {
+      const current = inFlightRequests.get(chatId);
+      return current?.token === requestToken && current.abortRequested === true;
+    },
+  }, () => runAgentTurn(db, threadId, ctx, text));
+}
+
+export function isTurnAbortedError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes(TURN_ABORTED_MESSAGE);
+}
+
 export function clearChatConversation(db: Db, chatId: number): number {
   const threads = db.prepare('SELECT thread_id FROM agent_threads WHERE chat_id = ?').all(chatId) as Array<{ thread_id: string }>;
   db.prepare('DELETE FROM thread_summaries WHERE thread_id IN (SELECT thread_id FROM agent_threads WHERE chat_id = ?)').run(chatId);
@@ -89,6 +137,8 @@ const inFlightRequests = new Map<number, {
   text: string;
   startedAt: number;
   userId: number;
+  /** Set by /clear: the running turn stops at its next abort checkpoint. */
+  abortRequested?: boolean;
 }>();
 
 export function hasInFlightRequest(chatId: number): boolean {

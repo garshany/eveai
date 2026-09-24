@@ -464,8 +464,10 @@ const TICKER_LOOKUP_LIMIT = 12;
 /**
  * Resolves entity names via batched ESI post_universe_names (max 1000 ids per
  * request). Failures are non-fatal: ESI rejects the whole request with 404 when
- * any id is invalid, so a failed batch is split in halves until the bad ids are
- * isolated (bounded by UNIVERSE_NAMES_MAX_CALLS); unresolved ids stay missing.
+ * any id is invalid, so only that failure splits a batch in halves until the
+ * bad ids are isolated (bounded by UNIVERSE_NAMES_MAX_CALLS). A thrown transport
+ * error (network, timeout) stops the lookup at once instead of bisecting through
+ * an outage; unresolved ids stay missing.
  */
 export async function resolveUniverseNames(
   deps: Pick<KillmailDeps, 'fetchJson'>,
@@ -483,6 +485,7 @@ export async function resolveUniverseNames(
     const batch = pending.shift()!;
     calls += 1;
     let data: JsonValue | null = null;
+    let failure: unknown = null;
     try {
       data = await deps.fetchJson(
         'eve-public',
@@ -490,8 +493,8 @@ export async function resolveUniverseNames(
         ['--ids', JSON.stringify(batch)],
         { maxOutputBytes: 512 * 1024 },
       );
-    } catch {
-      data = null;
+    } catch (error) {
+      failure = error;
     }
 
     if (Array.isArray(data)) {
@@ -504,12 +507,22 @@ export async function resolveUniverseNames(
       continue;
     }
 
+    // A null/error body is an answered-but-rejected request (ESI's 404 for an
+    // invalid id): bisect. A thrown transport error is an outage: stop, unless
+    // it names the 404 itself.
+    if (failure !== null && !isInvalidIdsFailure(failure)) break;
     if (batch.length > 1) {
       const middle = Math.ceil(batch.length / 2);
       pending.push(batch.slice(0, middle), batch.slice(middle));
     }
   }
   return names;
+}
+
+/** A thrown error that is ESI's "some id in this batch is invalid" (HTTP 404). */
+function isInvalidIdsFailure(failure: unknown): boolean {
+  const text = failure instanceof Error ? failure.message : String(failure);
+  return /\b404\b|not found|ensure all ids are valid/i.test(text);
 }
 
 /**

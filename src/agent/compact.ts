@@ -3,7 +3,6 @@ import { config } from '../config.js';
 import { recordModelUsageSafe } from '../usage/tracker.js';
 import { isTurnAborted } from './activity.js';
 import { runModelText } from './model.js';
-import type { NativeUsage } from './native-responses.js';
 
 type MessageRow = {
   id: number;
@@ -338,12 +337,9 @@ async function defaultSummarizer(
     transcript,
   ].filter(Boolean).join('\n\n');
 
-  const usages: NativeUsage[] = [];
-  const text = await runModelText(COMPACTION_DEVELOPER_PROMPT, userText, input.signal, (u) => {
-    usages.push(u);
-  });
-  const usage = usages[0];
-  if (usage) {
+  // Recorded inside the callback: runModelText reports usage before it throws
+  // on a failed/incomplete response, and that spend is billed too.
+  const text = await runModelText(COMPACTION_DEVELOPER_PROMPT, userText, input.signal, (usage) => {
     const owner = db.prepare('SELECT user_id, chat_id FROM agent_threads WHERE thread_id = ?').get(threadId) as
       | { user_id: number | null; chat_id: number }
       | undefined;
@@ -356,7 +352,7 @@ async function defaultSummarizer(
         reasoning: usage.reasoning,
       }, config.openai.model);
     }
-  }
+  });
   return text;
 }
 

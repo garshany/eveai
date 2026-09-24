@@ -9,7 +9,7 @@ import { getEveCapabilities } from '../eve/capabilities.js';
 import { getOrCreateUser, type UserContext } from '../auth/user-resolver.js';
 import {
   MAX_INPUT_LENGTH,
-  clearChatConversation,
+  clearChatConversationAfterInFlight,
   clearInFlightRequest,
   ensureChatSessionRow,
   evaluateChatRequestAllowance,
@@ -23,7 +23,8 @@ import {
   refreshAndSummarize,
   rememberInFlightRequest,
   resolveThreadForChat,
-  runAgentTurn,
+  runInFlightAgentTurn,
+  isTurnAbortedError,
 } from '../chat/shared.js';
 import { formatForTelegram } from './formatting.js';
 import { createLogger } from '../observability/logger.js';
@@ -359,7 +360,7 @@ async function runTelegramTurn(
     const stopTyping = startTyping(ctx);
     try {
       log.info('message len=%d', text.length);
-      const cleaned = await runAgentTurn(db, threadId, userCtx, text);
+      const cleaned = await runInFlightAgentTurn(db, chatId, requestToken, threadId, userCtx, text);
       // Delete thinking placeholder, then send real response
       if (thinkingMsg) await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
       await replyChunks(ctx, cleaned);
@@ -367,6 +368,11 @@ async function runTelegramTurn(
       stopTyping();
     }
   } catch (err) {
+    if (isTurnAbortedError(err)) {
+      // /clear stopped this turn and answers for it.
+      if (thinkingMsg) await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
+      return;
+    }
     log.error('agent error: %s', err instanceof Error ? err.message : String(err));
     try {
       if (thinkingMsg) await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
@@ -388,7 +394,11 @@ function ensureSession(db: Db, ctx: Context): void {
 
 async function clearConversation(db: Db, ctx: Context): Promise<void> {
   if (!ctx.chat) return;
-  const cleared = clearChatConversation(db, ctx.chat.id);
+  const cleared = await clearChatConversationAfterInFlight(db, ctx.chat.id);
+  if (cleared === null) {
+    await ctx.reply('Текущий запрос ещё завершается. Повтори /clear через несколько секунд.');
+    return;
+  }
   log.info('cleared %d threads', cleared);
   await ctx.reply('Диалог очищен.');
 }

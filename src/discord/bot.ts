@@ -26,7 +26,7 @@ import type { UserContext } from '../auth/user-resolver.js';
 import {
   MAX_INPUT_LENGTH,
   createEveLoginLink,
-  clearChatConversation,
+  clearChatConversationAfterInFlight,
   clearInFlightRequest,
   evaluateChatRequestAllowance,
   hasInFlightRequestForActor,
@@ -39,7 +39,8 @@ import {
   refreshAndSummarize,
   rememberInFlightRequest,
   resolveThreadForChat,
-  runAgentTurn,
+  runInFlightAgentTurn,
+  isTurnAbortedError,
 } from '../chat/shared.js';
 import { buildEveSsoSetupGuide, isEveSsoConfigured } from '../eve/eve-login.js';
 import {
@@ -242,12 +243,14 @@ async function handleMessage(db: Db, message: Message): Promise<void> {
 
   try {
     log.info('message len=%d', text.length);
-    const cleaned = await runAgentTurn(db, threadId, userCtx, text);
+    const cleaned = await runInFlightAgentTurn(db, chatKey, requestToken, threadId, userCtx, text);
     await thinkingMsg?.delete().catch(() => {});
     await sendChunks(message.channel as DMChannel, cleaned);
   } catch (err) {
-    log.error('agent error: %s', err instanceof Error ? err.message : String(err));
     await thinkingMsg?.delete().catch(() => {});
+    // /clear stopped this turn and answers for it.
+    if (isTurnAbortedError(err)) return;
+    log.error('agent error: %s', err instanceof Error ? err.message : String(err));
     await message.reply(normalizeAgentRuntimeError(err)).catch(() => {});
   } finally {
     stopTyping();
@@ -435,9 +438,14 @@ async function handleSlashCommand(db: Db, interaction: ChatInputCommandInteracti
       return;
     }
     case 'clear': {
-      const cleared = clearChatConversation(db, chatKey);
+      await interaction.deferReply();
+      const cleared = await clearChatConversationAfterInFlight(db, chatKey);
+      if (cleared === null) {
+        await interaction.editReply('Текущий запрос ещё завершается. Повтори /clear через несколько секунд.');
+        return;
+      }
       log.info('chat_key=%d cleared %d threads', chatKey, cleared);
-      await interaction.reply('Диалог очищен.');
+      await interaction.editReply('Диалог очищен.');
       return;
     }
     default:

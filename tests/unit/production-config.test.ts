@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validatePublicWebProductionConfig } from '../../src/web/production-config.js';
+import { browserSsoCallbackHostWarning, validatePublicWebProductionConfig } from '../../src/web/production-config.js';
 
 const valid = {
   nodeEnv: 'production',
@@ -28,5 +28,16 @@ describe('public web production startup validation', () => {
       turnstileSecretKey: '',
       turnstileHostname: '',
     })).toEqual([]);
+  });
+});
+
+describe('browser SSO callback host check', () => {
+  it('warns only when the callback and the web app are on different hosts', () => {
+    expect(browserSsoCallbackHostWarning('https://eve.example/auth/eve/callback', 'https://eve.example')).toBeNull();
+    expect(browserSsoCallbackHostWarning('http://localhost:3000/auth/eve/callback', 'http://127.0.0.1:3000'))
+      .toContain('разных хостах');
+    expect(browserSsoCallbackHostWarning('https://www.eve.example/auth/eve/callback', 'https://eve.example'))
+      .toContain('www.eve.example');
+    expect(browserSsoCallbackHostWarning('not a url', 'https://eve.example')).toBeNull();
   });
 });

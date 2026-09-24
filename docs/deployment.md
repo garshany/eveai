@@ -83,7 +83,7 @@ openssl rand -base64 32
 
 ## EVE Developer Portal
 
-Create an application at <https://developers.eveonline.com/> and configure the callback URL to match `EVE_CALLBACK_URL`.
+Create an application at <https://developers.eveonline.com/> and configure the callback URL to match `EVE_CALLBACK_URL`. For browser (web chat) logins the callback must be on the same host as `WEB_BASE_URL`: the login is bound to the web session cookie, and the app warns at startup when the hosts differ.
 
 By creating and using an EVE Developer application, each operator is responsible for accepting and complying with the EVE Online Developer License Agreement: <https://developers.eveonline.com/license-agreement>.
 

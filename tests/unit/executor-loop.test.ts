@@ -736,6 +736,20 @@ describe('stateless tool loop context accumulation', () => {
     expect(__test__.buildMidTurnCompactionNotice(2, 1)).toContain('не вызывай tools повторно');
   });
 
+  it('only replays tools the next request declares directly (not deferred or namespaced)', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const fn = (name: string, extra: Record<string, unknown> = {}) => ({
+      type: 'function', name, description: '', parameters: {}, ...extra,
+    });
+    const names = __test__.directlyDeclaredToolNames([
+      { type: 'tool_search' },
+      fn('sde_sql'),
+      fn('analyze_scan', { defer_loading: true }),
+      { type: 'namespace', name: 'eve_kill', description: '', tools: [fn('eve_kill_top')] },
+    ] as never);
+    expect([...names]).toEqual(['sde_sql']);
+  });
+
   it('records billed usage for a non-completed response before failing the turn', async () => {
     const { runMigrations } = await import('../../src/db/migrations.js');
     runMigrations(db as never);

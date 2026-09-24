@@ -4,14 +4,45 @@ import type { Bot, Context } from 'grammy';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import { runMigrations } from '../../src/db/migrations.js';
 
+// Mock one level below runAgentTurn so the real in-flight/abort wiring runs.
 const { runAgentTurnMock } = vi.hoisted(() => ({ runAgentTurnMock: vi.fn() }));
-vi.mock('../../src/chat/shared.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/chat/shared.js')>();
-  return { ...actual, runAgentTurn: runAgentTurnMock };
+vi.mock('../../src/agent/executor.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/agent/executor.js')>();
+  return {
+    ...actual,
+    handleAgentMessage: async (...args: unknown[]) => ({ text: await runAgentTurnMock(...args), peakInputTokens: 0 }),
+  };
 });
 
 import { registerHandlers } from '../../src/telegram/handlers.js';
-import { activeRequestCount, resetChatRequestGuardForTests } from '../../src/chat/shared.js';
+import {
+  activeRequestCount,
+  clearChatConversationAfterInFlight,
+  rememberInFlightRequest,
+  resetChatRequestGuardForTests,
+} from '../../src/chat/shared.js';
+import { isTurnAborted, TURN_ABORTED_MESSAGE } from '../../src/agent/activity.js';
+
+/**
+ * A pending turn that honours the cooperative abort like the real executor.
+ * `start` must run inside the turn (the abort probe lives in its async context).
+ */
+function pendingTurn(): { release: (value: string) => void; start: () => Promise<string> } {
+  let release: (value: string) => void = () => {};
+  const start = () => new Promise<string>((resolve, reject) => {
+    release = (value) => {
+      clearInterval(timer);
+      resolve(value);
+    };
+    const timer = setInterval(() => {
+      if (isTurnAborted()) {
+        clearInterval(timer);
+        reject(new Error(TURN_ABORTED_MESSAGE));
+      }
+    }, 5);
+  });
+  return { release: (value) => release(value), start };
+}
 
 type Handler = (ctx: Context, next?: () => Promise<void>) => Promise<void>;
 
@@ -58,16 +89,16 @@ afterEach(() => {
 
 describe('telegram text handler concurrency', () => {
   it('returns before the agent turn finishes so other updates are handled', async () => {
-    let finishFirst: (value: string) => void = () => {};
-    runAgentTurnMock.mockImplementationOnce(() => new Promise<string>((resolve) => { finishFirst = resolve; }));
+    const first = pendingTurn();
+    runAgentTurnMock.mockImplementationOnce(() => first.start());
     runAgentTurnMock.mockImplementationOnce(async () => 'second answer');
 
-    const { bot, on, commands } = fakeBot();
+    const { bot, on } = fakeBot();
     registerHandlers(bot, db);
     const textHandler = on.get('message:text')!;
 
-    const first = fakeCtx(101, 'first question');
-    await textHandler(first.ctx);
+    const firstUser = fakeCtx(101, 'first question');
+    await textHandler(firstUser.ctx);
     await vi.waitFor(() => expect(runAgentTurnMock).toHaveBeenCalledTimes(1));
     expect(activeRequestCount()).toBe(1);
 
@@ -81,14 +112,37 @@ describe('telegram text handler concurrency', () => {
     await textHandler(second.ctx);
     await vi.waitFor(() => expect(second.replies).toContain('second answer'));
 
-    // /clear from the first user also runs while their turn is pending.
+    first.release('first answer');
+    await vi.waitFor(() => expect(firstUser.replies).toContain('first answer'));
+    await vi.waitFor(() => expect(activeRequestCount()).toBe(0));
+  });
+
+  it('/clear during a running turn aborts it before deleting the thread', async () => {
+    const turn = pendingTurn();
+    runAgentTurnMock.mockImplementationOnce(() => turn.start());
+    const { bot, on, commands } = fakeBot();
+    registerHandlers(bot, db);
+
+    const user = fakeCtx(101, 'long question');
+    await on.get('message:text')!(user.ctx);
+    await vi.waitFor(() => expect(runAgentTurnMock).toHaveBeenCalledTimes(1));
+
     const clear = fakeCtx(101, '/clear');
     await commands.get('clear')!(clear.ctx);
-    expect(clear.replies).toContain('Диалог очищен.');
 
-    finishFirst('first answer');
-    await vi.waitFor(() => expect(first.replies).toContain('first answer'));
-    await vi.waitFor(() => expect(activeRequestCount()).toBe(0));
+    expect(clear.replies).toContain('Диалог очищен.');
+    expect(activeRequestCount()).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM agent_threads WHERE chat_id = 101').get()).toEqual({ n: 0 });
+    // The aborted turn neither answers nor reports an error; /clear speaks for it.
+    expect(user.replies.some((reply) => reply !== user.replies[0])).toBe(false);
+  });
+
+  it('/clear gives up without deleting anything when the turn does not stop in time', async () => {
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (404, 'u')").run();
+    db.prepare("INSERT INTO agent_threads (thread_id, chat_id) VALUES ('t-404', 404)").run();
+    rememberInFlightRequest(404, 't-404', 'stuck', 'token-404');
+    await expect(clearChatConversationAfterInFlight(db as never, 404, 30, 5)).resolves.toBeNull();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM agent_threads WHERE chat_id = 404').get()).toEqual({ n: 1 });
   });
 
   it('reports a failed detached turn and releases the in-flight entry', async () => {

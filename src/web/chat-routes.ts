@@ -428,6 +428,13 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): WebAgentReq
     snapshotTimer.unref?.();
     heartbeatTimer.unref?.();
     request.raw.once('close', close);
+    reply.raw.once('close', close);
+    // The socket may have gone before the listeners were attached; its 'close'
+    // already fired, so release the lane slot now instead of at request end.
+    if (request.raw.destroyed || reply.raw.destroyed) {
+      close();
+      return reply;
+    }
     sendSnapshot();
     return reply;
   });

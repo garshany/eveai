@@ -50,6 +50,7 @@ import {
   toNativeMessage,
   toNativeAssistantMessage,
   type NativeInputItem,
+  type NativeTool,
   type NativeFunctionCaller,
 } from './native-responses.js';
 import {
@@ -866,6 +867,11 @@ async function runNativeAgentLoop(
     ? prepareClientToolSearch(builtTools)
     : { requestTools: builtTools, index: [] as ClientToolSearchIndex };
   const tools = clientToolSearch.requestTools;
+  // Only tools declared at the top level and loaded up front can be replayed as
+  // bare function_call items after mid-turn compaction: deferred/namespaced
+  // tools depend on tool_search state (and a namespace field) that compaction
+  // discards, and the provider may reject a call to a tool it has not loaded.
+  const directReplayToolNames = directlyDeclaredToolNames(tools);
   const effectiveToolRegistry = new EffectiveToolRegistry(
     config.openai.toolSearchExecution === 'client' ? tools : builtTools,
   );
@@ -1211,8 +1217,12 @@ async function runNativeAgentLoop(
           // exact tool outputs (newest first within a bounded budget); the
           // SQLite audit summary is only a fallback because bounded tools
           // persist metadata, not data.
-          const replay = buildTurnToolReplayItems(turnToolExchanges, midTurnReplayBudgetChars());
-          if (replay.replayed === 0) {
+          const replay = buildTurnToolReplayItems(
+            turnToolExchanges.filter((exchange) => directReplayToolNames.has(exchange.name)),
+            midTurnReplayBudgetChars(),
+          );
+          replay.omitted = turnToolExchanges.length - replay.replayed;
+          if (replay.omitted > 0) {
             const toolSummary = buildRecentToolSummaryMessage(db, threadId);
             if (toolSummary) {
               pendingItems.push(toNativeAssistantMessage(toolSummary));
@@ -3087,6 +3097,12 @@ type TurnToolExchange = {
  * quarter of the auto-compact token limit (~3 chars per token), so the rebuilt
  * context stays well below the limit that triggered compaction.
  */
+function directlyDeclaredToolNames(tools: readonly NativeTool[]): ReadonlySet<string> {
+  return new Set(tools.flatMap((tool) => (
+    tool.type === 'function' && tool.defer_loading !== true ? [tool.name] : []
+  )));
+}
+
 function midTurnReplayBudgetChars(): number {
   return Math.max(
     0,
@@ -3375,6 +3391,7 @@ export const __test__ = {
   buildResponseStateRecoveryContext,
   buildRecentToolSummaryMessage,
   buildTurnToolReplayItems,
+  directlyDeclaredToolNames,
   buildMidTurnCompactionNotice,
   executeToolCall,
   deriveLiveContextNeeds,

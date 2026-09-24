@@ -264,5 +264,13 @@ describe('killmail enrichment', () => {
     const enriched = await enrichKillmailDetail(db, buildKillmail(), throwingDeps);
     expect((enriched.victim as Record<string, unknown>).character_name).toBeNull();
     expect((enriched.attackers as Array<Record<string, unknown>>)).toHaveLength(1);
+
+    // An outage (thrown transport error) is not bisected through: one call, then stop.
+    const outage = vi.fn(async () => {
+      throw new Error('ESI down');
+    });
+    const bigSet = Array.from({ length: 1500 }, (_, index) => 90_000_000 + index);
+    expect((await resolveUniverseNames({ fetchJson: outage }, bigSet)).size).toBe(0);
+    expect(outage).toHaveBeenCalledTimes(1);
   });
 });

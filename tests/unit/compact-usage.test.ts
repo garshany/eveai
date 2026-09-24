@@ -74,4 +74,23 @@ describe('compaction usage accounting', () => {
       output_tokens: 12,
     });
   });
+
+  it('bills a failed compaction call even though the summary is discarded', async () => {
+    createNativeResponseMock.mockResolvedValue({
+      id: 'resp_failed',
+      output: [],
+      outputText: '',
+      error: { message: 'upstream exploded' },
+      toolSearchPaths: [],
+      rawEvents: [],
+      usage: { input: 40, output: 5, cached: 0, reasoning: 0 },
+      status: 'failed',
+    });
+
+    await compactThread(db, 't1').catch(() => false);
+
+    const events = db.prepare('SELECT input_tokens, output_tokens FROM usage_events').all();
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events[0]).toEqual({ input_tokens: 40, output_tokens: 5 });
+  });
 });
