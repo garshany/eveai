@@ -42,7 +42,7 @@ export function MarketOverview({ overview, snapshot, lastUpdatedAt }: Props) {
       <div className="market-stats">
         <StatCard label={t('marketBestSell')} value={isk(overview.best_sell)} tone="sell" />
         <StatCard label={t('marketBestBuy')} value={isk(overview.best_buy)} tone="buy" />
-        <StatCard label={t('marketSpread')} value={isk(overview.spread_abs)} sub={formatPercent(overview.spread_pct, locale)} />
+        <StatCard label={t('marketSpread')} value={isk(overview.spread_abs)} sub={formatPercent(overview.spread_pct, locale)} money={overview.spread_abs !== null} />
         <StatCard
           label={t('marketSellVolume')}
           value={formatQuantity(overview.sell_volume, locale)}
@@ -58,11 +58,11 @@ export function MarketOverview({ overview, snapshot, lastUpdatedAt }: Props) {
   );
 }
 
-function StatCard({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'sell' | 'buy' }) {
+function StatCard({ label, value, sub, tone, money = false }: { label: string; value: string; sub?: string; tone?: 'sell' | 'buy'; money?: boolean }) {
   return (
     <article className="market-stat">
       <span className="market-stat__label">{label}</span>
-      <strong className={`market-stat__value${tone ? ` market-stat__value--${tone}` : ''}`}>{value}</strong>
+      <strong className={`market-stat__value${tone ? ` market-stat__value--${tone}` : ''}${money ? ' isk' : ''}`}>{value}</strong>
       {sub ? <small className="market-stat__sub">{sub}</small> : null}
     </article>
   );

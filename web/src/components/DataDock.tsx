@@ -187,7 +187,7 @@ function MarketTab({ characterId, onAsk }: { characterId: number | null; onAsk: 
       </div>
       <div className="dock-stat">
         <span className="dock-label">{t('dockEscrow')}</span>
-        <span className="dock-stat__value dock-stat__value--sm">{formatIsk(orders.totals.escrowTotal, locale)}</span>
+        <span className="dock-stat__value dock-stat__value--sm isk">{formatIsk(orders.totals.escrowTotal, locale)}</span>
       </div>
     </div> : null}
 
@@ -281,7 +281,7 @@ function PilotTab({ profile, characterId, onAsk }: { profile: PilotProfile | nul
     <div className="dock-stats">
       <div className="dock-stat">
         <span className="dock-label">{t('dockWallet')}</span>
-        <span className="dock-stat__value dock-stat__value--sm">{profile.wallet ? formatIsk(profile.wallet.balance, locale) : '—'}</span>
+        <span className={`dock-stat__value dock-stat__value--sm${profile.wallet ? ' isk' : ''}`}>{profile.wallet ? formatIsk(profile.wallet.balance, locale) : '—'}</span>
       </div>
       <div className="dock-stat">
         <span className="dock-label">{t('dockClone')}</span>

@@ -33,7 +33,7 @@ export function WalletPanel({ csrfToken }: Props) {
       <div className="chart-stats">
         <article className="chart-stat">
           <span className="chart-stat__label">{t('balance')}</span>
-          <strong className="chart-stat__value">
+          <strong className={`chart-stat__value${data.balance === null ? '' : ' isk'}`}>
             {data.balance === null ? '—' : `${formatIsk(data.balance, locale, { compact: false })} ISK`}
           </strong>
         </article>

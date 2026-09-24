@@ -34,6 +34,7 @@ import { UniverseCanvas } from './UniverseCanvas';
 import type { KillFlash } from './renderer';
 import { hiddenHopCount } from './route-view';
 import { useMapLive } from './use-map-live';
+import { securityClassName } from '../../security';
 
 type Props = {
   csrfToken: string;
@@ -486,19 +487,22 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
           </span> : null}
         </div> : null}
 
-        {missingScope ? <p className="perimeter-notice perimeter-notice--inline">
-          {t('perimeterMissingScope', { scope: status.character?.missingScope ?? '' })}
-        </p> : null}
-        {!status.character ? <p className="perimeter-notice perimeter-notice--inline">
-          {t('perimeterGuest')}
-        </p> : null}
-        {live.warning ? <p className="perimeter-notice perimeter-notice--inline" role="status">
-          {live.warning}
-          <button type="button" className="perimeter-chip" onClick={live.reconnect}>{t('retry')}</button>
-        </p> : null}
-        {live.status === 'offline' ? <p className="perimeter-notice perimeter-notice--inline">
-          {t('perimeterPilotOffline')}
-        </p> : null}
+        {/* One stack, so several notices never land on top of each other. */}
+        <div className="perimeter-notices">
+          {missingScope ? <p className="perimeter-notice perimeter-notice--inline">
+            {t('perimeterMissingScope', { scope: status.character?.missingScope ?? '' })}
+          </p> : null}
+          {!status.character ? <p className="perimeter-notice perimeter-notice--inline">
+            {t('perimeterGuest')}
+          </p> : null}
+          {live.warning ? <p className="perimeter-notice perimeter-notice--inline" role="status">
+            {live.warning}
+            <button type="button" className="perimeter-chip" onClick={live.reconnect}>{t('retry')}</button>
+          </p> : null}
+          {live.status === 'offline' ? <p className="perimeter-notice perimeter-notice--inline">
+            {t('perimeterPilotOffline')}
+          </p> : null}
+        </div>
 
         {/* Shown whether or not the panel opened. A system already in the bubble
             seeds the panel, so gating this on an empty panel hid the failure
@@ -637,7 +641,7 @@ function RouteRibbon({ route, onClear }: { route: MapRouteResponse; onClear: () 
     <ol className="perimeter__route-list">
       {route.systems.map((system) => <li key={system.systemId}>
         <span>{system.name}</span>
-        <span>{system.security.toFixed(1)}</span>
+        <span className={securityClassName(system.security)}>{system.security.toFixed(1)}</span>
         <span>{system.danger === null ? '—' : `${Math.round(system.danger * 100)}%`}</span>
       </li>)}
     </ol>

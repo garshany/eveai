@@ -11,6 +11,9 @@ import {
 } from '../turnstile-token';
 import { TurnstileWidget } from './TurnstileWidget';
 
+/** CCP's required proprietary notice (docs/legal.md), kept verbatim in every locale. */
+const CCP_NOTICE = '© 2014 CCP hf. All rights reserved. "EVE", "EVE Online", "CCP", and all related logos and images are trademarks or registered trademarks of CCP hf. EVE AI is a third-party tool, not affiliated with or endorsed by CCP Games.';
+
 type LoginScreenProps = {
   busy: boolean;
   ssoConfigured: boolean;
@@ -157,6 +160,7 @@ export function LoginScreen({
         </button>
         <span className="login__footer-divider" />
         <a href="/health" target="_blank" rel="noreferrer">{t('serviceStatus')}</a>
+        <p className="login__legal">{CCP_NOTICE}</p>
       </footer>
 
       {privacyOpen ? (

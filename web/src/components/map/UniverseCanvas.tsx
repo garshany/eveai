@@ -366,12 +366,19 @@ export function UniverseCanvas({
   </div>;
 }
 
-/** The colour ramp a capsuleer already reads without a legend. */
+/**
+ * The colour ramp a capsuleer already reads without a legend: the same steps
+ * as the `--sec-*` tokens in styles.css (canvas cannot read CSS variables
+ * cheaply per frame, so the values are mirrored here). Index = rounded tenths,
+ * with (0, 0.05) kept at 0.1 the way the game rounds lowsec.
+ */
+const SECURITY_RAMP = [
+  '#f24b62', '#f0524a', '#ea4a34', '#ec6a2c', '#f0902a',
+  '#e3ec6c', '#7ee25c', '#5fdcaa', '#4fd2f2', '#3fb0f2', '#4a8fff',
+];
+
 function securityColour(security: number): string {
-  if (security >= 0.9) return '#2f9bd8';
-  if (security >= 0.75) return '#3fbf6f';
-  if (security >= 0.5) return '#9fd14f';
-  if (security >= 0.45) return '#e8d44d';
-  if (security > 0) return '#e08a3c';
-  return '#c2452f';
+  if (!(security > 0)) return SECURITY_RAMP[0]!;
+  const tier = security < 0.05 ? 1 : Math.min(10, Math.round(security * 10));
+  return SECURITY_RAMP[tier]!;
 }
