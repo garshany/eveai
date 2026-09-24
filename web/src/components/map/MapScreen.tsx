@@ -32,6 +32,7 @@ import { bandLabelKey, freshnessKey, layerLabelKey } from './labels';
 import { buildLayout, interpolateLayouts, layoutsEqual, type Layout, type LayoutMode } from './layout';
 import { UniverseCanvas } from './UniverseCanvas';
 import type { KillFlash } from './renderer';
+import { mergeSystemKills, unseenKills } from './live-merge';
 import { hiddenHopCount } from './route-view';
 import { useMapLive } from './use-map-live';
 import { securityClassName } from '../../security';
@@ -42,6 +43,12 @@ type Props = {
 };
 
 const MORPH_MS = 700;
+/**
+ * How often a map without a live stream (guest, no location scope) re-reads
+ * its bubble. Matches the server's default intel cadence: faster only re-reads
+ * the same rollup, slower lets kills go unseen for minutes.
+ */
+const STATIC_REFRESH_MS = 15_000;
 /** Публичный вид для гостя: Jita — самая узнаваемая точка Нового Эдема. */
 const FALLBACK_SYSTEM_ID = 30000142;
 
@@ -66,9 +73,12 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   const [route, setRoute] = useState<MapRouteResponse | null>(null);
   const [avoid, setAvoid] = useState<number[]>([]);
   const [flashes, setFlashes] = useState<KillFlash[]>([]);
+  // A request to bring a system into view (an advisory anchor). A new object
+  // each time, so asking twice for the same system still moves the camera.
+  const [focus, setFocus] = useState<{ systemId: number } | null>(null);
 
   const liveEnabled = status?.character?.hasLocationScope === true && status.graph.ready;
-  const live = useMapLive(liveEnabled === true, radius);
+  const live = useMapLive(liveEnabled === true, radius, csrfToken);
 
   // Живой пузырь всегда побеждает статический: поток свежее любого снимка.
   const bubble = live.bubble ?? staticBubble;
@@ -94,7 +104,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
     if (!status?.graph.ready || radius === null) return;
     if (liveEnabled && live.bubble) return;
     let cancelled = false;
-    void (async () => {
+    const pull = async (): Promise<void> => {
       try {
         const payload = await webApi.map.bubble(
           liveEnabled ? undefined : FALLBACK_SYSTEM_ID,
@@ -113,8 +123,25 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
           }
         }
       }
-    })();
-    return () => { cancelled = true; };
+    };
+    void pull();
+    // With a live stream the snapshot is only the first frame. Without one it
+    // is the whole radar, and a one-shot fetch froze it at page load: kills
+    // never appeared for a guest however long the tab stayed open. Paused
+    // while the tab is hidden, and caught up the moment it is visible again.
+    if (liveEnabled) return () => { cancelled = true; };
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') void pull();
+    }, STATIC_REFRESH_MS);
+    const onVisibility = (): void => {
+      if (document.visibilityState !== 'hidden') void pull();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [status, radius, liveEnabled, live.bubble]);
 
   // --- Морф между раскладками ----------------------------------------------
@@ -230,29 +257,6 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
     return () => cancelAnimationFrame(frame);
   }, [targetLayout]);
 
-  // --- Вспышки килов --------------------------------------------------------
-  // Очередь потока накопительная, поэтому берём только то, чего ещё не видели:
-  // иначе каждый новый кил заново поджигал десяток старых.
-  const flashedRef = useRef<Set<number>>(new Set());
-  useEffect(() => {
-    if (live.killEvents.length === 0) return;
-    const fresh = live.killEvents.filter((kill) => !flashedRef.current.has(kill.killmailId));
-    if (fresh.length === 0) return;
-    for (const kill of fresh) flashedRef.current.add(kill.killmailId);
-    if (flashedRef.current.size > 500) {
-      flashedRef.current = new Set([...flashedRef.current].slice(-250));
-    }
-    const now = Date.now();
-    setFlashes((previous) => [
-      ...previous.filter((flash) => now - flash.startedAt < 2000),
-      ...fresh.slice(-10).map((kill) => ({
-        systemId: kill.systemId,
-        startedAt: now,
-        value: kill.totalValue,
-      })),
-    ]);
-  }, [live.killEvents]);
-
   const pilotSystemId = live.location?.solarSystemId ?? bubble?.originId ?? null;
 
   const bubbleSelection = useMemo<InspectedSystem | null>(
@@ -298,7 +302,9 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
       .then((payload) => {
         if (cancelled) return;
         setInspected(payload.system);
-        setInspectedKills(payload.kills);
+        // A kill streamed while this request was in flight may be newer than
+        // the index the server answered from.
+        setInspectedKills(mergeSystemKills(payload.kills, liveKillsRef.current, selected));
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -308,9 +314,79 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
     return () => { cancelled = true; };
   }, [selected, t]);
 
+  // --- Вспышки килов --------------------------------------------------------
+  // Очередь потока накопительная, поэтому берём только то, чего ещё не видели:
+  // иначе каждый новый кил заново поджигал десяток старых.
+  const flashedRef = useRef<Set<number>>(new Set());
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const liveKillsRef = useRef(live.killEvents);
+  liveKillsRef.current = live.killEvents;
+
+  /**
+   * A kill the screen has not shown yet: flash it (unless it is part of the
+   * first snapshot of a bubble, which is history rather than news) and, if its
+   * system is open in the inspector, put it at the top of that list at once —
+   * the radar must not show a fresh kill on the map while the panel about that
+   * very system still says nothing happened.
+   */
+  const announceKills = useCallback((fresh: MapKillEvent[], flash: boolean) => {
+    for (const kill of fresh) flashedRef.current.add(kill.killmailId);
+    if (flashedRef.current.size > 500) {
+      flashedRef.current = new Set([...flashedRef.current].slice(-250));
+    }
+    if (flash) {
+      const now = Date.now();
+      setFlashes((previous) => [
+        ...previous.filter((item) => now - item.startedAt < 2000),
+        ...fresh.slice(-10).map((kill) => ({
+          systemId: kill.systemId,
+          startedAt: now,
+          value: kill.totalValue,
+        })),
+      ]);
+    }
+    const open = selectedRef.current;
+    if (open !== null) {
+      setInspectedKills((previous) => (previous === null ? previous : mergeSystemKills(previous, fresh, open)));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (live.killEvents.length === 0) return;
+    const fresh = unseenKills(live.killEvents, flashedRef.current);
+    if (fresh.length > 0) announceKills(fresh, true);
+  }, [live.killEvents, announceKills]);
+
+  // Without a stream the only news is what a refreshed snapshot carries.
+  const staticPrimedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (liveEnabled || !staticBubble) return;
+    const key = `${staticBubble.originId}:${staticBubble.radius}`;
+    const primed = staticPrimedRef.current === key;
+    staticPrimedRef.current = key;
+    const fresh = unseenKills(staticBubble.recentKills, flashedRef.current);
+    if (fresh.length > 0) announceKills(fresh, primed);
+  }, [staticBubble, liveEnabled, announceKills]);
+
   const focusSystem = useCallback((systemId: number) => {
     setSelected(systemId);
     setFollow(false);
+    setFocus({ systemId });
+  }, []);
+
+  // The rings and geography chips used to change only the bubble layout, so
+  // with the whole map open they lit up and did nothing: the pilot was stuck
+  // in the universe view until they found the toggle again. A pending camera
+  // request belongs to the view it was made in.
+  const showLayout = useCallback((next: LayoutMode) => {
+    setMode(next);
+    setUniverseView(false);
+    setFocus(null);
+  }, []);
+  const showUniverse = useCallback((next: boolean) => {
+    setUniverseView(next);
+    setFocus(null);
   }, []);
 
   const clearDrawnRoute = useCallback(async () => {
@@ -378,6 +454,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
               showTraffic={showTraffic}
               showCamps={showCamps}
               selectedSystemId={selected}
+              focus={focus}
               onSelect={setSelected}
             />
             : <p className="perimeter-notice">{t('loading')}</p>)
@@ -392,6 +469,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
             flashes={flashes}
             jumpCounter={live.jumpCounter}
             follow={follow}
+            focus={focus}
             onFollowChange={setFollow}
             onSelect={setSelected}
           />
@@ -401,18 +479,18 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
           <div className="perimeter__hud-row">
             <button
               type="button"
-              className={`perimeter-chip${mode === 'ego' ? ' perimeter-chip--active' : ''}`}
-              onClick={() => setMode('ego')}
+              className={`perimeter-chip${!universeView && mode === 'ego' ? ' perimeter-chip--active' : ''}`}
+              onClick={() => showLayout('ego')}
             >{t('perimeterLayoutEgo')}</button>
             <button
               type="button"
-              className={`perimeter-chip${mode === 'geo' ? ' perimeter-chip--active' : ''}`}
-              onClick={() => setMode('geo')}
+              className={`perimeter-chip${!universeView && mode === 'geo' ? ' perimeter-chip--active' : ''}`}
+              onClick={() => showLayout('geo')}
             >{t('perimeterLayoutGeo')}</button>
             <button
               type="button"
               className={`perimeter-chip${universeView ? ' perimeter-chip--active' : ''}`}
-              onClick={() => setUniverseView((value) => !value)}
+              onClick={() => showUniverse(!universeView)}
             >{t('perimeterLayoutUniverse')}</button>
             {liveEnabled && !universeView ? <button
               type="button"
@@ -448,7 +526,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
             <button
               type="button"
               className="perimeter-chip"
-              onClick={() => setUniverseView(true)}
+              onClick={() => showUniverse(true)}
             >{t('perimeterRouteOpenUniverse')}</button>
           </div> : null}
 

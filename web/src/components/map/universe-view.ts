@@ -65,3 +65,21 @@ export function zoomRatio(view: View, fitK: number): number {
 export function project(view: View, worldX: number, worldY: number): { x: number; y: number } {
   return { x: worldX * view.k + view.x, y: worldY * view.k + view.y };
 }
+
+/**
+ * Centre the view on one system, zoomed in at least far enough for its label
+ * to be drawn. Used when the pilot asks to be shown a system (an advisory's
+ * anchor): selecting it without moving the view left the selection somewhere
+ * among 8490 dots, usually off screen.
+ */
+export function centreOn(
+  view: View,
+  fitK: number,
+  worldX: number,
+  worldY: number,
+  width: number,
+  height: number,
+): View {
+  const k = Math.max(view.k, fitK * LABEL_ZOOM_RATIO);
+  return { k, x: width / 2 - worldX * k, y: height / 2 - worldY * k };
+}

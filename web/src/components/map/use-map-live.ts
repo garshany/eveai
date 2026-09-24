@@ -10,6 +10,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { webApi } from '../../api';
+import { isStreamStale, LIVE_TOUCH_INTERVAL_MS } from './live-watchdog';
 import type { MapBubble, MapKillEvent, MapLocation, PerimeterMessage } from '../../types';
 
 export type LiveStatus = 'idle' | 'connecting' | 'live' | 'offline' | 'stopped';
@@ -67,7 +69,14 @@ export type MapLiveState = {
 const MAX_RETRY_MS = 60_000;
 const BASE_RETRY_MS = 5_000;
 
-export function useMapLive(enabled: boolean, radius: number | null): MapLiveState & { reconnect: () => void } {
+/** How often the watchdog looks at the stream; cheap, it only compares times. */
+const WATCHDOG_TICK_MS = 5_000;
+
+export function useMapLive(
+  enabled: boolean,
+  radius: number | null,
+  csrfToken: string | null = null,
+): MapLiveState & { reconnect: () => void } {
   const [state, setState] = useState<MapLiveState>({
     status: 'idle',
     location: null,
@@ -84,6 +93,9 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
   const sourceRef = useRef<EventSource | null>(null);
   const retryRef = useRef<{ attempts: number; timer: number | null }>({ attempts: 0, timer: null });
   const [manualNonce, setManualNonce] = useState(0);
+  // Read through a ref: a rotated token must not tear down a healthy stream.
+  const csrfRef = useRef(csrfToken);
+  csrfRef.current = csrfToken;
 
   const reconnect = useCallback(() => {
     retryRef.current.attempts = 0;
@@ -109,10 +121,18 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
     // every few seconds through an outage — exactly the storm the server-side
     // backoff exists to prevent.
     let fatal = false;
+    // Whether the warning on screen came from a fatal stop. Only a transient
+    // warning is cleared by the next healthy frame.
+    let warningFatal = false;
+    let lastEventAt = Date.now();
+    let sawLocation = false;
+    let pollSeconds: number | null = null;
 
     const on = <T,>(name: string, handler: (payload: T) => void): void => {
       source.addEventListener(name, (event) => {
         if (closed) return;
+        // Any real event proves the socket is alive; heartbeats cannot.
+        lastEventAt = Date.now();
         try {
           handler(JSON.parse((event as MessageEvent<string>).data) as T);
         } catch {
@@ -122,22 +142,36 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
       });
     };
 
-    on<{ threadId: string }>('ready', (payload) => {
+    on<{ threadId: string; pollSeconds?: number }>('ready', (payload) => {
       retryRef.current.attempts = 0;
+      pollSeconds = typeof payload.pollSeconds === 'number' ? payload.pollSeconds : null;
       setState((previous) => ({ ...previous, status: 'live', threadId: payload.threadId }));
     });
 
+    // Every successful ESI poll emits a location, and every successful rebuild
+    // an intel frame, so either one is the recovery signal for a transient
+    // warning. Without this "ESI 502" stayed on screen for the rest of the
+    // session over a perfectly healthy stream. A fatal warning closes the
+    // stream, so nothing can arrive to clear it by accident.
     on<{ location: MapLocation; jumped: boolean }>('location', (payload) => {
+      sawLocation = true;
       setState((previous) => ({
         ...previous,
-        status: 'live',
+        // The poll reports a logged-out pilot's last position every tick; the
+        // one-shot 'offline' event must not be overwritten by the next of them.
+        status: payload.location.online === false ? 'offline' : 'live',
         location: payload.location,
         jumpCounter: payload.jumped ? previous.jumpCounter + 1 : previous.jumpCounter,
+        warning: warningFatal ? previous.warning : null,
       }));
     });
 
     on<{ bubble: MapBubble }>('intel', (payload) => {
-      setState((previous) => ({ ...previous, bubble: payload.bubble }));
+      setState((previous) => ({
+        ...previous,
+        bubble: payload.bubble,
+        warning: warningFatal ? previous.warning : null,
+      }));
     });
 
     on<{ route: LiveRoute | null }>('route', (payload) => {
@@ -145,16 +179,29 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
     });
 
     on<{ kill: MapKillEvent }>('kill', (payload) => {
-      setState((previous) => ({
-        ...previous,
-        // Ограничение сверху: за долгий полёт очередь вспышек иначе растёт
-        // бесконечно, а показываются всё равно только свежие.
-        killEvents: [...previous.killEvents, payload.kill].slice(-50),
-      }));
+      setState((previous) => (
+        previous.killEvents.some((kill) => kill.killmailId === payload.kill.killmailId)
+          ? previous
+          : {
+            ...previous,
+            // Ограничение сверху: за долгий полёт очередь вспышек иначе растёт
+            // бесконечно, а показываются всё равно только свежие.
+            killEvents: [...previous.killEvents, payload.kill].slice(-50),
+          }
+      ));
     });
 
+    // A replayed advisory replaces its earlier copy instead of taking a second
+    // slot: the chat dedups by message id anyway, and duplicates here only
+    // pushed real warnings out of the capped window sooner.
     on<LiveAdvisory>('advisory', (payload) => {
-      setState((previous) => ({ ...previous, advisories: [...previous.advisories, payload].slice(-100) }));
+      setState((previous) => ({
+        ...previous,
+        advisories: [
+          ...previous.advisories.filter((entry) => entry.message.id !== payload.message.id),
+          payload,
+        ].slice(-100),
+      }));
     });
 
     on<{ at: string }>('offline', () => {
@@ -176,6 +223,7 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
     };
 
     on<{ message: string; fatal?: boolean }>('warning', (payload) => {
+      warningFatal = payload.fatal === true;
       if (payload.fatal) {
         fatal = true;
         // Closing here is the only thing that actually stops the browser from
@@ -193,6 +241,38 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
       }));
     });
 
+    const visible = (): boolean => document.visibilityState !== 'hidden';
+
+    // Watchdog: a proxy can keep a dead socket open indefinitely, and the
+    // heartbeat comments that would prove otherwise never reach this code. Only
+    // judged while the tab is visible — a background tab's timers are
+    // throttled, and nobody is looking at a stale map there anyway.
+    const checkStale = (): void => {
+      if (closed || fatal || source.readyState === EventSource.CLOSED || !visible()) return;
+      if (!isStreamStale({ now: Date.now(), lastEventAt, sawLocation, pollSeconds })) return;
+      source.close();
+      setState((previous) => ({ ...previous, status: 'connecting' }));
+      scheduleRetry();
+    };
+    const watchdog = window.setInterval(checkStale, WATCHDOG_TICK_MS);
+
+    // Lease ping: the server stops a session that has not jumped for its idle
+    // window, so a pilot parked in one system got a fatal stop every quarter
+    // hour with the map open. Only while visible, so a forgotten tab still
+    // times out and frees its slot.
+    const touch = (): void => {
+      const token = csrfRef.current;
+      if (closed || fatal || source.readyState === EventSource.CLOSED || !visible() || !token) return;
+      void webApi.map.touchLive(token).catch(() => undefined);
+    };
+    const toucher = window.setInterval(touch, LIVE_TOUCH_INTERVAL_MS);
+    const onVisibility = (): void => {
+      if (!visible()) return;
+      touch();
+      checkStale();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
     source.onerror = () => {
       if (closed) return;
       // A fatal stop, or a stream the browser has given up on: reconnect on our
@@ -208,6 +288,9 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
 
     return () => {
       closed = true;
+      window.clearInterval(watchdog);
+      window.clearInterval(toucher);
+      document.removeEventListener('visibilitychange', onVisibility);
       source.close();
       sourceRef.current = null;
       if (retryRef.current.timer !== null) {

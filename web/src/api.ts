@@ -320,6 +320,15 @@ export const webApi = {
       { method: 'DELETE' },
       csrfToken,
     ),
+    // Renews the live session's idle lease. Without it a pilot parked in one
+    // system is stopped after the idle window even with the map open. The
+    // caller only pings while the tab is visible, so a forgotten tab still
+    // times out. 404 means no live session exists (the stream is reconnecting).
+    touchLive: (csrfToken: string) => request<void>(
+      '/api/web/map/live/touch',
+      { method: 'POST' },
+      csrfToken,
+    ),
     chat: () => request<{ threadId: string; messages: PerimeterMessage[] }>('/api/web/map/chat'),
     resetChat: (csrfToken: string) => request<{ threadId: string; messages: PerimeterMessage[] }>(
       '/api/web/map/chat/reset',
