@@ -67,6 +67,24 @@ vi.mock('../../src/eve/esi-client.js', () => ({
     return { ok: false, status: 404, error: `unscripted ${operation}` };
   }),
 }));
+// The radar's model assessment: scripted, and counted, so the cooldown and the
+// billing can be asserted without a network.
+const modelCalls = vi.hoisted(() => ({ count: 0, facts: [] as string[] }));
+vi.mock('../../src/agent/native-responses.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/agent/native-responses.js')>();
+  return {
+    ...actual,
+    createNativeResponse: vi.fn(async (input: { items: Array<{ content: Array<{ text: string }> }> }) => {
+      modelCalls.count += 1;
+      modelCalls.facts.push(input.items[0]!.content[0]!.text);
+      return {
+        id: 'resp_radar', output: [], outputText: 'Тебя ведут от B: тот же пилот убивает по твоему следу. Не стой — уходи в док в C.',
+        error: null, status: 'completed', toolSearchPaths: [], rawEvents: [],
+        usage: { input: 900, output: 40, cached: 0, reasoning: 10 },
+      };
+    }),
+  };
+});
 vi.mock('../../src/eve/capabilities.js', () => ({
   getEveCapabilities: vi.fn(async () => ({ linked: true })),
   hasFreshCapabilitySnapshot: vi.fn(() => true),
@@ -127,6 +145,8 @@ let db: InstanceType<typeof Database>;
 let app: ReturnType<typeof Fastify>;
 let port: number;
 let cookie: string;
+let csrfToken: string;
+const ORIGIN = 'http://localhost:3000';
 let threadIdSeen: string | null = null;
 let sequence = 100;
 let killmailId = 5000;
@@ -305,6 +325,8 @@ beforeEach(async () => {
     toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
     now: NOW,
   });
+  modelCalls.count = 0;
+  modelCalls.facts = [];
   Object.assign(script, {
     systemId: A, online: true, esiFail: null, buildGate: null, locationCalls: 0, feedEvents: [], feedFail: null,
   });
@@ -326,6 +348,7 @@ beforeEach(async () => {
   const session = createWebSession(db);
   linkCharacter(session);
   cookie = `${WEB_SESSION_COOKIE}=${session.sessionToken}`;
+  csrfToken = session.csrfToken;
 
   // Real feed poller, real kill index. Bootstrap sets the cursor to 100.
   startMapKillIndex(db);
@@ -444,6 +467,23 @@ describe('Perimeter live radar, end to end over real SSE', () => {
       .find((frame) => (frame.data.advisory as { rule: string }).rule === 'pursuit');
     expect(pursuit?.data.advisory).toMatchObject({ severity: 'danger' });
     expect(threadAdvisories(threadIdSeen).map((entry) => entry.rule)).toContain('pursuit');
+
+    // The radar then *understands*: one model-written assessment follows the
+    // danger alarm, built from the live picture, persisted and billed.
+    await until(() => of(tab, 'advisory').some((frame) => frame.data.escalated === true), 'model assessment');
+    const assessment = of(tab, 'advisory').find((frame) => frame.data.escalated === true)!;
+    expect((assessment.data.message as { content: string }).content).toContain('Тебя ведут от B');
+    expect(modelCalls.count).toBe(1);
+    expect(modelCalls.facts[0]).toContain('Pilot position:');
+    expect(modelCalls.facts[0]).toContain('pursuit');
+    const authored = readPerimeterHistory(db, threadIdSeen!, 200)
+      .filter((message) => message.meta?.kind === 'advisory' && message.meta.authored === 'model');
+    expect(authored).toHaveLength(1);
+    expect(db.prepare('SELECT input_tokens FROM usage_events').all()).toEqual([{ input_tokens: 900 }]);
+    // Another danger inside the LLM cooldown: rules still speak, the model does not.
+    await feedKill(C, { attacker: 666, value: 5_000_000_000 });
+    await advance(2_000);
+    expect(modelCalls.count).toBe(1);
 
     // Offline: the online check runs once a minute.
     script.online = false;
@@ -580,4 +620,29 @@ describe('Perimeter live radar, end to end over real SSE', () => {
     tab.close();
     await until(() => getLiveSessionStats().sessions === 0, 'poller stopped');
   }, 30_000);
+
+  it('keeps the radar alive while the pilot watches, and times out a forgotten tab', async () => {
+    const tab = await openLive();
+    await until(() => of(tab, 'intel').length > 0, 'first intel');
+
+    const touch = async (headers: Record<string, string>) => app.inject({
+      method: 'POST', url: '/api/web/map/live/touch', headers,
+    });
+    // CSRF-guarded like every map mutation.
+    expect((await touch({ cookie })).statusCode).toBe(403);
+    const ok = { cookie, origin: ORIGIN, 'x-csrf-token': csrfToken };
+
+    // Sitting still for well past the idle window, touched every 4 minutes.
+    for (let minute = 0; minute < 20; minute += 4) {
+      expect((await touch(ok)).statusCode).toBe(204);
+      await advance(4 * 60_000, 5_000);
+    }
+    expect(tab.ended).toBe(false);
+
+    // Stop touching (tab hidden): the lease runs out and the stream closes.
+    await advance(16 * 60_000, 5_000);
+    await until(() => tab.ended, 'idle stop');
+    expect((await touch(ok)).statusCode).toBe(404);
+  }, 30_000);
 });
+

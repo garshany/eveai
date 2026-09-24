@@ -65,3 +65,19 @@ describe('perimeter radar snapshot for the chat agent', () => {
     expect(formatRadarSnapshot(12345, NOW)).toBeNull();
   });
 });
+
+describe('the Perimeter chat agent reads the radar', () => {
+  it('adds the radar snapshot to a Perimeter turn only', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    recordRadarBubble(CHAR, bubble(), NOW);
+    const perimeter = __test__.buildRuntimeLiveSummary('perimeter', CHAR, 'Ship: Iteron', NOW + 1_000)!;
+    expect(perimeter).toContain('Ship: Iteron');
+    expect(perimeter).toContain('Perimeter radar (live map open');
+    expect(perimeter).toContain('worst Uedama');
+    // The workspace assistant does not get the flight picture.
+    expect(__test__.buildRuntimeLiveSummary('full', CHAR, 'Ship: Iteron', NOW)).toBe('Ship: Iteron');
+    // No map open, nothing extra; nothing at all → null.
+    expect(__test__.buildRuntimeLiveSummary('perimeter', 777, null, NOW)).toBeNull();
+    expect(__test__.buildRuntimeLiveSummary('perimeter', null, null, NOW)).toBeNull();
+  });
+});

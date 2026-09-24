@@ -38,15 +38,21 @@ import {
 import { resolveCharacterNames } from '../eve-map/names.js';
 import {
   attachLiveSession,
+  touchLiveSession,
   getLiveSessionStats,
   type LiveLocation,
 } from '../eve-map/live-session.js';
 import {
   evaluateAdvisories,
   getSharedAdvisorState,
+  markModelCall,
   releaseSharedAdvisorState,
+  shouldEscalateToModel,
   type Advisory,
 } from '../eve-map/advisor.js';
+import { composeSituationAssessment } from '../eve-map/advisor-prose.js';
+import { recordRadarAdvisory, recordRadarBubble, recordRadarLocation } from '../eve-map/radar-snapshot.js';
+import { recordModelUsageSafe } from '../usage/tracker.js';
 import {
   appendAdvisory,
   getOrCreatePerimeterThread,
@@ -512,6 +518,18 @@ export function registerMapRoutes(
     });
   });
 
+  // Keeps the live radar alive while the pilot is looking at it (see
+  // touchLiveSession). The client calls it only while its tab is visible.
+  app.post('/api/web/map/live/touch', async (request, reply) => {
+    const session = requireMutationSession(db, request, reply);
+    if (!session) return;
+    const linked = getLinkedCharacter(db, sessionContext(session));
+    if (!linked || !touchLiveSession(linked.characterId, session.userId)) {
+      return reply.status(404).send({ error: 'Живая сессия карты не найдена.' });
+    }
+    return reply.status(204).send();
+  });
+
   // -- Live stream --------------------------------------------------------
   app.get<{ Querystring: BubbleQuery }>('/api/web/map/live', async (request, reply) => {
     const session = requireSession(db, request, reply);
@@ -615,6 +633,7 @@ export function registerMapRoutes(
         for (const system of next.systems) bubbleSystemIds.add(system.systemId);
         bubbleOriginId = origin;
         stream.send('intel', { bubble: next });
+        recordRadarBubble(linked.characterId, next);
 
         const byId = new Map(next.recentKills.map((kill) => [kill.killmailId, kill]));
         const newKills: IndexedKill[] = [];
@@ -633,11 +652,28 @@ export function registerMapRoutes(
           newKills,
           now: Date.now(),
         });
-        // Hook point for model escalation: `advisories`, `next`, `origin`,
-        // `state` and `locale` are everything `shouldEscalateToModel` and a
-        // prose composer need. Rule text is published first either way.
+        // Rule text goes out first, always: it is complete and costs nothing.
         for (const advisory of advisories) {
-          publishAdvisory(db, threadId, advisory, locale, stream);
+          publishAdvisory(db, threadId, linked.characterId, advisory, locale, stream);
+        }
+        // Then, for a danger-level picture and at most once per LLM cooldown
+        // (the state is shared per pilot, so several tabs still make one call),
+        // the model reads the whole radar and says what it means and what to
+        // do. Detached: the radar never waits on the model.
+        const evaluatedAt = Date.now();
+        if (config.map.advisorLlmEnabled && shouldEscalateToModel(state, advisories, evaluatedAt)) {
+          markModelCall(state, evaluatedAt);
+          void publishSituationAssessment(db, {
+            threadId,
+            characterId: linked.characterId,
+            owner: { userId: session.userId, chatId: session.chatId },
+            advisories,
+            bubble: next,
+            origin,
+            routeAhead: routeAheadOf(session.chatId, origin),
+            locale,
+            stream,
+          });
         }
       } catch (error) {
         // A failed build must not lose the kills it was about to judge.
@@ -666,6 +702,7 @@ export function registerMapRoutes(
       const jumped = event.jumped || currentSystemId !== location.solarSystemId;
       currentSystemId = location.solarSystemId;
       lastShipTypeId = location.shipTypeId;
+      recordRadarLocation(location);
       stream.send('location', { location, jumped, previousSystemId: event.previousSystemId });
       if (jumped) void refresh(location.shipTypeId, 'jump');
     });
@@ -772,23 +809,69 @@ export function registerMapRoutes(
 function publishAdvisory(
   db: Db,
   threadId: string,
+  characterId: number,
   advisory: Advisory,
   locale: 'ru' | 'en',
   stream: SseStream,
 ): void {
-  // The rule text is complete on its own. Model-authored prose is deliberately
-  // not wired here yet: the previous version consumed the escalation cooldown
-  // and then persisted the rule text anyway, which is worse than not having the
-  // feature — it burned the budget and reported an escalation that never
-  // happened. `shouldEscalateToModel` stays as the gate for when it lands.
+  // The rule text is complete on its own; the model assessment, when it runs,
+  // is a separate follow-up message (publishSituationAssessment).
   const message = appendAdvisory(db, threadId, advisory, locale, 'rule');
-  const payload = { advisory, message, escalated: false };
+  recordRadarAdvisory(characterId, advisory, message.content);
+  broadcastAdvisory(threadId, stream, { advisory, message, escalated: false });
+}
+
+function broadcastAdvisory(threadId: string, stream: SseStream, payload: unknown): void {
   // Every tab on this thread hears it. The advisor state is shared per pilot,
   // so only the tab whose rebuild ran first gets a non-empty result; without
   // the fan-out the other windows showed nothing until a reload.
   const audience = new Set(threadStreams.get(threadId) ?? []);
   audience.add(stream);
   for (const target of audience) target.send('advisory', payload);
+}
+
+/**
+ * The radar's model-written follow-up to a danger alarm: what the combined
+ * picture means for this pilot and one concrete action. Persisted as a
+ * model-authored advisory anchored to the most severe alarm, and billed to the
+ * pilot like any model call. Silent on failure — the rule text already stands.
+ */
+async function publishSituationAssessment(db: Db, input: {
+  threadId: string;
+  characterId: number;
+  owner: { userId: number; chatId: number };
+  advisories: Advisory[];
+  bubble: Awaited<ReturnType<typeof buildBubble>>;
+  origin: number;
+  routeAhead: number[];
+  locale: 'ru' | 'en';
+  stream: SseStream;
+}): Promise<void> {
+  try {
+    const text = await composeSituationAssessment({
+      advisories: input.advisories,
+      bubble: input.bubble,
+      currentSystemId: input.origin,
+      routeAhead: input.routeAhead,
+      locale: input.locale,
+      now: Date.now(),
+      onUsage: (usage) => recordModelUsageSafe(db, input.owner, input.threadId, {
+        input: usage.input,
+        output: usage.output,
+        cached: usage.cached,
+        cacheWrite: usage.cacheWrite ?? 0,
+        reasoning: usage.reasoning,
+      }, config.openai.model),
+    });
+    if (!text) return;
+    const anchor = input.advisories[0]!;
+    const message = appendAdvisory(db, input.threadId, anchor, input.locale, 'model', text);
+    recordRadarAdvisory(input.characterId, anchor, text);
+    broadcastAdvisory(input.threadId, input.stream, { advisory: anchor, message, escalated: true });
+  } catch (error) {
+    // The thread may have been reset or the DB closed during shutdown.
+    console.warn('[map-advisor] assessment publish failed: %s', error instanceof Error ? error.name : 'unknown');
+  }
 }
 
 /** Open live streams per Perimeter thread, for advisory fan-out. */

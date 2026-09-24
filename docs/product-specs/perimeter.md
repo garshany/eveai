@@ -53,6 +53,10 @@ conversation list.
   system and security, hull, bubble radius and its danger summary, the selected
   system, the active route — so a bare "стоит ли лететь?" is answerable without
   a clarifying question.
+- **The pilot's question sees the radar.** A Perimeter turn carries a radar
+  snapshot kept by the live stream — current system, hull, bubble verdict,
+  the hottest nearby systems and the latest alarms — read from memory with no
+  extra ESI call, and forgotten five minutes after the map closes.
 - **The agent speaks first.** On a position change or a new kill inside the
   bubble, deterministic rules fire: pursuit, camp on the next hop, threat-level
   rise, value spike, capability gap, route degraded, security-band change, and
@@ -72,6 +76,21 @@ conversation list.
 
 These are product guarantees, not implementation details:
 
+- **The radar understands, rarely.** After a danger-level alarm the model gets
+  a facts-only sheet of the live picture and writes a short assessment with one
+  concrete action, published as a follow-up to the rule text. It runs detached
+  (the radar never waits), at most once per `MAP_ADVISOR_LLM_COOLDOWN_SECONDS`
+  per pilot, is billed like any model call, and can be switched off with
+  `MAP_ADVISOR_LLM_ENABLED=false`.
+- **A kill reacts in about a second and a half,** not on the next intel tick:
+  an in-bubble kill schedules one debounced rebuild that a burst shares.
+- **Live kills carry an ISK value.** Feed killmails are ESI-shaped and have no
+  value; the index estimates hull + items at the cheapest sell in the home
+  market region from the local snapshot, never overriding a provided value.
+- **The radar stays on while watched.** The client renews the idle lease every
+  four minutes while its tab is visible (`POST /api/web/map/live/touch`); a
+  hidden, forgotten tab still times out. A client watchdog reconnects a stream
+  that has been silent for 45 seconds.
 - **Rules speak without the model.** Routine advisories cost nothing. The model
   is asked for prose only when a danger-level rule fired and its own longer
   cooldown has elapsed, so an hour of flying can never cost a model call every

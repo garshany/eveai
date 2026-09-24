@@ -564,6 +564,7 @@ const FAILURE_CASES: FailureCase[] = [
   ['map_bubble_intel', { system_id: 1, radius: null, ship_type_id: null }, null, { ok: false }],
   ['route_risk', { origin_system_id: JITA, destination_system_id: 1, mode: 'shortest', risk_weight: 0, draw_on_map: false }, null, { ok: false }],
   ['compare_ships', { ship_type_id_a: 0, ship_type_id_b: RIFTER }, null, { ok: false }],
+  ['compare_ships', { ship_type_id_a: 999_999_999, ship_type_id_b: RIFTER }, null, { ok: false }],
   ['threat_explain', { system_id: 1 }, null, { ok: false }],
   ['industry_cost', { product_id: RIFTER, runs: 2, me_level: 10, te_level: 20 }, 'api.everef.net', { ok: false }],
   ['pilot_intel', { scope: 'corporation', id: 98000001 }, 'zkillboard.com', { ok: false }],

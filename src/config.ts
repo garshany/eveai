@@ -507,6 +507,9 @@ export const config = {
     // Guards model spend for a pilot who flies for an hour: rules still speak,
     // but prose costs money and is rationed separately.
     advisorLlmCooldownSeconds: boundedPositiveInt('MAP_ADVISOR_LLM_COOLDOWN_SECONDS', 600, 30, 86_400),
+    // Model-written situation assessment after a danger-level alarm. Off keeps
+    // the radar rules-only (zero model spend from the map stream).
+    advisorLlmEnabled: optionalBoolean('MAP_ADVISOR_LLM_ENABLED', true),
   },
   compact: {
     maxInputChars: optionalInt('COMPACT_MAX_INPUT_CHARS', 20000),

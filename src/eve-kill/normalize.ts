@@ -150,6 +150,8 @@ export function parseFeedPage(value: unknown): FeedPage {
       throw new Error('feed event killmail_hash mismatch');
     }
     if (!killmail.killmailHash) killmail.killmailHash = outerHash;
+    // ESI-shaped data has no value; take one if the feed enriched the event.
+    killmail.totalValue ??= optionalFinite(event.total_value) ?? optionalFinite((event.data as Record<string, unknown> | null)?.total_value);
     return { sequenceId, killmail };
   });
   for (let i = 1; i < events.length; i += 1) {

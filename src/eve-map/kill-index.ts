@@ -24,6 +24,7 @@ import { searchKillmails } from '../eve-kill/client.js';
 import type { NormalizedKillmail } from '../eve-kill/types.js';
 import { nearestGate } from '../eve/map-graph.js';
 import { hourOfWeekFor } from './system-metrics.js';
+import { estimateKillValue } from './kill-value.js';
 
 export type IndexedKill = {
   killmailId: number;
@@ -243,6 +244,10 @@ export function recordKillmail(
     ? safeNearestGate(db, systemId, killmail.position)
     : null;
 
+  // ESI-shaped feed killmails carry no value; estimate it locally so value
+  // rules and ISK-destroyed layers work on live kills, not only on backfill.
+  const totalValue = killmail.totalValue ?? estimateKillValue(db, killmail, now) ?? 0;
+
   const result = db.prepare(INSERT_SQL).run(
     killmail.killmailId,
     systemId,
@@ -250,7 +255,7 @@ export function recordKillmail(
     killmail.killmailTime ?? null,
     killmailTimeMs,
     now,
-    killmail.totalValue ?? 0,
+    totalValue,
     killmail.attackerCount ?? 0,
     killmail.isNpc ? 1 : 0,
     killmail.isSolo ? 1 : 0,
@@ -278,7 +283,7 @@ export function recordKillmail(
     regionId: killmail.regionId ?? null,
     killmailTime: killmail.killmailTime ?? null,
     killmailTimeMs,
-    totalValue: killmail.totalValue ?? 0,
+    totalValue,
     attackerCount: killmail.attackerCount ?? 0,
     isNpc: Boolean(killmail.isNpc),
     isSolo: Boolean(killmail.isSolo),
@@ -387,7 +392,10 @@ export function sweepKillIndex(db: Db, now = Date.now()): { byAge: number; byCap
     byCap = db.prepare(`
       DELETE FROM map_kill_events WHERE killmail_id IN (
         SELECT killmail_id FROM map_kill_events
-        ORDER BY killmail_time_ms ASC
+        -- Ordinary kills go first: the long-lived gate kills are the oldest
+        -- rows by construction, and evicting purely by age would wipe camp
+        -- history before a single three-hour-old non-gate row.
+        ORDER BY (gate_id IS NOT NULL) ASC, killmail_time_ms ASC
         LIMIT ?
       )
     `).run(rows - config.map.killIndexMaxRows).changes;

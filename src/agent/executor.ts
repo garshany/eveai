@@ -101,6 +101,7 @@ import {
   needsMidTurnCompaction,
   runMidTurnCompact,
 } from './compact.js';
+import { formatRadarSnapshot } from '../eve-map/radar-snapshot.js';
 import { executeEveKillTool } from '../eve-kill/executor.js';
 import {
   INDUSTRY_COST_TOOL_NAME,
@@ -533,6 +534,15 @@ export async function handleAgentMessage(
   // Rebuild the developer prompt from current thread state. Called once up front
   // and again after mid-turn compaction so `instructions` always carries the
   // freshest thread summary. Everything except the summary is turn-stable.
+  // The flight assistant always sees what the pilot's radar shows right now
+  // (position, bubble verdict, hot systems, latest alarms) when the live map
+  // is open — read from memory, no ESI call — so "стоит ли лететь?" needs no
+  // clarifying question. Other threads never get it.
+  const runtimeLiveSummary = buildRuntimeLiveSummary(
+    promptMode,
+    linked?.characterId ?? null,
+    liveContext?.summary ?? null,
+  );
   const rebuildDeveloperPrompt = (): string =>
     buildDeveloperPrompt(
       {
@@ -543,7 +553,7 @@ export async function handleAgentMessage(
       },
       getThreadSummary(db, threadId),
       userProfile,
-      liveContext?.summary ?? null,
+      runtimeLiveSummary,
       promptMode,
       config.openai.responseLanguage,
       config.openai.programmaticToolCalling,
@@ -3404,6 +3414,7 @@ export function resolveTierReasoningEffort(
 }
 
 export const __test__ = {
+  buildRuntimeLiveSummary,
   setToolAdmissionsForTest(read: ResponseAdmissionController | null, write: ResponseAdmissionController | null): void {
     readToolAdmission = read;
     writeToolAdmission = write;
@@ -3779,6 +3790,18 @@ function ensureThreadOwnership(db: Db, threadId: string, ctx: UserContext): void
  * A thread's assistant identity. A missing or unknown value reads as 'chat', so
  * every legacy thread keeps the workspace agent it has always had.
  */
+function buildRuntimeLiveSummary(
+  promptMode: PromptMode,
+  characterId: number | null,
+  liveSummary: string | null,
+  now = Date.now(),
+): string | null {
+  const radar = promptMode === 'perimeter' && characterId !== null
+    ? formatRadarSnapshot(characterId, now)
+    : null;
+  return [liveSummary, radar].filter((part): part is string => Boolean(part)).join('\n\n') || null;
+}
+
 function readThreadKind(db: Db, threadId: string): 'chat' | 'perimeter' {
   try {
     const row = db.prepare('SELECT kind FROM agent_threads WHERE thread_id = ?')

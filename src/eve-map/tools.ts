@@ -325,6 +325,17 @@ function compareShips(db: Db, args: Record<string, unknown>): Record<string, unk
   const a = readId(args.ship_type_id_a);
   const b = readId(args.ship_type_id_b);
   if (a === null || b === null) return failure('Both ship type IDs must be positive integers.');
+  // An unknown id used to come back as "Type N" with 0 EHP and survival DEAD —
+  // a confident answer about a ship that does not exist.
+  for (const typeId of [a, b]) {
+    let known = false;
+    try {
+      known = Boolean(db.prepare('SELECT 1 FROM sde_types WHERE type_id = ?').get(typeId));
+    } catch {
+      return failure('Ship data unavailable: the local SDE is not loaded.');
+    }
+    if (!known) return failure(`Ship type ${typeId} is not in the local SDE. Resolve the hull name to a type_id first.`);
+  }
 
   let shipA;
   let shipB;

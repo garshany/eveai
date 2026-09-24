@@ -30,6 +30,7 @@ describe('perimeter configuration', () => {
     'MAP_GATE_KILL_RETENTION_DAYS',
     'MAP_ADVISOR_COOLDOWN_SECONDS',
     'MAP_ADVISOR_LLM_COOLDOWN_SECONDS',
+    'MAP_ADVISOR_LLM_ENABLED',
   ];
 
   it('documents every knob in .env.example', () => {
