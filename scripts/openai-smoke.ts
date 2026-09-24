@@ -16,7 +16,7 @@ import { createNativeResponse, toNativeMessage } from '../src/agent/native-respo
 const provider = resolveOpenAiProvider();
 const baseUrl = provider.baseUrl;
 const apiKey = process.env.OPENAI_API_KEY || '';
-const model = process.env.OPENAI_MODEL || 'gpt-5.6-luna';
+const model = process.env.OPENAI_MODEL || 'gpt-6-luna';
 const configuredReasoningEffort = parseOptionalEnumEnv(
   process.env,
   'OPENAI_REASONING_EFFORT',

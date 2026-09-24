@@ -4,7 +4,7 @@ This project uses the OpenAI Responses API for a tool-heavy EVE Online agent loo
 
 ## Default Target
 
-- Model: `gpt-5.6-luna`
+- Model: `gpt-6-luna`
 - Provider: `openai` (default) or `modelhub`
 - Transport: both providers use streamed HTTP `POST /v1/responses`
 - Base URL: fixed by provider ID (`https://api.openai.com/v1` or
@@ -42,9 +42,10 @@ The self-hosting operator selects one process-wide model:
 
 | Value | Role |
 | --- | --- |
+| `gpt-6-luna` | Default; next-generation efficient model, cheaper per token than GPT-5.6 Sol/Terra at OpenAI list prices |
 | `gpt-5.6-sol` | Strongest capability and quality-first work |
 | `gpt-5.6-terra` | Strong capability with a lower-cost balance |
-| `gpt-5.6-luna` | Default; efficient, latency-sensitive, high-volume work |
+| `gpt-5.6-luna` | Efficient, latency-sensitive, high-volume work |
 | `gpt-5.6` | Family alias that currently routes to Sol |
 
 `OPENAI_REASONING_EFFORT=auto` is an EVE Agent policy, not an API value. It uses the existing goal classifier for top-level chat turns and resolves internal model calls to the balanced `medium` baseline. A fixed value (`none`, `low`, `medium`, `high`, `xhigh`, or `max`) overrides the classifier and reaches every normal chat turn unchanged.
@@ -55,7 +56,7 @@ The self-hosting operator selects one process-wide model:
 
 `OPENAI_TEXT_VERBOSITY` accepts `low`, `medium`, or `high`. The developer prompt keeps task-specific chat requirements; this API control supplies the default amount of detail.
 
-End users can override the process-wide defaults for their own conversations on the web «Settings» screen (`GET`/`PUT`/`DELETE /api/web/settings/model`, session + CSRF; `PUT` requires a linked EVE character). The per-user row in `user_model_settings` (keyed by `user_id`, so it spans the web, Telegram, and Discord lanes) carries one of the three verified model ids (`gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`), a reasoning effort from the same whitelist as `OPENAI_REASONING_EFFORT`, and a verbosity. Users without a row run on the operator config; changes apply from the next turn. Usage events record the applied model, so the per-model tariffs on the transparency page price each event by the model that actually served it: top-level turns and delegated read-subagent calls inherit the user's model, while internal compaction summaries always run on — and are billed as — the operator-configured model.
+End users can override the process-wide defaults for their own conversations on the web «Settings» screen (`GET`/`PUT`/`DELETE /api/web/settings/model`, session + CSRF; `PUT` requires a linked EVE character). The per-user row in `user_model_settings` (keyed by `user_id`, so it spans the web, Telegram, and Discord lanes) carries one of the selectable model ids (`gpt-6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`), a reasoning effort from the same whitelist as `OPENAI_REASONING_EFFORT`, and a verbosity. Users without a row run on the operator config; changes apply from the next turn. Usage events record the applied model, so the per-model tariffs on the transparency page price each event by the model that actually served it: top-level turns and delegated read-subagent calls inherit the user's model, while internal compaction summaries always run on — and are billed as — the operator-configured model.
 
 ## Response State Modes
 
@@ -272,7 +273,7 @@ model-service failure.
 
 ```env
 OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-5.6-luna
+OPENAI_MODEL=gpt-6-luna
 OPENAI_RESPONSE_STATE_MODE=stateless
 OPENAI_STORE_RESPONSES=false
 OPENAI_PROGRAMMATIC_TOOL_CALLING=false

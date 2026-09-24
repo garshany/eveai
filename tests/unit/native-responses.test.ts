@@ -414,7 +414,7 @@ describe('createNativeResponse request body', () => {
     }));
 
     const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
-    const models = ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
+    const models = ['gpt-6-luna', 'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
     const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
     for (const model of models) {

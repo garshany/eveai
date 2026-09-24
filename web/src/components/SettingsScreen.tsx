@@ -8,7 +8,7 @@ type Props = { csrfToken: string; onMenu: () => void };
 
 type EffortKey = 'settingsEffortAuto' | 'settingsEffortNone' | 'settingsEffortLow' | 'settingsEffortMedium' | 'settingsEffortHigh' | 'settingsEffortXhigh' | 'settingsEffortMax';
 type VerbosityKey = 'settingsVerbosityLow' | 'settingsVerbosityMedium' | 'settingsVerbosityHigh';
-type ModelKey = 'settingsModelSol' | 'settingsModelTerra' | 'settingsModelLuna';
+type ModelKey = 'settingsModelLuna6' | 'settingsModelSol' | 'settingsModelTerra' | 'settingsModelLuna';
 type SettingsErrorKey = 'settingsErrorUnknownModel' | 'settingsErrorInvalidEffort' | 'settingsErrorInvalidVerbosity' | 'settingsErrorCharacterRequired';
 
 const EFFORT_LABELS: Record<string, EffortKey> = {
@@ -28,6 +28,7 @@ const VERBOSITY_LABELS: Record<string, VerbosityKey> = {
 };
 
 const MODEL_DESCRIPTIONS: Record<string, ModelKey> = {
+  'gpt-6-luna': 'settingsModelLuna6',
   'gpt-5.6-sol': 'settingsModelSol',
   'gpt-5.6-terra': 'settingsModelTerra',
   'gpt-5.6-luna': 'settingsModelLuna',

@@ -74,6 +74,9 @@ describe('transparency & usage configuration', () => {
     expect(defaults['gpt-5.6-luna']).toEqual({
       input: 0.042, output: 0.21, cached: 0.0126, reasoning: 0.21,
     });
+    expect(defaults['gpt-6-luna']).toEqual({
+      input: 0.1, output: 0.5, cached: 0.01, reasoning: 0.5,
+    });
 
     vi.resetModules();
     // An empty value behaves like unset: the defaults still apply.
