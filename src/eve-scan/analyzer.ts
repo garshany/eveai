@@ -385,9 +385,12 @@ function parseDscanLines(lines: string[]): DscanEntry[] {
     if (!isNaN(num) && parts.length >= 3) {
       const distRaw = parts[3]?.trim() ?? '';
       entries.push({ typeId: num, typeName: parts[1].trim(), distanceKm: parseDistanceKm(distRaw) });
+    } else if (parts.length >= 3) {
+      // "Name<TAB>Type<TAB>Distance": the first column is the object's own
+      // (often player-chosen) name; the Type column is what resolves.
+      entries.push({ typeId: null, typeName: parts[1].trim(), distanceKm: parseDistanceKm(parts[2].trim()) });
     } else {
-      const distRaw = parts[2]?.trim() ?? parts[1]?.trim() ?? '';
-      entries.push({ typeId: null, typeName: first, distanceKm: parseDistanceKm(distRaw) });
+      entries.push({ typeId: null, typeName: first, distanceKm: parseDistanceKm(parts[1].trim()) });
     }
   }
   return entries;

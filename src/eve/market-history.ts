@@ -252,7 +252,13 @@ function readHistorySeries(db: Db, regionId: number, typeId: number, days: numbe
     WHERE region_id = ? AND type_id = ?
     ORDER BY date ASC
   `).all(regionId, typeId) as HistoryPoint[];
-  return days !== null && days > 0 ? rows.slice(-days) : rows;
+  if (days === null || days <= 0 || rows.length === 0) return rows;
+  // Calendar window anchored at the latest stored day. ESI omits no-trade
+  // days, so slicing the last N ROWS would stretch an illiquid item's
+  // "30 days" across months and skew every windowed stat.
+  const cutoff = new Date(dateToUtcMs(rows[rows.length - 1].date) - (days - 1) * DAY_MS)
+    .toISOString().slice(0, 10);
+  return rows.filter((row) => row.date >= cutoff);
 }
 
 function readSyncRow(db: Db, regionId: number, typeId: number): SyncRow | undefined {

@@ -68,7 +68,7 @@ function timestamp(): string {
 // Redaction
 // ---------------------------------------------------------------------------
 
-export function redactLogValue(value: unknown): unknown {
+export function redactLogValue(value: unknown, ancestors: WeakSet<object> = new WeakSet()): unknown {
   if (typeof value === 'string') {
     return redactString(value);
   }
@@ -78,21 +78,28 @@ export function redactLogValue(value: unknown): unknown {
     redacted.stack = value.stack ? redactString(value.stack) : undefined;
     return redacted;
   }
-  if (Array.isArray(value)) {
-    return value.map((entry) => redactLogValue(entry));
-  }
-  if (value && typeof value === 'object') {
+  if (!value || typeof value !== 'object') return value;
+  // A cyclic structure (request/socket objects, error causes) must not turn a
+  // log call into a stack overflow. Only ANCESTORS count: an object shared by
+  // two siblings is not a cycle and is rendered both times.
+  if (ancestors.has(value)) return '[circular]';
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((entry) => redactLogValue(entry, ancestors));
+    }
     const result: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
       if (/token|secret|password|authorization|api[_-]?key/iu.test(key)) {
         result[key] = '[redacted]';
       } else {
-        result[key] = redactLogValue(entry);
+        result[key] = redactLogValue(entry, ancestors);
       }
     }
     return result;
+  } finally {
+    ancestors.delete(value);
   }
-  return value;
 }
 
 export function createLogger(scope?: string): Logger {

@@ -66,6 +66,14 @@ describe('parseItemLines', () => {
       .toEqual([{ name: 'Damage Control II', quantity: 1 }]);
   });
 
+  it('accepts non-breaking-space thousands separators from localized clients', () => {
+    // Russian/French clients group digits with U+00A0 / U+202F.
+    const parsed = parseItemLines('Tritanium\t1\u00a0200\tMineral\nPyerite\t12\u202f500\tMineral');
+    const byKey = new Map(parsed.map((line) => [line.name.toLowerCase(), line.quantity]));
+    expect(byKey.get('tritanium')).toBe(1200);
+    expect(byKey.get('pyerite')).toBe(12500);
+  });
+
   it('keeps a trailing token as part of the name when the name ends with a digit', () => {
     const parsed = parseItemLines('Item Mk2 5');
     expect(parsed).toEqual([{ name: 'Item Mk2 5', quantity: 1 }]);

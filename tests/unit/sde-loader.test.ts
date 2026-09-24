@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
@@ -66,5 +66,46 @@ describe('loadJsonlFile robustness', () => {
     // The table is populated (not wiped by a mid-load crash).
     const total = db.prepare('SELECT COUNT(*) AS n FROM sde_types').get() as { n: number };
     expect(total.n).toBe(3);
+  });
+
+  it('keeps the previous table contents when the file cannot be read mid-load', async () => {
+    db.prepare('INSERT INTO sde_types (type_id, name, group_id, data_json) VALUES (?, ?, ?, ?)')
+      .run(34, 'Tritanium', 18, '{}');
+    // A directory where the JSONL file should be: the read stream fails after
+    // the loader has already located the "file".
+    mkdirSync(join(dir, 'types.jsonl'));
+
+    await expect(loadJsonlFile(db as never, {
+      filePatterns: ['types.jsonl'],
+      table: 'sde_types',
+      idField: 'type_id',
+      nameField: 'name',
+      extraCols: { group_id: 'group_id' },
+    }, dir)).rejects.toThrow();
+
+    const rows = db.prepare('SELECT type_id FROM sde_types').all() as Array<{ type_id: number }>;
+    expect(rows.map((r) => r.type_id)).toEqual([34]);
+    expect(db.inTransaction).toBe(false);
+  });
+
+  it('skips only the unbindable row instead of dropping its whole batch', async () => {
+    const lines = [
+      JSON.stringify({ type_id: 34, name: 'Tritanium', group_id: 18 }),
+      JSON.stringify({ type_id: 'not-a-number', name: 'Broken', group_id: 18 }),
+      JSON.stringify({ type_id: 35, name: 'Pyerite', group_id: 18 }),
+    ];
+    writeFileSync(join(dir, 'types.jsonl'), lines.join('\n'));
+
+    const result = await loadJsonlFile(db as never, {
+      filePatterns: ['types.jsonl'],
+      table: 'sde_types',
+      idField: 'type_id',
+      nameField: 'name',
+      extraCols: { group_id: 'group_id' },
+    }, dir);
+
+    const rows = db.prepare('SELECT type_id FROM sde_types ORDER BY type_id').all() as Array<{ type_id: number }>;
+    expect(rows.map((r) => r.type_id)).toEqual([34, 35]);
+    expect(result.count).toBe(2);
   });
 });

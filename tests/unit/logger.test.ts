@@ -24,4 +24,17 @@ describe('logger redaction', () => {
       nested: { refresh_token: '[redacted]' },
     });
   });
+
+  it('survives cyclic objects instead of overflowing the stack', () => {
+    const request: Record<string, unknown> = { id: 1, apiKey: 'sk-live' };
+    request.self = request;
+    request.children = [request];
+
+    const redacted = redactLogValue(request) as Record<string, unknown>;
+
+    expect(redacted.id).toBe(1);
+    expect(redacted.apiKey).toBe('[redacted]');
+    expect(redacted.self).toBe('[circular]');
+    expect(redacted.children).toEqual(['[circular]']);
+  });
 });

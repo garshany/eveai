@@ -87,6 +87,29 @@ describe('market_history_summary facade', () => {
     expect(validateProgrammaticToolOutput('market_history_summary', result)).toEqual({ valid: true, errors: [] });
   });
 
+  it('windows by calendar days from the latest row, not by row count, for sparse history', async () => {
+    mocks.callEsiOperation.mockResolvedValue({
+      ok: true,
+      status: 200,
+      cached: false,
+      headers: {},
+      data: [
+        row('2026-04-01', 50, 55, 45, 1, 10),
+        row('2026-05-15', 60, 65, 55, 1, 10),
+        row('2026-07-10', 100, 110, 90, 1, 10),
+        row('2026-07-30', 110, 120, 100, 1, 10),
+      ],
+    });
+    const result = await executeMarketHistorySummary(db, validArgs);
+    expect(result).toMatchObject({
+      ok: true,
+      requested_days: 30,
+      window: { first_date: '2026-07-10', last_date: '2026-07-30' },
+      observed_days: 2,
+      price: { change_percent: 10 },
+    });
+  });
+
   it('returns an honest empty summary with nullable calculations', async () => {
     mocks.callEsiOperation.mockResolvedValue({ ok: true, status: 200, cached: false, headers: {}, data: [] });
     const result = await executeMarketHistorySummary(db, { ...validArgs, days: 90 });

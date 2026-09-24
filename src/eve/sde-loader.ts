@@ -321,11 +321,6 @@ export async function loadJsonlFile(
   const sql = `INSERT OR REPLACE INTO ${loader.table} (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`;
   const stmt = db.prepare(sql);
 
-  // Clear existing data
-  db.prepare(`DELETE FROM ${loader.table}`).run();
-
-  const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
-
   let count = 0;
   let skipped = 0;
   const insertMany = db.transaction((rows: unknown[][]) => {
@@ -333,78 +328,94 @@ export async function loadJsonlFile(
       stmt.run(...row);
     }
   });
+  const insertOne = db.transaction((row: unknown[]) => {
+    stmt.run(...row);
+  });
+  // A failed batch rolls back as a unit; retry it row by row so one
+  // unbindable record costs only itself, not up to BATCH_SIZE good rows.
+  const flushBatch = (rows: unknown[][]): void => {
+    try {
+      insertMany(rows);
+      return;
+    } catch (err) {
+      console.warn(`  [warn] ${basename(filePath)}: batch insert failed, retrying row by row: ${(err as Error).message}`);
+    }
+    for (const row of rows) {
+      try {
+        insertOne(row);
+      } catch {
+        skipped += 1;
+        count -= 1;
+      }
+    }
+  };
 
   const batch: unknown[][] = [];
   const BATCH_SIZE = 1000;
 
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-    try {
-      const obj = JSON.parse(line) as Record<string, unknown>;
+  // The DELETE and every batch commit together: a read error or crash
+  // mid-file rolls back to the previous table instead of leaving it wiped or
+  // half-loaded (and a running bot never observes the partial table).
+  await withFileTransaction(db, async () => {
+    db.prepare(`DELETE FROM ${loader.table}`).run();
+    const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
 
-      // Extract ID -- try the configured field, also try common alternatives
-      let id = getFieldValue(obj, loader.idField);
-      if (id === undefined && obj._key !== undefined) {
-        id = obj._key;
-      }
-      if (id === undefined) continue; // skip records without valid ID
-      // A non-scalar id (e.g. {"type_id": {...}}) can't bind to an INTEGER
-      // PRIMARY KEY and would otherwise throw at flush time — outside the
-      // per-line try — crashing the whole load with the table already cleared.
-      if (typeof id === 'object') { skipped++; continue; }
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
 
-      // Extract name -- handle localized format
-      let name = '';
-      if (loader.nameField) {
-        name = extractName(obj[loader.nameField]);
-      }
-      if (!name && loader.nameFromTypeIdField && typeNameMap) {
-        const typeId = getFieldValue(obj, loader.nameFromTypeIdField) ?? obj._key;
-        const typeName = typeof typeId === 'number' ? typeNameMap.get(typeId) : undefined;
-        if (typeName) {
-          name = typeName;
+        // Extract ID -- try the configured field, also try common alternatives
+        let id = getFieldValue(obj, loader.idField);
+        if (id === undefined && obj._key !== undefined) {
+          id = obj._key;
         }
-      }
+        if (id === undefined) continue; // skip records without valid ID
+        // A non-scalar id (e.g. {"type_id": {...}}) can't bind to an INTEGER
+        // PRIMARY KEY and would otherwise throw at flush time — outside the
+        // per-line try — crashing the whole load with the table already cleared.
+        if (typeof id === 'object') { skipped++; continue; }
 
-      const row: unknown[] = [id];
-      if (hasName) {
-        row.push(name);
-      }
-      for (const col of extraKeys) {
-        const jsonField = loader.extraCols![col];
-        const val = getFieldValue(obj, jsonField);
-        // Non-scalar values can't bind — store null rather than throwing.
-        row.push(val !== null && typeof val === 'object' ? null : (val ?? null));
-      }
-      row.push(JSON.stringify(obj));
-
-      batch.push(row);
-      count++;
-
-      if (batch.length >= BATCH_SIZE) {
-        try {
-          insertMany(batch.splice(0));
-        } catch (err) {
-          console.warn(`  [warn] ${basename(filePath)}: batch insert failed: ${(err as Error).message}`);
-          skipped += BATCH_SIZE;
-          count -= BATCH_SIZE;
+        // Extract name -- handle localized format
+        let name = '';
+        if (loader.nameField) {
+          name = extractName(obj[loader.nameField]);
         }
-      }
-    } catch {
-      skipped++;
-    }
-  }
+        if (!name && loader.nameFromTypeIdField && typeNameMap) {
+          const typeId = getFieldValue(obj, loader.nameFromTypeIdField) ?? obj._key;
+          const typeName = typeof typeId === 'number' ? typeNameMap.get(typeId) : undefined;
+          if (typeName) {
+            name = typeName;
+          }
+        }
 
-  if (batch.length > 0) {
-    // Guard the final flush too — it is outside the per-line try above.
-    try {
-      insertMany(batch);
-    } catch (err) {
-      console.warn(`  [warn] ${basename(filePath)}: final batch insert failed: ${(err as Error).message}`);
-      skipped += batch.length;
-      count -= batch.length;
+        const row: unknown[] = [id];
+        if (hasName) {
+          row.push(name);
+        }
+        for (const col of extraKeys) {
+          const jsonField = loader.extraCols![col];
+          const val = getFieldValue(obj, jsonField);
+          // Non-scalar values can't bind — store null rather than throwing.
+          row.push(val !== null && typeof val === 'object' ? null : (val ?? null));
+        }
+        row.push(JSON.stringify(obj));
+
+        batch.push(row);
+        count++;
+
+        if (batch.length >= BATCH_SIZE) {
+          flushBatch(batch.splice(0));
+        }
+      } catch {
+        skipped++;
+      }
     }
-  }
+
+    if (batch.length > 0) {
+      flushBatch(batch.splice(0));
+    }
+  });
 
   if (skipped > 0) {
     console.warn(`  [warn] ${basename(filePath)}: ${skipped} lines skipped (malformed)`);
@@ -451,7 +462,6 @@ async function loadGenericJsonlFile(
   filePath: string,
 ): Promise<number> {
   console.log(`  [load] ${basename(filePath)} into sde_raw_records`);
-  db.prepare('DELETE FROM sde_raw_records WHERE dataset_name = ?').run(datasetName);
 
   const stmt = db.prepare(
     'INSERT OR REPLACE INTO sde_raw_records (dataset_name, record_id, name, data_json) VALUES (?, ?, ?, ?)'
@@ -462,32 +472,52 @@ async function loadGenericJsonlFile(
     }
   });
 
-  const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
   const batch: Array<[string, string, string | null, string]> = [];
   const BATCH_SIZE = 1000;
   let count = 0;
 
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-    try {
-      const obj = JSON.parse(line) as Record<string, unknown>;
-      const rawId = obj._key ?? getFieldValue(obj, 'id') ?? getFieldValue(obj, 'type_id') ?? getFieldValue(obj, 'item_id');
-      if (rawId === undefined || rawId === null) continue;
-      batch.push([datasetName, String(rawId), inferGenericName(obj), JSON.stringify(obj)]);
-      count += 1;
-      if (batch.length >= BATCH_SIZE) {
-        insertMany(batch.splice(0));
-      }
-    } catch {
-      // ignore malformed lines
-    }
-  }
+  await withFileTransaction(db, async () => {
+    db.prepare('DELETE FROM sde_raw_records WHERE dataset_name = ?').run(datasetName);
+    const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
 
-  if (batch.length > 0) {
-    insertMany(batch);
-  }
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
+        const rawId = obj._key ?? getFieldValue(obj, 'id') ?? getFieldValue(obj, 'type_id') ?? getFieldValue(obj, 'item_id');
+        if (rawId === undefined || rawId === null) continue;
+        batch.push([datasetName, String(rawId), inferGenericName(obj), JSON.stringify(obj)]);
+        count += 1;
+        if (batch.length >= BATCH_SIZE) {
+          insertMany(batch.splice(0));
+        }
+      } catch {
+        // ignore malformed lines
+      }
+    }
+
+    if (batch.length > 0) {
+      insertMany(batch);
+    }
+  });
 
   return count;
+}
+
+/**
+ * Run one file's DELETE + reload as a single SQLite transaction. The body
+ * awaits a stream, so better-sqlite3's synchronous db.transaction() cannot
+ * wrap it; nested db.transaction() batches inside become savepoints.
+ */
+async function withFileTransaction(db: ReturnType<typeof initDb>, body: () => Promise<void>): Promise<void> {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    await body();
+    db.exec('COMMIT');
+  } catch (err) {
+    if (db.inTransaction) db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 async function main() {

@@ -329,6 +329,19 @@ describe('getTypeHistory', () => {
     expect(result.series.map((point) => point.date)).toEqual(['2026-07-02', '2026-07-03']);
   });
 
+  it('bounds the window by calendar days, not by row count, for sparse series', async () => {
+    // Illiquid item: ESI omits no-trade days, so 3 rows can span two months.
+    const fetchHistory = okFetcher([
+      makeEsiRow('2026-05-20', 90),
+      makeEsiRow('2026-06-25', 95),
+      makeEsiRow('2026-07-20', 100),
+      makeEsiRow('2026-07-26', 104),
+    ]);
+    const result = await getTypeHistory(db as Db, FORGE, TRITANIUM, { days: 30, deps: { fetchHistory, now: T0 } });
+    // Last stored day 2026-07-26; a 30-day window starts 2026-06-27.
+    expect(result.series.map((point) => point.date)).toEqual(['2026-07-20', '2026-07-26']);
+  });
+
   it('answers with empty local data when the backfill fails', async () => {
     const failing: MarketHistoryFetcher = vi.fn(async () => ({ ok: false as const, status: 500, error: 'boom' }));
     const result = await getTypeHistory(db as Db, FORGE, TRITANIUM, { deps: { fetchHistory: failing, now: T0 } });

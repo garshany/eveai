@@ -48,8 +48,9 @@ function parseQuantity(raw: string): number | null {
     const value = Number(trimmed);
     return Number.isSafeInteger(value) && value > 0 ? value : null;
   }
-  if (/^\d{1,3}([ .,]\d{3})+$/.test(trimmed)) {
-    const value = Number(trimmed.replace(/[ .,]/g, ''));
+  // Localized clients group with a (narrow) no-break space: U+00A0 / U+202F.
+  if (/^\d{1,3}([ .,\u00a0\u202f]\d{3})+$/.test(trimmed)) {
+    const value = Number(trimmed.replace(/[ .,\u00a0\u202f]/g, ''));
     return Number.isSafeInteger(value) && value > 0 ? value : null;
   }
   return null;
