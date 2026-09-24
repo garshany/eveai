@@ -31,7 +31,8 @@ function system(overrides: Partial<BubbleSystem> & { systemId: number }): Bubble
       systemId: overrides.systemId,
       kills15m: 0,
       kills1h: 0,
-      kills24h: 0,
+      killsWindow: 0,
+      killsWindowHours: 3,
       pvpKills1h: 0,
       npcKills1h: 0,
       valueDestroyed1h: 0,
@@ -186,6 +187,30 @@ describe('perimeter advisor', () => {
       bubble: bubble({ verdict: { score: 0.1, band: 'calm', worstSystemId: null } }),
     }));
     expect(falling.find((advisory) => advisory.rule === 'threat_rise')).toBeUndefined();
+  });
+
+  it('does not flip threat_rise between tabs watching different radii', () => {
+    // One shared state per pilot; a 2-jump tab sees calm, a 6-jump tab sees a
+    // hostile system further out. Neither view changed, so nothing rose.
+    const state = createAdvisorState(NOW);
+    const narrow = () => bubble({ radius: 2, verdict: { score: 0.1, band: 'calm', worstSystemId: null } });
+    const wide = () => bubble({ radius: 6, verdict: { score: 0.7, band: 'hostile', worstSystemId: 1 } });
+    const rises: string[] = [];
+    for (let step = 0; step < 6; step += 1) {
+      const advisories = evaluateAdvisories(state, ctx({
+        now: NOW + step * 20 * 60_000,
+        bubble: step % 2 === 0 ? narrow() : wide(),
+      }));
+      for (const advisory of advisories) if (advisory.rule === 'threat_rise') rises.push(advisory.stateKey);
+    }
+    expect(rises).toEqual([]);
+
+    // A genuine rise inside one radius still reports.
+    const rising = evaluateAdvisories(state, ctx({
+      now: NOW + 10 * 20 * 60_000,
+      bubble: bubble({ radius: 2, verdict: { score: 0.7, band: 'hostile', worstSystemId: 1 } }),
+    }));
+    expect(rising.find((advisory) => advisory.rule === 'threat_rise')?.stateKey).toBe('rise:calm->hostile');
   });
 
   it('calls out a value spike with the hull and the amount', () => {

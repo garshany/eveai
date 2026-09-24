@@ -11,7 +11,7 @@ const signaturesMock = vi.hoisted(() => vi.fn());
 vi.mock('../../src/eve/eve-scout-client.js', () => ({ getSignatures: signaturesMock }));
 
 const { buildMapGraph, invalidateMapGraphCache } = await import('../../src/eve/map-graph.js');
-const { getUniverseActivity, getUniverseStatic, getUniverseWormholes, resetUniverseCachesForTests } =
+const { getUniverseActivity, getUniverseIntel, getUniverseStatic, getUniverseWormholes, resetUniverseCachesForTests } =
   await import('../../src/eve-map/universe.js');
 
 const NOW = Date.parse('2026-07-29T19:00:00.000Z');
@@ -154,6 +154,17 @@ describe('whole-cluster map', () => {
     insertKill(db, { id: 41, systemId: 30000144, ageMinutes: 5 });
     // Внутри TTL второй зритель получает тот же объект — расчёт один на всех.
     expect(getUniverseActivity(db, NOW + 1000)).toBe(first);
+  });
+
+  it('marks the whole-map kill layer when the live feed is not running', () => {
+    insertKill(db, { id: 50, systemId: 30000142, ageMinutes: 5 });
+    const intel = getUniverseIntel(db, NOW);
+    // Без маркера остановившийся фид рисует всю карту спокойной.
+    expect(intel.killFeed).toMatchObject({ layer: 'kills', status: 'unavailable' });
+    expect(intel.killFeed.error).toMatch(/not running/);
+    expect(intel.systemIds).toEqual([30000142]);
+    // The shared rollup stays shared; only the freshness is per request.
+    expect(getUniverseActivity(db, NOW)).not.toHaveProperty('killFeed');
   });
 
   it('refuses to present stale traffic as current', () => {

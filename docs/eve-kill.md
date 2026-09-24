@@ -141,6 +141,16 @@ retryable failed send must not be silently skipped. A terminal rejection is
 also written to per-chat dedup, so another consumer can continue and that
 recipient is not retried for the same killmail.
 
+Non-blocking observers (`subscribeEveKillFeed(fn, { mode: 'observer' })`, used
+by the Perimeter map kill index) are not part of that acknowledgement. They get
+each page before the blocking listeners and watch delivery, are never awaited,
+and their failures are logged and dropped. While a retryable failure holds the
+cursor, the poller fetches up to ten further pages past it per poll for
+observers only (their in-memory position is deduped by sequence id), so the
+map keeps flowing through a Telegram/Discord outage. After a restart observers
+resume from the durable cursor, so they are at-least-once and must be
+idempotent. `lastObservedAt` in the runtime status is their freshness.
+
 Only consumers whose chat platform has an active sender participate in a run.
 Watches and route-monitor rows for a disabled platform remain durable but are
 suspended, cannot hold the global cursor, and do not receive historical replay

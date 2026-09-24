@@ -195,6 +195,17 @@ describe('map kill index', () => {
     expect(feedMocks.subscribe).toHaveBeenCalledTimes(1);
   });
 
+  it('does not count long-retained gate kills as recent window activity', () => {
+    // Gate kills outlive the ordinary retention for camp memory; a 10-hour-old
+    // one must not make a system look active "in the last 24 h" (really 3 h).
+    db.prepare(`INSERT INTO map_kill_events (killmail_id, system_id, killmail_time_ms, received_at_ms,
+      total_value, attacker_count, is_npc, is_solo, source, gate_id) VALUES (?, ?, ?, ?, 0, 1, 0, 1, 'feed', ?)`)
+      .run(77, 30000142, NOW - 10 * 3_600_000, NOW, 50000001);
+    const jita = getSystemKillRollups(db, [30000142], NOW).get(30000142)!;
+    expect(jita.killsWindow).toBe(0);
+    expect(jita.killsWindowHours).toBe(3);
+  });
+
   it('rolls up windows per system and keeps quiet systems in the result', () => {
     recordKillmail(db, killmail({ killmailId: 30, killmailTime: new Date(NOW - 5 * 60_000).toISOString() }), 'feed', NOW);
     recordKillmail(db, killmail({ killmailId: 31, killmailTime: new Date(NOW - 40 * 60_000).toISOString() }), 'feed', NOW);
@@ -206,7 +217,10 @@ describe('map kill index', () => {
 
     expect(jita.kills15m).toBe(2);
     expect(jita.kills1h).toBe(3);
-    expect(jita.kills24h).toBe(4);
+    // The 5-hour-old kill is outside the honest window: with the default 3 h
+    // retention the rollup covers 3 h and says so, instead of calling it 24 h.
+    expect(jita.killsWindowHours).toBe(3);
+    expect(jita.killsWindow).toBe(3);
     expect(jita.pvpKills1h).toBe(2);
     expect(jita.npcKills1h).toBe(1);
     // Нулевые строки нужны карте не меньше, чем ненулевые.

@@ -28,11 +28,11 @@ import type {
 import { MapCanvas } from './MapCanvas';
 import { PerimeterChat } from './PerimeterChat';
 import { SystemInspector } from './SystemInspector';
-import { bandLabelKey, freshnessKey, layerLabelKey } from './labels';
+import { bandLabelKey, freshnessKey, freshnessLayersForView, layerLabelKey } from './labels';
 import { buildLayout, interpolateLayouts, layoutsEqual, type Layout, type LayoutMode } from './layout';
 import { UniverseCanvas } from './UniverseCanvas';
 import type { KillFlash } from './renderer';
-import { mergeSystemKills, unseenKills } from './live-merge';
+import { mergeSystemKills, overlayLiveKills, unseenKills, type ReceivedKill } from './live-merge';
 import { hiddenHopCount } from './route-view';
 import { useMapLive } from './use-map-live';
 import { securityClassName } from '../../security';
@@ -63,7 +63,10 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   // cluster from shared static geometry instead of the pilot-relative bubble.
   const [universeView, setUniverseView] = useState(false);
   const [universe, setUniverse] = useState<UniverseStatic | null>(null);
-  const [universeIntel, setUniverseIntel] = useState<UniverseActivity | null>(null);
+  const [universeIntel, setUniverseIntel] = useState<{ payload: UniverseActivity; receivedAtMs: number } | null>(null);
+  // Live-stream kills with their receipt time, laid over the polled cluster
+  // rollup so the whole-map view does not wait up to a poll for news.
+  const [liveKillLog, setLiveKillLog] = useState<ReceivedKill[]>([]);
   const [wormholes, setWormholes] = useState<UniverseWormholes | null>(null);
   const [showTraffic, setShowTraffic] = useState(false);
   const [showCamps, setShowCamps] = useState(true);
@@ -197,7 +200,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
     let cancelled = false;
     const pull = (): void => {
       void webApi.map.universeIntel()
-        .then((payload) => { if (!cancelled) setUniverseIntel(payload); })
+        .then((payload) => { if (!cancelled) setUniverseIntel({ payload, receivedAtMs: Date.now() }); })
         .catch(() => undefined);
     };
     pull();
@@ -355,8 +358,26 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   useEffect(() => {
     if (live.killEvents.length === 0) return;
     const fresh = unseenKills(live.killEvents, flashedRef.current);
-    if (fresh.length > 0) announceKills(fresh, true);
+    if (fresh.length === 0) return;
+    announceKills(fresh, true);
+    const receivedAtMs = Date.now();
+    setLiveKillLog((previous) => [
+      ...previous,
+      ...fresh.map((kill) => ({ kill, receivedAtMs })),
+    ].slice(-200));
   }, [live.killEvents, announceKills]);
+
+  const universeActivity = useMemo(
+    () => (universeIntel
+      ? overlayLiveKills(universeIntel.payload, liveKillLog, universeIntel.receivedAtMs)
+      : null),
+    [universeIntel, liveKillLog],
+  );
+  const freshnessLayers = freshnessLayersForView(
+    bubble?.freshness ?? null,
+    universeIntel?.payload.killFeed ?? null,
+    universeView,
+  );
 
   // Without a stream the only news is what a refreshed snapshot carries.
   const staticPrimedRef = useRef<string | null>(null);
@@ -446,7 +467,8 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
           ? (universe
             ? <UniverseCanvas
               universe={universe}
-              activity={universeIntel}
+              activity={universeActivity}
+              flashes={flashes}
               currentSystemId={live.location?.solarSystemId ?? null}
               routeSystemIds={drawnRouteSystemIds}
               avoidedSystemIds={avoid}
@@ -541,12 +563,12 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
             />
           </label>}
 
-          <MapLegend bubble={universeView ? null : bubble} universe={universeView ? universeIntel : null} />
+          <MapLegend bubble={universeView ? null : bubble} universe={universeView ? universeActivity : null} />
         </div>
 
         {/* Честность слоёв — часть продукта, а не подпись мелким шрифтом. */}
-        {bubble ? <div className="perimeter__freshness">
-          {bubble.freshness.map((layerInfo) => <span
+        {freshnessLayers ? <div className="perimeter__freshness">
+          {freshnessLayers.map((layerInfo) => <span
             key={layerInfo.layer}
             className={`perimeter-fresh perimeter-fresh--${layerInfo.status}`}
             title={layerInfo.error ?? undefined}
@@ -560,7 +582,7 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
           {universeView && wormholes?.error ? <span className="perimeter-fresh perimeter-fresh--unavailable">
             {t('perimeterLayerWormholes')}: {t('perimeterFresh_unavailable')}
           </span> : null}
-          {bubble.truncated ? <span className="perimeter-fresh perimeter-fresh--hourly">
+          {bubble?.truncated ? <span className="perimeter-fresh perimeter-fresh--hourly">
             {t('perimeterTruncated', { shown: String(bubble.radius), asked: String(bubble.requestedRadius) })}
           </span> : null}
         </div> : null}

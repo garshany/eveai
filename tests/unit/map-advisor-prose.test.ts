@@ -23,7 +23,7 @@ function system(systemId: number, name: string, extra: Partial<BubbleSystem> = {
     systemId, name, jumps: 1, security: 0.5, securityClass: null, regionId: 1, regionName: 'The Forge',
     mapX: 0, mapY: 0, whClass: null,
     activity: {
-      systemId, kills15m: 0, kills1h: 0, kills24h: 0, pvpKills1h: 0, npcKills1h: 0,
+      systemId, kills15m: 0, kills1h: 0, killsWindow: 0, killsWindowHours: 3, pvpKills1h: 0, npcKills1h: 0,
       valueDestroyed1h: 0, soloKills1h: 0, lastKillMinutesAgo: null, lastKillAtMs: null,
     },
     baselineShipKills: 0, baselineNpcKills: 0, baselineJumps: 0,
@@ -60,7 +60,7 @@ function input(extra: Partial<SituationInput> = {}): SituationInput {
         security: 0.5,
         danger: { systemId: 2, score: 0.82, band: 'hot', terms: [] },
         activity: {
-          systemId: 2, kills15m: 3, kills1h: 7, kills24h: 20, pvpKills1h: 7, npcKills1h: 0,
+          systemId: 2, kills15m: 3, kills1h: 7, killsWindow: 20, killsWindowHours: 3, pvpKills1h: 7, npcKills1h: 0,
           valueDestroyed1h: 0, soloKills1h: 0, lastKillMinutesAgo: 3, lastKillAtMs: NOW - 180_000,
         },
       }),

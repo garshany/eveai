@@ -29,6 +29,7 @@ import {
   missingCharacterIds,
   backfillSystems,
   getKillFeedFreshness,
+  killsWindowHours,
   type IndexedKill,
   type SystemKillRollup,
 } from './kill-index.js';
@@ -418,7 +419,8 @@ function emptyRollupFor(systemId: number): SystemKillRollup {
     systemId,
     kills15m: 0,
     kills1h: 0,
-    kills24h: 0,
+    killsWindow: 0,
+    killsWindowHours: killsWindowHours(),
     pvpKills1h: 0,
     npcKills1h: 0,
     valueDestroyed1h: 0,

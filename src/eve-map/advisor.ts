@@ -50,7 +50,13 @@ export type Advisory = {
 export type AdvisorState = {
   /** Systems the pilot has actually passed through, newest last. */
   trail: number[];
-  lastBand: DangerBand | null;
+  /**
+   * Last bubble verdict band per bubble radius. The state is shared by every
+   * tab watching this pilot, and tabs can watch different radii: a single
+   * shared band made a 2-jump tab and a 6-jump tab flip it back and forth, so
+   * `threat_rise` fired on every alternate evaluation with nothing changing.
+   */
+  lastBandByRadius: Map<number, DangerBand>;
   lastSecurityBand: 'high' | 'low' | 'null' | null;
   /** rule → last emission timestamp in ms. */
   cooldowns: Map<AdvisoryRule, number>;
@@ -171,7 +177,7 @@ export function resetSharedAdvisorStatesForTests(): void {
 export function createAdvisorState(now = Date.now()): AdvisorState {
   return {
     trail: [],
-    lastBand: null,
+    lastBandByRadius: new Map(),
     lastSecurityBand: null,
     cooldowns: new Map(),
     suppressed: new Map(),
@@ -364,8 +370,9 @@ function detectCampAhead(
 
 function detectThreatRise(state: AdvisorState, ctx: AdvisorContext): Advisory | null {
   const band = ctx.bubble.verdict.band as DangerBand;
-  const previous = state.lastBand;
-  state.lastBand = band;
+  const radius = ctx.bubble.radius;
+  const previous = state.lastBandByRadius.get(radius) ?? null;
+  state.lastBandByRadius.set(radius, band);
   if (previous === null) return null;
   if (rank(band) <= rank(previous)) return null;
 

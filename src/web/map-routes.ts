@@ -24,7 +24,7 @@ import {
   type RouteMode,
 } from '../eve/map-graph.js';
 import { buildBubble } from '../eve-map/bubble.js';
-import { getUniverseActivity, getUniverseStatic, getUniverseWormholes } from '../eve-map/universe.js';
+import { getUniverseIntel, getUniverseStatic, getUniverseWormholes } from '../eve-map/universe.js';
 import { setAutopilotRoute } from '../eve/route-planner.js';
 import {
   applyCharacterNames,
@@ -214,7 +214,7 @@ export function registerMapRoutes(
     if (!getMapGraphMeta(db)) {
       return reply.status(503).send({ error: 'Карта недоступна: граф систем не построен.' });
     }
-    return getUniverseActivity(db);
+    return getUniverseIntel(db);
   });
 
   // EVE-Scout exits for the whole cluster. Its own endpoint rather than a field

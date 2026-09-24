@@ -8,7 +8,8 @@ function rollup(overrides: Partial<SystemKillRollup> = {}): SystemKillRollup {
     systemId: 30000142,
     kills15m: 0,
     kills1h: 0,
-    kills24h: 0,
+    killsWindow: 0,
+    killsWindowHours: 3,
     pvpKills1h: 0,
     npcKills1h: 0,
     valueDestroyed1h: 0,
@@ -48,6 +49,13 @@ function ship(overrides: Partial<ShipAssessment> = {}): ShipAssessment {
 }
 
 describe('danger scoring', () => {
+  it('labels the quiet discount with the real kill window, not a fictional 24 h', () => {
+    const quiet = scoreSystemDanger(input({ security: -0.5 }));
+    const term = quiet.terms.find((entry) => entry.key === 'quiet_discount');
+    expect(term?.detail).toBe('nothing observed here in the last 3 hour(s)');
+    expect(term?.detail).not.toContain('24');
+  });
+
   it('scores a quiet highsec system near zero', () => {
     const score = scoreSystemDanger(input());
     expect(score.score).toBeLessThan(0.1);
@@ -57,7 +65,7 @@ describe('danger scoring', () => {
   it('always returns the terms behind the score', () => {
     const score = scoreSystemDanger(input({
       security: 0.4,
-      rollup: rollup({ kills1h: 4, kills15m: 3, kills24h: 6, pvpKills1h: 4 }),
+      rollup: rollup({ kills1h: 4, kills15m: 3, killsWindow: 6, pvpKills1h: 4 }),
     }));
     // Красная точка без разбора — не разведданные.
     expect(score.terms.length).toBeGreaterThan(0);
@@ -67,21 +75,21 @@ describe('danger scoring', () => {
 
   it('weighs recent kills above older ones', () => {
     const fresh = scoreSystemDanger(input({
-      rollup: rollup({ kills1h: 4, kills15m: 4, kills24h: 4, pvpKills1h: 4 }),
+      rollup: rollup({ kills1h: 4, kills15m: 4, killsWindow: 4, pvpKills1h: 4 }),
     }));
     const stale = scoreSystemDanger(input({
-      rollup: rollup({ kills1h: 4, kills15m: 0, kills24h: 4, pvpKills1h: 4 }),
+      rollup: rollup({ kills1h: 4, kills15m: 0, killsWindow: 4, pvpKills1h: 4 }),
     }));
     expect(fresh.score).toBeGreaterThan(stale.score);
   });
 
   it('raises the score when the same attacker keeps killing', () => {
     const once = scoreSystemDanger(input({
-      rollup: rollup({ kills1h: 2, kills24h: 2, pvpKills1h: 2 }),
+      rollup: rollup({ kills1h: 2, killsWindow: 2, pvpKills1h: 2 }),
       attackers: [{ characterId: 1, name: 'A', kills: 1 }, { characterId: 2, name: 'B', kills: 1 }],
     }));
     const repeat = scoreSystemDanger(input({
-      rollup: rollup({ kills1h: 2, kills24h: 2, pvpKills1h: 2 }),
+      rollup: rollup({ kills1h: 2, killsWindow: 2, pvpKills1h: 2 }),
       attackers: [{ characterId: 1, name: 'A', kills: 2 }],
     }));
     expect(repeat.score).toBeGreaterThan(once.score);
@@ -90,11 +98,11 @@ describe('danger scoring', () => {
 
   it('flags a gate camp separately from scattered kills', () => {
     const scattered = scoreSystemDanger(input({
-      rollup: rollup({ kills1h: 4, kills24h: 4, pvpKills1h: 4 }),
+      rollup: rollup({ kills1h: 4, killsWindow: 4, pvpKills1h: 4 }),
       maxGateKills: 1,
     }));
     const camped = scoreSystemDanger(input({
-      rollup: rollup({ kills1h: 4, kills24h: 4, pvpKills1h: 4 }),
+      rollup: rollup({ kills1h: 4, killsWindow: 4, pvpKills1h: 4 }),
       maxGateKills: 4,
     }));
     expect(camped.score).toBeGreaterThan(scattered.score);
@@ -102,7 +110,7 @@ describe('danger scoring', () => {
   });
 
   it('scores the same system higher for a hull that cannot survive there', () => {
-    const base = input({ rollup: rollup({ kills1h: 3, kills24h: 3, pvpKills1h: 3 }) });
+    const base = input({ rollup: rollup({ kills1h: 3, killsWindow: 3, pvpKills1h: 3 }) });
     const anonymous = scoreSystemDanger(base);
     const hauler = scoreSystemDanger({ ...base, pilotShip: ship({ survivalChance: 'DEAD' }) });
     // Вопрос всегда «опасно ли мне», а не «опасно ли вообще».
@@ -112,7 +120,7 @@ describe('danger scoring', () => {
 
   it('notices that this system eats hulls like the pilot\'s', () => {
     const score = scoreSystemDanger(input({
-      rollup: rollup({ kills1h: 2, kills24h: 2, pvpKills1h: 2 }),
+      rollup: rollup({ kills1h: 2, killsWindow: 2, pvpKills1h: 2 }),
       victimGroups: ['hauler', 'hauler'],
       pilotShip: ship(),
     }));
@@ -124,7 +132,7 @@ describe('danger scoring', () => {
     const campedHigh = scoreSystemDanger(input({
       systemId: 2,
       security: 0.9,
-      rollup: rollup({ kills15m: 3, kills1h: 5, kills24h: 5, pvpKills1h: 5 }),
+      rollup: rollup({ kills15m: 3, kills1h: 5, killsWindow: 5, pvpKills1h: 5 }),
       maxGateKills: 4,
       attackers: [{ characterId: 1, name: 'Ganker', kills: 4 }],
     }));
@@ -137,7 +145,7 @@ describe('danger scoring', () => {
     const quiet = scoreSystemDanger(input({ security: -0.5 }));
     const active = scoreSystemDanger(input({
       security: -0.5,
-      rollup: rollup({ kills1h: 1, kills24h: 1, pvpKills1h: 1 }),
+      rollup: rollup({ kills1h: 1, killsWindow: 1, pvpKills1h: 1 }),
     }));
     expect(active.score).toBeGreaterThan(quiet.score);
   });
@@ -155,7 +163,7 @@ describe('bubble verdict', () => {
   const dangerous = scoreSystemDanger(input({
     systemId: 1,
     security: 0.4,
-    rollup: rollup({ kills15m: 5, kills1h: 8, kills24h: 8, pvpKills1h: 8 }),
+    rollup: rollup({ kills15m: 5, kills1h: 8, killsWindow: 8, pvpKills1h: 8 }),
     maxGateKills: 5,
     attackers: [{ characterId: 1, name: 'Ganker', kills: 5 }],
   }));

@@ -80,3 +80,18 @@ export function freshnessKey(status: MapLayerFreshness['status']): TranslationKe
 export function advisoryRuleKey(rule: string): TranslationKey | null {
   return RULE_KEYS[rule] ?? null;
 }
+
+/**
+ * Freshness chips for the current view. The whole-map view takes its kill
+ * layer from the cluster intel (the bubble's may be absent or about another
+ * radius): a stalled feed must be visible there too, not only in the bubble.
+ */
+export function freshnessLayersForView(
+  bubbleFreshness: readonly MapLayerFreshness[] | null,
+  universeKillFeed: MapLayerFreshness | null,
+  universeView: boolean,
+): MapLayerFreshness[] | null {
+  if (!universeView || !universeKillFeed) return bubbleFreshness ? [...bubbleFreshness] : null;
+  const others = (bubbleFreshness ?? []).filter((layer) => layer.layer !== universeKillFeed.layer);
+  return [universeKillFeed, ...others];
+}

@@ -25,6 +25,7 @@ import { config } from '../config.js';
 import { getMapGraphMeta } from '../eve/map-graph.js';
 import { getSignatures } from '../eve/eve-scout-client.js';
 import { bandFor, type DangerBand } from './danger.js';
+import { getKillFeedFreshness, type KillFeedFreshness } from './kill-index.js';
 
 export type UniverseStatic = {
   /** Identifies the SDE build this geometry came from; the client caches on it. */
@@ -58,6 +59,15 @@ export type UniverseActivity = {
   /** Hourly ESI traffic, carried separately because it is an hour old. */
   baselineJumps: Record<number, number>;
   totals: { activeSystems: number; kills1h: number; campedSystems: number };
+};
+
+/**
+ * What the whole-map intel route serves: the shared activity rollup plus the
+ * kill layer's freshness. A stalled feed leaves every system quiet, which on
+ * the whole-map view reads as "all of New Eden is calm" unless it says so.
+ */
+export type UniverseIntel = UniverseActivity & {
+  killFeed: { layer: 'kills' } & KillFeedFreshness;
 };
 
 const WINDOW_MS = 60 * 60_000;
@@ -309,6 +319,14 @@ export function getUniverseActivity(db: Db, now = Date.now()): UniverseActivity 
     expiresAtMs: now + config.map.intelRefreshSeconds * 1000,
   };
   return payload;
+}
+
+/**
+ * The activity rollup is cached and shared, but freshness is evaluated per
+ * request so a feed that stalls mid-TTL is reported on the next poll.
+ */
+export function getUniverseIntel(db: Db, now = Date.now()): UniverseIntel {
+  return { ...getUniverseActivity(db, now), killFeed: { layer: 'kills', ...getKillFeedFreshness(now) } };
 }
 
 /**

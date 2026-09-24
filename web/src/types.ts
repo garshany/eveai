@@ -576,7 +576,9 @@ export type MapSystemActivity = {
   systemId: number;
   kills15m: number;
   kills1h: number;
-  kills24h: number;
+  /** Kills over `killsWindowHours` (min(24, server retention)); not always 24 h. */
+  killsWindow: number;
+  killsWindowHours: number;
   pvpKills1h: number;
   npcKills1h: number;
   valueDestroyed1h: number;
@@ -757,4 +759,6 @@ export type UniverseActivity = {
   bands: string[];
   baselineJumps: Record<string, number>;
   totals: { activeSystems: number; kills1h: number; campedSystems: number };
+  /** Kill-feed freshness, so a stalled feed is not read as a calm cluster. */
+  killFeed?: MapLayerFreshness;
 };
