@@ -127,6 +127,9 @@ const ALERT_COOLDOWN_MS = 5 * 60_000;
 const KILL_WINDOW_MS = 60 * 60_000;
 const PURSUIT_WINDOW_MS = 20 * 60_000;
 
+/** usage_events thread label for route-intel model calls (billed to the monitor's lane). */
+const ROUTE_MONITOR_USAGE_THREAD_ID = 'route-monitor';
+
 export const activeMonitors = new Map<number, MonitorInstance>();
 
 export type RouteMonitorStartOptions = {
@@ -785,6 +788,9 @@ async function sendRouteDigest(instance: MonitorInstance): Promise<void> {
       || shouldSendDigestHeartbeat(instance.lastDigestTime, digest, gankers.length);
     if (!shouldSend) return;
 
+    // Billed to the lane's owner; a lane with no resolvable user falls back
+    // to userId 0 (SYSTEM_USAGE_USER_ID) so the spend still lands in usage_events.
+    const payerCtx = getMonitorUserContext(db, monitor.chatId);
     const summary = await generateRouteIntelSummary(
       digest,
       shipAssessment,
@@ -796,6 +802,7 @@ async function sendRouteDigest(instance: MonitorInstance): Promise<void> {
         destinationId: monitor.destinationId,
         currentSystemId: monitor.currentSystemId,
       },
+      { db, userId: payerCtx.userId, chatId: monitor.chatId, threadId: ROUTE_MONITOR_USAGE_THREAD_ID },
     );
     await instance.sender(monitor.chatId, formatIntelMessage(summary, {
       digest,

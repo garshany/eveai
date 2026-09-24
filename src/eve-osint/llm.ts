@@ -1,4 +1,6 @@
 import { createNativeResponse, toNativeMessage } from '../agent/native-responses.js';
+import { config } from '../config.js';
+import { getUsagePayer, recordPayerUsage } from '../usage/payer.js';
 
 const OSINT_ANALYSIS_PROMPT = `You are an EVE Online intelligence analyst. You receive a structured OSINT digest built from public killboard data about a player, corporation, or alliance.
 
@@ -44,15 +46,26 @@ Your job: synthesize all data into an actionable intelligence report. Do not inv
 const LLM_TIMEOUT_MS = 18_000;
 
 export async function analyzeOsintGraphPatterns(digest: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  // Billed to the ambient payer the executor sets around tool dispatch (the
+  // user/chat lane whose turn asked for OSINT inference).
+  const payer = getUsagePayer();
+  const model = config.openai.model;
   try {
-    const response = await withTimeout(
-      createNativeResponse({
-        instructions: OSINT_ANALYSIS_PROMPT,
-        items: [toNativeMessage(JSON.stringify(digest, null, 2))],
-        tools: [],
-      }),
-      LLM_TIMEOUT_MS,
-    );
+    // A real abort, not a Promise.race: a raced-out request would keep
+    // running and its billed usage would arrive after nobody is listening.
+    const response = await createNativeResponse({
+      instructions: OSINT_ANALYSIS_PROMPT,
+      items: [toNativeMessage(JSON.stringify(digest, null, 2))],
+      tools: [],
+      model,
+      signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+    });
+    // Record before inspecting status: failed/incomplete responses are billed too.
+    if (response.usage) {
+      if (payer) recordPayerUsage(payer, response.usage, model);
+      else console.warn('[eve-osint] LLM usage has no payer scope; not recorded');
+    }
+    if (response.error) return null;
     return parseAnalysis(response.outputText);
   } catch (error) {
     console.warn('[eve-osint] LLM pattern analysis failed: %s', (error as Error).message);
@@ -87,20 +100,4 @@ function parseAnalysis(text: string): Record<string, unknown> | null {
 function filterStrings(value: unknown, max: number): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === 'string').slice(0, max);
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`OSINT LLM call timed out after ${ms}ms`)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
 }

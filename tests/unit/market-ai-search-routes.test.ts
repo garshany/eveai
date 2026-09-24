@@ -205,6 +205,30 @@ describe('market ai-search route', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM usage_events').get()).toEqual({ count: 0 });
   });
 
+  it('still bills a degraded search that spent tokens on a failed/incomplete response', async () => {
+    runner.mockResolvedValue({
+      ok: false,
+      picks: [],
+      usage: { input: 90, output: 12, cached: 0, cacheWrite: 0, reasoning: 4 },
+    });
+    const session = browserSession();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/web/market/ai-search',
+      headers: mutationHeaders(session),
+      payload: { query: 'фрегат' },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(db.prepare('SELECT user_id, thread_id, model, input_tokens, reasoning_tokens FROM usage_events').all())
+      .toEqual([{
+        user_id: session.userId,
+        thread_id: 'web-market-ai-search',
+        model: config.openai.model,
+        input_tokens: 90,
+        reasoning_tokens: 4,
+      }]);
+  });
+
   it('keeps sessions isolated: each call runs under its own user', async () => {
     seedType(RIFTER, 'Rifter');
     runner.mockResolvedValue(okOutcome([{ type_id: RIFTER, reason: '' }]));

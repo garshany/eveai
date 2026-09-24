@@ -85,6 +85,8 @@ describe('eve-board travel intel', () => {
         destinationId: 30000142,
         currentSystemId: 30002660,
       },
+      // Quiet digest never reaches the model, so the payer's db is never touched.
+      { db: {} as never, userId: 1, chatId: 1, threadId: 'route-monitor' },
     );
 
     expect(shouldUseLlmIntel(digest, null, [])).toBe(false);

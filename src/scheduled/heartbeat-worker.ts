@@ -7,6 +7,8 @@ import { getEveCapabilities } from '../eve/capabilities.js';
 import { getUserOutboundChatId } from '../auth/user-resolver.js';
 import { deliverOutbound } from '../messaging/outbound.js';
 import { runModelText } from '../agent/model.js';
+import { recordPayerUsage } from '../usage/payer.js';
+import { config } from '../config.js';
 import {
   parseChecks,
   parseState,
@@ -130,7 +132,7 @@ export async function processUserHeartbeat(
   }
 
   const characterName = getCharacterName(db, row.character_id);
-  const summary = await summarizeFindings(characterName, findings);
+  const summary = await summarizeFindings(db, { userId: row.user_id, chatId }, characterName, findings);
 
   // Commit cursors only after the outbound gateway accepts the notification.
   // A failed send therefore retries the same official ESI findings next tick.
@@ -190,7 +192,7 @@ async function runCheck(
     case 'killmails': return await checkKillmails(db, ctx, characterId, state);
     case 'orders': return await checkOrders(db, ctx, characterId, state);
     case 'notifications': return await checkNotifications(db, ctx, characterId, state);
-    case 'pi': return await checkPI(db, ctx, characterId);
+    case 'pi': return await checkPI(db, ctx, characterId, state);
     default: return null;
   }
 }
@@ -236,7 +238,7 @@ async function checkMail(
 
 // ── SKILLS ──
 
-async function checkSkills(
+export async function checkSkills(
   db: Db, ctx: UserContext, characterId: number, state: HeartbeatState,
 ): Promise<string | null> {
   const result = await callEsiOperation<Array<{
@@ -247,8 +249,11 @@ async function checkSkills(
   if (!result.ok || !Array.isArray(result.data)) return null;
 
   const now = new Date();
+  // A PAUSED queue returns its entries without start/finish dates; they are
+  // still queued, not finished. Only entries whose finish_date has passed
+  // (ESI keeps them until the next login) count as no longer in training.
   const currentIds = result.data
-    .filter((s) => s.finish_date && new Date(s.finish_date) > now)
+    .filter((s) => !s.finish_date || new Date(s.finish_date) > now)
     .map((s) => s.skill_id);
   const prevIds = new Set(state.last_skillqueue_ids ?? []);
 
@@ -517,8 +522,8 @@ async function checkNotifications(
 
 // ── PI ──
 
-async function checkPI(
-  db: Db, ctx: UserContext, characterId: number,
+export async function checkPI(
+  db: Db, ctx: UserContext, characterId: number, state: HeartbeatState,
 ): Promise<string | null> {
   const result = await callEsiOperation<Array<{
     planet_id: number; planet_type: string; last_update: string;
@@ -526,21 +531,32 @@ async function checkPI(
   }>>(
     db, 'get_characters_character_id_planets', { character_id: characterId }, ctx,
   );
-  if (!result.ok || !Array.isArray(result.data) || result.data.length === 0) return null;
+  if (!result.ok || !Array.isArray(result.data)) return null;
+  if (result.data.length === 0) {
+    state.last_pi_stale_planet_ids = [];
+    return null;
+  }
 
   const stale: string[] = [];
   const now = Date.now();
   const STALE_HOURS = 24;
+  // Notify about a stale colony once, not on every interval: remember which
+  // planets were already reported and re-arm only after they were refreshed.
+  const alreadyNotified = new Set(state.last_pi_stale_planet_ids ?? []);
+  const staleIds: number[] = [];
 
   for (const planet of result.data) {
     const updated = new Date(planet.last_update).getTime();
     const hoursAgo = (now - updated) / (1000 * 60 * 60);
     if (hoursAgo > STALE_HOURS) {
+      staleIds.push(planet.planet_id);
+      if (alreadyNotified.has(planet.planet_id)) continue;
       const system = db.prepare('SELECT name FROM sde_systems WHERE system_id = ?')
         .get(planet.solar_system_id) as { name: string } | undefined;
       stale.push(`${planet.planet_type} в ${system?.name ?? '?'} (${Math.round(hoursAgo)}ч назад)`);
     }
   }
+  state.last_pi_stale_planet_ids = staleIds;
 
   if (stale.length === 0) return null;
   return `[PI] ${stale.length} планет требуют внимания:\n${stale.join('\n')}`;
@@ -548,7 +564,15 @@ async function checkPI(
 
 // ── Model summary ──
 
-async function summarizeFindings(characterName: string, findings: string[]): Promise<string> {
+const HEARTBEAT_USAGE_THREAD_ID = 'heartbeat';
+
+async function summarizeFindings(
+  db: Db,
+  // Billed to the heartbeat owner on the lane the summary is delivered to.
+  lane: { userId: number; chatId: number },
+  characterName: string,
+  findings: string[],
+): Promise<string> {
   const systemPrompt = `You are an EVE Online assistant. Summarize the following heartbeat check results for character "${characterName}".
 Be concise, use Russian language. Plain text only, no markdown or HTML.
 If there are mail messages, briefly describe each and suggest if any action is needed.
@@ -557,7 +581,11 @@ Start with a short header line. Keep it under 1500 characters.`;
   const userPrompt = findings.join('\n\n---\n\n');
 
   try {
-    return await runModelText(systemPrompt, userPrompt);
+    // runModelText reports usage before throwing on a failed/incomplete
+    // response, so that spend is billed too. It sends config.openai.model.
+    return await runModelText(systemPrompt, userPrompt, undefined, (usage) => {
+      recordPayerUsage({ db, ...lane, threadId: HEARTBEAT_USAGE_THREAD_ID }, usage, config.openai.model);
+    });
   } catch (err) {
     console.error('[heartbeat] model summarize failed:', err);
     return `${characterName}:\n\n${findings.join('\n\n')}`;
