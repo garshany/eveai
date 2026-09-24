@@ -31,7 +31,7 @@ Arguments:
 - `window_days`: requested lookback, default 30
 - `include_member_analysis`: analyze repeatedly observed participants
 - `include_graph`: include the compact graph digest
-- `include_llm_pattern_analysis`: run the optional model interpretation
+- `include_llm_pattern_analysis`: run the optional model interpretation; only an explicit `true` enables it (`null` and `false` skip the extra model call)
 
 Important result sections:
 

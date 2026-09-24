@@ -216,6 +216,15 @@ export async function executeMarketWideSummary(
       .flatMap((best) => (best.order.system_id !== null ? [best.order.system_id] : [])),
   );
 
+  // Zero successful regions is an outage, not an empty market: an ok result
+  // with zero totals would read as "nobody sells this anywhere".
+  if (selected.length > 0 && failedRegions.length === selected.length) {
+    return failure(
+      'CCP ESI market orders were unavailable for every queried trade region; no market data was collected.',
+      failedRegions[0]?.status ?? null,
+    );
+  }
+
   const typeName = lookupTypeName(db, typeId);
   const regionsFailed = failedRegions.length;
   const regionsSkipped = skipped.length;

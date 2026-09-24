@@ -88,7 +88,12 @@ export async function executeWebSearch(query: string): Promise<{ ok: boolean; re
     return true;
   }).slice(0, 8);
 
-  return { ok: deduped.length > 0, results: deduped, error: errors.length > 0 ? errors.join('; ') : null };
+  // A failed search must say why: the model otherwise sees ok:false with no
+  // reason and cannot tell "nothing matched" from "providers are down".
+  const error = errors.length > 0
+    ? errors.map((entry) => entry.replace(/^Error: /, '')).join('; ')
+    : deduped.length === 0 ? 'No results found' : null;
+  return { ok: deduped.length > 0, results: deduped, error };
 }
 
 async function fetchTavily(query: string, apiKey: string): Promise<Array<{ title: string; url: string; snippet: string; source: string }>> {
@@ -110,7 +115,7 @@ async function fetchTavily(query: string, apiKey: string): Promise<Array<{ title
         include_images: false,
       }),
     });
-    if (!res.ok) return [];
+    if (!res.ok) throw new Error(`Tavily HTTP ${res.status}`);
     const data = await res.json() as { results?: Array<{ title?: string; url?: string; content?: string }> };
     return (data?.results ?? [])
       .filter((r) => r.title && r.url)
@@ -138,7 +143,7 @@ async function fetchEveUni(query: string): Promise<Array<{ title: string; url: s
   const timer = setTimeout(() => controller.abort(), WEB_SEARCH_TIMEOUT_MS);
   try {
     const res = await fetch(url.toString(), { signal: controller.signal, headers: { 'User-Agent': 'EVEAI/4.0 (+https://github.com/example/eveai; contact=operator@example.com)' } });
-    if (!res.ok) return [];
+    if (!res.ok) throw new Error(`EVE University Wiki HTTP ${res.status}`);
     const data = await res.json() as { query?: { search?: Array<{ title?: string; snippet?: string }> } };
     return (data?.query?.search ?? [])
       .filter((i) => i.title)

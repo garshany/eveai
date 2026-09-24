@@ -107,6 +107,21 @@ const EXCLUDED_OPERATIONS = new Set([
 ]);
 
 /**
+ * POST endpoints that only resolve data (the body carries a lookup list). They
+ * change nothing, so they run on the parallel read path like any GET.
+ */
+const READ_ONLY_POST_OPERATIONS = new Set([
+  'post_universe_names',
+  'post_universe_ids',
+  'post_characters_affiliation',
+  'post_characters_character_id_assets_locations',
+  'post_characters_character_id_assets_names',
+  'post_characters_character_id_cspa',
+  'post_corporations_corporation_id_assets_locations',
+  'post_corporations_corporation_id_assets_names',
+]);
+
+/**
  * Bulk operations that return massive arrays without server-side filtering.
  * The executor fetches all rows, then filters client-side by the given key.
  * Model must supply `filter_ids` (array of IDs) to select specific rows.
@@ -202,7 +217,7 @@ async function loadEsiCatalogInternal(): Promise<Map<string, EsiOperationMeta>> 
       const description = buildDescription(method, path, operation, requiredScopes, responseFields, bulkSpec);
       const toolPolicy = namespace.includes('ui')
         ? 'ui'
-        : method === 'GET'
+        : method === 'GET' || READ_ONLY_POST_OPERATIONS.has(operation.operationId)
           ? 'read'
           : 'write';
       const meta: EsiOperationMeta = {

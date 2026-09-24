@@ -2559,9 +2559,30 @@ async function executeToolCall(
       db, requestId, goal, ctx, name, args, webSearchState, programmatic, localBatchState,
       guard,
     );
+  } catch (error) {
+    // Cancellation and the turn deadline keep propagating: the loop owns them.
+    // Any other throw is one tool's failure, and must reach the model as a
+    // result instead of failing every sibling call and the whole turn.
+    if (isTurnControlError(error, guard)) throw error;
+    console.error('[tool] %s threw %s: %s', name,
+      error instanceof Error ? error.name : typeof error,
+      error instanceof Error ? error.message.slice(0, 200) : '');
+    return {
+      ok: false,
+      internal_error: true,
+      error: 'Tool execution failed unexpectedly; no result is available. Answer without it or use a different tool.',
+    };
   } finally {
     release?.();
   }
+}
+
+function isTurnControlError(error: unknown, guard: ToolExecutionGuard): boolean {
+  if (guard.signal?.aborted || isTurnAborted()) return true;
+  if (!(error instanceof Error)) return false;
+  return error.name === 'AbortError'
+    || error.message === TURN_ABORTED_MESSAGE
+    || error.message === TURN_DEADLINE_MESSAGE;
 }
 
 async function executeToolCallUnadmitted(
@@ -2912,6 +2933,12 @@ async function executeToolCallUnadmitted(
     const result = await executeEveKillTool(db, name as EveKillToolName, args, ctx.chatId ?? ctx.userId);
     console.log('[eve-kill] %s completed (call #%d)', name, webSearchState.eveKillCallCount);
     return result;
+  }
+
+  // The loop dispatches the delegation container itself (it needs the model
+  // client and turn budget). Reaching here means a nested caller tried it.
+  if (isReadSubagentBatchTool(name)) {
+    return { ok: false, blocked: true, error: 'delegate_read_subagents is only available as a direct top-level call' };
   }
 
   if (isEveScoutToolName(name)) {
