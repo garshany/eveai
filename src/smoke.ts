@@ -126,7 +126,7 @@ async function checkOpenAiResponses(): Promise<SmokeCheck> {
 
   const provider = resolveOpenAiProvider();
   const baseUrl = provider.baseUrl;
-  const model = process.env.OPENAI_MODEL?.trim() || 'gpt-5.6-sol';
+  const model = process.env.OPENAI_MODEL?.trim() || 'gpt-5.6-luna';
   const storeResponses = parseOptionalStrictBooleanEnv(
     process.env,
     'OPENAI_STORE_RESPONSES',

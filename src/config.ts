@@ -170,7 +170,7 @@ export const config = {
   },
   openai: {
     apiKey: required('OPENAI_API_KEY'),
-    model: optional('OPENAI_MODEL', 'gpt-5.6-sol'),
+    model: optional('OPENAI_MODEL', 'gpt-5.6-luna'),
     providerId: openAiProvider.id,
     providerName: openAiProvider.name,
     // Provider IDs map to fixed transports and endpoints. There is deliberately no

@@ -4,7 +4,7 @@ This project uses the OpenAI Responses API for a tool-heavy EVE Online agent loo
 
 ## Default Target
 
-- Model: `gpt-5.6-sol`
+- Model: `gpt-5.6-luna`
 - Provider: `openai` (default) or `modelhub`
 - Transport: both providers use streamed HTTP `POST /v1/responses`
 - Base URL: fixed by provider ID (`https://api.openai.com/v1` or
@@ -42,9 +42,9 @@ The self-hosting operator selects one process-wide model:
 
 | Value | Role |
 | --- | --- |
-| `gpt-5.6-sol` | Default, strongest capability and quality-first work |
+| `gpt-5.6-sol` | Strongest capability and quality-first work |
 | `gpt-5.6-terra` | Strong capability with a lower-cost balance |
-| `gpt-5.6-luna` | Efficient, latency-sensitive, high-volume work |
+| `gpt-5.6-luna` | Default; efficient, latency-sensitive, high-volume work |
 | `gpt-5.6` | Family alias that currently routes to Sol |
 
 `OPENAI_REASONING_EFFORT=auto` is an EVE Agent policy, not an API value. It uses the existing goal classifier for top-level chat turns and resolves internal model calls to the balanced `medium` baseline. A fixed value (`none`, `low`, `medium`, `high`, `xhigh`, or `max`) overrides the classifier and reaches every normal chat turn unchanged.
@@ -272,7 +272,7 @@ model-service failure.
 
 ```env
 OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-5.6-sol
+OPENAI_MODEL=gpt-5.6-luna
 OPENAI_RESPONSE_STATE_MODE=stateless
 OPENAI_STORE_RESPONSES=false
 OPENAI_PROGRAMMATIC_TOOL_CALLING=false
