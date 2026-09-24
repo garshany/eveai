@@ -32,6 +32,10 @@ ProtectHome=true
 # The checkout, package metadata, and built code remain read-only. Runtime
 # state and the adjacent single-process lock live under this explicit path.
 ReadWritePaths=/srv/eveai/data
+# Group-writable runtime files, so the separate deploy account (member of the
+# eveai group, see docs/deployment.md "Continuous deployment") can take online
+# backups and restore one on rollback without owning the service's data.
+UMask=0007
 
 [Install]
 WantedBy=multi-user.target

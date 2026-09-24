@@ -525,6 +525,82 @@ dedicated account (for example, `install -d -o eveai -g eveai -m 0700
 `package.json` non-writable by `eveai`. Adapt release-directory paths to your
 own supervisor without committing host-specific values here.
 
+## Continuous deployment
+
+`.github/workflows/deploy.yml` rolls every push to `master` out to your server.
+It first re-runs the full verification (public artifact audit, `npm run check`,
+build), packs `dist/`, `web/dist/` and the package manifests, and runs
+[`scripts/deploy/remote-deploy.sh`](../scripts/deploy/remote-deploy.sh) on the
+host over SSH:
+
+1. stages the release in `$APP_DIR/.releases/<sha>` and runs `npm ci --omit=dev`
+   there, so the native SQLite binding matches the server's Node, and checks it
+   loads before anything is stopped;
+2. takes an online SQLite backup to `data/backups/` (last 10 kept);
+3. stops the service (systemd drains in-flight answers), swaps in `dist/`,
+   `web/dist/`, `node_modules/` and `package*.json` — `.env` and `data/` are
+   never touched — and starts it; migrations run on startup;
+4. waits up to 180 s for `/health` to return 200. If it does not, it puts the
+   previous build back, restores the pre-rollout database **only if the failed
+   build changed the schema**, restarts the old build and fails the job.
+
+One rollout runs at a time. Until the secrets below exist the job still
+verifies and builds, then skips the rollout with a notice.
+
+### One-time server setup
+
+The service keeps running as `eveai` with read-only code (see the systemd
+unit). Rollouts use a separate account that owns the code and belongs to the
+`eveai` group:
+
+```bash
+sudo useradd --system --create-home --shell /bin/bash eveai-deploy
+sudo usermod -aG eveai eveai-deploy
+sudo chown -R eveai-deploy:eveai /srv/eveai
+sudo chown -R eveai:eveai /srv/eveai/data
+sudo chmod 2770 /srv/eveai/data            # group access for backups/restore
+sudo chmod 640 /srv/eveai/.env && sudo chown eveai-deploy:eveai /srv/eveai/.env
+# The unit ships UMask=0007 so runtime files stay group-writable; reinstall it:
+sudo cp deploy/systemd/eveai.service /etc/systemd/system/ && sudo systemctl daemon-reload
+```
+
+Allow exactly the three service commands the rollout needs
+(`sudo visudo -f /etc/sudoers.d/eveai-deploy`):
+
+```text
+eveai-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start eveai, /usr/bin/systemctl stop eveai, /usr/bin/systemctl is-active --quiet eveai
+```
+
+The host needs Node.js ≥ 20.19 with npm, `curl`, `tar` and `flock`, outbound
+access to the npm registry, and a complete `/srv/eveai/.env`. Create a
+dedicated key pair for CI and authorize it for `eveai-deploy` only:
+
+```bash
+ssh-keygen -t ed25519 -N '' -C eveai-ci-deploy -f eveai_deploy
+sudo -u eveai-deploy install -d -m 700 ~eveai-deploy/.ssh
+cat eveai_deploy.pub | sudo -u eveai-deploy tee -a ~eveai-deploy/.ssh/authorized_keys
+ssh-keyscan -p 22 your.server.example   # output → PROD_SSH_KNOWN_HOSTS
+```
+
+### GitHub configuration
+
+In **Settings → Environments** create `production` (optionally with required
+reviewers, to approve every rollout by hand) and add:
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| secret | `PROD_SSH_HOST` | server hostname or IP |
+| secret | `PROD_SSH_USER` | `eveai-deploy` |
+| secret | `PROD_SSH_KEY` | the private key `eveai_deploy` |
+| secret | `PROD_SSH_KNOWN_HOSTS` | `ssh-keyscan` output (host key is pinned) |
+| variable | `PROD_SSH_PORT` | optional, default `22` |
+| variable | `PROD_APP_DIR` | optional, default `/srv/eveai` |
+| variable | `PROD_SERVICE` | optional, default `eveai` |
+
+Then merge to `master` (or run the workflow by hand from the Actions tab). The
+job summary shows the commit and result; `/srv/eveai/.deployed-sha` holds the
+live commit on the host.
+
 ## v4 Release Gate
 
 Before publishing a public release or making a fork public, run these commands
