@@ -325,7 +325,9 @@ function normalizeArgs(raw: Record<string, unknown>): OsintInferenceArgs | null 
       : 30,
     includeMemberAnalysis: raw.include_member_analysis !== false,
     includeGraph: raw.include_graph !== false,
-    includeLlmPatternAnalysis: raw.include_llm_pattern_analysis !== false,
+    // An extra model pass costs a provider call and latency; the schema reserves
+    // it for an explicit request, so null (the strict-mode "default") is off.
+    includeLlmPatternAnalysis: raw.include_llm_pattern_analysis === true,
   };
 }
 

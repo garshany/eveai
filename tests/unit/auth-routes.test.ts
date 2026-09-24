@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import { runMigrations } from '../../src/db/migrations.js';
+import fastifyCookie from '@fastify/cookie';
+import { protectOpaqueToken } from '../../src/auth/secret-storage.js';
 
 const { jwtVerifyMock, createRemoteJwkSetMock, refreshUserProfileMock } = vi.hoisted(() => ({
   jwtVerifyMock: vi.fn(),
@@ -30,7 +32,7 @@ vi.mock('../../src/config.js', () => ({
       path: '/tmp/eve-agent-auth-routes-tests/USER_{chat_id}_{character_id}.md',
       refreshSeconds: 300,
     },
-    web: { baseUrl: 'http://localhost:3000' },
+    web: { baseUrl: 'http://localhost:3000', sessionTtlHours: 24 },
   },
 }));
 
@@ -455,8 +457,62 @@ describe('auth routes', () => {
     await app.close();
   });
 
+  it('rejects a browser SSO login finished from a different browser session (login CSRF)', async () => {
+    const app = Fastify();
+    await app.register(fastifyCookie);
+    registerAuthRoutes(app, db);
+    db.prepare("INSERT INTO users (user_id, display_name) VALUES (1, 'Victim'), (2, 'Attacker guest')").run();
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (-2000000000, 'attacker'), (-2000000001, 'victim')").run();
+    db.prepare(`
+      INSERT INTO web_sessions (
+        session_hash, csrf_hash, user_id, chat_id, created_at, last_seen_at, expires_at
+      ) VALUES
+        (?, 'h1:csrf-a', 2, -2000000000, datetime('now'), datetime('now'), datetime('now', '+1 hour')),
+        (?, 'h1:csrf-v', 1, -2000000001, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
+    `).run(protectOpaqueToken('attacker-session', 'web_session'), protectOpaqueToken('victim-session', 'web_session'));
+    // The attacker's guest lane minted the login request and forwarded the link.
+    const state = createAuthRequestToken(db, 'eve_sso', 2, {
+      chatId: -2_000_000_000,
+      redirectUrl: '/app',
+      ttlSeconds: 600,
+    });
+
+    for (const cookie of ['eveai_session=victim-session', '']) {
+      const login = await app.inject({
+        method: 'GET',
+        url: `/auth/eve/login?state=${encodeURIComponent(state)}`,
+        headers: cookie ? { cookie } : {},
+      });
+      expect(login.statusCode).toBe(403);
+    }
+
+    consentRequest(state, ['esi-location.read_location.v1']);
+    const callback = await app.inject({
+      method: 'GET',
+      url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
+      headers: { cookie: 'eveai_session=victim-session' },
+    });
+    expect(callback.statusCode).toBe(302);
+    expect(callback.headers.location).toBe('http://localhost:3000/app?auth=error');
+    // No token exchange happened, nothing was linked, and the lane kept its owner.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM eve_accounts').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT user_id FROM web_sessions WHERE chat_id = -2000000000').get())
+      .toEqual({ user_id: 2 });
+
+    // The request is still usable by the browser session that created it.
+    const ownLogin = await app.inject({
+      method: 'GET',
+      url: `/auth/eve/login?state=${encodeURIComponent(state)}`,
+      headers: { cookie: 'eveai_session=attacker-session' },
+    });
+    expect(ownLogin.statusCode).toBe(302);
+    await app.close();
+  });
+
   it('merges a browser SSO lane into the existing character owner without stealing other channel links', async () => {
     const app = Fastify();
+    await app.register(fastifyCookie);
     registerAuthRoutes(app, db);
     db.prepare("INSERT INTO users (user_id, display_name) VALUES (1, 'Telegram Pilot'), (2, 'Web capsuleer')").run();
     db.prepare(`
@@ -467,8 +523,8 @@ describe('auth routes', () => {
     db.prepare(`
       INSERT INTO web_sessions (
         session_hash, csrf_hash, user_id, chat_id, created_at, last_seen_at, expires_at
-      ) VALUES ('h1:web-session', 'h1:csrf', 2, -2000000000, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
-    `).run();
+      ) VALUES (?, 'h1:csrf', 2, -2000000000, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
+    `).run(protectOpaqueToken('web-session', 'web_session'));
     db.prepare(`
       INSERT INTO agent_threads (thread_id, chat_id, user_id)
       VALUES ('web-thread', -2000000000, 2)
@@ -527,6 +583,7 @@ describe('auth routes', () => {
     const response = await app.inject({
       method: 'GET',
       url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
+      headers: { cookie: 'eveai_session=web-session' },
     });
     expect(response.statusCode).toBe(302);
     expect(response.headers.location).toBe('http://localhost:3000/app?auth=connected');
@@ -558,14 +615,15 @@ describe('auth routes', () => {
 
   it('keeps the owner model settings when both identities have a row at SSO merge', async () => {
     const app = Fastify();
+    await app.register(fastifyCookie);
     registerAuthRoutes(app, db);
     db.prepare("INSERT INTO users (user_id, display_name) VALUES (1, 'Telegram Pilot'), (2, 'Web capsuleer')").run();
     db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (111, 'telegram'), (-2000000000, 'web')").run();
     db.prepare(`
       INSERT INTO web_sessions (
         session_hash, csrf_hash, user_id, chat_id, created_at, last_seen_at, expires_at
-      ) VALUES ('h1:web-session', 'h1:csrf', 2, -2000000000, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
-    `).run();
+      ) VALUES (?, 'h1:csrf', 2, -2000000000, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
+    `).run(protectOpaqueToken('web-session', 'web_session'));
     db.prepare(`
       INSERT INTO eve_accounts (
         character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id
@@ -603,6 +661,7 @@ describe('auth routes', () => {
     const response = await app.inject({
       method: 'GET',
       url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
+      headers: { cookie: 'eveai_session=web-session' },
     });
     expect(response.statusCode).toBe(302);
     // The authenticated identity's choice wins; the guest row is gone, so the
@@ -615,6 +674,7 @@ describe('auth routes', () => {
 
   it('merges a browser guest that owns another character into the current owner', async () => {
     const app = Fastify();
+    await app.register(fastifyCookie);
     registerAuthRoutes(app, db);
     const characterId = 95465503;
     const browserChatId = -2_000_000_000;
@@ -624,8 +684,8 @@ describe('auth routes', () => {
     db.prepare(`
       INSERT INTO web_sessions (
         session_hash, csrf_hash, user_id, chat_id, created_at, last_seen_at, expires_at
-      ) VALUES ('h1:session', 'h1:csrf', 2, ?, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
-    `).run(browserChatId);
+      ) VALUES (?, 'h1:csrf', 2, ?, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
+    `).run(protectOpaqueToken('web-session', 'web_session'), browserChatId);
     db.prepare(`
       INSERT INTO eve_accounts (
         character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id
@@ -687,6 +747,7 @@ describe('auth routes', () => {
     const responsePromise = app.inject({
       method: 'GET',
       url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
+      headers: { cookie: 'eveai_session=web-session' },
     });
     await jwtVerified;
     await new Promise<void>((resolve) => setImmediate(resolve));

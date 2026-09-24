@@ -146,7 +146,9 @@ export function attachLiveSession(
   const session: Session = {
     characterId,
     userId: ctx.userId,
-    ctx,
+    // Polls stay bound to this session's character even if the user switches
+    // their active character while the map is open.
+    ctx: { ...ctx, characterId },
     db,
     subscribers: new Set([subscriber]),
     timer: null,
@@ -185,6 +187,19 @@ function stop(session: Session, reason: string): void {
   session.stopped = true;
   session.stopReason = reason;
   sessions.delete(session.characterId);
+}
+
+/**
+ * Renew the idle lease while a pilot is actually watching. Only a jump renews
+ * it otherwise, so a pilot sitting still on a gate lost the radar every idle
+ * window; the client calls this while its tab is visible, and a forgotten
+ * hidden tab still times out. False when there is no session for this owner.
+ */
+export function touchLiveSession(characterId: number, userId: number, now = Date.now()): boolean {
+  const session = sessions.get(characterId);
+  if (!session || session.stopped || session.userId !== userId) return false;
+  session.lastActivityMs = now;
+  return true;
 }
 
 export function getLiveSession(characterId: number): LiveSessionView | null {

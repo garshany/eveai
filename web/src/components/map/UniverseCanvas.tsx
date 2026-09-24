@@ -4,6 +4,7 @@ import { splitRouteRuns } from './route-view';
 import {
   GLYPH_ZOOM_RATIO,
   LABEL_ZOOM_RATIO,
+  centreOn,
   fitView,
   zoomAt,
   zoomRatio,
@@ -45,6 +46,8 @@ export type UniverseCanvasProps = {
   showCamps: boolean;
   onSelect: (systemId: number) => void;
   selectedSystemId: number | null;
+  /** A request to bring one system into view; a new object is a new request. */
+  focus?: { systemId: number } | null;
 };
 
 const BAND_COLOURS: Record<string, string> = {
@@ -66,6 +69,7 @@ export function UniverseCanvas({
   showCamps,
   onSelect,
   selectedSystemId,
+  focus = null,
 }: UniverseCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -109,6 +113,22 @@ export function UniverseCanvas({
     viewRef.current = view;
     forceRedraw((value) => value + 1);
   }, [universe]);
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!focus || !wrap) return;
+    const index = indexById.get(focus.systemId);
+    if (index === undefined) return;
+    viewRef.current = centreOn(
+      viewRef.current,
+      fitKRef.current,
+      universe.x[index]!,
+      universe.y[index]!,
+      wrap.clientWidth,
+      wrap.clientHeight,
+    );
+    forceRedraw((value) => value + 1);
+  }, [focus, indexById, universe]);
 
   // Pan, zoom and hit testing. Written directly rather than through a zoom
   // library because the transform is also what culling and LOD read.
@@ -366,12 +386,19 @@ export function UniverseCanvas({
   </div>;
 }
 
-/** The colour ramp a capsuleer already reads without a legend. */
+/**
+ * The colour ramp a capsuleer already reads without a legend: the same steps
+ * as the `--sec-*` tokens in styles.css (canvas cannot read CSS variables
+ * cheaply per frame, so the values are mirrored here). Index = rounded tenths,
+ * with (0, 0.05) kept at 0.1 the way the game rounds lowsec.
+ */
+const SECURITY_RAMP = [
+  '#f24b62', '#f0524a', '#ea4a34', '#ec6a2c', '#f0902a',
+  '#e3ec6c', '#7ee25c', '#5fdcaa', '#4fd2f2', '#3fb0f2', '#4a8fff',
+];
+
 function securityColour(security: number): string {
-  if (security >= 0.9) return '#2f9bd8';
-  if (security >= 0.75) return '#3fbf6f';
-  if (security >= 0.5) return '#9fd14f';
-  if (security >= 0.45) return '#e8d44d';
-  if (security > 0) return '#e08a3c';
-  return '#c2452f';
+  if (!(security > 0)) return SECURITY_RAMP[0]!;
+  const tier = security < 0.05 ? 1 : Math.min(10, Math.round(security * 10));
+  return SECURITY_RAMP[tier]!;
 }

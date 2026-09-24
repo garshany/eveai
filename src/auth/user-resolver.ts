@@ -9,6 +9,13 @@ export type UserContext = {
   chatId?: number;
   /** Defaults to all. CLI uses feed; browser lanes use durable web status. */
   notificationCapability?: NotificationCapability;
+  /**
+   * Pins EVE access to this character instead of the user's currently active
+   * one (background workers bound to a specific character). Honored only
+   * after an ownership check for userId/chatId; an unowned pin resolves to no
+   * character at all, never to a fallback.
+   */
+  characterId?: number;
 };
 
 export function resolveUserContextForChat(db: Db, chatId: number): UserContext | null {

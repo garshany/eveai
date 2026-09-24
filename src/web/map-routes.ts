@@ -33,19 +33,26 @@ import {
   missingCharacterIds,
   onIndexedKill,
   resolveShipNames,
+  type IndexedKill,
 } from '../eve-map/kill-index.js';
 import { resolveCharacterNames } from '../eve-map/names.js';
 import {
   attachLiveSession,
+  touchLiveSession,
   getLiveSessionStats,
   type LiveLocation,
 } from '../eve-map/live-session.js';
 import {
   evaluateAdvisories,
   getSharedAdvisorState,
+  markModelCall,
   releaseSharedAdvisorState,
+  shouldEscalateToModel,
   type Advisory,
 } from '../eve-map/advisor.js';
+import { composeSituationAssessment } from '../eve-map/advisor-prose.js';
+import { recordRadarAdvisory, recordRadarBubble, recordRadarLocation } from '../eve-map/radar-snapshot.js';
+import { recordModelUsageSafe } from '../usage/tracker.js';
 import {
   appendAdvisory,
   getOrCreatePerimeterThread,
@@ -77,6 +84,13 @@ const LOCATION_SCOPE = 'esi-location.read_location.v1';
 const WAYPOINT_SCOPE = 'esi-ui.write_waypoint.v1';
 
 const HEARTBEAT_MS = 15_000;
+/** How long an in-bubble kill waits for company before the radar re-judges. */
+const KILL_REFRESH_DEBOUNCE_MS = 1_500;
+/** Bound on kills held for one evaluation; a fleet fight must not grow it forever. */
+const MAX_PENDING_KILLS = 500;
+
+type PendingKill = { kill: IndexedKill; announced: boolean };
+
 const MAX_ROUTE_AVOID = 100;
 
 type BubbleQuery = { system_id?: string; radius?: string };
@@ -504,6 +518,18 @@ export function registerMapRoutes(
     });
   });
 
+  // Keeps the live radar alive while the pilot is looking at it (see
+  // touchLiveSession). The client calls it only while its tab is visible.
+  app.post('/api/web/map/live/touch', async (request, reply) => {
+    const session = requireMutationSession(db, request, reply);
+    if (!session) return;
+    const linked = getLinkedCharacter(db, sessionContext(session));
+    if (!linked || !touchLiveSession(linked.characterId, session.userId)) {
+      return reply.status(404).send({ error: 'Живая сессия карты не найдена.' });
+    }
+    return reply.status(204).send();
+  });
+
   // -- Live stream --------------------------------------------------------
   app.get<{ Querystring: BubbleQuery }>('/api/web/map/live', async (request, reply) => {
     const session = requireSession(db, request, reply);
@@ -525,23 +551,50 @@ export function registerMapRoutes(
     const stream = openStream(reply, request);
     // One advisor state per character, not per tab: three windows must not
     // persist the same warning into the same thread three times.
-    const state = getSharedAdvisorState(linked.characterId);
+    // The thread lookup runs first: it can throw, and the advisor state below
+    // takes a reference that must be released on every exit path.
     const threadId = getOrCreatePerimeterThread(
       db, session.chatId, session.userId, linked.characterId,
     );
+    const state = getSharedAdvisorState(linked.characterId);
     const locale = readLocale(request);
 
     let currentSystemId: number | null = null;
     let lastShipTypeId: number | null = null;
-    let pendingKills: Array<{ killmailId: number; systemId: number }> = [];
+    // Kills waiting for the next evaluation. `announced` says whether the
+    // client already got a 'kill' frame for it: a kill that lands while the
+    // bubble is stale (before the first build, or mid-jump) cannot be judged
+    // in or out yet, so it is held unannounced and sorted by the next build
+    // instead of being dropped against the wrong system set.
+    let pendingKills: PendingKill[] = [];
     let refreshing = false;
     // A jump that lands while a build is in flight used to be dropped: the old
     // system's bubble was published while advisories were already evaluated
     // against the new position, and the map stayed on the previous system until
     // the next periodic tick.
     let refreshQueued: { shipTypeId: number | null; reason: 'jump' | 'tick' } | null = null;
+    // A radar reacts to a kill in seconds, not at the next intel tick. Bursts
+    // (a fleet fight is dozens of mails in a few seconds) share one rebuild.
+    let killRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
     const bubbleSystemIds = new Set<number>();
+    // Origin of the bubble the client currently holds; null before the first
+    // build. `bubbleSystemIds` is only authoritative while this equals the
+    // pilot's current system.
+    let bubbleOriginId: number | null = null;
+    // The last origin whose build ran the cold-start backfill successfully.
+    // Tracked instead of "was the last reason a jump": a jump build that failed
+    // would otherwise leave every later tick skipping backfill for that space.
+    let backfilledOriginId: number | null = null;
+
+    const scheduleKillRefresh = (): void => {
+      if (killRefreshTimer !== null || stream.closed) return;
+      killRefreshTimer = setTimeout(() => {
+        killRefreshTimer = null;
+        void refresh(lastShipTypeId, 'tick');
+      }, KILL_REFRESH_DEBOUNCE_MS);
+      killRefreshTimer.unref?.();
+    };
 
     const refresh = async (shipTypeId: number | null, reason: 'jump' | 'tick'): Promise<void> => {
       if (currentSystemId === null || stream.closed) return;
@@ -551,32 +604,80 @@ export function registerMapRoutes(
         return;
       }
       refreshing = true;
+      const origin = currentSystemId;
+      // Only what arrived before the build started is judged by it. Clearing
+      // the list after the await used to drop kills that landed mid-build: they
+      // were never announced to the advisor by any later pass.
+      const batch = pendingKills;
+      pendingKills = [];
       try {
-        const next = await buildBubble(db, currentSystemId, {
+        const skipBackfill = reason === 'tick' && backfilledOriginId === origin;
+        const next = await buildBubble(db, origin, {
           radius,
           shipTypeId,
-          // A five-second tick must never pay for a cold-start fan-out; only a
-          // jump into new space is allowed to backfill.
-          skipBackfill: reason === 'tick',
+          // A tick must never pay for a cold-start fan-out; only new space is
+          // allowed to backfill.
+          skipBackfill,
         });
+        if (stream.closed) return;
+        if (currentSystemId !== origin) {
+          // The pilot jumped while this was building. Publishing it would flash
+          // the previous system's bubble, and advisories would be judged
+          // against a position the pilot has already left. The jump's own
+          // refresh is queued; hand it the kills.
+          pendingKills = [...batch, ...pendingKills];
+          return;
+        }
+        if (!skipBackfill) backfilledOriginId = origin;
         bubbleSystemIds.clear();
         for (const system of next.systems) bubbleSystemIds.add(system.systemId);
+        bubbleOriginId = origin;
         stream.send('intel', { bubble: next });
+        recordRadarBubble(linked.characterId, next);
+
+        const byId = new Map(next.recentKills.map((kill) => [kill.killmailId, kill]));
+        const newKills: IndexedKill[] = [];
+        for (const pending of batch) {
+          if (!bubbleSystemIds.has(pending.kill.systemId)) continue;
+          if (!pending.announced) stream.send('kill', { kill: pending.kill });
+          // The bubble's copy carries resolved pilot names; the pushed copy is
+          // the fallback for a kill outside the feed window or its row limit.
+          newKills.push(byId.get(pending.kill.killmailId) ?? pending.kill);
+        }
 
         const advisories = evaluateAdvisories(state, {
           bubble: next,
-          currentSystemId,
-          routeAhead: routeAheadOf(session.chatId, currentSystemId),
-          newKills: next.recentKills.filter(
-            (kill) => pendingKills.some((pending) => pending.killmailId === kill.killmailId),
-          ),
+          currentSystemId: origin,
+          routeAhead: routeAheadOf(session.chatId, origin),
+          newKills,
           now: Date.now(),
         });
-        pendingKills = [];
+        // Rule text goes out first, always: it is complete and costs nothing.
         for (const advisory of advisories) {
-          publishAdvisory(db, threadId, advisory, locale, stream);
+          publishAdvisory(db, threadId, linked.characterId, advisory, locale, stream);
+        }
+        // Then, for a danger-level picture and at most once per LLM cooldown
+        // (the state is shared per pilot, so several tabs still make one call),
+        // the model reads the whole radar and says what it means and what to
+        // do. Detached: the radar never waits on the model.
+        const evaluatedAt = Date.now();
+        if (config.map.advisorLlmEnabled && shouldEscalateToModel(state, advisories, evaluatedAt)) {
+          markModelCall(state, evaluatedAt);
+          void publishSituationAssessment(db, {
+            threadId,
+            characterId: linked.characterId,
+            owner: { userId: session.userId, chatId: session.chatId },
+            advisories,
+            bubble: next,
+            origin,
+            routeAhead: routeAheadOf(session.chatId, origin),
+            locale,
+            stream,
+          });
         }
       } catch (error) {
+        // A failed build must not lose the kills it was about to judge.
+        pendingKills = [...batch, ...pendingKills].slice(-MAX_PENDING_KILLS);
         stream.send('warning', { message: (error as Error).message });
       } finally {
         refreshing = false;
@@ -601,12 +702,16 @@ export function registerMapRoutes(
       const jumped = event.jumped || currentSystemId !== location.solarSystemId;
       currentSystemId = location.solarSystemId;
       lastShipTypeId = location.shipTypeId;
+      recordRadarLocation(location);
       stream.send('location', { location, jumped, previousSystemId: event.previousSystemId });
       if (jumped) void refresh(location.shipTypeId, 'jump');
     });
 
     if (!attached.ok) {
       stream.abortBeforeStart();
+      // The shared advisor reference was taken above; without this release a
+      // refused attach pins the state as "in use" forever.
+      releaseSharedAdvisorState(linked.characterId);
       return reply
         .status(attached.statusCode)
         .header('Retry-After', String(attached.retryAfterSeconds))
@@ -631,9 +736,21 @@ export function registerMapRoutes(
     });
 
     const unsubscribeKills = onIndexedKill((kill) => {
-      if (stream.closed || !bubbleSystemIds.has(kill.systemId)) return;
-      pendingKills.push({ killmailId: kill.killmailId, systemId: kill.systemId });
+      if (stream.closed) return;
+      const bubbleIsCurrent = bubbleOriginId !== null && bubbleOriginId === currentSystemId;
+      if (!bubbleIsCurrent) {
+        // Before the first build, or while a jump rebuild is in flight, the
+        // system set is unknown or belongs to the system just left. Hold the
+        // kill for that build to sort; it is already on its way.
+        pendingKills.push({ kill, announced: false });
+        if (pendingKills.length > MAX_PENDING_KILLS) pendingKills.splice(0, pendingKills.length - MAX_PENDING_KILLS);
+        return;
+      }
+      if (!bubbleSystemIds.has(kill.systemId)) return;
+      pendingKills.push({ kill, announced: true });
+      if (pendingKills.length > MAX_PENDING_KILLS) pendingKills.splice(0, pendingKills.length - MAX_PENDING_KILLS);
       stream.send('kill', { kill });
+      scheduleKillRefresh();
     });
 
     const intelTimer = setInterval(() => {
@@ -644,8 +761,13 @@ export function registerMapRoutes(
     }, config.map.intelRefreshSeconds * 1000);
     intelTimer.unref?.();
 
+    const leaveAudience = joinThreadAudience(threadId, stream);
+
     stream.onClose(() => {
+      leaveAudience();
       clearInterval(intelTimer);
+      if (killRefreshTimer !== null) clearTimeout(killRefreshTimer);
+      killRefreshTimer = null;
       unsubscribeRoute();
       unsubscribeKills();
       releaseSharedAdvisorState(linked.characterId);
@@ -687,17 +809,82 @@ export function registerMapRoutes(
 function publishAdvisory(
   db: Db,
   threadId: string,
+  characterId: number,
   advisory: Advisory,
   locale: 'ru' | 'en',
   stream: SseStream,
 ): void {
-  // The rule text is complete on its own. Model-authored prose is deliberately
-  // not wired here yet: the previous version consumed the escalation cooldown
-  // and then persisted the rule text anyway, which is worse than not having the
-  // feature — it burned the budget and reported an escalation that never
-  // happened. `shouldEscalateToModel` stays as the gate for when it lands.
+  // The rule text is complete on its own; the model assessment, when it runs,
+  // is a separate follow-up message (publishSituationAssessment).
   const message = appendAdvisory(db, threadId, advisory, locale, 'rule');
-  stream.send('advisory', { advisory, message, escalated: false });
+  recordRadarAdvisory(characterId, advisory, message.content);
+  broadcastAdvisory(threadId, stream, { advisory, message, escalated: false });
+}
+
+function broadcastAdvisory(threadId: string, stream: SseStream, payload: unknown): void {
+  // Every tab on this thread hears it. The advisor state is shared per pilot,
+  // so only the tab whose rebuild ran first gets a non-empty result; without
+  // the fan-out the other windows showed nothing until a reload.
+  const audience = new Set(threadStreams.get(threadId) ?? []);
+  audience.add(stream);
+  for (const target of audience) target.send('advisory', payload);
+}
+
+/**
+ * The radar's model-written follow-up to a danger alarm: what the combined
+ * picture means for this pilot and one concrete action. Persisted as a
+ * model-authored advisory anchored to the most severe alarm, and billed to the
+ * pilot like any model call. Silent on failure — the rule text already stands.
+ */
+async function publishSituationAssessment(db: Db, input: {
+  threadId: string;
+  characterId: number;
+  owner: { userId: number; chatId: number };
+  advisories: Advisory[];
+  bubble: Awaited<ReturnType<typeof buildBubble>>;
+  origin: number;
+  routeAhead: number[];
+  locale: 'ru' | 'en';
+  stream: SseStream;
+}): Promise<void> {
+  try {
+    const text = await composeSituationAssessment({
+      advisories: input.advisories,
+      bubble: input.bubble,
+      currentSystemId: input.origin,
+      routeAhead: input.routeAhead,
+      locale: input.locale,
+      now: Date.now(),
+      onUsage: (usage) => recordModelUsageSafe(db, input.owner, input.threadId, {
+        input: usage.input,
+        output: usage.output,
+        cached: usage.cached,
+        cacheWrite: usage.cacheWrite ?? 0,
+        reasoning: usage.reasoning,
+      }, config.openai.model),
+    });
+    if (!text) return;
+    const anchor = input.advisories[0]!;
+    const message = appendAdvisory(db, input.threadId, anchor, input.locale, 'model', text);
+    recordRadarAdvisory(input.characterId, anchor, text);
+    broadcastAdvisory(input.threadId, input.stream, { advisory: anchor, message, escalated: true });
+  } catch (error) {
+    // The thread may have been reset or the DB closed during shutdown.
+    console.warn('[map-advisor] assessment publish failed: %s', error instanceof Error ? error.name : 'unknown');
+  }
+}
+
+/** Open live streams per Perimeter thread, for advisory fan-out. */
+const threadStreams = new Map<string, Set<SseStream>>();
+
+function joinThreadAudience(threadId: string, stream: SseStream): () => void {
+  const set = threadStreams.get(threadId) ?? new Set<SseStream>();
+  set.add(stream);
+  threadStreams.set(threadId, set);
+  return () => {
+    set.delete(stream);
+    if (set.size === 0 && threadStreams.get(threadId) === set) threadStreams.delete(threadId);
+  };
 }
 
 // ---------------------------------------------------------------------------

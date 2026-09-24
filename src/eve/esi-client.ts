@@ -76,12 +76,16 @@ export async function callEsiOperation<T = unknown>(
     return { ok: false, status: 409, error: 'ESI operation cancelled before request dispatch.' };
   }
 
-  const prepared = prepareRequest(operation, args, access.characterId);
+  const prepared = prepareRequest(operation, args, access.characterId, access.authenticated);
   if (!prepared.ok) {
     return { ok: false, status: 400, error: prepared.error };
   }
 
-  const cacheKey = buildCacheKey(operation, prepared.url.toString(), access.characterId);
+  // Public responses do not depend on who asks, so they are not keyed by the
+  // linked character (the URL already carries any character_id path param).
+  const cacheKey = buildCacheKey(
+    operation, prepared.url.toString(), access.authenticated ? access.characterId : null,
+  );
   const cacheRow = operation.method === 'GET' ? readCacheRow(db, cacheKey) : null;
   if (operation.method === 'GET') {
     const cached = readFreshCachedResponse<T>(cacheRow);
@@ -121,9 +125,14 @@ async function resolveAccess(
   db: Db,
   operation: EsiOperationMeta,
   ctx: UserContext,
-): Promise<{ ok: true; token: string | null; characterId: number | null } | { ok: false; status: number; error: string }> {
+): Promise<
+  | { ok: true; token: string | null; characterId: number | null; authenticated: boolean }
+  | { ok: false; status: number; error: string }
+> {
   if (!operation.requiresAuth) {
-    return { ok: true, token: null, characterId: getLinkedCharacter(db, ctx)?.characterId ?? null };
+    // Public operations: the linked character is only a default for an absent
+    // character_id argument (see prepareRequest), never a substitute.
+    return { ok: true, token: null, characterId: getLinkedCharacter(db, ctx)?.characterId ?? null, authenticated: false };
   }
 
   const linked = getLinkedCharacter(db, ctx);
@@ -146,22 +155,28 @@ async function resolveAccess(
   if (!token) {
     return { ok: false, status: 401, error: 'No valid EVE access token.' };
   }
-  return { ok: true, token: token.token, characterId: token.characterId };
+  return { ok: true, token: token.token, characterId: token.characterId, authenticated: true };
 }
 
 function prepareRequest(
   operation: EsiOperationMeta,
   args: Record<string, unknown>,
   boundCharacterId: number | null,
+  authenticated: boolean,
 ): { ok: true; url: URL; body: string | null } | { ok: false; error: string } {
   let path = operation.path;
   const url = buildEsiUrl(config.esi.baseUrl, path);
   let body: string | null = null;
 
   for (const parameter of operation.parameters) {
+    // Authenticated ops are always bound to the token's character. Public ops
+    // honor the caller's character_id (looking up another pilot) and only fall
+    // back to the linked character when the argument is absent.
+    const suppliedValue = args[parameter.name];
     const rawValue = parameter.name === 'character_id' && boundCharacterId
+      && (authenticated || suppliedValue === null || suppliedValue === undefined || suppliedValue === '')
       ? boundCharacterId
-      : args[parameter.name];
+      : suppliedValue;
     if (rawValue === null || rawValue === undefined || rawValue === '') {
       if (parameter.required) {
         return { ok: false, error: `Missing required parameter: ${parameter.name}` };
@@ -289,7 +304,7 @@ async function fetchEsi<T>(
 
     const payload = value.status === 204
       ? null
-      : await value.json().catch(async () => await value.text());
+      : parseResponseBody(await value.text());
     if (operation.paginationType !== 'x-pages' || !operation.hiddenPageParam || !Array.isArray(payload)) {
       if (operation.method === 'GET') {
         writeCachedResponse(db, cacheKey, JSON.stringify(payload), responseHeaders);
@@ -361,10 +376,7 @@ export async function fetchEsiWithRetry(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
-      return {
-        ok: false,
-        result: { ok: false, status: 409, error: 'ESI operation cancelled before request dispatch.' },
-      };
+      return cancelledResult();
     }
     let response: Response;
     try {
@@ -379,7 +391,9 @@ export async function fetchEsiWithRetry(
       // reached ESI and been processed (mail sent, fitting created) — retrying
       // could duplicate the side effect, so only retry idempotent methods.
       if (attempt < maxAttempts && isIdempotentMethod(method)) {
-        await sleep(computeBackoffMs(new Headers(), attempt));
+        if (!await sleepUnlessAborted(computeBackoffMs(new Headers(), attempt), guard.signal)) {
+          return cancelledResult();
+        }
         continue;
       }
       return {
@@ -401,7 +415,9 @@ export async function fetchEsiWithRetry(
     const isRateLimit = response.status === 420 || response.status === 429;
     const shouldRetry = isRateLimit || (response.status >= 500 && isIdempotentMethod(method));
     if (shouldRetry && attempt < maxAttempts) {
-      await sleep(computeBackoffMs(response.headers, attempt));
+      if (!await sleepUnlessAborted(computeBackoffMs(response.headers, attempt), guard.signal)) {
+        return cancelledResult();
+      }
       continue;
     }
 
@@ -425,6 +441,41 @@ export async function fetchEsiWithRetry(
       error: 'ESI request exhausted all retry attempts.',
     },
   };
+}
+
+/** The body stream can be read only once: read text, then try JSON. */
+function parseResponseBody(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
+}
+
+function cancelledResult(): { ok: false; result: Extract<EsiCallResult<never>, { ok: false }> } {
+  return {
+    ok: false,
+    result: { ok: false, status: 409, error: 'ESI operation cancelled before request dispatch.' },
+  };
+}
+
+async function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+  if (!signal) {
+    await sleep(ms);
+    return true;
+  }
+  if (signal.aborted) return false;
+  return await new Promise<boolean>((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 async function parseError(response: Response): Promise<string> {

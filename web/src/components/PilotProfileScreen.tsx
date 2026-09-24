@@ -9,6 +9,7 @@ import { ClonesPanel } from './profile/ClonesPanel';
 import { OrdersPanel } from './profile/OrdersPanel';
 import { SkillsPanel } from './profile/SkillsPanel';
 import { WalletPanel } from './profile/WalletPanel';
+import { securityClassName } from '../security';
 
 type Props = { character: Character | null; csrfToken: string; busy: boolean; onMenu: () => void; onConnect: () => void; onUnlink: (characterId: number) => Promise<void> };
 
@@ -115,11 +116,11 @@ export function PilotProfileScreen({ character, csrfToken, busy, onMenu, onConne
         </div>
         <div hidden={activeTab !== 'overview'}>
           <div className="profile-grid">
-            <ProfileCard title={t('location')} availability={profile.availability.location} t={t}><strong>{profile.location?.solarSystemName ?? '—'}</strong><small>{profile.location?.security === null || profile.location?.security === undefined ? '' : `security ${profile.location.security.toFixed(1)}`}</small></ProfileCard>
+            <ProfileCard title={t('location')} availability={profile.availability.location} t={t}><strong>{profile.location?.solarSystemName ?? '—'}</strong><small>{profile.location?.security === null || profile.location?.security === undefined ? '' : <>security <span className={securityClassName(profile.location.security, 'sec-badge')}>{profile.location.security.toFixed(1)}</span></>}</small></ProfileCard>
             <ProfileCard title={t('ship')} availability={profile.availability.ship} t={t}><strong>{profile.ship?.name || profile.ship?.typeName || '—'}</strong><small>{profile.ship?.name && profile.ship.typeName ? profile.ship.typeName : ''}</small></ProfileCard>
             <ProfileCard title={t('skills')} availability={profile.availability.skills} t={t}><strong>{profile.skills ? `${formatNumber(profile.skills.totalSp, locale)} ${t('skillPoints')}` : '—'}</strong><small>{profile.skills ? `${profile.skills.queued} ${t('queued')}` : ''}</small></ProfileCard>
-            <ProfileCard title={t('wallet')} availability={profile.availability.wallet} t={t}><strong>{profile.wallet ? `${formatNumber(profile.wallet.balance, locale, 2)} ISK` : '—'}</strong><small>{t('balance')}</small></ProfileCard>
-            <ProfileCard title={t('security')} availability={profile.availability.public} t={t}><strong>{profile.character.securityStatus?.toFixed(2) ?? '—'}</strong><small>{profile.location?.security === null || profile.location?.security === undefined ? '' : `${t('location')}: ${profile.location.security.toFixed(1)}`}</small></ProfileCard>
+            <ProfileCard title={t('wallet')} availability={profile.availability.wallet} t={t}><strong className={profile.wallet ? 'isk' : undefined}>{profile.wallet ? `${formatNumber(profile.wallet.balance, locale, 2)} ISK` : '—'}</strong><small>{t('balance')}</small></ProfileCard>
+            <ProfileCard title={t('security')} availability={profile.availability.public} t={t}><strong>{profile.character.securityStatus?.toFixed(2) ?? '—'}</strong><small>{profile.location?.security === null || profile.location?.security === undefined ? '' : <>{t('location')}: <span className={securityClassName(profile.location.security)}>{profile.location.security.toFixed(1)}</span></>}</small></ProfileCard>
             <ProfileCard title={t('born')} availability={profile.availability.public} t={t}><strong>{profile.character.birthday ? new Intl.DateTimeFormat(locale === 'ru' ? 'ru-RU' : 'en-US', { dateStyle: 'medium' }).format(new Date(profile.character.birthday)) : '—'}</strong><small>ID {profile.character.id}</small></ProfileCard>
           </div>
         </div>

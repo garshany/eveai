@@ -13,6 +13,7 @@ import { useI18n } from '../../i18n';
 import type { PerimeterMessage } from '../../types';
 import type { LiveAdvisory } from './use-map-live';
 import { advisoryRuleKey } from './labels';
+import { mergeAdvisoryMessages } from './live-merge';
 
 export type MapAskContext = {
   systemId: number | null;
@@ -72,13 +73,11 @@ export function PerimeterChat({ csrfToken, advisories, context, onFocusSystem }:
   // повторная загрузка истории не задваивает ленту.
   useEffect(() => {
     if (advisories.length === 0) return;
-    setMessages((previous) => {
-      const known = new Set(previous.map((message) => message.id));
-      const additions = advisories
-        .map((entry) => entry.message)
-        .filter((message) => !known.has(message.id) && message.id > clearedBeforeIdRef.current);
-      return additions.length > 0 ? [...previous, ...additions] : previous;
-    });
+    setMessages((previous) => mergeAdvisoryMessages(
+      previous,
+      advisories.map((entry) => entry.message),
+      clearedBeforeIdRef.current,
+    ));
   }, [advisories]);
 
   useEffect(() => {
@@ -113,7 +112,16 @@ export function PerimeterChat({ csrfToken, advisories, context, onFocusSystem }:
           (message) => message.id < 0
             && !payload.messages.some((saved) => saved.role === 'user' && saved.content === message.content),
         );
-        return [...payload.messages.filter((message) => !serverIds.has(-message.id)), ...pending];
+        // A live advisory that landed while this request was in flight is
+        // newer than anything in the snapshot; dropping it here made a fresh
+        // warning blink out until some later advisory re-merged the stream.
+        const newestSaved = payload.messages.reduce((max, message) => Math.max(max, message.id), 0);
+        const liveTail = previous.filter((message) => message.id > newestSaved && !serverIds.has(message.id));
+        return [
+          ...payload.messages.filter((message) => !serverIds.has(-message.id)),
+          ...liveTail,
+          ...pending,
+        ];
       });
     } catch {
       // История обновится на следующем тике.

@@ -414,7 +414,7 @@ describe('createNativeResponse request body', () => {
     }));
 
     const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
-    const models = ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
+    const models = ['gpt-6-luna', 'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
     const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 
     for (const model of models) {
@@ -525,6 +525,24 @@ describe('createNativeResponse request body', () => {
     // No sink (the bots) even with streamToActivity true: unchanged request.
     await call(true);
     expect(body?.reasoning).toEqual({ effort: 'medium' });
+  });
+
+  it('never logs reasoning summary text, only its length', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response([
+      'event: response.done',
+      'data: {"response":{"id":"r","output_text":"ok","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"wallet balance 123456 ISK SECRETLOC"}]},{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}',
+      '',
+    ].join('\n'), { status: 200 })));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+      await createNativeResponse({ instructions: 't', items: [toNativeMessage('hi')], tools: [] });
+      const logged = logSpy.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+      expect(logged).toContain('[reasoning]');
+      expect(logged).not.toContain('SECRETLOC');
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it('forwards prompt_cache_key to the proxy', async () => {

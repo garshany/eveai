@@ -306,7 +306,7 @@ export async function createNativeResponse(input: {
   // live from the stream, before the answer — don't emit it again post-parse.
   const reasoningSummary = extractReasoningSummary(output);
   if (reasoningSummary) {
-    console.log('[reasoning] %s', reasoningSummary.slice(0, 500));
+    console.log('[reasoning] summary %d chars', reasoningSummary.length);
     // Surface reasoning only for the top-level agent turn with a sink attached
     // (the CLI). Internal calls (streamThisCall false) and the bots (no sink)
     // never emit it.

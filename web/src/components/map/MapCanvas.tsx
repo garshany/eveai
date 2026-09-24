@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { select } from 'd3-selection';
 import { zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior, type ZoomTransform } from 'd3-zoom';
 import type { MapBubble } from '../../types';
-import { cameraTargetFor, easeToward, isSettled, pruneJumpTimes, type CameraTarget } from './camera';
+import { cameraTargetFor, easeToward, focusTargetFor, isSettled, pruneJumpTimes, type CameraTarget } from './camera';
 import type { Layout } from './layout';
 import {
   buildHitIndex,
@@ -33,6 +33,11 @@ type Props = {
   /** Растёт на каждом прыжке: триггер доводки камеры. */
   jumpCounter: number;
   follow: boolean;
+  /**
+   * Просьба показать систему (якорь совета в чате). Новый объект — новая
+   * просьба, даже к той же системе: пилот мог увести камеру и нажать снова.
+   */
+  focus?: { systemId: number } | null;
   onFollowChange: (follow: boolean) => void;
   onSelect: (systemId: number | null) => void;
 };
@@ -52,6 +57,7 @@ export function MapCanvas({
   flashes,
   jumpCounter,
   follow,
+  focus = null,
   onFollowChange,
   onSelect,
 }: Props) {
@@ -73,6 +79,12 @@ export function MapCanvas({
   pilotRef.current = pilotSystemId;
   const sizeRef = useRef(size);
   sizeRef.current = size;
+  // Система, к которой камера едет по просьбе; гаснет, когда доехали, или
+  // когда пилот сам взялся за карту.
+  const focusRef = useRef<number | null>(null);
+  useEffect(() => {
+    focusRef.current = focus?.systemId ?? null;
+  }, [focus]);
 
   const nodes = useMemo<RenderNode[]>(() => buildRenderNodes(bubble, layout), [bubble, layout]);
   const hitIndex = useMemo(() => buildHitIndex(nodes), [nodes]);
@@ -131,6 +143,7 @@ export function MapCanvas({
       .on('zoom', (event: D3ZoomEvent<HTMLCanvasElement, unknown>) => {
         transformRef.current = event.transform;
         // Жест пользователя (а не программная доводка) отпускает следование.
+        if (event.sourceEvent) focusRef.current = null;
         if (event.sourceEvent && followRef.current) onFollowChange(false);
       });
     zoomRef.current = behavior;
@@ -160,10 +173,28 @@ export function MapCanvas({
       // Цель считается заново каждый кадр, пока включено следование: пилот
       // прыгает, кольца перестраиваются, панель меняет ширину — всё это меняет
       // ответ, и ни одно из этих событий не должно требовать своего эффекта.
-      const target = followRef.current ? cameraTarget() : null;
+      // A system outside the bubble cannot be shown here; forget the request
+      // rather than yanking the camera whenever it later drifts into range.
+      if (focusRef.current !== null && !layoutRef.current.has(focusRef.current)) focusRef.current = null;
+      // Following the pilot supersedes the request; it must not resurface the
+      // next time following is switched off.
+      if (followRef.current) focusRef.current = null;
+      const focusId = followRef.current ? null : focusRef.current;
+      const target = followRef.current
+        ? cameraTarget()
+        : focusId === null
+          ? null
+          : focusTargetFor({
+            width: sizeRef.current.width,
+            height: sizeRef.current.height,
+            point: layoutRef.current.get(focusId) ?? null,
+            k: transformRef.current.k,
+          });
       if (target) {
         const current = transformRef.current;
-        if (!isSettled(current, target)) {
+        if (isSettled(current, target)) {
+          if (focusId !== null) focusRef.current = null;
+        } else {
           const stepped = easeToward(current, target, reducedMotion ? 1 : EASE);
           const next = zoomIdentity.translate(stepped.x, stepped.y).scale(stepped.k);
           transformRef.current = next;

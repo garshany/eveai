@@ -206,6 +206,28 @@ describe('route planner', () => {
     expect(feedCaptureHarness.unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores an expired cached location for origin=current and asks live ESI instead', async () => {
+    db.prepare("UPDATE esi_cache SET expires_at = datetime('now', '-1 hour') WHERE cache_key LIKE 'get_characters_character_id_location:%'").run();
+    const baseImpl = callEsiOperationMock.getMockImplementation();
+    callEsiOperationMock.mockImplementation(async (dbArg: unknown, operation: string, args: unknown, ...rest: unknown[]) => {
+      if (operation === 'get_characters_character_id_location') {
+        return { ok: true, status: 200, cached: false, headers: {}, data: { solar_system_id: 30002659 } };
+      }
+      return await baseImpl?.(dbArg, operation, args, ...rest);
+    });
+    const { planRoute, setRouteMonitorSender } = await import('../../src/eve/route-planner.js');
+    setRouteMonitorSender(async () => {});
+
+    const result = await planRoute(
+      db,
+      { origin: 'current', destination: 'Jita', prefer: 'secure' },
+      { userId: 1, chatId: -2_000_000_000, notificationCapability: 'none' },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(callEsiOperationMock.mock.calls.map((call) => call[1])).toContain('get_characters_character_id_location');
+  });
+
   it('does not subscribe to the global feed or start a monitor for a transient browser lane', async () => {
     const { planRoute, setRouteMonitorSender } = await import('../../src/eve/route-planner.js');
     setRouteMonitorSender(async () => {});

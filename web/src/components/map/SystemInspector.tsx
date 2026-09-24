@@ -10,6 +10,7 @@ import { useI18n } from '../../i18n';
 import type { InspectedSystem, MapKillEvent } from '../../types';
 import { bandColor } from './renderer';
 import { bandLabelKey, dangerTermKey } from './labels';
+import { securityClassName } from '../../security';
 
 type Props = {
   system: InspectedSystem;
@@ -31,7 +32,7 @@ export function SystemInspector({ system, kills, onClose, onRouteTo, onAvoid, on
       <div>
         <h3>{system.name}</h3>
         <p className="perimeter-inspector__sub">
-          {system.security.toFixed(1)} · {system.regionName ?? '—'} · {system.jumps === null
+          <span className={securityClassName(system.security, 'sec-badge')}>{system.security.toFixed(1)}</span> · {system.regionName ?? '—'} · {system.jumps === null
             ? t('perimeterJumpsUnknown')
             : t('perimeterJumpsAway', { jumps: String(system.jumps) })}
         </p>

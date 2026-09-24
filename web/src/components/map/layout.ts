@@ -120,6 +120,21 @@ function buildGeoLayout(bubble: MapBubble): Layout {
 }
 
 /**
+ * Same node set at the same positions. Live ticks rebuild the bubble object
+ * every few seconds even when nothing moved; without this check each tick
+ * restarted a full morph that re-rendered the map every animation frame.
+ */
+export function layoutsEqual(a: Layout, b: Layout): boolean {
+  if (a === b) return true;
+  if (a.size !== b.size) return false;
+  for (const [id, position] of a) {
+    const other = b.get(id);
+    if (!other || other.x !== position.x || other.y !== position.y) return false;
+  }
+  return true;
+}
+
+/**
  * Покадровая интерполяция между раскладками. Узел, которого нет в одной из
  * них (пузырь сдвинулся во время морфа), берёт позицию из той, где он есть, —
  * появление системы не должно выглядеть как прилёт из центра координат.

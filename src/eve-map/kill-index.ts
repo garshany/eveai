@@ -19,11 +19,12 @@
 
 import type { Db } from '../db/sqlite.js';
 import { config } from '../config.js';
-import { subscribeEveKillFeed } from '../eve-kill/feed-poll.js';
+import { getEveKillFeedRuntimeStatus, subscribeEveKillFeed } from '../eve-kill/feed-poll.js';
 import { searchKillmails } from '../eve-kill/client.js';
 import type { NormalizedKillmail } from '../eve-kill/types.js';
 import { nearestGate } from '../eve/map-graph.js';
 import { hourOfWeekFor } from './system-metrics.js';
+import { estimateKillValue } from './kill-value.js';
 
 export type IndexedKill = {
   killmailId: number;
@@ -104,6 +105,46 @@ export function getKillIndexStatus(db: Db): {
     newestAtMs: row.newest,
     lastSweepAt,
   };
+}
+
+/**
+ * The feed polls every second and backs off to at most thirty; a last success
+ * older than this means the index is no longer live, whatever it last held.
+ */
+const FEED_STALE_AFTER_MS = 90_000;
+
+export type KillFeedFreshness = {
+  status: 'live' | 'cached' | 'unavailable';
+  retrievedAt: string | null;
+  error: string | null;
+};
+
+/**
+ * How live the kill layer really is. The bubble used to label it 'live'
+ * unconditionally, so a dead or stalled feed left the radar silently quiet —
+ * which reads as "all clear", the most dangerous thing a radar can say wrongly.
+ */
+export function getKillFeedFreshness(now = Date.now()): KillFeedFreshness {
+  const feed = getEveKillFeedRuntimeStatus();
+  if (unsubscribeFeed === null || !feed.running) {
+    return {
+      status: 'unavailable',
+      retrievedAt: feed.lastSuccessAt,
+      error: 'Live kill feed is not running; kill activity is not being updated.',
+    };
+  }
+  const lastSuccessMs = feed.lastSuccessAt ? Date.parse(feed.lastSuccessAt) : Number.NaN;
+  if (!Number.isFinite(lastSuccessMs)) {
+    return { status: 'cached', retrievedAt: null, error: feed.lastError ?? 'Live kill feed has not answered yet.' };
+  }
+  if (now - lastSuccessMs > FEED_STALE_AFTER_MS) {
+    return {
+      status: 'cached',
+      retrievedAt: feed.lastSuccessAt,
+      error: `Live kill feed is stale${feed.lastError ? `: ${feed.lastError}` : ''}.`,
+    };
+  }
+  return { status: 'live', retrievedAt: feed.lastSuccessAt, error: null };
 }
 
 /**
@@ -203,6 +244,10 @@ export function recordKillmail(
     ? safeNearestGate(db, systemId, killmail.position)
     : null;
 
+  // ESI-shaped feed killmails carry no value; estimate it locally so value
+  // rules and ISK-destroyed layers work on live kills, not only on backfill.
+  const totalValue = killmail.totalValue ?? estimateKillValue(db, killmail, now) ?? 0;
+
   const result = db.prepare(INSERT_SQL).run(
     killmail.killmailId,
     systemId,
@@ -210,7 +255,7 @@ export function recordKillmail(
     killmail.killmailTime ?? null,
     killmailTimeMs,
     now,
-    killmail.totalValue ?? 0,
+    totalValue,
     killmail.attackerCount ?? 0,
     killmail.isNpc ? 1 : 0,
     killmail.isSolo ? 1 : 0,
@@ -238,7 +283,7 @@ export function recordKillmail(
     regionId: killmail.regionId ?? null,
     killmailTime: killmail.killmailTime ?? null,
     killmailTimeMs,
-    totalValue: killmail.totalValue ?? 0,
+    totalValue,
     attackerCount: killmail.attackerCount ?? 0,
     isNpc: Boolean(killmail.isNpc),
     isSolo: Boolean(killmail.isSolo),
@@ -347,7 +392,10 @@ export function sweepKillIndex(db: Db, now = Date.now()): { byAge: number; byCap
     byCap = db.prepare(`
       DELETE FROM map_kill_events WHERE killmail_id IN (
         SELECT killmail_id FROM map_kill_events
-        ORDER BY killmail_time_ms ASC
+        -- Ordinary kills go first: the long-lived gate kills are the oldest
+        -- rows by construction, and evicting purely by age would wipe camp
+        -- history before a single three-hour-old non-gate row.
+        ORDER BY (gate_id IS NOT NULL) ASC, killmail_time_ms ASC
         LIMIT ?
       )
     `).run(rows - config.map.killIndexMaxRows).changes;

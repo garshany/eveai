@@ -1,0 +1,119 @@
+name: deploy
+
+# Continuous deployment to the operator's own server.
+#
+# Every push to master is verified exactly like CI (audit, typecheck, tests,
+# lint, build) and then rolled out over SSH by scripts/deploy/remote-deploy.sh:
+# staged install, online SQLite backup, drained restart, /health gate and an
+# automatic rollback to the previous build if the new one is not healthy.
+#
+# It runs in the GitHub Environment "production", so the operator can require a
+# manual approval there. Until the production secrets exist the job verifies
+# and builds, then skips the rollout with a notice instead of failing.
+# Setup: docs/deployment.md → "Continuous deployment".
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One rollout at a time, and never cancel one halfway.
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'garshany/eveai'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+      PROD_SSH_USER: ${{ secrets.PROD_SSH_USER }}
+      PROD_SSH_PORT: ${{ vars.PROD_SSH_PORT || '22' }}
+      PROD_APP_DIR: ${{ vars.PROD_APP_DIR || '/srv/eveai' }}
+      PROD_SERVICE: ${{ vars.PROD_SERVICE || 'eveai' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '20.19.0'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Public artifact audit
+        run: npm run audit:public
+
+      - name: Full verification
+        run: npm run check
+
+      - name: Build
+        run: npm run build
+
+      - name: Package release
+        run: |
+          tar -czf "$RUNNER_TEMP/release.tar.gz" dist web/dist package.json package-lock.json
+          ls -la "$RUNNER_TEMP/release.tar.gz"
+
+      - name: Check production configuration
+        id: target
+        env:
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: |
+          missing=()
+          for name in PROD_SSH_HOST PROD_SSH_USER PROD_SSH_KEY PROD_SSH_KNOWN_HOSTS; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::notice title=Deploy skipped::Production secrets not configured (${missing[*]}). Build verified; nothing was deployed. See docs/deployment.md."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pinned host key: never trust-on-first-use against production.
+          printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Roll out
+        if: steps.target.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          ssh_opts=(-i ~/.ssh/deploy_key -p "$PROD_SSH_PORT" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30)
+          remote="$PROD_SSH_USER@$PROD_SSH_HOST"
+          stage="/tmp/eveai-deploy-$GITHUB_SHA"
+          ssh "${ssh_opts[@]}" "$remote" "rm -rf '$stage' && mkdir -p '$stage'"
+          scp -i ~/.ssh/deploy_key -P "$PROD_SSH_PORT" -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "$RUNNER_TEMP/release.tar.gz" scripts/deploy/remote-deploy.sh "$remote:$stage/"
+          status=0
+          ssh "${ssh_opts[@]}" "$remote" \
+            "EVEAI_APP_DIR='$PROD_APP_DIR' EVEAI_SERVICE='$PROD_SERVICE' bash '$stage/remote-deploy.sh' '$stage/release.tar.gz' '$GITHUB_SHA'" \
+            || status=$?
+          ssh "${ssh_opts[@]}" "$remote" "rm -rf '$stage'" || true
+          exit "$status"
+
+      - name: Summary
+        if: always() && steps.target.outputs.ready == 'true'
+        run: |
+          {
+            echo "### Production rollout"
+            echo "- commit: \`$GITHUB_SHA\`"
+            echo "- target: \`$PROD_SERVICE\` in \`$PROD_APP_DIR\`"
+            echo "- result: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove SSH material
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { rmSync } from 'node:fs';
 import { config } from '../config.js';
 import type { Db } from '../db/sqlite.js';
@@ -26,7 +26,7 @@ import {
 } from './eve-consent.js';
 import { buildLocalizedEveConsentPage, type ConsentLocale } from './localized-eve-consent-page.js';
 import { withWebLaneAuthorizationLocks } from './web-lane-lock.js';
-import { WEB_CHAT_ID_START } from './web-session.js';
+import { readWebSession, WEB_CHAT_ID_START } from './web-session.js';
 
 const log = createLogger('auth');
 
@@ -75,6 +75,9 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     if (!pending) {
       return reply.status(403).type('text/html').send(buildNoticePage('This login link has expired or was already used. Run /eve_login again in the bot.'));
     }
+    if (!isBoundToRequestSession(db, req, pending)) {
+      return reply.status(403).type('text/html').send(buildNoticePage(FOREIGN_SESSION_NOTICE));
+    }
     if (!pending.consented_at || !pending.requestedScopes || pending.consent_version !== EVE_CONSENT_VERSION) {
       return reply
         .header('Cache-Control', 'no-store')
@@ -93,6 +96,9 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     const pending = state ? findPendingAuthRequest(db, 'eve_sso', state) : null;
     if (!pending) {
       return reply.status(403).type('text/html').send(buildNoticePage('This login link has expired or was already used.'));
+    }
+    if (!isBoundToRequestSession(db, req, pending)) {
+      return reply.status(403).type('text/html').send(buildNoticePage(FOREIGN_SESSION_NOTICE));
     }
     const consent = parseEveConsentForm(values);
     if (!consent) {
@@ -148,6 +154,14 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     }
     if (!authRequest.consented_at || !authRequest.requestedScopes || authRequest.consent_version !== EVE_CONSENT_VERSION) {
       return reply.status(403).send({ error: 'EVE data access was not acknowledged. Please start the login flow again.' });
+    }
+    if (!isBoundToRequestSession(db, req, authRequest)) {
+      // Not consumed: the finishing browser does not own this request, so it
+      // must not be able to burn the owner's pending login either.
+      log.warn('Browser SSO callback rejected category=session_mismatch');
+      const redirect = safeAppRedirect(authRequest.redirect_url);
+      if (redirect) return reply.redirect(buildAppAuthRedirect(redirect, 'error'));
+      return reply.status(403).send({ error: FOREIGN_SESSION_NOTICE });
     }
 
     markAuthRequestUsed(db, 'eve_sso', state);
@@ -291,6 +305,26 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     return reply.redirect(`/auth/eve/callback?${qs.toString()}`);
   });
 }
+
+/**
+ * A browser-flow login request (one with an /app redirect) is bound to the web
+ * session that minted it. Without this the state is a bearer token: a guest
+ * could send their /auth/eve/login link to another pilot, and the victim's
+ * SSO would link (or merge) the victim's character into the guest's lane.
+ * Bot flows carry no redirect and stay link-based.
+ */
+function isBoundToRequestSession(
+  db: Db,
+  request: FastifyRequest,
+  pending: { redirect_url: string | null; chat_id: number | null },
+): boolean {
+  if (!safeAppRedirect(pending.redirect_url)) return true;
+  if (pending.chat_id === null) return false;
+  const session = readWebSession(db, request);
+  return session !== null && session.chatId === pending.chat_id;
+}
+
+const FOREIGN_SESSION_NOTICE = 'This login link belongs to a different browser session. Start the EVE login again from the app.';
 
 function safeAppRedirect(value: string | null): string | null {
   if (!value) return null;

@@ -149,6 +149,7 @@ async function linkCharacterViaSso(session: BrowserSession): Promise<void> {
   const callback = await app.inject({
     method: 'GET',
     url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
+    headers: { cookie: session.cookie },
   });
   expect(callback.statusCode).toBe(302);
   expect(callback.headers.location).toBe('http://localhost:3000/app?auth=connected');
@@ -415,6 +416,7 @@ describe('web relogin preserves user data', () => {
     const callback = await app.inject({
       method: 'GET',
       url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
+      headers: { cookie: session.cookie },
     });
     expect(callback.statusCode).toBe(302);
     expect(callback.headers.location).toBe('http://localhost:3000/app?auth=error');

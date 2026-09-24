@@ -53,10 +53,20 @@ conversation list.
   system and security, hull, bubble radius and its danger summary, the selected
   system, the active route — so a bare "стоит ли лететь?" is answerable without
   a clarifying question.
+- **The pilot's question sees the radar.** A Perimeter turn carries a radar
+  snapshot kept by the live stream — current system, hull, bubble verdict,
+  the hottest nearby systems and the latest alarms — read from memory with no
+  extra ESI call, and forgotten five minutes after the map closes.
 - **The agent speaks first.** On a position change or a new kill inside the
   bubble, deterministic rules fire: pursuit, camp on the next hop, threat-level
   rise, value spike, capability gap, route degraded, security-band change, and
-  all-clear. Each produces a finished, localized sentence.
+  all-clear. Each produces a finished, localized sentence. A kill inside the
+  bubble is pushed to the map at once and re-judged within about 1.5 s (bursts
+  share one rebuild), not at the next 15 s intel tick. Kills that land before
+  the first bubble or mid-jump are held and sorted by the next build rather than
+  dropped; a bubble the pilot jumped out of while it was building is never
+  published. Every open tab of the same pilot hears each advisory, which is
+  persisted once.
 - Every proactive message is anchored to what it is about; clicking it moves the
   camera to that system and highlights the killmail.
 - Severity filter and mute are honoured server-side. Repeats inside a cooldown
@@ -66,6 +76,21 @@ conversation list.
 
 These are product guarantees, not implementation details:
 
+- **The radar understands, rarely.** After a danger-level alarm the model gets
+  a facts-only sheet of the live picture and writes a short assessment with one
+  concrete action, published as a follow-up to the rule text. It runs detached
+  (the radar never waits), at most once per `MAP_ADVISOR_LLM_COOLDOWN_SECONDS`
+  per pilot, is billed like any model call, and can be switched off with
+  `MAP_ADVISOR_LLM_ENABLED=false`.
+- **A kill reacts in about a second and a half,** not on the next intel tick:
+  an in-bubble kill schedules one debounced rebuild that a burst shares.
+- **Live kills carry an ISK value.** Feed killmails are ESI-shaped and have no
+  value; the index estimates hull + items at the cheapest sell in the home
+  market region from the local snapshot, never overriding a provided value.
+- **The radar stays on while watched.** The client renews the idle lease every
+  four minutes while its tab is visible (`POST /api/web/map/live/touch`); a
+  hidden, forgotten tab still times out. A client watchdog reconnects a stream
+  that has been silent for 45 seconds.
 - **Rules speak without the model.** Routine advisories cost nothing. The model
   is asked for prose only when a danger-level rule fired and its own longer
   cooldown has elapsed, so an hour of flying can never cost a model call every
@@ -92,6 +117,11 @@ Shown in the interface, not buried here:
   layer, never as live.
 - **Killmails arrive with a publisher delay** of seconds to minutes; each event
   shows its age.
+- **A stalled kill feed is not "all clear".** The bubble's `kills` layer is
+  `live` only while the EVE-KILL feed is attached and answered within 90 s;
+  otherwise it is `cached` (stale, with the feed error) or `unavailable`.
+- **An unknown hull is not a doomed hull.** A ship type without dogma rows in the
+  loaded SDE gets no capability assessment instead of "survival: dead".
 - **Position cannot be fresher than five seconds** — that is the ESI cache, and
   it is exactly the poll interval.
 - **Nothing reads the game client.** ESI only.

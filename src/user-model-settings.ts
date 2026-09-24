@@ -13,12 +13,12 @@ import {
  * resolve to the same user. No row means the operator's config defaults
  * apply, so existing users see zero behavior change.
  *
- * The selectable model set is fixed to the three ids verified against the
- * provider's /v1/models; tariffs (MODEL_PRICING_JSON) are keyed by the same
+ * The selectable model set is fixed to the GPT-5.6 ids verified against the
+ * provider's /v1/models plus gpt-6-luna (the operator default); tariffs (MODEL_PRICING_JSON) are keyed by the same
  * ids. Reasoning efforts and verbosities are exactly the values the existing
  * Responses API path already supports (src/openai-options.ts).
  */
-export const USER_SELECTABLE_MODELS = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'] as const;
+export const USER_SELECTABLE_MODELS = ['gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'] as const;
 export type UserSelectableModel = typeof USER_SELECTABLE_MODELS[number];
 
 export type UserModelSettings = {

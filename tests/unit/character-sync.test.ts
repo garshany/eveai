@@ -106,6 +106,35 @@ afterEach(() => {
 });
 
 describe('character datastore sync', () => {
+  it('keeps a sync run pinned to its character when the user switches mid-run', async () => {
+    linkCharacter();
+    const OTHER_ID = 90000002;
+    db.prepare(`
+      INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id)
+      VALUES (?, ?, 'access-token-b', 'refresh-token-b', datetime('now', '+1 hour'), ?, ?)
+    `).run(OTHER_ID, 'Pilot Two', JSON.stringify(ALL_SCOPES), USER_ID);
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (?, ?, ?)')
+      .run(CHAT_ID, OTHER_ID, USER_ID);
+    let switched = false;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!switched) {
+        switched = true;
+        db.prepare('UPDATE users SET active_character_id = ? WHERE user_id = ?').run(OTHER_ID, USER_ID);
+      }
+      if (url.includes('/wallet/')) return jsonResponse(1234.5);
+      return jsonResponse([]);
+    });
+
+    await ensureCharacterDatasetsFresh(db as Db, { userId: USER_ID }, ['wallet', 'orders']);
+
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.length).toBeGreaterThanOrEqual(2);
+    expect(urls.every((url) => url.includes(`/characters/${CHARACTER_ID}/`))).toBe(true);
+    const authHeaders = fetchMock.mock.calls.map((call) => new Headers((call[1] as RequestInit).headers).get('Authorization'));
+    expect(authHeaders.every((value) => value === 'Bearer access-token')).toBe(true);
+  });
+
   it('walks every assets page beyond ESI_MAX_PAGES using the sync page cap', async () => {
     linkCharacter();
     const totalPages = 7; // interactive ESI_MAX_PAGES is 5 — sync must not stop there

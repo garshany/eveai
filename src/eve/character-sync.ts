@@ -746,6 +746,9 @@ async function syncCharacterDatasets(
   const linked = getLinkedCharacter(db, ctx);
   if (!linked) return [];
   const characterId = linked.characterId;
+  // Pin every ESI call below to the character captured here, so a character
+  // switch mid-run cannot write B's data under A's character_id.
+  const pinnedCtx: UserContext = { ...ctx, characterId };
 
   const pending = datasets.filter((datasetId) => {
     const dataset = DATASETS_BY_ID.get(datasetId);
@@ -756,7 +759,7 @@ async function syncCharacterDatasets(
   if (pending.length > 0) {
     // Private ESI calls require a fresh capability snapshot (else 428). One
     // call covers every dataset refresh below.
-    await getEveCapabilities(db, 'character datastore sync', ctx);
+    await getEveCapabilities(db, 'character datastore sync', pinnedCtx);
     for (const datasetId of pending) {
       const key = `${characterId}:${datasetId}`;
       const existing = syncInFlight.get(key);
@@ -764,7 +767,7 @@ async function syncCharacterDatasets(
         await existing.catch(() => undefined);
         continue;
       }
-      const run = refreshDataset(db, characterId, datasetId, linked.scopes, ctx, guard)
+      const run = refreshDataset(db, characterId, datasetId, linked.scopes, pinnedCtx, guard)
         .finally(() => syncInFlight.delete(key));
       syncInFlight.set(key, run);
       await run.catch(() => undefined);

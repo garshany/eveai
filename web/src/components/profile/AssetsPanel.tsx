@@ -111,7 +111,7 @@ function LocationRow({ location, expanded, onToggle }: {
         <span className="asset-location__stat">{formatQuantity(location.itemCount, locale)}</span>
         <span className="asset-location__stat">{`${formatQuantity(Math.round(location.totalVolume), locale)} м³`}</span>
         <span className="asset-location__value">
-          {location.estimatedValue === null ? '—' : `${formatIsk(location.estimatedValue, locale)} ISK`}
+          {location.estimatedValue === null ? '—' : <span className="isk">{`${formatIsk(location.estimatedValue, locale)} ISK`}</span>}
           {location.valuation === 'partial' ? <small className="asset-location__flag">{t('profileValuationPartial')}</small> : null}
           {location.valuation === 'unavailable' ? <small className="asset-location__flag">{t('profileValuationUnavailable')}</small> : null}
         </span>

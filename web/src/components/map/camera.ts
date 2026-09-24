@@ -16,6 +16,8 @@ export const MOTION_JUMPS = 2;
 
 const SCALE_MOVING = 0.55;
 const SCALE_PARKED = 1.1;
+/** Не мельче этого камера показывает систему, к которой её попросили отвезти. */
+const FOCUS_MIN_SCALE = 0.8;
 
 /**
  * Куда камера должна приехать. Возвращает null, когда следовать не за чем:
@@ -71,4 +73,26 @@ export function isSettled(current: CameraTarget, target: CameraTarget): boolean 
   return Math.abs(target.x - current.x) <= 0.5
     && Math.abs(target.y - current.y) <= 0.5
     && Math.abs(target.k - current.k) <= 0.001;
+}
+
+/**
+ * Куда везти камеру, когда пилот попросил показать систему (якорь совета,
+ * «на карте»): центр экрана на точке, масштаб не меньше читаемого. Без этого
+ * клик по якорю только выделял систему, а камера оставалась где была — часто
+ * с выделением за краем экрана.
+ */
+export function focusTargetFor(input: {
+  width: number;
+  height: number;
+  point: { x: number; y: number } | null;
+  /** Текущий масштаб: приближать сильнее нужного не надо, отдалять — тоже. */
+  k: number;
+}): CameraTarget | null {
+  if (input.width <= 0 || input.height <= 0 || !input.point) return null;
+  const k = Math.max(input.k, FOCUS_MIN_SCALE);
+  return {
+    k,
+    x: input.width / 2 - input.point.x * k,
+    y: input.height / 2 - input.point.y * k,
+  };
 }

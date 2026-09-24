@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import type { Db } from '../../src/db/sqlite.js';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
@@ -327,5 +327,28 @@ describe('analyzeCharacterSqlTables', () => {
     expect(analysis.ok).toBe(false);
     if (analysis.ok) throw new Error('Expected analysis to reject non-character tables');
     expect(analysis.error).toContain('eve_accounts');
+  });
+});
+
+describe('executeCharacterSql time limit', () => {
+  it('enforces the elapsed-time limit within the row cap', () => {
+    for (let i = 0; i < 60; i += 1) insertAsset(OWN_CHARACTER, 1000 + i, 34, 1);
+    let fakeNow = 1_000_000;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => {
+      fakeNow += 100;
+      return fakeNow;
+    });
+    try {
+      const result = executeCharacterSql(
+        db,
+        'SELECT item_id FROM character_assets',
+        OWN_CHARACTER,
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/execution limit/);
+      expect(result.rows).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

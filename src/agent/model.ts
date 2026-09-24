@@ -14,9 +14,10 @@ export async function runModelText(
     parallelToolCalls: false,
     signal,
   });
+  // Record billed usage first: a failed/incomplete response is still charged.
+  if (response.usage) onUsage?.(response.usage);
   if (response.error) {
     throw new Error(response.error.message);
   }
-  if (response.usage) onUsage?.(response.usage);
   return response.outputText.trim();
 }

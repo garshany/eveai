@@ -1,5 +1,5 @@
 import { createLogger, printStartupBanner, type BannerRow } from './observability/logger.js';
-import { validatePublicWebProductionConfig } from './web/production-config.js';
+import { browserSsoCallbackHostWarning, validatePublicWebProductionConfig } from './web/production-config.js';
 
 const log = createLogger('app');
 
@@ -48,6 +48,11 @@ async function main() {
   if (publicWebErrors.length > 0) {
     for (const error of publicWebErrors) log.error('%s', error);
     process.exit(1);
+  }
+
+  if (config.web.chatEnabled) {
+    const ssoHostWarning = browserSsoCallbackHostWarning(config.eve.callbackUrl, config.web.baseUrl);
+    if (ssoHostWarning) log.warn('%s', ssoHostWarning);
   }
 
   if (config.esi.userAgent.includes('example')) {

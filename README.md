@@ -28,7 +28,7 @@ workspace into a full pilot hub:
 - **Live pilot profile.** Location-grouped assets appraised against the local
   order book, orders, wallet, clones, skills, and granted scopes — every block
   with its own freshness marker.
-- **Per-user model settings.** Model (Sol/Terra/Luna), reasoning effort, and
+- **Per-user model settings.** Model (Luna 6, Sol/Terra/Luna 5.6), reasoning effort, and
   verbosity per user, applied across browser, Telegram, Discord, and CLI, with
   guest gating and honest usage accounting for subagents and compaction.
 - **Community integrations.** Bounded tools with schemas verified against live
@@ -185,7 +185,7 @@ Model defaults:
 
 - `OPENAI_PROVIDER=openai` uses the official OpenAI HTTP/SSE endpoint. `modelhub` selects the fixed ModelHub OpenAI-compatible HTTP/SSE endpoint (`https://modelhub.my/v1`); arbitrary `OPENAI_BASE_URL` overrides remain disabled.
 - The selected provider and its API key are process-wide operator settings. Browser users never provide or receive this key; each user gets an isolated opaque session and chat lane while requests share the configured concurrency and rate limits.
-- `OPENAI_MODEL=gpt-5.6-sol` is the quality-first default. Use `gpt-5.6-terra` for a capability/cost balance or `gpt-5.6-luna` for latency-sensitive, high-volume deployments. The `gpt-5.6` alias routes to Sol.
+- `OPENAI_MODEL=gpt-6-luna` is the default: the next-generation fast, cheap model. `gpt-5.6-luna`, `gpt-5.6-terra` (capability/cost balance) and `gpt-5.6-sol` (quality-first) remain available. The `gpt-5.6` alias routes to Sol.
 - `OPENAI_PROGRAMMATIC_TOOL_CALLING=false` keeps the default direct-tool path. Setting it to `true` opts into provider-entitled hosted programs for exactly nine bounded public-read tools: static counts, batch market prices, wormhole-type comparisons, Scout system searches, compact kill-activity summaries, market-history summaries, system-metric snapshots, doctrine summaries, and dynamic-item summaries. Restart after changing it. See [OpenAI integration](./docs/openai-integration.md) for schemas, budgets, exclusions, real smoke matrices, and rollback.
 - `OPENAI_RESPONSE_STATE_MODE=stateless` is the default and rollback path. `server` reuses `previous_response_id`, requires `OPENAI_STORE_RESPONSES=true`, and falls back to canonical SQLite history if the provider state is missing or no longer matches its anchored assistant message.
 - `OPENAI_STORE_RESPONSES=false` keeps provider-side Response logs opt-in. Set it to `true` to inspect requests in [OpenAI Responses Logs](https://platform.openai.com/logs?api=responses); storage alone does not switch the state mode.

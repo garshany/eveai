@@ -205,6 +205,23 @@ describe('perimeter advisor', () => {
     expect(spike!.killmailId).toBe(5);
   });
 
+  it('judges a kill once even when several tabs hand it over', () => {
+    // Две вкладки делят одно состояние и обе передают тот же килл. Второй
+    // проход раньше засчитывался как «подавленный повтор», и следующая
+    // настоящая тревога приходила как «×2».
+    const state = createAdvisorState(NOW);
+    const big = kill({ killmailId: 7, systemId: 2, totalValue: 4_000_000_000 });
+    const frame = bubble({
+      systems: [system({ systemId: 1, jumps: 0 }), system({ systemId: 2, jumps: 1 })],
+      recentKills: [big],
+    });
+    const first = evaluateAdvisories(state, ctx({ bubble: frame, newKills: [big] }));
+    const second = evaluateAdvisories(state, ctx({ bubble: frame, newKills: [big], now: NOW + 1_000 }));
+    expect(first.filter((advisory) => advisory.rule === 'value_spike')).toHaveLength(1);
+    expect(second.filter((advisory) => advisory.rule === 'value_spike')).toHaveLength(0);
+    expect(state.suppressed.get('value_spike') ?? 0).toBe(0);
+  });
+
   it('warns when the pilot leaves highsec, and stays quiet coming back', () => {
     const state = createAdvisorState(NOW);
     evaluateAdvisories(state, ctx());

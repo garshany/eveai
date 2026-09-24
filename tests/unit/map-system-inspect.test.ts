@@ -22,7 +22,10 @@ const searchMock = vi.hoisted(() => vi.fn(async () => ({ ok: false as const, err
 vi.mock('../../src/eve/esi-client.js', () => ({ callEsiOperation: esiMock }));
 vi.mock('../../src/eve/eve-scout-client.js', () => ({ getSignatures: scoutMock }));
 vi.mock('../../src/eve-kill/client.js', () => ({ searchKillmails: searchMock }));
-vi.mock('../../src/eve-kill/feed-poll.js', () => ({ subscribeEveKillFeed: vi.fn(() => vi.fn()) }));
+vi.mock('../../src/eve-kill/feed-poll.js', () => ({
+  subscribeEveKillFeed: vi.fn(() => vi.fn()),
+  getEveKillFeedRuntimeStatus: vi.fn(() => ({ running: false, lastPollAt: null, lastSuccessAt: null, lastError: null })),
+}));
 
 const { buildMapGraph, invalidateMapGraphCache } = await import('../../src/eve/map-graph.js');
 const { registerMapRoutes } = await import('../../src/web/map-routes.js');

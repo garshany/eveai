@@ -274,4 +274,56 @@ describe('read-only subagents', () => {
       expect(call[0]).toEqual(usage);
     }
   });
+  it('caps worker reasoning effort at low (respecting none) with room for output', async () => {
+    const seen: Array<Parameters<typeof createNativeResponse>[0]> = [];
+    const responseFactory = vi.fn(async (input: Parameters<typeof createNativeResponse>[0]) => {
+      seen.push(input);
+      return response([{
+        type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'No data.' }],
+      }], 'No data.');
+    });
+    for (const effort of ['max', 'high', 'auto', undefined] as const) {
+      await runReadSubagentBatch(tasks(), {
+        toolsFor: () => [countTool], dispatch: async () => ({ ok: true }), responseFactory, reasoningEffort: effort,
+      });
+    }
+    expect(seen.every((input) => input.reasoningEffort === 'low')).toBe(true);
+    expect(seen.every((input) => (input.maxOutputTokens ?? 0) >= 4_000)).toBe(true);
+
+    seen.length = 0;
+    await runReadSubagentBatch(tasks(), {
+      toolsFor: () => [countTool], dispatch: async () => ({ ok: true }), responseFactory, reasoningEffort: 'none',
+    });
+    expect(seen.every((input) => input.reasoningEffort === 'none')).toBe(true);
+  });
+
+  it('keeps already-gathered evidence when a later model call throws', async () => {
+    const responseFactory = vi.fn(async (input: Parameters<typeof createNativeResponse>[0]) => {
+      if (input.items.some((item) => item.type === 'function_call_output')) {
+        throw new Error('private upstream detail');
+      }
+      return response([{
+        type: 'function_call', call_id: 'call_ok', name: 'count_universe_objects',
+        arguments: '{"target_kind":"region","target_name":"The Forge","object_kind":"systems"}',
+      }]);
+    });
+    const result = await runReadSubagentBatch({
+      tasks: (tasks().tasks as unknown[]).slice(0, 2),
+    }, {
+      toolsFor: () => [countTool],
+      dispatch: async () => ({
+        ok: true, target_kind: 'region', target_name: 'The Forge', object_kind: 'systems', count: 88,
+      }),
+      responseFactory,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    for (const item of result.results) {
+      expect(item.status).toBe('partial');
+      expect(item.evidence).toHaveLength(1);
+      expect(item.gaps).toContain('Subagent model call failed');
+    }
+    expect(JSON.stringify(result)).not.toContain('private upstream detail');
+  });
 });

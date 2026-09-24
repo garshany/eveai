@@ -23,16 +23,28 @@ export async function executeEveKillTool(
   args: Record<string, unknown>,
   chatId?: number,
 ): Promise<Record<string, unknown>> {
-  switch (name) {
-    case 'kill_search': return await executeSearch(db, args);
-    case 'kill_activity': return await executeActivity(db, args);
-    case 'kill_detail': return await executeDetail(db, args);
-    case 'kill_intel': return await executeIntel(db, args);
-    case 'kill_battles': return await executeBattles(db, args);
-    case 'kill_watch': return executeWatch(db, args, chatId);
-    case 'kill_activity_summary': return await executeKillActivitySummary(db, args);
+  // The strict schemas cannot express cross-field rules (a system scope with
+  // kills/losses, a null id for the chosen action). Those arrive as argument
+  // errors and must reach the model as a tool result, not abort the turn.
+  try {
+    switch (name) {
+      case 'kill_search': return await executeSearch(db, args);
+      case 'kill_activity': return await executeActivity(db, args);
+      case 'kill_detail': return await executeDetail(db, args);
+      case 'kill_intel': return await executeIntel(db, args);
+      case 'kill_battles': return await executeBattles(db, args);
+      case 'kill_watch': return executeWatch(db, args, chatId);
+      case 'kill_activity_summary': return await executeKillActivitySummary(db, args);
+    }
+  } catch (error) {
+    if (error instanceof EveKillArgumentError) {
+      return { ok: false, source: 'EVE-KILL', error: `Invalid ${name} arguments: ${error.message}`, blocked: true };
+    }
+    throw error;
   }
 }
+
+class EveKillArgumentError extends Error {}
 
 async function executeSearch(db: Db, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const request: KillmailSearchRequest = {
@@ -51,7 +63,7 @@ async function executeActivity(db: Db, args: Record<string, unknown>): Promise<R
   const id = requiredInt(args.id, 'id');
   const activity = requiredEnum(args.activity, ['kills', 'losses', 'all'] as const, 'activity');
   if (scope === 'system' && activity !== 'all') {
-    throw new Error('system activity does not have separate kills/losses roles; use activity=all');
+    throw new EveKillArgumentError('system activity does not have separate kills/losses roles; use activity=all');
   }
   const options = {
     from: optionalString(args.from),
@@ -215,7 +227,7 @@ function projectEntity(entity: NormalizedKillmail['victim']): Record<string, unk
 }
 
 function requiredInt(value: unknown, name: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) throw new EveKillArgumentError(`${name} must be a positive integer`);
   return value;
 }
 
@@ -228,7 +240,7 @@ function toolResultLimit(value: unknown): number {
 }
 
 function requiredString(value: unknown, name: string): string {
-  if (typeof value !== 'string' || value.length === 0) throw new Error(`${name} must be a non-empty string`);
+  if (typeof value !== 'string' || value.length === 0) throw new EveKillArgumentError(`${name} must be a non-empty string`);
   return value;
 }
 
@@ -239,12 +251,12 @@ function optionalString(value: unknown): string | undefined {
 function optionalIds(value: unknown, name: string): number[] {
   if (value === null || value === undefined) return [];
   if (!Array.isArray(value) || value.some((id) => typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)) {
-    throw new Error(`${name} must contain only positive integer IDs`);
+    throw new EveKillArgumentError(`${name} must contain only positive integer IDs`);
   }
   return [...new Set(value as number[])];
 }
 
 function requiredEnum<const T extends readonly string[]>(value: unknown, allowed: T, name: string): T[number] {
-  if (typeof value !== 'string' || !(allowed as readonly string[]).includes(value)) throw new Error(`invalid ${name}`);
+  if (typeof value !== 'string' || !(allowed as readonly string[]).includes(value)) throw new EveKillArgumentError(`invalid ${name}`);
   return value as T[number];
 }

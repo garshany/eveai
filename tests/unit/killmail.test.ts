@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import {
   enrichKillmailDetail,
+  resolveUniverseNames,
   enrichKillmailReferenceList,
   type KillmailDeps,
 } from '../../src/eve/killmail.js';
@@ -79,6 +80,18 @@ afterEach(() => {
 function buildDeps(): KillmailDeps {
   const fetchJson = vi.fn(async (_profile: string, command: string, args: string[]) => {
     const id = Number(args[1]);
+    if (command === 'post_universe_names') {
+      const known: Record<number, string> = {
+        9001: 'Killer One',
+        9101: 'Victim One',
+        98000001: 'Killers Inc',
+        98000002: 'Victims Ltd',
+        99000001: 'Murder Coalition',
+        99000002: 'Carebear Union',
+      };
+      const ids = JSON.parse(args[1]) as number[];
+      return ids.filter((entry) => known[entry]).map((entry) => ({ id: entry, name: known[entry], category: 'character' }));
+    }
     if (command === 'characters_character_id') {
       if (id === 9001) {
         return { character_id: 9001, name: 'Killer One', security_status: 4.2, corporation_id: 98000001, alliance_id: 99000001 };
@@ -181,5 +194,83 @@ describe('killmail enrichment', () => {
     expect(((enriched.killmails as Array<Record<string, unknown>>)[0]).linked_character_role).toBe('victim');
     expect(((((enriched.killmails as Array<Record<string, any>>)[0]).victim).ship).links.show_info).toBe('<url=showinfo:44996>Marshal</url>');
     expect((enriched.remaining_refs as unknown[])).toHaveLength(0);
+  });
+
+  it('resolves a 300-pilot killmail with batched post_universe_names instead of per-character GETs', async () => {
+    const attackers = Array.from({ length: 300 }, (_, index) => ({
+      character_id: 2_000_000_000 + index,
+      corporation_id: 98_100_000 + (index % 40),
+      alliance_id: 99_100_000 + (index % 15),
+      damage_done: 10,
+      final_blow: index === 0,
+      ship_type_id: 7001,
+    }));
+    const killmail = { ...buildKillmail(), attackers };
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const deps: KillmailDeps = {
+      fetchJson: vi.fn(async (_profile: string, command: string, args: string[]) => {
+        calls.push({ command, args });
+        if (command === 'post_universe_names') {
+          const ids = JSON.parse(args[1]) as number[];
+          return ids.map((id) => ({ id, name: `Name ${id}`, category: 'character' }));
+        }
+        if (command === 'corporations_corporation_id' || command === 'alliances_alliance_id') {
+          return { name: 'x', ticker: `T${args[1]}` };
+        }
+        throw new Error(`unexpected ESI call ${command}`);
+      }),
+      getMarketPrices: vi.fn(async () => new Map()),
+    };
+
+    const enriched = await enrichKillmailDetail(db, killmail, deps);
+
+    expect(calls.filter((call) => call.command === 'characters_character_id')).toHaveLength(0);
+    expect(calls.filter((call) => call.command === 'post_universe_names')).toHaveLength(1);
+    expect(calls.length).toBeLessThanOrEqual(1 + 2 * 12);
+    const namesIds = JSON.parse(calls.find((call) => call.command === 'post_universe_names')!.args[1]) as number[];
+    expect(new Set(namesIds).size).toBe(namesIds.length);
+    const first = (enriched.attackers as Array<Record<string, unknown>>)[0];
+    expect(first.character_name).toBe('Name 2000000000');
+    expect(first.corporation_name).toBe('Name 98100000');
+    expect(first.alliance_name).toBe('Name 99100000');
+    expect((enriched.victim as Record<string, unknown>).corporation_ticker).toBe('T98000002');
+  });
+
+  it('keeps enriching when name resolution fails and isolates invalid ids after an ESI 404', async () => {
+    const invalidId = 123;
+    let namesCalls = 0;
+    const deps: Pick<KillmailDeps, 'fetchJson'> = {
+      fetchJson: vi.fn(async (_profile: string, command: string, args: string[]) => {
+        if (command !== 'post_universe_names') return null;
+        namesCalls += 1;
+        const ids = JSON.parse(args[1]) as number[];
+        if (ids.includes(invalidId)) return null; // ESI 404: whole request rejected
+        return ids.map((id) => ({ id, name: `N${id}` }));
+      }),
+    };
+    const ids = [invalidId, ...Array.from({ length: 1500 }, (_, index) => 90_000_000 + index), 90_000_000];
+    const names = await resolveUniverseNames(deps, ids);
+
+    expect(names.size).toBe(1500);
+    expect(names.has(invalidId)).toBe(false);
+    expect(namesCalls).toBeLessThanOrEqual(40);
+
+    const throwingDeps: KillmailDeps = {
+      fetchJson: vi.fn(async () => {
+        throw new Error('ESI down');
+      }),
+      getMarketPrices: vi.fn(async () => new Map()),
+    };
+    const enriched = await enrichKillmailDetail(db, buildKillmail(), throwingDeps);
+    expect((enriched.victim as Record<string, unknown>).character_name).toBeNull();
+    expect((enriched.attackers as Array<Record<string, unknown>>)).toHaveLength(1);
+
+    // An outage (thrown transport error) is not bisected through: one call, then stop.
+    const outage = vi.fn(async () => {
+      throw new Error('ESI down');
+    });
+    const bigSet = Array.from({ length: 1500 }, (_, index) => 90_000_000 + index);
+    expect((await resolveUniverseNames({ fetchJson: outage }, bigSet)).size).toBe(0);
+    expect(outage).toHaveBeenCalledTimes(1);
   });
 });

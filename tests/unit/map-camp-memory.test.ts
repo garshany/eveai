@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import type { NormalizedKillmail } from '../../src/eve-kill/types.js';
 
-vi.mock('../../src/eve-kill/feed-poll.js', () => ({ subscribeEveKillFeed: vi.fn(() => vi.fn()) }));
+vi.mock('../../src/eve-kill/feed-poll.js', () => ({
+  subscribeEveKillFeed: vi.fn(() => vi.fn()),
+  getEveKillFeedRuntimeStatus: vi.fn(() => ({ running: false, lastPollAt: null, lastSuccessAt: null, lastError: null })),
+}));
 vi.mock('../../src/eve-kill/client.js', () => ({ searchKillmails: vi.fn() }));
 
 const { buildMapGraph, invalidateMapGraphCache, nearestGate } = await import('../../src/eve/map-graph.js');

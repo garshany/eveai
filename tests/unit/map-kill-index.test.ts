@@ -26,9 +26,15 @@ const feedMocks = vi.hoisted(() => {
 });
 
 const searchMock = vi.hoisted(() => vi.fn());
+const feedStatus = vi.hoisted(() => ({
+  value: { running: false, lastPollAt: null, lastSuccessAt: null, lastError: null } as {
+    running: boolean; lastPollAt: string | null; lastSuccessAt: string | null; lastError: string | null;
+  },
+}));
 
 vi.mock('../../src/eve-kill/feed-poll.js', () => ({
   subscribeEveKillFeed: feedMocks.subscribe,
+  getEveKillFeedRuntimeStatus: () => feedStatus.value,
 }));
 vi.mock('../../src/eve-kill/client.js', () => ({
   searchKillmails: searchMock,
@@ -37,6 +43,7 @@ vi.mock('../../src/eve-kill/client.js', () => ({
 const {
   backfillSystems,
   getAttackerActivity,
+  getKillFeedFreshness,
   getRecentKills,
   getRecentKillsForSystems,
   getSystemKillRollups,
@@ -95,6 +102,37 @@ describe('map kill index', () => {
     expect(rows.n).toBe(1);
   });
 
+  it('estimates ISK for a feed kill that arrives without a value, never overriding a provided one', async () => {
+    const { resetKillValueCacheForTests } = await import('../../src/eve-map/kill-value.js');
+    resetKillValueCacheForTests();
+    const { config } = await import('../../src/config.js');
+    const order = db.prepare(`
+      INSERT INTO market_orders (order_id, type_id, region_id, system_id, location_id, is_buy_order, price,
+        volume_remain, volume_total, min_volume, duration, range, issued)
+      VALUES (?, ?, ?, 30000142, 60003760, ?, ?, 1, 1, 1, 90, 'region', '2026-07-28')
+    `);
+    order.run(1, 28665, config.market.defaultRegionId, 0, 250_000_000); // Vargur hull, cheapest sell
+    order.run(2, 28665, config.market.defaultRegionId, 0, 260_000_000);
+    order.run(3, 28665, config.market.defaultRegionId, 1, 900_000_000); // buy orders are ignored
+    order.run(4, 2048, config.market.defaultRegionId, 0, 5_000_000); // a module
+    order.run(5, 2048, 10000043, 0, 1); // another region is ignored
+
+    const valueless = killmail({
+      killmailId: 40,
+      totalValue: undefined,
+      victim: { characterId: 1, shipTypeId: 28665, shipName: 'Vargur' },
+      items: [
+        { typeId: 2048, quantityDestroyed: 2, quantityDropped: 1 },
+        { typeId: 999999, quantityDestroyed: 5, quantityDropped: 0 }, // unpriced: skipped
+      ],
+    } as never);
+    expect(recordKillmail(db, valueless, 'feed', NOW)?.totalValue).toBe(265_000_000);
+    // A value the source provided always wins over the estimate.
+    expect(recordKillmail(db, killmail({ killmailId: 41, totalValue: 7 }), 'feed', NOW)?.totalValue).toBe(7);
+    // Nothing priceable: 0, as before.
+    expect(recordKillmail(db, killmail({ killmailId: 42, totalValue: undefined }), 'feed', NOW)?.totalValue).toBe(0);
+  });
+
   it('rejects a killmail without a usable system', () => {
     expect(recordKillmail(db, killmail({ killmailId: 2, solarSystemId: undefined }), 'feed', NOW)).toBeNull();
   });
@@ -124,6 +162,31 @@ describe('map kill index', () => {
 
     const rows = db.prepare('SELECT killmail_id FROM map_kill_events').all() as Array<{ killmail_id: number }>;
     expect(rows).toEqual([{ killmail_id: 20 }]);
+  });
+
+  it('reports the kill layer honestly: live, stale, or not running', () => {
+    // Раньше слой убийств всегда был «live»: мёртвая лента выглядела как
+    // спокойный периметр — худшее, что может соврать радар.
+    feedStatus.value = { running: true, lastPollAt: null, lastSuccessAt: null, lastError: null };
+    expect(getKillFeedFreshness(NOW).status).toBe('unavailable');
+
+    startMapKillIndex(db);
+    feedStatus.value = {
+      running: true,
+      lastPollAt: new Date(NOW).toISOString(),
+      lastSuccessAt: new Date(NOW - 5_000).toISOString(),
+      lastError: null,
+    };
+    expect(getKillFeedFreshness(NOW)).toMatchObject({ status: 'live', error: null });
+
+    feedStatus.value = { ...feedStatus.value, lastSuccessAt: new Date(NOW - 120_000).toISOString(), lastError: 'HTTP 503' };
+    const stale = getKillFeedFreshness(NOW);
+    expect(stale.status).toBe('cached');
+    expect(stale.error).toContain('HTTP 503');
+
+    feedStatus.value = { ...feedStatus.value, running: false };
+    expect(getKillFeedFreshness(NOW).status).toBe('unavailable');
+    feedStatus.value = { running: false, lastPollAt: null, lastSuccessAt: null, lastError: null };
   });
 
   it('subscribes only once even if started twice', () => {
@@ -159,6 +222,30 @@ describe('map kill index', () => {
     expect(swept.byAge).toBe(1);
     const rows = db.prepare('SELECT killmail_id FROM map_kill_events').all() as Array<{ killmail_id: number }>;
     expect(rows).toEqual([{ killmail_id: 41 }]);
+  });
+
+  it('keeps gate-camp evidence when the row cap bites, evicting ordinary kills first', async () => {
+    const { config } = await import('../../src/config.js');
+    const map = config.map as { killIndexMaxRows: number };
+    const previous = map.killIndexMaxRows;
+    map.killIndexMaxRows = 2;
+    try {
+      const insert = db.prepare(`
+        INSERT INTO map_kill_events (killmail_id, system_id, killmail_time_ms, received_at_ms, gate_id)
+        VALUES (?, 30000142, ?, ?, ?)
+      `);
+      // A two-day-old gate kill (camp history) and three fresh ordinary kills.
+      insert.run(60, NOW - 48 * 3_600_000, NOW, 50000001);
+      insert.run(61, NOW - 30 * 60_000, NOW, null);
+      insert.run(62, NOW - 20 * 60_000, NOW, null);
+      insert.run(63, NOW - 10 * 60_000, NOW, null);
+
+      expect(sweepKillIndex(db, NOW).byCap).toBe(2);
+      const rows = db.prepare('SELECT killmail_id FROM map_kill_events ORDER BY killmail_id').all();
+      expect(rows).toEqual([{ killmail_id: 60 }, { killmail_id: 63 }]);
+    } finally {
+      map.killIndexMaxRows = previous;
+    }
   });
 
   it('returns recent kills newest first across systems', () => {

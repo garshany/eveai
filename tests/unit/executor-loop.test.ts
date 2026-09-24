@@ -4,10 +4,12 @@ import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 // Mock ONLY the network call; keep the real item builders/helpers so the loop
 // under test assembles input exactly as production does.
-const { createNativeResponseMock, runPreTurnCompactMock, runMidTurnCompactMock } = vi.hoisted(() => ({
+const { createNativeResponseMock, runPreTurnCompactMock, runMidTurnCompactMock, midTurnCompactLimit } = vi.hoisted(() => ({
   createNativeResponseMock: vi.fn(),
   runPreTurnCompactMock: vi.fn(),
   runMidTurnCompactMock: vi.fn(),
+  // null = the real autoCompactLimit-based check.
+  midTurnCompactLimit: { value: null as number | null },
 }));
 vi.mock('../../src/agent/native-responses.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/agent/native-responses.js')>();
@@ -19,6 +21,11 @@ vi.mock('../../src/agent/compact.js', async (importOriginal) => {
     ...actual,
     runPreTurnCompact: runPreTurnCompactMock,
     runMidTurnCompact: runMidTurnCompactMock,
+    needsMidTurnCompaction: (inputTokens: number) => (
+      midTurnCompactLimit.value === null
+        ? actual.needsMidTurnCompaction(inputTokens)
+        : inputTokens >= midTurnCompactLimit.value
+    ),
   };
 });
 
@@ -120,6 +127,7 @@ afterEach(() => {
   delete process.env.AGENT_MAX_EVE_KILL_CALLS_PER_TURN;
   delete process.env.AGENT_MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN;
   delete process.env.AGENT_MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE;
+  midTurnCompactLimit.value = null;
   vi.resetModules();
 });
 
@@ -634,6 +642,124 @@ describe('stateless tool loop context accumulation', () => {
     const persisted = JSON.stringify(db.prepare('SELECT content FROM messages').all());
     expect(persisted).not.toContain('opaque-fp');
     expect(persisted).not.toContain('not persisted');
+  });
+
+  it('does not carry the pre-compaction peak into total_tokens after a mid-turn compaction', async () => {
+    midTurnCompactLimit.value = 3000;
+    const oversized = { ...toolCallResponse('call_2', 'SELECT type_id FROM sde_types LIMIT 2'), usage: { input: 5000, output: 50, cached: 0, reasoning: 0 } };
+    createNativeResponseMock
+      .mockResolvedValueOnce(toolCallResponse('call_1', 'SELECT type_id FROM sde_types LIMIT 1'))
+      .mockResolvedValueOnce(oversized)
+      .mockResolvedValueOnce(toolCallResponse('call_3', 'SELECT type_id FROM sde_types LIMIT 3'))
+      .mockResolvedValueOnce(textResponse('после сжатия'));
+
+    const result = await runLoop() as { text: string; peakInputTokens: number };
+
+    expect(runMidTurnCompactMock).toHaveBeenCalledTimes(1);
+    expect(result.text).toBe('после сжатия');
+    // Only post-compaction samples count; 5000 would re-trigger compaction next turn.
+    expect(result.peakInputTokens).toBe(1200);
+  });
+
+  it('replays this turn\'s bounded tool outputs verbatim after a mid-turn compaction', async () => {
+    // local_parallel_batch is a bounded public facade (declared on ModelHub):
+    // its audit row keeps only {ok, blocked, schema_valid, output_chars}.
+    process.env.OPENAI_PROVIDER = 'modelhub';
+    vi.resetModules();
+    midTurnCompactLimit.value = 3000;
+    db.prepare('INSERT INTO sde_regions (region_id, name, data_json) VALUES (?, ?, ?)').run(10000002, 'The Forge', '{}');
+    db.prepare('INSERT INTO sde_constellations (constellation_id, name, region_id, data_json) VALUES (?, ?, ?, ?)')
+      .run(20000020, 'Kimotoro', 10000002, '{}');
+    db.prepare('INSERT INTO sde_systems (system_id, name, constellation_id, data_json) VALUES (?, ?, ?, ?), (?, ?, ?, ?)')
+      .run(30000142, 'Jita', 20000020, '{}', 30000144, 'Perimeter', 20000020, '{}');
+    const batchCall = (callId: string, usage = 1000) => ({
+      ...outputResponse([{
+        type: 'function_call',
+        call_id: callId,
+        name: 'local_parallel_batch',
+        arguments: JSON.stringify({ calls: [{
+          id: 'forge_systems',
+          tool: 'count_universe_objects',
+          arguments_json: JSON.stringify({ target_kind: 'region', target_name: 'The Forge', object_kind: 'systems' }),
+        }] }),
+      }], `resp_${callId}`),
+      usage: { input: usage, output: 50, cached: 0, reasoning: 0 },
+    });
+    createNativeResponseMock
+      .mockResolvedValueOnce(batchCall('batch_1'))
+      .mockResolvedValueOnce(batchCall('batch_2', 5000))
+      .mockResolvedValueOnce(textResponse('после сжатия'));
+
+    const result = await runLoop();
+
+    expect(result.text).toBe('после сжатия');
+    expect(runMidTurnCompactMock).toHaveBeenCalledTimes(1);
+    // The persisted audit row carries only bounded metadata, not the data.
+    const audit = db.prepare("SELECT content FROM messages WHERE role = 'tool'").get() as { content: string };
+    expect(JSON.parse(audit.content).result).toMatchObject({ ok: true });
+    expect(audit.content).not.toContain('Jita');
+    const preCompactInput = createNativeResponseMock.mock.calls[1]![0].items as Array<Record<string, unknown>>;
+    const sentOutput = preCompactInput.find((item) =>
+      item.type === 'function_call_output' && item.call_id === 'batch_1');
+    expect(sentOutput).toBeDefined();
+    expect(String(sentOutput!.output)).toContain('"count":2');
+    const postCompactInput = createNativeResponseMock.mock.calls[2]![0].items as Array<Record<string, unknown>>;
+    const replayedCall = postCompactInput.find((item) =>
+      item.type === 'function_call' && item.call_id === 'batch_1');
+    const replayedOutput = postCompactInput.find((item) =>
+      item.type === 'function_call_output' && item.call_id === 'batch_1');
+    expect(replayedCall).toMatchObject({ name: 'local_parallel_batch' });
+    expect(replayedOutput?.output).toBe(sentOutput!.output);
+    expect(postCompactInput.indexOf(replayedCall!)).toBeLessThan(postCompactInput.indexOf(replayedOutput!));
+    // The discarded pre-compaction call was never executed, so it is not replayed.
+    expect(itemTexts(postCompactInput).some((text) => text.includes('batch_2'))).toBe(false);
+    expect(itemTexts(postCompactInput).at(-1)).toContain('не вызывай tools повторно');
+  });
+
+  it('bounds the compaction replay and allows re-calling tools when nothing was replayed', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const items = __test__.buildTurnToolReplayItems([], 10_000);
+    expect(items.items).toEqual([]);
+    const exchange = (callId: string, output: string) => ({ callId, name: 'sde_sql', argumentsText: '{}', output });
+    const bounded = __test__.buildTurnToolReplayItems(
+      [exchange('old', 'x'.repeat(500)), exchange('mid', 'y'.repeat(300)), exchange('new', 'z'.repeat(300))],
+      700,
+    );
+    // Newest first within budget, oldest dropped, pairs kept in chronological order.
+    expect(bounded.replayed).toBe(2);
+    expect(bounded.omitted).toBe(1);
+    expect(bounded.items.map((item) => `${item.type}:${(item as { call_id: string }).call_id}`)).toEqual([
+      'function_call:mid', 'function_call_output:mid', 'function_call:new', 'function_call_output:new',
+    ]);
+    expect(bounded.items.some((item) => 'caller' in item)).toBe(false);
+    expect(__test__.buildMidTurnCompactionNotice(0, 0)).not.toContain('не вызывай tools повторно');
+    expect(__test__.buildMidTurnCompactionNotice(2, 1)).toContain('не вызывай tools повторно');
+  });
+
+  it('only replays tools the next request declares directly (not deferred or namespaced)', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const fn = (name: string, extra: Record<string, unknown> = {}) => ({
+      type: 'function', name, description: '', parameters: {}, ...extra,
+    });
+    const names = __test__.directlyDeclaredToolNames([
+      { type: 'tool_search' },
+      fn('sde_sql'),
+      fn('analyze_scan', { defer_loading: true }),
+      { type: 'namespace', name: 'eve_kill', description: '', tools: [fn('eve_kill_top')] },
+    ] as never);
+    expect([...names]).toEqual(['sde_sql']);
+  });
+
+  it('records billed usage for a non-completed response before failing the turn', async () => {
+    const { runMigrations } = await import('../../src/db/migrations.js');
+    runMigrations(db as never);
+    db.prepare("INSERT OR IGNORE INTO users (user_id, display_name) VALUES (1, 'Pilot')").run();
+    createNativeResponseMock.mockResolvedValueOnce({ ...textResponse('обрезано'), status: 'incomplete' });
+
+    await runLoop();
+
+    expect(db.prepare('SELECT input_tokens, output_tokens FROM usage_events').all())
+      .toEqual([{ input_tokens: 1200, output_tokens: 80 }]);
   });
 
   it('fails closed when a program reaches a final message below its minimum call shape', async () => {
@@ -1847,6 +1973,45 @@ describe('cooperative turn abort (CLI Ctrl-C)', () => {
       ),
     )).rejects.toThrow('Turn aborted by user');
     expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a per-call failure instead of failing the turn when tool admission is saturated', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const { createWebSearchState } = await import('../../src/agent/web-search.js');
+    const { ResponseAdmissionController } = await import('../../src/agent/response-admission.js');
+    const saturated = new ResponseAdmissionController({ maxConcurrent: 1, maxQueued: 0, queueTimeoutMs: 10, label: 'Read tool' });
+    const held = await saturated.acquire();
+    __test__.setToolAdmissionsForTest(saturated, null);
+    try {
+      const result = await __test__.executeToolCall(
+        db as never,
+        'req-saturated',
+        GOAL,
+        { userId: 1, chatId: 1 },
+        'sde_sql',
+        { query: 'SELECT type_id FROM sde_types LIMIT 1' },
+        createWebSearchState(),
+      );
+      expect(result).toMatchObject({ ok: false, retryable: true });
+
+      const controller = new AbortController();
+      controller.abort();
+      await expect(__test__.executeToolCall(
+        db as never,
+        'req-saturated-aborted',
+        GOAL,
+        { userId: 1, chatId: 1 },
+        'sde_sql',
+        { query: 'SELECT type_id FROM sde_types LIMIT 1' },
+        createWebSearchState(),
+        false,
+        { callsExecuted: 0 },
+        { signal: controller.signal },
+      )).rejects.toThrow('admission aborted');
+    } finally {
+      held();
+      __test__.setToolAdmissionsForTest(null, null);
+    }
   });
 
   it('rechecks identity after tool admission before dispatch', async () => {

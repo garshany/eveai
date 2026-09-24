@@ -50,6 +50,7 @@ import {
   toNativeMessage,
   toNativeAssistantMessage,
   type NativeInputItem,
+  type NativeTool,
   type NativeFunctionCaller,
 } from './native-responses.js';
 import {
@@ -93,7 +94,14 @@ import {
   refreshUserProfile,
 } from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
-import { getThreadSummary, runPreTurnCompact, needsMidTurnCompaction, runMidTurnCompact } from './compact.js';
+import {
+  autoCompactLimit,
+  getThreadSummary,
+  runPreTurnCompact,
+  needsMidTurnCompaction,
+  runMidTurnCompact,
+} from './compact.js';
+import { formatRadarSnapshot } from '../eve-map/radar-snapshot.js';
 import { executeEveKillTool } from '../eve-kill/executor.js';
 import {
   INDUSTRY_COST_TOOL_NAME,
@@ -177,6 +185,8 @@ import {
 const MAX_TOOL_ITERATIONS = config.openai.maxToolIterations;
 const MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE = config.openai.maxClientSearchCallsPerResponse;
 const MAX_CONSECUTIVE_EMPTY_CLIENT_SEARCHES = 3;
+/** Abort polls tick every 100ms; the identity queries behind them need not. */
+const IDENTITY_POLL_MAX_STALE_MS = 1_000;
 const MAX_PROGRAMMATIC_CALLS_PER_BATCH = 4;
 const MAX_PROGRAMMATIC_CALLS_PER_TURN = 4;
 const MAX_PROGRAMMATIC_CALLS_PER_PROGRAM = 4;
@@ -477,7 +487,7 @@ export async function handleAgentMessage(
       if (
         Date.now() >= rootDeadlineAt
         || isTurnAborted()
-        || !isTurnIdentityCurrent(db, ctx, turnIdentity)
+        || !isTurnIdentityCurrent(db, ctx, turnIdentity, IDENTITY_POLL_MAX_STALE_MS)
       ) liveController.abort();
     }, 100);
     try {
@@ -524,6 +534,15 @@ export async function handleAgentMessage(
   // Rebuild the developer prompt from current thread state. Called once up front
   // and again after mid-turn compaction so `instructions` always carries the
   // freshest thread summary. Everything except the summary is turn-stable.
+  // The flight assistant always sees what the pilot's radar shows right now
+  // (position, bubble verdict, hot systems, latest alarms) when the live map
+  // is open — read from memory, no ESI call — so "стоит ли лететь?" needs no
+  // clarifying question. Other threads never get it.
+  const runtimeLiveSummary = buildRuntimeLiveSummary(
+    promptMode,
+    linked?.characterId ?? null,
+    liveContext?.summary ?? null,
+  );
   const rebuildDeveloperPrompt = (): string =>
     buildDeveloperPrompt(
       {
@@ -534,7 +553,7 @@ export async function handleAgentMessage(
       },
       getThreadSummary(db, threadId),
       userProfile,
-      liveContext?.summary ?? null,
+      runtimeLiveSummary,
       promptMode,
       config.openai.responseLanguage,
       config.openai.programmaticToolCalling,
@@ -858,6 +877,11 @@ async function runNativeAgentLoop(
     ? prepareClientToolSearch(builtTools)
     : { requestTools: builtTools, index: [] as ClientToolSearchIndex };
   const tools = clientToolSearch.requestTools;
+  // Only tools declared at the top level and loaded up front can be replayed as
+  // bare function_call items after mid-turn compaction: deferred/namespaced
+  // tools depend on tool_search state (and a namespace field) that compaction
+  // discards, and the provider may reject a call to a tool it has not loaded.
+  const directReplayToolNames = directlyDeclaredToolNames(tools);
   const effectiveToolRegistry = new EffectiveToolRegistry(
     config.openai.toolSearchExecution === 'client' ? tools : builtTools,
   );
@@ -944,6 +968,10 @@ async function runNativeAgentLoop(
   let clientDiscoveredSchemaBytes = 0;
   let consecutiveEmptyClientSearches = 0;
   const clientDiscoveryReplayItems: NativeInputItem[] = [];
+  // Exact model-facing call/output pairs executed in this turn. Persisted audit
+  // rows keep only bounded metadata for programmatic, bounded-facade, and
+  // analytics tools, so mid-turn compaction replays this ledger instead.
+  const turnToolExchanges: TurnToolExchange[] = [];
   const seenProviderCallIds = new Set<string>();
   const turnGoalLedger = createTurnGoalLedger(goal);
   let completionNudges = 0;
@@ -976,7 +1004,7 @@ async function runNativeAgentLoop(
       if (
         turnDeadlineExceeded()
         || isTurnAborted()
-        || !isTurnIdentityCurrent(db, ctx, turnContext)
+        || !isTurnIdentityCurrent(db, ctx, turnContext, IDENTITY_POLL_MAX_STALE_MS)
       ) modelController.abort();
     }, 100);
     let response;
@@ -1064,6 +1092,31 @@ async function runNativeAgentLoop(
       clearInterval(modelAbortPoll);
     }
 
+    // Track token usage first: error, incomplete, cancelled and identity-
+    // changed responses are billed by the provider too, and every early exit
+    // below would otherwise drop them from usage_events.
+    if (response.usage) {
+      totalInputTokens += response.usage.input;
+      totalOutputTokens += response.usage.output;
+      totalCachedTokens += response.usage.cached;
+      totalCacheWriteTokens += response.usage.cacheWrite ?? 0;
+      totalReasoningTokens += response.usage.reasoning;
+      if (response.usage.input > peakInputTokens) peakInputTokens = response.usage.input;
+      // Durable per-response spend event (usage_events). Deliberately
+      // non-fatal like the total_tokens counter below: accounting failure
+      // must never break the user's turn.
+      recordModelUsageSafe(db, ctx, threadId, {
+        input: response.usage.input,
+        output: response.usage.output,
+        cached: response.usage.cached,
+        cacheWrite: response.usage.cacheWrite ?? 0,
+        reasoning: response.usage.reasoning,
+      }, modelSettings.model);
+      console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d cache_write=%d reasoning=%d',
+        iteration, response.usage.input, response.usage.output, response.usage.cached,
+        response.usage.cacheWrite ?? 0, response.usage.reasoning);
+    }
+
     // Cooperative cancellation, immediately after sampling: an abort during
     // the model call must stop the turn BEFORE mid-turn compaction (another
     // model call + history mutation) or any tool execution.
@@ -1140,29 +1193,6 @@ async function runNativeAgentLoop(
       programInFlight = true;
     }
 
-    // Track token usage
-    if (response.usage) {
-      totalInputTokens += response.usage.input;
-      totalOutputTokens += response.usage.output;
-      totalCachedTokens += response.usage.cached;
-      totalCacheWriteTokens += response.usage.cacheWrite ?? 0;
-      totalReasoningTokens += response.usage.reasoning;
-      if (response.usage.input > peakInputTokens) peakInputTokens = response.usage.input;
-      // Durable per-response spend event (usage_events). Deliberately
-      // non-fatal like the total_tokens counter below: accounting failure
-      // must never break the user's turn.
-      recordModelUsageSafe(db, ctx, threadId, {
-        input: response.usage.input,
-        output: response.usage.output,
-        cached: response.usage.cached,
-        cacheWrite: response.usage.cacheWrite ?? 0,
-        reasoning: response.usage.reasoning,
-      }, modelSettings.model);
-      console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d cache_write=%d reasoning=%d',
-        iteration, response.usage.input, response.usage.output, response.usage.cached,
-        response.usage.cacheWrite ?? 0, response.usage.reasoning);
-    }
-
     // --- Codex-style mid-turn compaction ---
     // After each sampling request, if input tokens >= autoCompactLimit AND model
     // needs follow-up (tool calls), compact and continue the loop.
@@ -1193,22 +1223,34 @@ async function runNativeAgentLoop(
           developerPrompt = rebuildDeveloperPrompt();
           previousResponseId = null;
           pendingItems = buildSmartContext(db, threadId);
-          // The summary only covers user/assistant history — re-inject the
-          // freshest tool results so this turn's collected data survives.
-          const toolSummary = buildRecentToolSummaryMessage(db, threadId);
-          if (toolSummary) {
-            pendingItems.push(toNativeAssistantMessage(toolSummary));
+          // The summary only covers user/assistant history. Replay this turn's
+          // exact tool outputs (newest first within a bounded budget); the
+          // SQLite audit summary is only a fallback because bounded tools
+          // persist metadata, not data.
+          const replay = buildTurnToolReplayItems(
+            turnToolExchanges.filter((exchange) => directReplayToolNames.has(exchange.name)),
+            midTurnReplayBudgetChars(),
+          );
+          replay.omitted = turnToolExchanges.length - replay.replayed;
+          if (replay.omitted > 0) {
+            const toolSummary = buildRecentToolSummaryMessage(db, threadId);
+            if (toolSummary) {
+              pendingItems.push(toNativeAssistantMessage(toolSummary));
+            }
           }
           // Client-discovered schemas are declarations, not persisted tool
           // results. Re-link their trusted search calls/outputs after local
           // compaction so the provider and effective registry stay coherent.
           pendingItems.push(...clientDiscoveryReplayItems);
-          pendingItems.push({
-            type: 'message',
-            role: 'user',
-            content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку и восстановленные tool-результаты выше. Если нужные данные уже есть — используй их, не вызывай tools повторно.' }],
-          } as NativeInputItem);
+          pendingItems.push(...replay.items);
+          console.log('[executor] mid-turn compaction replay: exchanges=%d omitted=%d chars=%d',
+            replay.replayed, replay.omitted, replay.chars);
+          pendingItems.push(toNativeMessage(buildMidTurnCompactionNotice(replay.replayed, replay.omitted)));
           if (useServerResponseState) serverRecoveryItems = [...pendingItems];
+          // Compaction just reset agent_threads.total_tokens; the pre-compaction
+          // peak must not be written back at turn end, or the next turn would
+          // immediately compact the fresh summary again.
+          peakInputTokens = 0;
           // Compaction fires only when tool calls are pending — the turn stays
           // inside its tool chain after the context rebuild.
           continuesToolChain = true;
@@ -1575,7 +1617,7 @@ async function runNativeAgentLoop(
         if (
           turnDeadlineExceeded()
           || isTurnAborted()
-          || !isTurnIdentityCurrent(db, ctx, turnContext)
+          || !isTurnIdentityCurrent(db, ctx, turnContext, IDENTITY_POLL_MAX_STALE_MS)
         ) toolController.abort();
       }, 100);
       let result: unknown;
@@ -1702,6 +1744,14 @@ async function runNativeAgentLoop(
         output,
         ...(validated.callers[index] ? { caller: validated.callers[index] } : {}),
       });
+      if (!callRejections[index]) {
+        turnToolExchanges.push({
+          callId: toolCall.callId,
+          name: toolCall.name,
+          argumentsText: toolCall.argumentsText,
+          output,
+        });
+      }
     }
 
     const deterministicAnswer = hasProgrammaticBatch
@@ -2414,7 +2464,7 @@ async function executeReadSubagentDelegation(
     if (
       Date.now() >= turnContext.deadlineAt
       || isTurnAborted()
-      || !isTurnIdentityCurrent(db, ctx, turnContext)
+      || !isTurnIdentityCurrent(db, ctx, turnContext, IDENTITY_POLL_MAX_STALE_MS)
     ) controller.abort();
   }, 100);
   try {
@@ -2499,7 +2549,18 @@ async function executeToolCall(
     : policy === 'write' || policy === 'ui'
       ? getWriteToolAdmission()
       : null;
-  const release = admission ? await admission.acquire(guard.signal) : null;
+  let release: (() => void) | null = null;
+  if (admission) {
+    try {
+      release = await admission.acquire(guard.signal);
+    } catch (error) {
+      // Cancellation keeps propagating so the batch handler can classify it.
+      // A saturated queue is a per-call outcome: the tool never ran, and the
+      // model can retry or answer without it instead of the whole turn failing.
+      if (guard.signal?.aborted) throw error;
+      return { ok: false, retryable: true, error: 'Tool capacity is saturated; the call was not executed. Retry later or answer without it.' };
+    }
+  }
   try {
     if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
       return { ok: false, blocked: true, error: 'Turn identity changed or request was cancelled before dispatch' };
@@ -2508,9 +2569,30 @@ async function executeToolCall(
       db, requestId, goal, ctx, name, args, webSearchState, programmatic, localBatchState,
       guard,
     );
+  } catch (error) {
+    // Cancellation and the turn deadline keep propagating: the loop owns them.
+    // Any other throw is one tool's failure, and must reach the model as a
+    // result instead of failing every sibling call and the whole turn.
+    if (isTurnControlError(error, guard)) throw error;
+    console.error('[tool] %s threw %s: %s', name,
+      error instanceof Error ? error.name : typeof error,
+      error instanceof Error ? error.message.slice(0, 200) : '');
+    return {
+      ok: false,
+      internal_error: true,
+      error: 'Tool execution failed unexpectedly; no result is available. Answer without it or use a different tool.',
+    };
   } finally {
     release?.();
   }
+}
+
+function isTurnControlError(error: unknown, guard: ToolExecutionGuard): boolean {
+  if (guard.signal?.aborted || isTurnAborted()) return true;
+  if (!(error instanceof Error)) return false;
+  return error.name === 'AbortError'
+    || error.message === TURN_ABORTED_MESSAGE
+    || error.message === TURN_DEADLINE_MESSAGE;
 }
 
 async function executeToolCallUnadmitted(
@@ -2863,6 +2945,12 @@ async function executeToolCallUnadmitted(
     return result;
   }
 
+  // The loop dispatches the delegation container itself (it needs the model
+  // client and turn budget). Reaching here means a nested caller tried it.
+  if (isReadSubagentBatchTool(name)) {
+    return { ok: false, blocked: true, error: 'delegate_read_subagents is only available as a direct top-level call' };
+  }
+
   if (isEveScoutToolName(name)) {
     const result = await executeEveScoutTool(db, name as EveScoutToolName, args);
     console.log('[eve-scout] %s completed', name);
@@ -3031,6 +3119,79 @@ function buildResponseStateRecoveryContext(
   replayItems: NativeInputItem[],
 ): NativeInputItem[] {
   return replayItems.length > 0 ? [...replayItems] : buildSmartContext(db, threadId);
+}
+
+type TurnToolExchange = {
+  callId: string;
+  name: string;
+  argumentsText: string;
+  output: string;
+};
+
+/**
+ * Character budget for replaying this turn's tool outputs after mid-turn
+ * compaction: at most two full tool outputs, and never more than roughly a
+ * quarter of the auto-compact token limit (~3 chars per token), so the rebuilt
+ * context stays well below the limit that triggered compaction.
+ */
+function directlyDeclaredToolNames(tools: readonly NativeTool[]): ReadonlySet<string> {
+  return new Set(tools.flatMap((tool) => (
+    tool.type === 'function' && tool.defer_loading !== true ? [tool.name] : []
+  )));
+}
+
+function midTurnReplayBudgetChars(): number {
+  return Math.max(
+    0,
+    Math.min(config.openai.maxToolOutputChars * 2, Math.floor(autoCompactLimit() * 0.25) * 3),
+  );
+}
+
+/**
+ * Rebuild self-contained function_call/function_call_output pairs for this
+ * turn's executed tools, newest first within `budgetChars`, emitted in
+ * chronological order. Provider-owned fields (item ids, reasoning, program
+ * items, `caller`) are dropped: every replayed call is a plain direct call with
+ * its matching output in the same input. Oldest exchanges are dropped first.
+ */
+function buildTurnToolReplayItems(
+  exchanges: readonly TurnToolExchange[],
+  budgetChars: number,
+): { items: NativeInputItem[]; replayed: number; omitted: number; chars: number } {
+  const selected: TurnToolExchange[] = [];
+  let chars = 0;
+  for (let index = exchanges.length - 1; index >= 0; index -= 1) {
+    const exchange = exchanges[index]!;
+    const size = exchange.output.length + exchange.argumentsText.length + exchange.name.length;
+    if (chars + size > budgetChars) break;
+    chars += size;
+    selected.push(exchange);
+  }
+  selected.reverse();
+  const items: NativeInputItem[] = selected.flatMap((exchange) => [
+    {
+      type: 'function_call',
+      call_id: exchange.callId,
+      name: exchange.name,
+      arguments: exchange.argumentsText,
+    },
+    {
+      type: 'function_call_output',
+      call_id: exchange.callId,
+      output: exchange.output,
+    },
+  ] as NativeInputItem[]);
+  return { items, replayed: selected.length, omitted: exchanges.length - selected.length, chars };
+}
+
+function buildMidTurnCompactionNotice(replayed: number, omitted: number): string {
+  if (replayed === 0) {
+    return '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку выше. Результаты tools этого хода не сохранились в контексте — при необходимости вызови нужные tools снова.';
+  }
+  const omittedNote = omitted > 0
+    ? ` Самые ранние результаты (${omitted}) не поместились в бюджет — если они нужны, вызови соответствующие tools снова.`
+    : '';
+  return `[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку и восстановленные tool-результаты этого хода выше. Если нужные данные уже есть — используй их, не вызывай tools повторно.${omittedNote}`;
 }
 
 function buildRecentToolSummaryMessage(db: Db, threadId: string): string | null {
@@ -3253,6 +3414,11 @@ export function resolveTierReasoningEffort(
 }
 
 export const __test__ = {
+  buildRuntimeLiveSummary,
+  setToolAdmissionsForTest(read: ResponseAdmissionController | null, write: ResponseAdmissionController | null): void {
+    readToolAdmission = read;
+    writeToolAdmission = write;
+  },
   runNativeAgentLoop,
   runPreTurnCompactSafe,
   refreshMissingProfileWithinDeadline,
@@ -3262,6 +3428,9 @@ export const __test__ = {
   buildToolStateRecoveryContext,
   buildResponseStateRecoveryContext,
   buildRecentToolSummaryMessage,
+  buildTurnToolReplayItems,
+  directlyDeclaredToolNames,
+  buildMidTurnCompactionNotice,
   executeToolCall,
   deriveLiveContextNeeds,
   resolveSystemLocationContext,
@@ -3621,6 +3790,18 @@ function ensureThreadOwnership(db: Db, threadId: string, ctx: UserContext): void
  * A thread's assistant identity. A missing or unknown value reads as 'chat', so
  * every legacy thread keeps the workspace agent it has always had.
  */
+function buildRuntimeLiveSummary(
+  promptMode: PromptMode,
+  characterId: number | null,
+  liveSummary: string | null,
+  now = Date.now(),
+): string | null {
+  const radar = promptMode === 'perimeter' && characterId !== null
+    ? formatRadarSnapshot(characterId, now)
+    : null;
+  return [liveSummary, radar].filter((part): part is string => Boolean(part)).join('\n\n') || null;
+}
+
 function readThreadKind(db: Db, threadId: string): 'chat' | 'perimeter' {
   try {
     const row = db.prepare('SELECT kind FROM agent_threads WHERE thread_id = ?')

@@ -10,6 +10,7 @@ import {
 } from './user-profile-storage.js';
 import { getEveSsoMetadata, verifyEveAccessToken } from './sso-auth.js';
 import { fetchRetrying } from './http.js';
+import { createHash } from 'node:crypto';
 
 interface TokenResponse {
   access_token: string;
@@ -28,6 +29,47 @@ interface EveAccount {
 }
 
 const refreshInFlight = new Map<number, Promise<{ token: string; characterId: number } | null>>();
+
+/**
+ * Backoff for refresh tokens that EVE SSO rejected permanently (400
+ * invalid_grant / 401). Kept in memory, keyed by character_id and a SHA-256
+ * fingerprint of the refresh token the rejection applied to:
+ * - a re-login writes a new refresh_token, the fingerprint no longer matches,
+ *   so the backoff is ignored without any callback-side bookkeeping;
+ * - no schema change or extra write path in SSO callbacks;
+ * - a process restart costs at most one extra SSO call per dead token.
+ * Transient failures (network, 429, 5xx) never create an entry.
+ */
+const REFRESH_BACKOFF_BASE_MS = 5 * 60_000;
+const REFRESH_BACKOFF_MAX_MS = 6 * 60 * 60_000;
+const refreshBackoff = new Map<number, { tokenHash: string; failures: number; until: number }>();
+
+function refreshTokenFingerprint(refreshToken: string): string {
+  return createHash('sha256').update(refreshToken).digest('hex');
+}
+
+function activeRefreshBackoff(characterId: number, refreshToken: string, now = Date.now()): boolean {
+  const entry = refreshBackoff.get(characterId);
+  if (!entry) return false;
+  if (entry.tokenHash !== refreshTokenFingerprint(refreshToken)) {
+    refreshBackoff.delete(characterId);
+    return false;
+  }
+  return entry.until > now;
+}
+
+function recordRefreshRejection(characterId: number, refreshToken: string, now = Date.now()): number {
+  const tokenHash = refreshTokenFingerprint(refreshToken);
+  const previous = refreshBackoff.get(characterId);
+  const failures = previous && previous.tokenHash === tokenHash ? previous.failures + 1 : 1;
+  const delayMs = Math.min(REFRESH_BACKOFF_MAX_MS, REFRESH_BACKOFF_BASE_MS * 2 ** (failures - 1));
+  refreshBackoff.set(characterId, { tokenHash, failures, until: now + delayMs });
+  return delayMs;
+}
+
+export function resetRefreshBackoffForTests(): void {
+  refreshBackoff.clear();
+}
 
 /**
  * Get a valid access token for the linked character.
@@ -66,6 +108,12 @@ export async function getAccessToken(db: Db, ctx: UserContext): Promise<{ token:
 
   if (expiresAt.getTime() - now.getTime() > bufferMs) {
     return { token: accessToken, characterId: account.character_id };
+  }
+
+  // A refresh token SSO already rejected is not retried until the backoff
+  // expires or a re-login stores a different refresh token.
+  if (activeRefreshBackoff(account.character_id, refreshToken)) {
+    return null;
   }
 
   // Refresh the token
@@ -118,7 +166,7 @@ export function listLinkedCharacters(
   ctx: UserContext,
 ): Array<{ characterId: number; characterName: string; isActive: boolean }> {
   backfillLegacyOwnership(db, ctx);
-  const activeId = resolveActiveCharacterId(db, ctx);
+  const activeId = resolveActiveCharacterId(db, unpinned(ctx));
 
   if (ctx.userId) {
     const rows = db.prepare(`
@@ -226,7 +274,7 @@ export async function unlinkCharacter(db: Db, ctx: UserContext, characterId: num
     if (!deleted) return false;
 
     // If this was the active character, clear it
-    const active = resolveActiveCharacterId(db, ctx);
+    const active = resolveActiveCharacterId(db, unpinned(ctx));
     if (active === characterId) {
       if (ctx.chatId !== undefined) {
         db.prepare('UPDATE telegram_sessions SET active_character_id = NULL WHERE chat_id = ?').run(ctx.chatId);
@@ -250,6 +298,9 @@ export async function unlinkCharacter(db: Db, ctx: UserContext, characterId: num
 }
 
 function resolveActiveCharacterId(db: Db, ctx: UserContext): number | null {
+  if (ctx.characterId !== undefined) {
+    return resolvePinnedCharacterId(db, ctx, ctx.characterId);
+  }
   if (ctx.userId) {
     const userRow = db.prepare('SELECT active_character_id FROM users WHERE user_id = ?')
       .get(ctx.userId) as { active_character_id: number | null } | undefined;
@@ -292,6 +343,38 @@ function resolveActiveCharacterId(db: Db, ctx: UserContext): number | null {
   }
 
   return null;
+}
+
+/**
+ * A pinned character is honored only when this user (or, for a legacy
+ * chat-only context, this chat) owns it. Never mutates the active selection.
+ */
+function resolvePinnedCharacterId(db: Db, ctx: UserContext, characterId: number): number | null {
+  if (!Number.isSafeInteger(characterId) || characterId <= 0) return null;
+  if (ctx.userId) {
+    const ownsLink = db.prepare(
+      'SELECT 1 FROM eve_character_links WHERE user_id = ? AND character_id = ?',
+    ).get(ctx.userId, characterId);
+    const ownsAccount = db.prepare(
+      'SELECT 1 FROM eve_accounts WHERE user_id = ? AND character_id = ?',
+    ).get(ctx.userId, characterId);
+    return ownsLink || ownsAccount ? characterId : null;
+  }
+  if (ctx.chatId !== undefined) {
+    const linked = db.prepare(
+      'SELECT 1 FROM eve_character_links WHERE chat_id = ? AND character_id = ?',
+    ).get(ctx.chatId, characterId);
+    return linked ? characterId : null;
+  }
+  return null;
+}
+
+/** The user's real active selection, ignoring any per-call character pin. */
+function unpinned(ctx: UserContext): UserContext {
+  if (ctx.characterId === undefined) return ctx;
+  const rest = { ...ctx };
+  delete rest.characterId;
+  return rest;
 }
 
 function backfillLegacyOwnership(db: Db, ctx: UserContext): void {
@@ -355,12 +438,39 @@ async function refreshAccessToken(
   }
 
   if (!res.ok) {
+    if (res.status === 400 || res.status === 401) {
+      const delayMs = recordRefreshRejection(account.character_id, refreshToken);
+      console.error(
+        '[sso] Token refresh rejected: HTTP %d for character=%d; pausing refresh for %d min or until re-login',
+        res.status,
+        account.character_id,
+        Math.round(delayMs / 60_000),
+      );
+      return null;
+    }
     console.error('[sso] Token refresh failed: HTTP %d for character=%d', res.status, account.character_id);
     return null;
   }
 
-  const tokens = (await res.json()) as TokenResponse;
-  const payload = await verifyEveAccessToken(tokens.access_token);
+  refreshBackoff.delete(account.character_id);
+
+  // getAccessToken's contract is "token or null": a malformed body or a JWT
+  // that fails verification must not escape as an exception. Only the error
+  // message is logged, never token material.
+  let tokens: TokenResponse;
+  let payload: Awaited<ReturnType<typeof verifyEveAccessToken>>;
+  try {
+    tokens = (await res.json()) as TokenResponse;
+    if (!tokens || typeof tokens.access_token !== 'string' || typeof tokens.refresh_token !== 'string') {
+      console.error('[sso] Token refresh returned an invalid payload for character=%d', account.character_id);
+      return null;
+    }
+    payload = await verifyEveAccessToken(tokens.access_token);
+  } catch (error) {
+    console.error('[sso] Token refresh response rejected for character=%d: %s',
+      account.character_id, error instanceof Error ? error.name : 'unknown error');
+    return null;
+  }
 
   // Ensure the refreshed token is still for the same character before storing
   // it under this row — never serve character B's token from A's account.
