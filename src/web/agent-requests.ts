@@ -417,12 +417,19 @@ export class WebAgentRequestCoordinator {
     }
 
     const heartbeat = setInterval(() => {
-      this.db.prepare(`
-        UPDATE web_agent_requests
-        SET heartbeat_at = datetime('now'), lease_expires_at = datetime('now', '+45 seconds'),
-            updated_at = datetime('now')
-        WHERE request_id = ? AND status = 'running'
-      `).run(row.request_id);
+      // A synchronous SQLite error (SQLITE_BUSY, closed handle during
+      // shutdown) thrown from a timer is an uncaughtException that kills the
+      // process. A missed beat only shortens the lease; the next one renews it.
+      try {
+        this.db.prepare(`
+          UPDATE web_agent_requests
+          SET heartbeat_at = datetime('now'), lease_expires_at = datetime('now', '+45 seconds'),
+              updated_at = datetime('now')
+          WHERE request_id = ? AND status = 'running'
+        `).run(row.request_id);
+      } catch (error) {
+        console.error('[web-agent] lease heartbeat failed: %s', error instanceof Error ? error.name : 'unknown');
+      }
     }, 15_000);
     heartbeat.unref?.();
     const deadline = setTimeout(() => controller.abort(), config.web.agentDeadlineMs);

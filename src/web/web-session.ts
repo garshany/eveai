@@ -109,7 +109,7 @@ export function createWebSession(db: Db, ipKey = buildWebClientIpKey('unknown'))
 }
 
 export function readWebSession(db: Db, request: FastifyRequest): WebSession | null {
-  const rawToken = request.cookies[WEB_SESSION_COOKIE];
+  const rawToken = request.cookies?.[WEB_SESSION_COOKIE];
   if (!rawToken || rawToken.length > 128) return null;
   const row = db.prepare(`
     SELECT user_id, chat_id, csrf_hash
@@ -308,6 +308,11 @@ async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
         db.prepare('DELETE FROM heartbeat_config WHERE user_id = ?').run(userId);
         db.prepare('DELETE FROM user_model_settings WHERE user_id = ?').run(userId);
         db.prepare('DELETE FROM intel_notes WHERE user_id = ?').run(userId);
+        // Watchlist/alert rows drive background ESI history sync and alert
+        // evaluation; left behind they would keep polling for a gone guest.
+        db.prepare('DELETE FROM market_alert_events WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM market_price_alerts WHERE user_id = ?').run(userId);
+        db.prepare('DELETE FROM market_watchlist WHERE user_id = ?').run(userId);
         db.prepare('DELETE FROM auth_requests WHERE user_id = ?').run(userId);
         db.prepare('DELETE FROM eve_character_links WHERE user_id = ?').run(userId);
         db.prepare('DELETE FROM eve_accounts WHERE user_id = ?').run(userId);

@@ -29,7 +29,7 @@ import { MapCanvas } from './MapCanvas';
 import { PerimeterChat } from './PerimeterChat';
 import { SystemInspector } from './SystemInspector';
 import { bandLabelKey, freshnessKey, layerLabelKey } from './labels';
-import { buildLayout, interpolateLayouts, type Layout, type LayoutMode } from './layout';
+import { buildLayout, interpolateLayouts, layoutsEqual, type Layout, type LayoutMode } from './layout';
 import { UniverseCanvas } from './UniverseCanvas';
 import type { KillFlash } from './renderer';
 import { hiddenHopCount } from './route-view';
@@ -117,10 +117,16 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   }, [status, radius, liveEnabled, live.bubble]);
 
   // --- Морф между раскладками ----------------------------------------------
-  const targetLayout = useMemo<Layout>(
-    () => (bubble ? buildLayout(bubble, mode) : new Map()),
-    [bubble, mode],
-  );
+  // Every live tick delivers a new bubble object. Keep the previous target when
+  // the geometry is identical so the morph effect below only runs when the
+  // layout actually changes, not on every intel refresh.
+  const stableTargetRef = useRef<Layout>(new Map());
+  const targetLayout = useMemo<Layout>(() => {
+    const next: Layout = bubble ? buildLayout(bubble, mode) : new Map();
+    if (layoutsEqual(next, stableTargetRef.current)) return stableTargetRef.current;
+    stableTargetRef.current = next;
+    return next;
+  }, [bubble, mode]);
   const [layout, setLayout] = useState<Layout>(new Map());
 
   /**
@@ -196,6 +202,12 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
     const from = layoutRef.current;
     // Первый кадр не анимируется: карта должна появиться сразу.
     if (from.size === 0) {
+      setLayout(targetLayout);
+      return;
+    }
+    // Already there: nothing to animate.
+    if (layoutsEqual(from, targetLayout)) {
+      morphRef.current = null;
       setLayout(targetLayout);
       return;
     }

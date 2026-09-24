@@ -220,25 +220,41 @@ export default function App() {
   }, []);
 
   const observedRequestId = activeRequest?.requestId ?? null;
-  const observedRequestStatus = activeRequest?.status ?? null;
-  const observedRetryAfterMs = activeRequest?.retryAfterMs ?? 1_000;
+  // A boolean, not the status: queued -> running must not tear down and reopen
+  // the stream (and restart polling) mid-request.
+  const observedRequestActive = activeRequest?.status === 'queued' || activeRequest?.status === 'running';
+  const observedRetryAfterRef = useRef(1_000);
+  observedRetryAfterRef.current = activeRequest?.retryAfterMs ?? 1_000;
 
   useEffect(() => {
-    if (!observedRequestId || (observedRequestStatus !== 'queued' && observedRequestStatus !== 'running')) return;
+    if (!observedRequestId || !observedRequestActive) return;
     let cancelled = false;
-    const source = typeof EventSource === 'undefined'
-      ? null
-      : new EventSource(`/api/web/chat/requests/${encodeURIComponent(observedRequestId)}/events`);
+    let timer: number | null = null;
     const applySnapshot = (request: WebAgentRequest) => {
       if (!cancelled) setActiveRequest((current) => mergeRequestSnapshot(current, request));
     };
+    // Polling is only the fallback: the SSE stream already pushes every
+    // snapshot, so running both doubled the server load for each request.
+    const startPolling = () => {
+      if (cancelled || timer !== null) return;
+      timer = window.setInterval(() => {
+        void webApi.getAgentRequest(observedRequestId)
+          .then(({ request }) => applySnapshot(request))
+          .catch((reason: unknown) => {
+            if (!cancelled) setError(reason instanceof Error ? reason.message : 'Не удалось проверить состояние запроса.');
+          });
+      }, Math.max(500, observedRetryAfterRef.current));
+    };
+    const source = typeof EventSource === 'undefined'
+      ? null
+      : new EventSource(`/api/web/chat/requests/${encodeURIComponent(observedRequestId)}/events`);
     source?.addEventListener('request', (event) => {
       if (cancelled || !(event instanceof MessageEvent)) return;
       try {
         const payload = JSON.parse(event.data) as { request?: WebAgentRequest };
         if (payload.request?.requestId === observedRequestId) applySnapshot(payload.request);
       } catch {
-        // Polling below remains authoritative when an SSE frame is malformed.
+        // A malformed frame is skipped; the next snapshot carries full state.
       }
     });
     source?.addEventListener('delta', (event) => {
@@ -249,23 +265,20 @@ export default function App() {
           setActiveRequest((current) => mergeStreamDelta(current, frame));
         }
       } catch {
-        // Polling below remains authoritative when an SSE frame is malformed.
+        // A malformed frame is skipped; the next snapshot carries full state.
       }
     });
-    source?.addEventListener('error', () => source.close());
-    const timer = window.setInterval(() => {
-      void webApi.getAgentRequest(observedRequestId)
-        .then(({ request }) => applySnapshot(request))
-        .catch((reason: unknown) => {
-          if (!cancelled) setError(reason instanceof Error ? reason.message : 'Не удалось проверить состояние запроса.');
-        });
-    }, Math.max(500, observedRetryAfterMs));
+    source?.addEventListener('error', () => {
+      source.close();
+      startPolling();
+    });
+    if (!source) startPolling();
     return () => {
       cancelled = true;
       source?.close();
-      window.clearInterval(timer);
+      if (timer !== null) window.clearInterval(timer);
     };
-  }, [observedRequestId, observedRequestStatus, observedRetryAfterMs]);
+  }, [observedRequestId, observedRequestActive]);
 
   useEffect(() => {
     if (!activeRequest || activeRequest.status === 'queued' || activeRequest.status === 'running') return;

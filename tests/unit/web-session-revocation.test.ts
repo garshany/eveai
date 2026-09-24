@@ -218,4 +218,34 @@ describe('browser session revocation', () => {
     expect(db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(session.userId)).toBeUndefined();
     expect(getLinkedCharacter(db, { userId: session.userId, chatId: session.chatId })).toBeNull();
   });
+  it('drops an expired guest market watchlist and alerts so background workers stop polling them', async () => {
+    const userId = 11;
+    const otherUserId = 12;
+    const chatId = -2_000_000_011;
+    db.prepare("INSERT INTO users (user_id, display_name) VALUES (?, 'Guest')").run(userId);
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, 'web')").run(chatId);
+    db.prepare(`
+      INSERT INTO web_sessions (session_hash, csrf_hash, user_id, chat_id, expires_at)
+      VALUES ('h1:guest-session', 'h1:guest-csrf', ?, ?, datetime('now', '-1 second'))
+    `).run(userId, chatId);
+    for (const owner of [userId, otherUserId]) {
+      db.prepare('INSERT INTO market_watchlist (user_id, type_id, region_id) VALUES (?, 34, 10000002)').run(owner);
+      const alert = db.prepare(`
+        INSERT INTO market_price_alerts (user_id, type_id, region_id, side, comparator, threshold_price)
+        VALUES (?, 34, 10000002, 'sell', 'below', 5)
+      `).run(owner);
+      db.prepare(`
+        INSERT INTO market_alert_events (alert_id, user_id, type_id, price, threshold)
+        VALUES (?, ?, 34, 4, 5)
+      `).run(alert.lastInsertRowid, owner);
+    }
+
+    await cleanExpiredWebSessions(db, { force: true });
+
+    expect(db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(userId)).toBeUndefined();
+    for (const table of ['market_watchlist', 'market_price_alerts', 'market_alert_events']) {
+      expect(db.prepare(`SELECT 1 FROM ${table} WHERE user_id = ?`).get(userId)).toBeUndefined();
+      expect(db.prepare(`SELECT 1 FROM ${table} WHERE user_id = ?`).get(otherUserId)).toBeDefined();
+    }
+  });
 });

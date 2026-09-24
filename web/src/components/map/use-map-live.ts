@@ -161,12 +161,30 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
       setState((previous) => ({ ...previous, status: 'offline' }));
     });
 
+    // Reconnect on our own schedule rather than the browser's few-second
+    // default. Idempotent per stream: a fatal warning and a later error event
+    // must not stack two timers.
+    const scheduleRetry = (): void => {
+      if (closed || retryRef.current.timer !== null) return;
+      const attempts = retryRef.current.attempts + 1;
+      retryRef.current.attempts = attempts;
+      const delay = Math.min(MAX_RETRY_MS, BASE_RETRY_MS * 2 ** (attempts - 1));
+      retryRef.current.timer = window.setTimeout(() => {
+        retryRef.current.timer = null;
+        setManualNonce((v) => v + 1);
+      }, delay);
+    };
+
     on<{ message: string; fatal?: boolean }>('warning', (payload) => {
       if (payload.fatal) {
         fatal = true;
         // Closing here is the only thing that actually stops the browser from
         // retrying; readyState after a server EOF is CONNECTING, not CLOSED.
+        // A closed EventSource never fires onerror, so the backoff retry has
+        // to be scheduled here or the map never reconnects (e.g. after a
+        // deploy stops every live session).
         source.close();
+        scheduleRetry();
       }
       setState((previous) => ({
         ...previous,
@@ -182,10 +200,7 @@ export function useMapLive(enabled: boolean, radius: number | null): MapLiveStat
       if (fatal || source.readyState === EventSource.CLOSED) {
         source.close();
         setState((previous) => ({ ...previous, status: 'stopped' }));
-        const attempts = retryRef.current.attempts + 1;
-        retryRef.current.attempts = attempts;
-        const delay = Math.min(MAX_RETRY_MS, BASE_RETRY_MS * 2 ** (attempts - 1));
-        retryRef.current.timer = window.setTimeout(() => setManualNonce((v) => v + 1), delay);
+        scheduleRetry();
       } else {
         setState((previous) => ({ ...previous, status: 'connecting' }));
       }

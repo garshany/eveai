@@ -331,29 +331,52 @@ export function registerHandlers(bot: Bot<Context>, db: Db): void {
     const requestToken = randomUUID();
     rememberInFlightRequest(chatId, threadId, text, requestToken, Date.now(), userCtx.userId);
 
-    // Send EVE-flavored "thinking" placeholder. Guarded: a failed reply must
-    // not leak the in-flight entry, or the chat wedges until restart.
-    const thinkingMsg = await ctx.reply(pickThinkingPhrase()).catch(() => null);
+    // Run the turn detached. grammY's built-in long polling awaits each
+    // update's middleware before fetching the next batch, so awaiting a
+    // minutes-long agent turn here would block every other Telegram user (and
+    // their /clear) behind it. The in-flight entry above is what serialises
+    // this actor and feeds the global active-request ceiling; it is cleared in
+    // the detached task's finally, never by this handler returning.
+    void runTelegramTurn(db, ctx, chatId, threadId, userCtx, text, requestToken);
+  });
+}
 
+async function runTelegramTurn(
+  db: Db,
+  ctx: Context,
+  chatId: number,
+  threadId: string,
+  userCtx: UserContext,
+  text: string,
+  requestToken: string,
+): Promise<void> {
+  // Guarded: a failed reply must not leak the in-flight entry, or the chat
+  // wedges until restart.
+  let thinkingMsg: { message_id: number } | null = null;
+  try {
+    // Send EVE-flavored "thinking" placeholder.
+    thinkingMsg = await ctx.reply(pickThinkingPhrase()).catch(() => null);
+    const stopTyping = startTyping(ctx);
     try {
-      const stopTyping = startTyping(ctx);
-      try {
-        log.info('message len=%d', text.length);
-        const cleaned = await runAgentTurn(db, threadId, userCtx, text);
-        // Delete thinking placeholder, then send real response
-        if (thinkingMsg) await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
-        await replyChunks(ctx, cleaned);
-      } finally {
-        stopTyping();
-      }
-    } catch (err) {
-      log.error('agent error: %s', err instanceof Error ? err.message : String(err));
+      log.info('message len=%d', text.length);
+      const cleaned = await runAgentTurn(db, threadId, userCtx, text);
+      // Delete thinking placeholder, then send real response
+      if (thinkingMsg) await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
+      await replyChunks(ctx, cleaned);
+    } finally {
+      stopTyping();
+    }
+  } catch (err) {
+    log.error('agent error: %s', err instanceof Error ? err.message : String(err));
+    try {
       if (thinkingMsg) await ctx.api.deleteMessage(chatId, thinkingMsg.message_id).catch(() => {});
       await ctx.reply(normalizeAgentRuntimeError(err)).catch(() => {});
-    } finally {
-      clearInFlightRequest(chatId, requestToken);
+    } catch {
+      // Error reporting must never escape the detached task.
     }
-  });
+  } finally {
+    clearInFlightRequest(chatId, requestToken);
+  }
 }
 
 export { isDuplicateInFlightRequest, rememberInFlightRequest, clearInFlightRequest } from '../chat/shared.js';

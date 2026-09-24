@@ -102,6 +102,45 @@ describe('durable web agent request coordinator', () => {
     }
   });
 
+  it('survives a synchronous SQLite failure in the lease heartbeat timer', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      let finishTurn: (value: string) => void = () => {};
+      const coordinator = new WebAgentRequestCoordinator(db, () => new Promise<string>((resolve) => {
+        finishTurn = resolve;
+      }));
+      coordinator.start();
+      const accepted = coordinator.enqueue(input('heartbeat_throw_key1'));
+      expect(accepted.ok).toBe(true);
+      if (!accepted.ok) return;
+      for (let i = 0; i < 50 && coordinator.readOwned(owner(), accepted.request.requestId)?.status !== 'running'; i += 1) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(coordinator.readOwned(owner(), accepted.request.requestId)?.status).toBe('running');
+
+      const realPrepare = db.prepare.bind(db);
+      const prepareSpy = vi.spyOn(db, 'prepare').mockImplementation(((sql: string) => {
+        if (sql.includes('SET heartbeat_at')) throw new Error('SQLITE_BUSY: database is locked');
+        return realPrepare(sql);
+      }) as typeof db.prepare);
+      // Before the fix the throw escaped the interval callback.
+      await vi.advanceTimersByTimeAsync(15_100);
+      prepareSpy.mockRestore();
+      expect(errorSpy).toHaveBeenCalledWith('[web-agent] lease heartbeat failed: %s', 'Error');
+
+      finishTurn('done');
+      for (let i = 0; i < 50 && coordinator.readOwned(owner(), accepted.request.requestId)?.status === 'running'; i += 1) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(coordinator.readOwned(owner(), accepted.request.requestId)?.status).toBe('completed');
+      await coordinator.close();
+    } finally {
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('records a root turn deadline as failed rather than completed', async () => {
     const coordinator = new WebAgentRequestCoordinator(db, async () => {
       throw new Error(TURN_DEADLINE_MESSAGE);

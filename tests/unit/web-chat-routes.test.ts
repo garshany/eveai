@@ -756,3 +756,82 @@ describe('web chat routes', () => {
     expect(activate.statusCode).toBe(404);
   });
 });
+
+describe('web chat request event streams', () => {
+  async function startPendingRequest(): Promise<{ session: BrowserSession; requestId: string; finish: () => void }> {
+    let finish: () => void = () => {};
+    runAgentTurnMock.mockImplementation(() => new Promise<string>((resolve) => {
+      finish = () => resolve('готово');
+    }));
+    const session = await createBrowserSession();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/web/conversations',
+      headers: mutationHeaders(session),
+    });
+    const threadId = (created.json() as { threadId: string }).threadId;
+    const answer = await app.inject({
+      method: 'POST',
+      url: '/api/web/chat',
+      headers: mutationHeaders(session),
+      payload: { message: 'Долгий вопрос', threadId },
+    });
+    expect(answer.statusCode).toBe(202);
+    const requestId = (answer.json() as { request: { requestId: string } }).request.requestId;
+    await vi.waitFor(() => expect(runAgentTurnMock).toHaveBeenCalled());
+    return { session, requestId, finish: () => finish() };
+  }
+
+  it('caps concurrent event streams per browser lane and frees slots when they close', async () => {
+    const { session, requestId, finish } = await startPendingRequest();
+    const url = `/api/web/chat/requests/${requestId}/events`;
+    const open = Array.from({ length: 4 }, () => app.inject({ method: 'GET', url, headers: { cookie: session.cookie } }));
+    // Let the four streams register before probing the cap.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const refused = await app.inject({ method: 'GET', url, headers: { cookie: session.cookie } });
+    expect(refused.statusCode).toBe(429);
+
+    finish();
+    const streams = await Promise.all(open);
+    expect(streams.every((stream) => stream.statusCode === 200)).toBe(true);
+
+    const again = await app.inject({ method: 'GET', url, headers: { cookie: session.cookie } });
+    expect(again.statusCode).toBe(200);
+    expect(again.body).toContain('"status":"completed"');
+  });
+
+  it('closes the stream instead of crashing when a timer snapshot read throws', async () => {
+    const localApp = Fastify({ bodyLimit: 64 * 1024 });
+    await localApp.register(fastifyCookie);
+    const previousApp = app;
+    app = localApp;
+    const coordinator = registerWebChatRoutes(localApp, db);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { session, requestId, finish } = await startPendingRequest();
+      const realRead = coordinator.readOwned.bind(coordinator);
+      let reads = 0;
+      const readSpy = vi.spyOn(coordinator, 'readOwned').mockImplementation((owner, id) => {
+        reads += 1;
+        // First two reads: the route's ownership check and the initial frame.
+        if (reads > 2) throw new Error('SQLITE_BUSY: database is locked');
+        return realRead(owner, id);
+      });
+      const stream = await localApp.inject({
+        method: 'GET',
+        url: `/api/web/chat/requests/${requestId}/events`,
+        headers: { cookie: session.cookie },
+      });
+      readSpy.mockRestore();
+      expect(stream.statusCode).toBe(200);
+      expect(stream.body).toContain('event: request');
+      expect(errorSpy).toHaveBeenCalledWith('[web-chat] events stream snapshot failed: %s', 'Error');
+      finish();
+    } finally {
+      errorSpy.mockRestore();
+      app = previousApp;
+      await localApp.close();
+    }
+  });
+});

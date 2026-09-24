@@ -64,8 +64,10 @@ export function createBot(db: Db): Bot<Context> {
   // longer drop them by default), but a backlog from a long outage must not be
   // replayed — answering day-old questions confuses, and replaying stale
   // destructive commands (/clear) is worse. Applies ONLY to updates sent
-  // before this process started: sequential long polling can delay a LIVE
-  // message behind a long turn, and that must never be skipped. 0 disables.
+  // before this process started: a LIVE message can still queue behind a slow
+  // update batch, and that must never be skipped. Agent turns run detached
+  // from the update handler (see handlers.ts), so polling does not wait on
+  // them. 0 disables.
   // Floor to whole seconds: Telegram dates are integer Unix seconds, so a
   // fractional boot time would rank a keyboard sent during the startup second
   // as older than the process and reject taps on it.
@@ -130,9 +132,9 @@ export function createBot(db: Db): Bot<Context> {
 }
 /**
  * True when a redelivered PRE-BOOT update is older than the configured window.
- * Updates sent after the process started are never stale — long polling is
- * sequential, so a live message can legitimately wait behind a long agent turn
- * longer than the window. maxAgeMinutes 0 disables the check; updates without
+ * Updates sent after the process started are never stale — long polling
+ * handles updates one at a time, so a live message can legitimately wait behind
+ * a slow update longer than the window. maxAgeMinutes 0 disables the check; updates without
  * a date are never stale (callback queries carry no message date).
  */
 export function isStaleTelegramUpdate(

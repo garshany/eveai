@@ -525,10 +525,12 @@ export function registerMapRoutes(
     const stream = openStream(reply, request);
     // One advisor state per character, not per tab: three windows must not
     // persist the same warning into the same thread three times.
-    const state = getSharedAdvisorState(linked.characterId);
+    // The thread lookup runs first: it can throw, and the advisor state below
+    // takes a reference that must be released on every exit path.
     const threadId = getOrCreatePerimeterThread(
       db, session.chatId, session.userId, linked.characterId,
     );
+    const state = getSharedAdvisorState(linked.characterId);
     const locale = readLocale(request);
 
     let currentSystemId: number | null = null;
@@ -607,6 +609,9 @@ export function registerMapRoutes(
 
     if (!attached.ok) {
       stream.abortBeforeStart();
+      // The shared advisor reference was taken above; without this release a
+      // refused attach pins the state as "in use" forever.
+      releaseSharedAdvisorState(linked.characterId);
       return reply
         .status(attached.statusCode)
         .header('Retry-After', String(attached.retryAfterSeconds))

@@ -61,6 +61,10 @@ type CharacterParams = { characterId: string };
 type RequestParams = { requestId: string };
 type ActiveRequestQuery = { threadId?: string };
 const MAX_WEB_CONVERSATIONS = 40;
+// Each /events stream holds a socket and a 1s SQLite poll. A handful covers
+// several tabs; anything beyond is a leak or abuse and is refused.
+const MAX_EVENT_STREAMS_PER_LANE = 4;
+const openEventStreams = new Map<number, number>();
 
 /**
  * Returns the request coordinator so other lanes (the Perimeter map) can enqueue
@@ -360,6 +364,11 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): WebAgentReq
     const owner = { userId: session.userId, chatId: session.chatId };
     const initial = agentRequests.readOwned(owner, request.params.requestId);
     if (!initial) return reply.status(404).send({ error: 'Запрос не найден.' });
+    const laneStreams = openEventStreams.get(session.chatId) ?? 0;
+    if (laneStreams >= MAX_EVENT_STREAMS_PER_LANE) {
+      return reply.status(429).header('Retry-After', '5').send({ error: 'Слишком много открытых потоков.' });
+    }
+    openEventStreams.set(session.chatId, laneStreams + 1);
 
     reply.hijack();
     reply.raw.writeHead(200, {
@@ -378,9 +387,23 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): WebAgentReq
       closed = true;
       clearInterval(snapshotTimer);
       clearInterval(heartbeatTimer);
+      const remaining = (openEventStreams.get(session.chatId) ?? 1) - 1;
+      if (remaining > 0) openEventStreams.set(session.chatId, remaining);
+      else openEventStreams.delete(session.chatId);
       if (!reply.raw.writableEnded) reply.raw.end();
     };
+    // Runs from a timer: a synchronous SQLite error escaping here would be an
+    // uncaughtException and take the whole process down. End this stream
+    // instead; the client falls back to polling.
     const sendSnapshot = () => {
+      try {
+        writeSnapshot();
+      } catch (error) {
+        console.error('[web-chat] events stream snapshot failed: %s', error instanceof Error ? error.name : 'unknown');
+        close();
+      }
+    };
+    const writeSnapshot = () => {
       const snapshot = agentRequests.readOwned(owner, request.params.requestId);
       if (!snapshot) return close();
       if (snapshot.progressSequence !== lastSequence || lastSequence < 0) {
