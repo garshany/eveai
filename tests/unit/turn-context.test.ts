@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
 import {
   buildAgentTurnContext,
@@ -39,5 +39,45 @@ describe('immutable agent turn context', () => {
     ).run(9001, 7);
     expect(isTurnIdentityCurrent(db, ctx, identity)).toBe(false);
     db.close();
+  });
+
+  it('lets abort polls reuse a recent positive check but never a stale mismatch', () => {
+    vi.useFakeTimers();
+    try {
+      const db = new Database(':memory:');
+      db.exec(SCHEMA_SQL);
+      db.prepare('INSERT INTO users (user_id, display_name, active_character_id) VALUES (?, ?, ?)')
+        .run(7, 'Pilot', 9001);
+      db.prepare('INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id) VALUES (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)').run(
+        9001, 'Alpha', 'x', 'x', '2099-01-01 00:00:00', '[]', 7,
+        9002, 'Bravo', 'x', 'x', '2099-01-01 00:00:00', '[]', 7,
+      );
+      db.prepare('INSERT INTO telegram_sessions (chat_id, active_character_id) VALUES (?, ?)').run(70, 9001);
+      db.prepare('INSERT INTO eve_character_links (chat_id, user_id, character_id) VALUES (?, ?, ?), (?, ?, ?)').run(
+        70, 7, 9001,
+        70, 7, 9002,
+      );
+      const ctx = { userId: 7, chatId: 70 };
+      const identity = captureTurnIdentity(db, ctx);
+      expect(isTurnIdentityCurrent(db, ctx, identity, 1_000)).toBe(true);
+
+      db.prepare('UPDATE users SET active_character_id = 9002, active_character_version = active_character_version + 1 WHERE user_id = 7').run();
+      // Within the staleness window the poll may reuse the positive result...
+      vi.advanceTimersByTime(500);
+      expect(isTurnIdentityCurrent(db, ctx, identity, 1_000)).toBe(true);
+      // ...but a fresh (default) check always sees the switch,
+      expect(isTurnIdentityCurrent(db, ctx, identity)).toBe(false);
+      // and once a mismatch is seen it sticks for every caller.
+      expect(isTurnIdentityCurrent(db, ctx, identity, 1_000)).toBe(false);
+
+      const second = captureTurnIdentity(db, ctx);
+      expect(isTurnIdentityCurrent(db, ctx, second, 1_000)).toBe(true);
+      db.prepare('UPDATE users SET active_character_id = 9001, active_character_version = active_character_version + 1 WHERE user_id = 7').run();
+      vi.advanceTimersByTime(1_001);
+      expect(isTurnIdentityCurrent(db, ctx, second, 1_000)).toBe(false);
+      db.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

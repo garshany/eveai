@@ -45,9 +45,21 @@ export function rollupUsageEvents(
     `).all(DAY_MS, todayStart) as Array<{ bucket: number }>;
 
     let rolledEvents = 0;
+    let rolledDays = 0;
     for (const { bucket } of buckets) {
       const dayStart = bucket * DAY_MS;
       const day = utcDayString(dayStart);
+      const counted = db.prepare(
+        'SELECT COUNT(*) AS n FROM usage_events WHERE created_at_ms >= ? AND created_at_ms < ?',
+      ).get(dayStart, dayStart + DAY_MS) as { n: number };
+      const stored = db.prepare(
+        'SELECT COALESCE(SUM(events), 0) AS n FROM usage_daily WHERE day = ?',
+      ).get(day) as { n: number };
+      // Pruning only ever removes events and late events only ever add them,
+      // so fewer raw events than already summarized means the day lost rows
+      // to retention (e.g. a legacy unaligned prune). Never rebuild a
+      // summary from a partially pruned day — that would shrink history.
+      if (counted.n < stored.n) continue;
       db.prepare('DELETE FROM usage_daily WHERE day = ?').run(day);
       db.prepare(`
         INSERT INTO usage_daily (
@@ -63,15 +75,15 @@ export function rollupUsageEvents(
         WHERE created_at_ms >= ? AND created_at_ms < ?
         GROUP BY channel, model, user_id
       `).run(day, dayStart, dayStart + DAY_MS);
-      const counted = db.prepare(
-        'SELECT COUNT(*) AS n FROM usage_events WHERE created_at_ms >= ? AND created_at_ms < ?',
-      ).get(dayStart, dayStart + DAY_MS) as { n: number };
       rolledEvents += counted.n;
+      rolledDays += 1;
     }
 
-    const pruneBeforeMs = nowMs - retentionDays * DAY_MS;
+    // Prune whole UTC days only: a cutoff inside a day would leave that day
+    // partially pruned, and its summary must never be rebuilt from leftovers.
+    const pruneBeforeMs = todayStart - retentionDays * DAY_MS;
     const pruned = db.prepare('DELETE FROM usage_events WHERE created_at_ms < ?').run(pruneBeforeMs);
-    return { rolledDays: buckets.length, rolledEvents, prunedEvents: Number(pruned.changes) };
+    return { rolledDays, rolledEvents, prunedEvents: Number(pruned.changes) };
   });
   return tx();
 }

@@ -29,6 +29,10 @@ export const MAX_TOTAL_SUBAGENT_MODEL_CALLS = 24;
 // two-phase workflow.
 export const MAX_TOTAL_TURN_READ_LEAVES = 96;
 const MAX_TASK_SUMMARY_CHARS = 1_200;
+// Output-token cap per worker call. Reasoning tokens count against it, so it
+// must leave room for reasoning plus a tool-call envelope or short summary;
+// the summary itself is still clipped to MAX_TASK_SUMMARY_CHARS.
+const SUBAGENT_MAX_OUTPUT_TOKENS = 4_000;
 const DEFAULT_MAX_AGGREGATE_CHARS = 60_000;
 
 export type ReadSubagentLimits = {
@@ -212,20 +216,27 @@ async function runReadSubagent(
       return partialOrFailed(task.id, evidence, gaps, iteration, 'Shared subagent model-call budget exceeded');
     }
     budget.modelCalls += 1;
-    const response = await responseFactory({
-      instructions: READ_SUBAGENT_SYSTEM_PROMPT,
-      items: pendingItems,
-      tools,
-      parallelToolCalls: true,
-      truncation: 'auto',
-      model: options.model,
-      reasoningEffort: options.reasoningEffort,
-      safetyIdentifier: options.safetyIdentifier,
-      maxOutputTokens: 1_200,
-      preserveReasoning: false,
-      streamToActivity: false,
-      signal: options.signal,
-    });
+    let response: Awaited<ReturnType<typeof createNativeResponse>>;
+    try {
+      response = await responseFactory({
+        instructions: READ_SUBAGENT_SYSTEM_PROMPT,
+        items: pendingItems,
+        tools,
+        parallelToolCalls: true,
+        truncation: 'auto',
+        model: options.model,
+        reasoningEffort: subagentReasoningEffort(options.reasoningEffort),
+        safetyIdentifier: options.safetyIdentifier,
+        maxOutputTokens: SUBAGENT_MAX_OUTPUT_TOKENS,
+        preserveReasoning: false,
+        streamToActivity: false,
+        signal: options.signal,
+      });
+    } catch {
+      // Keep evidence gathered on earlier iterations instead of discarding it.
+      const reason = options.signal?.aborted ? 'Subagent aborted' : 'Subagent model call failed';
+      return partialOrFailed(task.id, evidence, gaps, iteration + 1, reason);
+    }
     if (response.usage) options.recordUsage?.(response.usage);
     if (response.error || response.status !== 'completed') {
       return partialOrFailed(task.id, evidence, gaps, iteration + 1, 'Subagent model response failed');
@@ -297,6 +308,15 @@ async function runReadSubagent(
   }
 
   return partialOrFailed(task.id, evidence, gaps, limits.maxWorkerIterations, 'Subagent iteration budget exceeded');
+}
+
+/**
+ * Workers are bounded evidence gatherers: cap their effort at 'low' so
+ * reasoning cannot eat the output-token cap (status incomplete → billed
+ * failure). An explicit 'none' is respected.
+ */
+function subagentReasoningEffort(effort: ReasoningEffort | undefined): ReasoningEffort {
+  return effort === 'none' ? 'none' : 'low';
 }
 
 function partialOrFailed(

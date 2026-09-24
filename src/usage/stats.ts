@@ -108,8 +108,9 @@ function addInto(target: UsageSums, source: UsageSums): void {
 }
 
 /**
- * Public/personal spend report. Reads ONLY usage_daily plus today's raw tail
- * (created_at_ms >= UTC midnight): the raw table is never scanned whole.
+ * Public/personal spend report. Reads ONLY usage_daily plus the raw tail of
+ * days not yet rolled up (from the day after the newest usage_daily day, so
+ * nothing is double counted): the raw table is never scanned whole.
  * With userId set the same cuts are produced for that single user — this is
  * the only per-user read path and it is reachable solely with that user's
  * own session.
@@ -121,7 +122,6 @@ export function buildUsageReport(
   const nowMs = options.nowMs ?? Date.now();
   const windowDays = Math.max(1, Math.min(366, options.days ?? 30));
   const todayStart = startOfUtcDayMs(nowMs);
-  const today = utcDayString(todayStart);
   const userFilter = options.userId === undefined ? '' : 'AND user_id = ?';
   const userArgs = options.userId === undefined ? [] : [options.userId];
 
@@ -132,18 +132,30 @@ export function buildUsageReport(
     GROUP BY day
   `).all(...userArgs) as Array<{ day: string } & SumRow>;
 
-  const tailTotals = toSums(db.prepare(`
-    SELECT ${SUM_SELECT}
+  // The raw tail starts the day after the newest rolled day (rollup is
+  // global, so this is not user-filtered): days already in usage_daily are
+  // never re-read from raw events, and days the hourly rollup has not reached
+  // yet (e.g. yesterday, right after midnight) still show up. With no
+  // summaries at all, fall back to yesterday + today.
+  const newest = db.prepare('SELECT MAX(day) AS day FROM usage_daily').get() as { day: string | null } | undefined;
+  const newestRolledStart = newest?.day ? Date.parse(`${newest.day}T00:00:00Z`) : null;
+  const tailStart = newestRolledStart === null || Number.isNaN(newestRolledStart)
+    ? todayStart - DAY_MS
+    : Math.min(newestRolledStart + DAY_MS, todayStart);
+
+  const tailByDay = db.prepare(`
+    SELECT CAST(created_at_ms / ? AS INTEGER) AS bucket, ${SUM_SELECT}
     FROM usage_events
     WHERE created_at_ms >= ? ${userFilter}
-  `).get(todayStart, ...userArgs) as SumRow | undefined);
+    GROUP BY bucket
+  `).all(DAY_MS, tailStart, ...userArgs) as Array<{ bucket: number } & SumRow>;
 
   const tailByModel = db.prepare(`
     SELECT model, ${SUM_SELECT}
     FROM usage_events
     WHERE created_at_ms >= ? ${userFilter}
     GROUP BY model
-  `).all(todayStart, ...userArgs) as Array<{ model: string } & SumRow>;
+  `).all(tailStart, ...userArgs) as Array<{ model: string } & SumRow>;
 
   const modelRows = db.prepare(`
     SELECT model, ${DAILY_SUM_SELECT}
@@ -162,10 +174,15 @@ export function buildUsageReport(
     addInto(totalsAcc, sums);
     if (since === null || row.day < since) since = row.day;
   }
-  if (tailTotals.events > 0) {
-    byDay.set(today, tailTotals);
-    addInto(totalsAcc, tailTotals);
-    if (since === null || today < since) since = today;
+  for (const row of tailByDay) {
+    const sums = toSums(row);
+    if (sums.events === 0) continue;
+    const day = utcDayString(row.bucket * DAY_MS);
+    const acc = byDay.get(day) ?? emptySums();
+    addInto(acc, sums);
+    byDay.set(day, acc);
+    addInto(totalsAcc, sums);
+    if (since === null || day < since) since = day;
   }
 
   // --- daily: zero-filled trailing window ending today ---

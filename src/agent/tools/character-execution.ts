@@ -30,7 +30,6 @@ import {
 
 const MAX_CHARACTER_ROWS = 50;
 const MAX_QUERY_MS = 2_000;
-const TIME_CHECK_EVERY_ROWS = 64;
 
 const CHARACTER_WRITE_KEYWORDS = new Set(['ALTER', 'ATTACH', 'CREATE', 'DELETE', 'DETACH', 'DROP', 'INSERT', 'PRAGMA', 'REINDEX', 'REPLACE', 'UPDATE', 'VACUUM']);
 const IGNORED_PLAN_REFERENCES = new Set(['constant']);
@@ -349,11 +348,13 @@ export function executeCharacterSql(db: Db, sql: string, characterId: number): C
     // Iterate lazily and stop one past the cap (same rationale as sde_sql).
     const rows: unknown[] = [];
     for (const row of stmt.iterate()) {
-      rows.push(row);
-      if (rows.length > MAX_CHARACTER_ROWS) break;
-      if (rows.length % TIME_CHECK_EVERY_ROWS === 0 && Date.now() - startedAt > MAX_QUERY_MS) {
+      // Check elapsed time on every row: the loop stops at MAX_CHARACTER_ROWS+1
+      // rows, so a sparser check would never fire, and Date.now() is cheap.
+      if (Date.now() - startedAt > MAX_QUERY_MS) {
         return { ok: false, rows: [], count: 0, error: `Query exceeded the ${MAX_QUERY_MS}ms execution limit` };
       }
+      rows.push(row);
+      if (rows.length > MAX_CHARACTER_ROWS) break;
     }
     const truncated = rows.length > MAX_CHARACTER_ROWS;
     return {

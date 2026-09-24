@@ -167,6 +167,19 @@ export function clearInFlightRequest(chatId: number, token?: string): void {
 // ---------------------------------------------------------------------------
 
 const recentRequestStarts = new Map<string, number[]>();
+let lastRecentRequestSweepAt = 0;
+
+/**
+ * Drop actor keys whose whole window has expired, at most once per window,
+ * so idle users do not keep entries forever (unbounded map growth).
+ */
+function sweepRecentRequestStarts(now: number, windowMs: number): void {
+  if (now - lastRecentRequestSweepAt < windowMs) return;
+  lastRecentRequestSweepAt = now;
+  for (const [key, values] of recentRequestStarts) {
+    if (values.every((value) => now - value >= windowMs)) recentRequestStarts.delete(key);
+  }
+}
 
 export interface ChatRequestAllowanceInput {
   chatId: number;
@@ -207,6 +220,7 @@ export function evaluateChatRequestAllowance(input: ChatRequestAllowanceInput): 
     DEFAULT_MAX_REQUESTS_PER_WINDOW,
   );
 
+  sweepRecentRequestStarts(now, windowMs);
   const key = buildActorKey(input.chatId, input.userId);
   const recent = pruneRecentRequests(recentRequestStarts.get(key) ?? [], now, windowMs);
   if (recent.length >= maxRequestsPerWindow) {
@@ -224,7 +238,12 @@ export function evaluateChatRequestAllowance(input: ChatRequestAllowanceInput): 
 
 export function resetChatRequestGuardForTests(): void {
   recentRequestStarts.clear();
+  lastRecentRequestSweepAt = 0;
   inFlightRequests.clear();
+}
+
+export function trackedRequestActorCountForTests(): number {
+  return recentRequestStarts.size;
 }
 
 function buildActorKey(chatId: number, userId: number): string {
@@ -283,16 +302,21 @@ export async function refreshAndSummarize(
   characterId: number,
 ): Promise<string> {
   let profileContent: string | null = null;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await Promise.race([
       refreshUserProfile(db, userCtx),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), PROFILE_REFRESH_TIMEOUT_MS)),
+      new Promise<null>((resolve) => {
+        timeout = setTimeout(() => resolve(null), PROFILE_REFRESH_TIMEOUT_MS);
+      }),
     ]);
     if (result && result.ok) {
       profileContent = await readUserProfile(db, userCtx);
     }
   } catch {
     // profile will refresh later on next message
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (!profileContent) {

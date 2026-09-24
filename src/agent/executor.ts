@@ -177,6 +177,8 @@ import {
 const MAX_TOOL_ITERATIONS = config.openai.maxToolIterations;
 const MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE = config.openai.maxClientSearchCallsPerResponse;
 const MAX_CONSECUTIVE_EMPTY_CLIENT_SEARCHES = 3;
+/** Abort polls tick every 100ms; the identity queries behind them need not. */
+const IDENTITY_POLL_MAX_STALE_MS = 1_000;
 const MAX_PROGRAMMATIC_CALLS_PER_BATCH = 4;
 const MAX_PROGRAMMATIC_CALLS_PER_TURN = 4;
 const MAX_PROGRAMMATIC_CALLS_PER_PROGRAM = 4;
@@ -477,7 +479,7 @@ export async function handleAgentMessage(
       if (
         Date.now() >= rootDeadlineAt
         || isTurnAborted()
-        || !isTurnIdentityCurrent(db, ctx, turnIdentity)
+        || !isTurnIdentityCurrent(db, ctx, turnIdentity, IDENTITY_POLL_MAX_STALE_MS)
       ) liveController.abort();
     }, 100);
     try {
@@ -976,7 +978,7 @@ async function runNativeAgentLoop(
       if (
         turnDeadlineExceeded()
         || isTurnAborted()
-        || !isTurnIdentityCurrent(db, ctx, turnContext)
+        || !isTurnIdentityCurrent(db, ctx, turnContext, IDENTITY_POLL_MAX_STALE_MS)
       ) modelController.abort();
     }, 100);
     let response;
@@ -1064,6 +1066,31 @@ async function runNativeAgentLoop(
       clearInterval(modelAbortPoll);
     }
 
+    // Track token usage first: error, incomplete, cancelled and identity-
+    // changed responses are billed by the provider too, and every early exit
+    // below would otherwise drop them from usage_events.
+    if (response.usage) {
+      totalInputTokens += response.usage.input;
+      totalOutputTokens += response.usage.output;
+      totalCachedTokens += response.usage.cached;
+      totalCacheWriteTokens += response.usage.cacheWrite ?? 0;
+      totalReasoningTokens += response.usage.reasoning;
+      if (response.usage.input > peakInputTokens) peakInputTokens = response.usage.input;
+      // Durable per-response spend event (usage_events). Deliberately
+      // non-fatal like the total_tokens counter below: accounting failure
+      // must never break the user's turn.
+      recordModelUsageSafe(db, ctx, threadId, {
+        input: response.usage.input,
+        output: response.usage.output,
+        cached: response.usage.cached,
+        cacheWrite: response.usage.cacheWrite ?? 0,
+        reasoning: response.usage.reasoning,
+      }, modelSettings.model);
+      console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d cache_write=%d reasoning=%d',
+        iteration, response.usage.input, response.usage.output, response.usage.cached,
+        response.usage.cacheWrite ?? 0, response.usage.reasoning);
+    }
+
     // Cooperative cancellation, immediately after sampling: an abort during
     // the model call must stop the turn BEFORE mid-turn compaction (another
     // model call + history mutation) or any tool execution.
@@ -1140,29 +1167,6 @@ async function runNativeAgentLoop(
       programInFlight = true;
     }
 
-    // Track token usage
-    if (response.usage) {
-      totalInputTokens += response.usage.input;
-      totalOutputTokens += response.usage.output;
-      totalCachedTokens += response.usage.cached;
-      totalCacheWriteTokens += response.usage.cacheWrite ?? 0;
-      totalReasoningTokens += response.usage.reasoning;
-      if (response.usage.input > peakInputTokens) peakInputTokens = response.usage.input;
-      // Durable per-response spend event (usage_events). Deliberately
-      // non-fatal like the total_tokens counter below: accounting failure
-      // must never break the user's turn.
-      recordModelUsageSafe(db, ctx, threadId, {
-        input: response.usage.input,
-        output: response.usage.output,
-        cached: response.usage.cached,
-        cacheWrite: response.usage.cacheWrite ?? 0,
-        reasoning: response.usage.reasoning,
-      }, modelSettings.model);
-      console.log('[executor] iter=%d tokens: in=%d out=%d cached=%d cache_write=%d reasoning=%d',
-        iteration, response.usage.input, response.usage.output, response.usage.cached,
-        response.usage.cacheWrite ?? 0, response.usage.reasoning);
-    }
-
     // --- Codex-style mid-turn compaction ---
     // After each sampling request, if input tokens >= autoCompactLimit AND model
     // needs follow-up (tool calls), compact and continue the loop.
@@ -1209,6 +1213,10 @@ async function runNativeAgentLoop(
             content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку и восстановленные tool-результаты выше. Если нужные данные уже есть — используй их, не вызывай tools повторно.' }],
           } as NativeInputItem);
           if (useServerResponseState) serverRecoveryItems = [...pendingItems];
+          // Compaction just reset agent_threads.total_tokens; the pre-compaction
+          // peak must not be written back at turn end, or the next turn would
+          // immediately compact the fresh summary again.
+          peakInputTokens = 0;
           // Compaction fires only when tool calls are pending — the turn stays
           // inside its tool chain after the context rebuild.
           continuesToolChain = true;
@@ -1575,7 +1583,7 @@ async function runNativeAgentLoop(
         if (
           turnDeadlineExceeded()
           || isTurnAborted()
-          || !isTurnIdentityCurrent(db, ctx, turnContext)
+          || !isTurnIdentityCurrent(db, ctx, turnContext, IDENTITY_POLL_MAX_STALE_MS)
         ) toolController.abort();
       }, 100);
       let result: unknown;
@@ -2414,7 +2422,7 @@ async function executeReadSubagentDelegation(
     if (
       Date.now() >= turnContext.deadlineAt
       || isTurnAborted()
-      || !isTurnIdentityCurrent(db, ctx, turnContext)
+      || !isTurnIdentityCurrent(db, ctx, turnContext, IDENTITY_POLL_MAX_STALE_MS)
     ) controller.abort();
   }, 100);
   try {
@@ -2499,7 +2507,18 @@ async function executeToolCall(
     : policy === 'write' || policy === 'ui'
       ? getWriteToolAdmission()
       : null;
-  const release = admission ? await admission.acquire(guard.signal) : null;
+  let release: (() => void) | null = null;
+  if (admission) {
+    try {
+      release = await admission.acquire(guard.signal);
+    } catch (error) {
+      // Cancellation keeps propagating so the batch handler can classify it.
+      // A saturated queue is a per-call outcome: the tool never ran, and the
+      // model can retry or answer without it instead of the whole turn failing.
+      if (guard.signal?.aborted) throw error;
+      return { ok: false, retryable: true, error: 'Tool capacity is saturated; the call was not executed. Retry later or answer without it.' };
+    }
+  }
   try {
     if (guard.signal?.aborted || guard.identityCurrent?.() === false) {
       return { ok: false, blocked: true, error: 'Turn identity changed or request was cancelled before dispatch' };
@@ -3253,6 +3272,10 @@ export function resolveTierReasoningEffort(
 }
 
 export const __test__ = {
+  setToolAdmissionsForTest(read: ResponseAdmissionController | null, write: ResponseAdmissionController | null): void {
+    readToolAdmission = read;
+    writeToolAdmission = write;
+  },
   runNativeAgentLoop,
   runPreTurnCompactSafe,
   refreshMissingProfileWithinDeadline,

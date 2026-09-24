@@ -61,19 +61,40 @@ export function buildAgentTurnContext(
   });
 }
 
+/**
+ * Last full identity check per snapshot. A mismatch is sticky: the version
+ * embeds the monotonic active_character_version, so a turn whose identity
+ * changed never becomes current again.
+ */
+const identityChecks = new WeakMap<TurnIdentitySnapshot, { checkedAt: number; current: boolean }>();
+
+/**
+ * `maxStaleMs` lets the 100ms abort polls reuse a recent positive result
+ * instead of re-running the identity queries (with their ownership backfill
+ * writes) ten times a second per in-flight call. Dispatch-gating callers keep
+ * the default of 0 and always check fresh.
+ */
 export function isTurnIdentityCurrent(
   db: Db,
   ctx: UserContext,
   expected: TurnIdentitySnapshot,
+  maxStaleMs = 0,
 ): boolean {
   if (ctx.userId !== expected.userId || (ctx.chatId ?? null) !== expected.chatId) return false;
+  const now = Date.now();
+  const previous = identityChecks.get(expected);
+  if (previous && (!previous.current || now - previous.checkedAt < maxStaleMs)) {
+    return previous.current;
+  }
   const current = getLinkedCharacter(db, ctx);
   const scopes = [...(current?.scopes ?? [])].sort((left, right) => left.localeCompare(right));
-  return buildIdentityVersion(
+  const isCurrent = buildIdentityVersion(
     current?.characterId ?? null,
     scopes,
     readActiveCharacterVersion(db, ctx.userId),
   ) === expected.identityVersion;
+  identityChecks.set(expected, { checkedAt: now, current: isCurrent });
+  return isCurrent;
 }
 
 function buildIdentityVersion(

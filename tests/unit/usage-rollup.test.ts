@@ -122,6 +122,42 @@ describe('rollupUsageEvents', () => {
       .get('2026-06-26') as Record<string, unknown>;
     expect(dailyOld).toMatchObject({ events: 1, input_tokens: 900, cost_micros: 90 });
   });
+  it('prunes only whole UTC days so hourly reruns never shrink the oldest day', () => {
+    const oldestDay = TODAY_START - 30 * DAY_MS;
+    addEvent({ createdAtMs: oldestDay + 1 * 3_600_000, userId: 1, input: 100, costMicros: 1 });
+    addEvent({ createdAtMs: oldestDay + 18 * 3_600_000, userId: 1, input: 200, costMicros: 2 });
+
+    rollupUsageEvents(db, NOW_MS, 30);
+    rollupUsageEvents(db, NOW_MS + 3_600_000, 30);
+
+    const row = db.prepare('SELECT * FROM usage_daily WHERE day = ?')
+      .get(new Date(oldestDay).toISOString().slice(0, 10)) as Record<string, unknown>;
+    expect(row).toMatchObject({ events: 2, input_tokens: 300, cost_micros: 3 });
+    const raw = db.prepare('SELECT COUNT(*) AS n FROM usage_events').get() as { n: number };
+    expect(raw.n).toBe(2);
+
+    // Next UTC day: the whole day falls out of retention together.
+    const next = rollupUsageEvents(db, NOW_MS + DAY_MS, 30);
+    expect(next.prunedEvents).toBe(2);
+    const kept = db.prepare('SELECT * FROM usage_daily WHERE day = ?')
+      .get(new Date(oldestDay).toISOString().slice(0, 10)) as Record<string, unknown>;
+    expect(kept).toMatchObject({ events: 2, input_tokens: 300 });
+  });
+
+  it('never rebuilds a summary from a partially pruned day', () => {
+    const day = TODAY_START - 5 * DAY_MS;
+    addEvent({ createdAtMs: day + 1000, userId: 1, input: 100 });
+    addEvent({ createdAtMs: day + 2000, userId: 1, input: 200 });
+    rollupUsageEvents(db, NOW_MS, 30);
+    // Simulate a legacy unaligned prune having removed part of the day.
+    db.prepare('DELETE FROM usage_events WHERE created_at_ms = ?').run(day + 1000);
+
+    rollupUsageEvents(db, NOW_MS + 3_600_000, 30);
+
+    const row = db.prepare('SELECT * FROM usage_daily WHERE day = ?')
+      .get(new Date(day).toISOString().slice(0, 10)) as Record<string, unknown>;
+    expect(row).toMatchObject({ events: 2, input_tokens: 300 });
+  });
 });
 
 describe('buildUsageReport', () => {
@@ -180,5 +216,33 @@ describe('buildUsageReport', () => {
     const everyone = buildUsageReport(db, { nowMs: NOW_MS });
     expect(everyone.totals.inputTokens).toBe(9100);
     expect(everyone.models.map((entry) => entry.model)).toEqual(['model-b', 'model-a']);
+  });
+});
+
+describe('buildUsageReport around UTC midnight', () => {
+  it('shows yesterday from raw events until the first rollup after midnight, without double counting', () => {
+    const justAfterMidnight = TODAY_START + DAY_MS + 60_000; // 2026-07-28 00:01
+    // Rolled earlier on 07-27: day 07-26.
+    addEvent({ createdAtMs: TODAY_START - DAY_MS + 1000, userId: 1, input: 1000 });
+    rollupUsageEvents(db, NOW_MS, 30);
+    // 07-27 usage, not rolled yet (rollup ran at 12:00 on 07-27).
+    addEvent({ createdAtMs: TODAY_START + 3_600_000, userId: 1, input: 50 });
+    addEvent({ createdAtMs: TODAY_START + 20 * 3_600_000, userId: 1, input: 70 });
+
+    const before = buildUsageReport(db, { nowMs: justAfterMidnight });
+    expect(before.daily.at(-1)).toMatchObject({ day: '2026-07-28', inputTokens: 0 });
+    expect(before.daily.at(-2)).toMatchObject({ day: '2026-07-27', inputTokens: 120, events: 2 });
+    expect(before.daily.at(-3)).toMatchObject({ day: '2026-07-26', inputTokens: 1000 });
+    expect(before.totals.inputTokens).toBe(1120);
+    expect(before.models).toEqual([expect.objectContaining({ model: 'model-a', inputTokens: 1120 })]);
+
+    // After the rollup the numbers are identical — no double counting.
+    rollupUsageEvents(db, justAfterMidnight + 60_000, 30);
+    addEvent({ createdAtMs: justAfterMidnight + 120_000, userId: 1, input: 5 });
+    const after = buildUsageReport(db, { nowMs: justAfterMidnight + 180_000 });
+    expect(after.daily.at(-2)).toMatchObject({ day: '2026-07-27', inputTokens: 120, events: 2 });
+    expect(after.daily.at(-1)).toMatchObject({ day: '2026-07-28', inputTokens: 5 });
+    expect(after.totals.inputTokens).toBe(1125);
+    expect(after.models[0]).toMatchObject({ model: 'model-a', inputTokens: 1125 });
   });
 });

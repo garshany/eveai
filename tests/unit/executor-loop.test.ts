@@ -4,10 +4,12 @@ import { SCHEMA_SQL } from '../../src/db/schema.js';
 
 // Mock ONLY the network call; keep the real item builders/helpers so the loop
 // under test assembles input exactly as production does.
-const { createNativeResponseMock, runPreTurnCompactMock, runMidTurnCompactMock } = vi.hoisted(() => ({
+const { createNativeResponseMock, runPreTurnCompactMock, runMidTurnCompactMock, midTurnCompactLimit } = vi.hoisted(() => ({
   createNativeResponseMock: vi.fn(),
   runPreTurnCompactMock: vi.fn(),
   runMidTurnCompactMock: vi.fn(),
+  // null = the real autoCompactLimit-based check.
+  midTurnCompactLimit: { value: null as number | null },
 }));
 vi.mock('../../src/agent/native-responses.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/agent/native-responses.js')>();
@@ -19,6 +21,11 @@ vi.mock('../../src/agent/compact.js', async (importOriginal) => {
     ...actual,
     runPreTurnCompact: runPreTurnCompactMock,
     runMidTurnCompact: runMidTurnCompactMock,
+    needsMidTurnCompaction: (inputTokens: number) => (
+      midTurnCompactLimit.value === null
+        ? actual.needsMidTurnCompaction(inputTokens)
+        : inputTokens >= midTurnCompactLimit.value
+    ),
   };
 });
 
@@ -120,6 +127,7 @@ afterEach(() => {
   delete process.env.AGENT_MAX_EVE_KILL_CALLS_PER_TURN;
   delete process.env.AGENT_MAX_EVE_KILL_ANALYTICS_CALLS_PER_TURN;
   delete process.env.AGENT_MAX_CLIENT_SEARCH_CALLS_PER_RESPONSE;
+  midTurnCompactLimit.value = null;
   vi.resetModules();
 });
 
@@ -634,6 +642,35 @@ describe('stateless tool loop context accumulation', () => {
     const persisted = JSON.stringify(db.prepare('SELECT content FROM messages').all());
     expect(persisted).not.toContain('opaque-fp');
     expect(persisted).not.toContain('not persisted');
+  });
+
+  it('does not carry the pre-compaction peak into total_tokens after a mid-turn compaction', async () => {
+    midTurnCompactLimit.value = 3000;
+    const oversized = { ...toolCallResponse('call_2', 'SELECT type_id FROM sde_types LIMIT 2'), usage: { input: 5000, output: 50, cached: 0, reasoning: 0 } };
+    createNativeResponseMock
+      .mockResolvedValueOnce(toolCallResponse('call_1', 'SELECT type_id FROM sde_types LIMIT 1'))
+      .mockResolvedValueOnce(oversized)
+      .mockResolvedValueOnce(toolCallResponse('call_3', 'SELECT type_id FROM sde_types LIMIT 3'))
+      .mockResolvedValueOnce(textResponse('после сжатия'));
+
+    const result = await runLoop() as { text: string; peakInputTokens: number };
+
+    expect(runMidTurnCompactMock).toHaveBeenCalledTimes(1);
+    expect(result.text).toBe('после сжатия');
+    // Only post-compaction samples count; 5000 would re-trigger compaction next turn.
+    expect(result.peakInputTokens).toBe(1200);
+  });
+
+  it('records billed usage for a non-completed response before failing the turn', async () => {
+    const { runMigrations } = await import('../../src/db/migrations.js');
+    runMigrations(db as never);
+    db.prepare("INSERT OR IGNORE INTO users (user_id, display_name) VALUES (1, 'Pilot')").run();
+    createNativeResponseMock.mockResolvedValueOnce({ ...textResponse('обрезано'), status: 'incomplete' });
+
+    await runLoop();
+
+    expect(db.prepare('SELECT input_tokens, output_tokens FROM usage_events').all())
+      .toEqual([{ input_tokens: 1200, output_tokens: 80 }]);
   });
 
   it('fails closed when a program reaches a final message below its minimum call shape', async () => {
@@ -1847,6 +1884,45 @@ describe('cooperative turn abort (CLI Ctrl-C)', () => {
       ),
     )).rejects.toThrow('Turn aborted by user');
     expect(createNativeResponseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a per-call failure instead of failing the turn when tool admission is saturated', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const { createWebSearchState } = await import('../../src/agent/web-search.js');
+    const { ResponseAdmissionController } = await import('../../src/agent/response-admission.js');
+    const saturated = new ResponseAdmissionController({ maxConcurrent: 1, maxQueued: 0, queueTimeoutMs: 10, label: 'Read tool' });
+    const held = await saturated.acquire();
+    __test__.setToolAdmissionsForTest(saturated, null);
+    try {
+      const result = await __test__.executeToolCall(
+        db as never,
+        'req-saturated',
+        GOAL,
+        { userId: 1, chatId: 1 },
+        'sde_sql',
+        { query: 'SELECT type_id FROM sde_types LIMIT 1' },
+        createWebSearchState(),
+      );
+      expect(result).toMatchObject({ ok: false, retryable: true });
+
+      const controller = new AbortController();
+      controller.abort();
+      await expect(__test__.executeToolCall(
+        db as never,
+        'req-saturated-aborted',
+        GOAL,
+        { userId: 1, chatId: 1 },
+        'sde_sql',
+        { query: 'SELECT type_id FROM sde_types LIMIT 1' },
+        createWebSearchState(),
+        false,
+        { callsExecuted: 0 },
+        { signal: controller.signal },
+      )).rejects.toThrow('admission aborted');
+    } finally {
+      held();
+      __test__.setToolAdmissionsForTest(null, null);
+    }
   });
 
   it('rechecks identity after tool admission before dispatch', async () => {
