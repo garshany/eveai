@@ -84,7 +84,9 @@ export async function processUserHeartbeat(
   row: HeartbeatConfigRow,
   nowUtc: string,
 ): Promise<void> {
-  const ctx: UserContext = { userId: row.user_id };
+  // Pin every ESI call to this row's character: resolving the user's
+  // currently active character would poll B's mail/wallet under row A.
+  const ctx: UserContext = { userId: row.user_id, characterId: row.character_id };
   const chatId = getUserOutboundChatId(db, row.user_id);
   if (!chatId) return;
 

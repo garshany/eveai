@@ -146,7 +146,9 @@ export function attachLiveSession(
   const session: Session = {
     characterId,
     userId: ctx.userId,
-    ctx,
+    // Polls stay bound to this session's character even if the user switches
+    // their active character while the map is open.
+    ctx: { ...ctx, characterId },
     db,
     subscribers: new Set([subscriber]),
     timer: null,

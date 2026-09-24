@@ -34,6 +34,8 @@ export function runMigrations(db: Db): void {
     ensureHeartbeatConfig(db);
     addColumnIfMissing(db, 'heartbeat_config', 'state_json', "TEXT NOT NULL DEFAULT '{}'");
     ensureKillWatches(db);
+    // Feed matching looks watches up by exact topic for every killmail.
+    createIndexIfMissing(db, 'idx_kill_watches_topic', 'kill_watches', 'topic');
     ensureEveKillFeedState(db);
     removeLegacyRouteWatchesOnce(db);
     ensureRouteMonitors(db);

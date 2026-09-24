@@ -242,4 +242,28 @@ describe('heartbeat killmail source boundary', () => {
     expect(persisted.last_run_at).toBeNull();
     expect(esiMocks.deliverOutbound).toHaveBeenCalledWith(77, 'heartbeat summary');
   });
+
+  it('pins token, capability and ESI calls to the config row character, not the active one', async () => {
+    db.prepare(`
+      INSERT INTO heartbeat_config
+        (user_id, character_id, enabled, interval_seconds, checks_json, state_json)
+      VALUES (?, ?, 1, 300, ?, ?)
+    `).run(7, 9001, '["wallet"]', '{}');
+    const row = db.prepare('SELECT * FROM heartbeat_config WHERE user_id = 7 AND character_id = 9001')
+      .get() as HeartbeatConfigRow;
+    esiMocks.getUserOutboundChatId.mockReturnValue(77);
+    esiMocks.getAccessToken.mockResolvedValue({ token: 'x', characterId: 9001 });
+    esiMocks.getCapabilities.mockResolvedValue({ authenticated: true });
+    esiMocks.callEsiOperation.mockResolvedValue({ ok: true, status: 200, data: 1_000 });
+
+    await processUserHeartbeat(db, row, '2026-07-13 18:05:00');
+
+    const pinned = { userId: 7, characterId: 9001 };
+    expect(esiMocks.getAccessToken).toHaveBeenCalledWith(db, pinned);
+    expect(esiMocks.getCapabilities).toHaveBeenCalledWith(db, 'heartbeat', pinned);
+    expect(esiMocks.callEsiOperation).toHaveBeenCalled();
+    for (const call of esiMocks.callEsiOperation.mock.calls) {
+      expect(call[3]).toEqual(pinned);
+    }
+  });
 });

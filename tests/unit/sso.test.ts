@@ -225,6 +225,99 @@ describe('getAccessToken', () => {
   });
 });
 
+describe('getAccessToken refresh failures', () => {
+  function seedExpired(): void {
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, ?)").run(1, 'pilot');
+    db.prepare(`
+      INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json)
+      VALUES (?, ?, ?, ?, datetime('now', '-100 seconds'), ?)
+    `).run(12345, 'Pilot', 'expired-token', 'ref-token', '[]');
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id) VALUES (?, ?)').run(1, 12345);
+  }
+  const metadataResponse = {
+    ok: true,
+    json: async () => ({
+      authorization_endpoint: 'https://login.eveonline.com/v2/oauth/authorize',
+      token_endpoint: 'https://login.eveonline.com/v2/oauth/token',
+      jwks_uri: 'https://login.eveonline.com/oauth/jwks',
+    }),
+  };
+
+  it('returns null when the token endpoint answers with a non-JSON body', async () => {
+    seedExpired();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    fetchMock
+      .mockResolvedValueOnce(metadataResponse)
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <'); } });
+
+    await expect(getAccessToken(db, { userId: 0, chatId: 1 })).resolves.toBeNull();
+    const logged = errorSpy.mock.calls.flat().map(String).join(' ');
+    expect(logged).not.toContain('ref-token');
+    errorSpy.mockRestore();
+  });
+
+  it('returns null when the refreshed JWT fails verification', async () => {
+    seedExpired();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    fetchMock
+      .mockResolvedValueOnce(metadataResponse)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: 'bad-jwt', refresh_token: 'new-ref', expires_in: 1200 }),
+      });
+    jwtVerifyMock.mockRejectedValue(new Error('signature verification failed'));
+
+    await expect(getAccessToken(db, { userId: 0, chatId: 1 })).resolves.toBeNull();
+    const logged = errorSpy.mock.calls.flat().map(String).join(' ');
+    expect(logged).not.toContain('bad-jwt');
+    expect(logged).not.toContain('new-ref');
+    errorSpy.mockRestore();
+  });
+});
+
+describe('character-pinned UserContext', () => {
+  function seedUserWithTwoCharacters(): void {
+    db.prepare("INSERT INTO users (user_id, display_name, active_character_id, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))")
+      .run(7, 'Owner', 222);
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, ?)").run(70, 'owner');
+    const insertAccount = db.prepare(`
+      INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id)
+      VALUES (?, ?, ?, ?, datetime('now', '+1200 seconds'), '[]', ?)
+    `);
+    insertAccount.run(111, 'Alpha', 'token-a', 'ref-a', 7);
+    insertAccount.run(222, 'Bravo', 'token-b', 'ref-b', 7);
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (?, ?, ?)').run(70, 111, 7);
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (?, ?, ?)').run(70, 222, 7);
+  }
+
+  it('resolves the pinned character instead of the currently active one', async () => {
+    seedUserWithTwoCharacters();
+
+    expect(getLinkedCharacter(db, { userId: 7 })?.characterId).toBe(222);
+    expect(getLinkedCharacter(db, { userId: 7, characterId: 111 })?.characterId).toBe(111);
+    await expect(getAccessToken(db, { userId: 7, characterId: 111 }))
+      .resolves.toEqual({ token: 'token-a', characterId: 111 });
+    // Pinning never rewrites the user's active character.
+    const active = db.prepare('SELECT active_character_id FROM users WHERE user_id = 7').get() as { active_character_id: number };
+    expect(active.active_character_id).toBe(222);
+  });
+
+  it('returns null for a pinned character the user does not own', async () => {
+    seedUserWithTwoCharacters();
+    db.prepare("INSERT INTO users (user_id, display_name, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))")
+      .run(8, 'Stranger');
+    db.prepare(`
+      INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id)
+      VALUES (?, ?, ?, ?, datetime('now', '+1200 seconds'), '[]', ?)
+    `).run(333, 'Charlie', 'token-c', 'ref-c', 8);
+
+    expect(getLinkedCharacter(db, { userId: 7, characterId: 333 })).toBeNull();
+    await expect(getAccessToken(db, { userId: 7, characterId: 333 })).resolves.toBeNull();
+    expect(getLinkedCharacter(db, { userId: 7, characterId: 999 })).toBeNull();
+  });
+});
+
 describe('unlinkCharacter', () => {
   it('removes tokens and profile artifact when the last character link is deleted', async () => {
     db.prepare("INSERT INTO users (user_id, display_name, active_character_id, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))")

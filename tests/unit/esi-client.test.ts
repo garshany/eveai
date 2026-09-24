@@ -240,6 +240,65 @@ describe('esi client', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('uses the caller-supplied character_id for public operations instead of the linked character', async () => {
+    db.prepare('INSERT INTO telegram_sessions (chat_id, username, active_character_id) VALUES (?, ?, ?)').run(1, 'pilot', 123);
+    db.prepare(`
+      INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json)
+      VALUES (?, ?, ?, ?, datetime('now', '+1200 seconds'), ?)
+    `).run(123, 'Pilot', 'tok', 'ref', '[]');
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id) VALUES (?, ?)').run(1, 123);
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ name: 'Other Pilot' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', Expires: new Date(Date.now() + 60_000).toUTCString() },
+    }));
+
+    const other = await callEsiOperation(db, 'get_characters_character_id', { character_id: 999 }, { userId: 0, chatId: 1 });
+    expect(other.ok).toBe(true);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/characters/999/');
+
+    // Absent arg still falls back to the linked character (backward compatible).
+    const own = await callEsiOperation(db, 'get_characters_character_id', {}, { userId: 0, chatId: 1 });
+    expect(own.ok).toBe(true);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/characters/123/');
+
+    // Public cache keys are not scoped to the linked character.
+    const keys = (db.prepare('SELECT cache_key FROM esi_cache ORDER BY cache_key').all() as Array<{ cache_key: string }>)
+      .map((r) => r.cache_key);
+    expect(keys.every((key) => key.startsWith('get_characters_character_id:0:'))).toBe(true);
+  });
+
+  it('returns a non-JSON body as text instead of failing on a consumed stream', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('plain text body', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain', Expires: new Date(Date.now() + 60_000).toUTCString() },
+    }));
+
+    const result = await callEsiOperation<string>(db, 'get_status', {}, { userId: 0 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('Expected text payload to succeed');
+    expect(result.data).toBe('plain text body');
+  });
+
+  it('aborts a retry backoff sleep when the guard signal fires', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ error: 'slow down' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '30' },
+    }));
+    const controller = new AbortController();
+
+    const resultPromise = callEsiOperation(db, 'get_status', {}, { userId: 0 }, { signal: controller.signal });
+    await vi.advanceTimersByTimeAsync(10);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(10);
+    const result = await resultPromise;
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('Expected aborted call to fail');
+    expect(result.status).toBe(409);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('pruneExpiredEsiCache deletes rows past the grace window and keeps fresh ones', () => {
     db.prepare("INSERT INTO esi_cache (cache_key, response_text, expires_at, created_at) VALUES ('fresh', '{}', datetime('now','+1 hour'), datetime('now'))").run();
     db.prepare("INSERT INTO esi_cache (cache_key, response_text, expires_at, created_at) VALUES ('recent', '{}', datetime('now','-1 hour'), datetime('now'))").run();

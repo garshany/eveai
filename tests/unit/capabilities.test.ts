@@ -156,4 +156,37 @@ describe('get_eve_capabilities', () => {
     expect(result.ok).toBe(true);
     expect(fetchMock).toHaveBeenCalled();
   });
+
+  it('keeps character-pinned snapshots separate from the interactive lane', async () => {
+    db.prepare("INSERT INTO users (user_id, display_name, active_character_id) VALUES (?, ?, ?)").run(5, 'Owner', 222);
+    const insertAccount = db.prepare(`
+      INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id)
+      VALUES (?, ?, ?, ?, datetime('now', '+1200 seconds'), ?, ?)
+    `);
+    insertAccount.run(111, 'Alpha', 'tok-a', 'ref-a', JSON.stringify(ALL_REQUESTED_SCOPES), 5);
+    insertAccount.run(222, 'Bravo', 'tok-b', 'ref-b', JSON.stringify(ALL_REQUESTED_SCOPES), 5);
+
+    const pinned = { userId: 5, characterId: 111 };
+    const pinnedCaps = await getEveCapabilities(db, 'heartbeat', pinned);
+    expect(pinnedCaps.characterId).toBe(111);
+
+    // The unpinned lane (active = 222) has no snapshot of its own yet.
+    const unpinnedResult = await callEsiOperation(db, 'get_characters_character_id_wallet', {}, { userId: 5 });
+    expect(unpinnedResult.ok).toBe(false);
+    if (!unpinnedResult.ok) expect(unpinnedResult.status).toBe(428);
+
+    await getEveCapabilities(db, 'chat', { userId: 5 });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toContain('/characters/111/wallet/');
+      expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer tok-a');
+      return new Response('42.5', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Recording the interactive (222) snapshot did not clobber the pinned one.
+    const pinnedResult = await callEsiOperation(db, 'get_characters_character_id_wallet', {}, pinned);
+    expect(pinnedResult.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

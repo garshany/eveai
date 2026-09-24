@@ -700,10 +700,17 @@ async function resolveOriginSystem(db: Db, origin: string, ctx: UserContext): Pr
 function resolveCurrentSystemFromCache(db: Db, ctx: UserContext): string | null {
   const linked = getLinkedCharacter(db, ctx);
   if (!linked) return null;
+  // Only a still-fresh cached location counts as "current"; an expired row
+  // falls through to a live ESI call. The prefix range (':' < ';') is an
+  // index seek on the cache_key primary key instead of a LIKE full scan.
   const prefix = `get_characters_character_id_location:${linked.characterId}:`;
+  const upperBound = `get_characters_character_id_location:${linked.characterId};`;
   const cached = db.prepare(
-    "SELECT response_text FROM esi_cache WHERE cache_key LIKE ? LIMIT 1"
-  ).get(`${prefix}%`) as { response_text: string } | undefined;
+    `SELECT response_text FROM esi_cache
+     WHERE cache_key >= ? AND cache_key < ? AND expires_at > datetime('now')
+     ORDER BY expires_at DESC
+     LIMIT 1`
+  ).get(prefix, upperBound) as { response_text: string } | undefined;
   if (cached) {
     try {
       const data = JSON.parse(cached.response_text) as { solar_system_id?: number };

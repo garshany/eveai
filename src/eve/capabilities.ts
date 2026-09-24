@@ -108,5 +108,8 @@ function recordCapabilitySnapshot(ctx: UserContext, capabilities: Capabilities):
 }
 
 function buildCapabilitySnapshotKey(ctx: UserContext): string {
-  return `${ctx.userId}:${ctx.chatId ?? 'none'}`;
+  // A character-pinned background context gets its own slot so it neither
+  // clobbers nor borrows the interactive lane's snapshot for another character.
+  const pin = ctx.characterId !== undefined ? `:pin${ctx.characterId}` : '';
+  return `${ctx.userId}:${ctx.chatId ?? 'none'}${pin}`;
 }

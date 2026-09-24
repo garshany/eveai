@@ -95,6 +95,17 @@ describe('map live session', () => {
     expect(getLiveSession(CHARACTER_ID)?.lastLocation?.solarSystemId).toBe(30000142);
   });
 
+  it('pins every poll to the session character, not the caller context active character', async () => {
+    esiReturns({ systemId: 30000142 });
+    attachLiveSession(db, ctx(), CHARACTER_ID, () => {});
+
+    await settle();
+    expect(esiMock).toHaveBeenCalled();
+    for (const call of esiMock.mock.calls) {
+      expect(call[3]).toMatchObject({ userId: 1, characterId: CHARACTER_ID });
+    }
+  });
+
   it('shares one poller across tabs of the same character', async () => {
     esiReturns({});
     const a = attachLiveSession(db, ctx(), CHARACTER_ID, () => {});

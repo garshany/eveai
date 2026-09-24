@@ -34,7 +34,7 @@ export async function resolveCharacterNames(db: Db, ids: number[]): Promise<Map<
     const response = await callEsiOperation<unknown>(
       db,
       'post_universe_names',
-      { body: missing.slice(0, MAX_IDS_PER_CALL) },
+      { ids: JSON.stringify(missing.slice(0, MAX_IDS_PER_CALL)) },
       null,
     );
     if (!response.ok || !Array.isArray(response.data)) return resolved;

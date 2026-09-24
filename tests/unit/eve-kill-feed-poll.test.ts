@@ -243,6 +243,44 @@ describe('durable EVE-KILL feed poller', () => {
     expect(feedCursor()).toBe(88);
   });
 
+  it('does not accumulate abort listeners on the long-lived wake signal across delays', async () => {
+    const addSpy = vi.spyOn(EventTarget.prototype, 'addEventListener');
+    const removeSpy = vi.spyOn(EventTarget.prototype, 'removeEventListener');
+    try {
+      fetchMock.mockImplementation(async () => new Response(
+        JSON.stringify({ data: [], latest: 70, hasMore: false, next: null, last: null }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ));
+      startEveKillFeedPoller(db, async () => {}, { pollIntervalMs: 1 });
+      await vi.waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(6));
+      await stopEveKillFeedPoller();
+
+      const net = new Map<unknown, number>();
+      addSpy.mock.calls.forEach((call, index) => {
+        if (call[0] !== 'abort') return;
+        const target = addSpy.mock.contexts[index];
+        net.set(target, (net.get(target) ?? 0) + 1);
+      });
+      removeSpy.mock.calls.forEach((call, index) => {
+        if (call[0] !== 'abort') return;
+        const target = removeSpy.mock.contexts[index];
+        net.set(target, (net.get(target) ?? 0) - 1);
+      });
+      // Only the final, abort-interrupted delay may still count its listener.
+      expect(Math.max(0, ...net.values())).toBeLessThanOrEqual(1);
+    } finally {
+      addSpy.mockRestore();
+      removeSpy.mockRestore();
+    }
+  });
+
+  it('indexes kill_watches by topic for exact-topic feed matching', () => {
+    const plan = db.prepare(
+      "EXPLAIN QUERY PLAN SELECT id FROM kill_watches WHERE topic IN (SELECT value FROM json_each('[\"system.1\"]'))",
+    ).all() as Array<{ detail: string }>;
+    expect(plan.map((row) => row.detail).join(' ')).toContain('idx_kill_watches_topic');
+  });
+
   it('bootstraps first and restores listeners before processing the first live event', async () => {
     respondWith({ data: [], latest: 90, hasMore: false, next: null, last: null });
     respondWith(feedPage(91, 9091));

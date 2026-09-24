@@ -178,9 +178,14 @@ export async function stopEveKillFeedPoller(): Promise<void> {
 export function matchFeedEventToWatches(db: Db, event: FeedEvent): FeedWatchMatch[] {
   const topics = eventTopics(db, event);
   if (topics.size === 0) return [];
-  const rows = db.prepare('SELECT id, chat_id, topic, label FROM kill_watches ORDER BY id').all() as WatchRow[];
+  // Exact-topic lookup via idx_kill_watches_topic; json_each keeps it a single
+  // bound parameter no matter how many attacker topics the killmail carries.
+  const rows = db.prepare(`
+    SELECT id, chat_id, topic, label FROM kill_watches
+    WHERE topic IN (SELECT value FROM json_each(?))
+    ORDER BY id
+  `).all(JSON.stringify([...topics])) as WatchRow[];
   return rows
-    .filter((row) => topics.has(row.topic))
     .map((row) => ({ watchId: row.id, chatId: row.chat_id, topic: row.topic, label: row.label }));
 }
 
@@ -352,7 +357,13 @@ function boundedDelay(value: number | undefined, fallback: number, max: number):
 async function interruptibleDelay(ms: number, signal: AbortSignal): Promise<void> {
   if (ms <= 0 || signal.aborted) return;
   await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
+    const onAbort = () => { clearTimeout(timer); resolve(); };
+    // The wake signal lives for the whole poller; drop the listener when the
+    // timer fires so every delay does not leave one behind.
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }

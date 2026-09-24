@@ -471,6 +471,7 @@ CREATE TABLE IF NOT EXISTS kill_watches (
   UNIQUE (chat_id, topic)
 );
 CREATE INDEX IF NOT EXISTS idx_kill_watches_chat ON kill_watches(chat_id);
+CREATE INDEX IF NOT EXISTS idx_kill_watches_topic ON kill_watches(topic);
 
 CREATE TABLE IF NOT EXISTS eve_kill_notification_dedup (
   chat_id       INTEGER NOT NULL,
