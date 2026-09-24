@@ -8,9 +8,6 @@ type JsonValue = Record<string, unknown> | unknown[];
 type CharacterPublicInfo = {
   character_id: number;
   name: string | null;
-  corporation_id: number | null;
-  alliance_id: number | null;
-  security_status: number | null;
 };
 
 type CorporationPublicInfo = {
@@ -164,30 +161,25 @@ export async function enrichKillmailDetail(
   const alliances = new Map<number, AlliancePublicInfo | null>();
   const factions = new Map<number, FactionInfo | null>();
 
-  const characterResults = await mapWithConcurrency(Array.from(characterIds.values()), 6, async (characterId) => {
-    const data = await deps.fetchJson('eve-public', 'characters_character_id', ['--character_id', String(characterId)]);
-    return [characterId, normalizeCharacterInfo(characterId, data)] as const;
-  });
-  for (const [characterId, info] of characterResults) {
-    characters.set(characterId, info);
-    if (info?.corporation_id) corporationIds.add(info.corporation_id);
-    if (info?.alliance_id) allianceIds.add(info.alliance_id);
-  }
+  // Killmail participants already carry corporation_id/alliance_id, so names
+  // for every entity are resolved through batched post_universe_names instead
+  // of one ESI GET per character/corporation/alliance.
+  const names = await resolveUniverseNames(deps, [...characterIds, ...corporationIds, ...allianceIds]);
+  const tickers = await resolveTickers(deps, victim, attackers);
 
-  const corporationResults = await mapWithConcurrency(Array.from(corporationIds.values()), 6, async (corporationId) => {
-    const data = await deps.fetchJson('eve-public', 'corporations_corporation_id', ['--corporation_id', String(corporationId)]);
-    return [corporationId, normalizeCorporationInfo(corporationId, data)] as const;
-  });
-  for (const [corporationId, info] of corporationResults) {
-    corporations.set(corporationId, info);
+  for (const characterId of characterIds) {
+    const name = names.get(characterId) ?? null;
+    characters.set(characterId, name === null ? null : { character_id: characterId, name });
   }
-
-  const allianceResults = await mapWithConcurrency(Array.from(allianceIds.values()), 6, async (allianceId) => {
-    const data = await deps.fetchJson('eve-public', 'alliances_alliance_id', ['--alliance_id', String(allianceId)]);
-    return [allianceId, normalizeAllianceInfo(allianceId, data)] as const;
-  });
-  for (const [allianceId, info] of allianceResults) {
-    alliances.set(allianceId, info);
+  for (const corporationId of corporationIds) {
+    const name = names.get(corporationId) ?? null;
+    const ticker = tickers.corporations.get(corporationId) ?? null;
+    corporations.set(corporationId, name === null && ticker === null ? null : { corporation_id: corporationId, name, ticker });
+  }
+  for (const allianceId of allianceIds) {
+    const name = names.get(allianceId) ?? null;
+    const ticker = tickers.alliances.get(allianceId) ?? null;
+    alliances.set(allianceId, name === null && ticker === null ? null : { alliance_id: allianceId, name, ticker });
   }
 
   for (const factionId of factionIds) {
@@ -315,7 +307,7 @@ function enrichParticipant(
     ...participant,
     character_id: characterId,
     character_name: character?.name ?? null,
-    character_security_status: character?.security_status ?? readNumeric(participant, 'security_status'),
+    character_security_status: readNumeric(participant, 'security_status'),
     corporation_id: corporationId,
     corporation_name: corporation?.name ?? null,
     corporation_ticker: corporation?.ticker ?? null,
@@ -465,33 +457,113 @@ function participantLabel(participant: Record<string, unknown>): string | null {
   return corporationName ?? shipName ?? null;
 }
 
-function normalizeCharacterInfo(characterId: number, data: JsonValue | null): CharacterPublicInfo | null {
-  if (!isRecord(data)) return null;
-  return {
-    character_id: characterId,
-    name: readString(data, 'name'),
-    corporation_id: readNumeric(data, 'corporation_id'),
-    alliance_id: readNumeric(data, 'alliance_id'),
-    security_status: readNumeric(data, 'security_status'),
-  };
+const UNIVERSE_NAMES_BATCH_SIZE = 1000;
+const UNIVERSE_NAMES_MAX_CALLS = 40;
+const TICKER_LOOKUP_LIMIT = 12;
+
+/**
+ * Resolves entity names via batched ESI post_universe_names (max 1000 ids per
+ * request). Failures are non-fatal: ESI rejects the whole request with 404 when
+ * any id is invalid, so a failed batch is split in halves until the bad ids are
+ * isolated (bounded by UNIVERSE_NAMES_MAX_CALLS); unresolved ids stay missing.
+ */
+export async function resolveUniverseNames(
+  deps: Pick<KillmailDeps, 'fetchJson'>,
+  ids: Iterable<number>,
+): Promise<Map<number, string>> {
+  const names = new Map<number, string>();
+  const unique = [...new Set(ids)].filter((id) => Number.isSafeInteger(id) && id > 0);
+  const pending: number[][] = [];
+  for (let index = 0; index < unique.length; index += UNIVERSE_NAMES_BATCH_SIZE) {
+    pending.push(unique.slice(index, index + UNIVERSE_NAMES_BATCH_SIZE));
+  }
+
+  let calls = 0;
+  while (pending.length > 0 && calls < UNIVERSE_NAMES_MAX_CALLS) {
+    const batch = pending.shift()!;
+    calls += 1;
+    let data: JsonValue | null = null;
+    try {
+      data = await deps.fetchJson(
+        'eve-public',
+        'post_universe_names',
+        ['--ids', JSON.stringify(batch)],
+        { maxOutputBytes: 512 * 1024 },
+      );
+    } catch {
+      data = null;
+    }
+
+    if (Array.isArray(data)) {
+      for (const entry of data) {
+        if (!isRecord(entry)) continue;
+        const id = readNumeric(entry, 'id');
+        const name = readString(entry, 'name');
+        if (id !== null && name) names.set(id, name);
+      }
+      continue;
+    }
+
+    if (batch.length > 1) {
+      const middle = Math.ceil(batch.length / 2);
+      pending.push(batch.slice(0, middle), batch.slice(middle));
+    }
+  }
+  return names;
 }
 
-function normalizeCorporationInfo(corporationId: number, data: JsonValue | null): CorporationPublicInfo | null {
-  if (!isRecord(data)) return null;
-  return {
-    corporation_id: corporationId,
-    name: readString(data, 'name'),
-    ticker: readString(data, 'ticker'),
+/**
+ * post_universe_names does not return tickers. Tickers are looked up only for a
+ * small, bounded set of corporations/alliances (victim first, then the most
+ * frequent attacker affiliations); each lookup failure is non-fatal.
+ */
+async function resolveTickers(
+  deps: KillmailDeps,
+  victim: Record<string, unknown>,
+  attackers: Array<Record<string, unknown>>,
+): Promise<{ corporations: Map<number, string>; alliances: Map<number, string> }> {
+  const corporationIds = rankAffiliations([victim, ...attackers], 'corporation_id', readNumeric(victim, 'corporation_id'));
+  const allianceIds = rankAffiliations([victim, ...attackers], 'alliance_id', readNumeric(victim, 'alliance_id'));
+
+  const lookup = async (command: string, flag: string, ids: number[]): Promise<Map<number, string>> => {
+    const results = await mapWithConcurrency(ids, 4, async (id) => {
+      try {
+        const data = await deps.fetchJson('eve-public', command, [flag, String(id)]);
+        return [id, isRecord(data) ? readString(data, 'ticker') : null] as const;
+      } catch {
+        return [id, null] as const;
+      }
+    });
+    const map = new Map<number, string>();
+    for (const [id, ticker] of results) {
+      if (ticker) map.set(id, ticker);
+    }
+    return map;
   };
+
+  const [corporations, alliances] = await Promise.all([
+    lookup('corporations_corporation_id', '--corporation_id', corporationIds),
+    lookup('alliances_alliance_id', '--alliance_id', allianceIds),
+  ]);
+  return { corporations, alliances };
 }
 
-function normalizeAllianceInfo(allianceId: number, data: JsonValue | null): AlliancePublicInfo | null {
-  if (!isRecord(data)) return null;
-  return {
-    alliance_id: allianceId,
-    name: readString(data, 'name'),
-    ticker: readString(data, 'ticker'),
-  };
+function rankAffiliations(
+  participants: Array<Record<string, unknown>>,
+  key: 'corporation_id' | 'alliance_id',
+  priorityId: number | null,
+): number[] {
+  const counts = new Map<number, number>();
+  for (const participant of participants) {
+    const id = readNumeric(participant, key);
+    if (id !== null && id > 0) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  const ranked = [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0] - right[0])
+    .map(([id]) => id)
+    .filter((id) => id !== priorityId);
+  const ordered = priorityId !== null && counts.has(priorityId) ? [priorityId, ...ranked] : ranked;
+  return ordered.slice(0, TICKER_LOOKUP_LIMIT);
 }
 
 function resolveSystemInfo(db: Db, systemId: number | null): SystemInfo | null {

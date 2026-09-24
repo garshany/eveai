@@ -10,6 +10,7 @@ import {
 } from './user-profile-storage.js';
 import { getEveSsoMetadata, verifyEveAccessToken } from './sso-auth.js';
 import { fetchRetrying } from './http.js';
+import { createHash } from 'node:crypto';
 
 interface TokenResponse {
   access_token: string;
@@ -28,6 +29,47 @@ interface EveAccount {
 }
 
 const refreshInFlight = new Map<number, Promise<{ token: string; characterId: number } | null>>();
+
+/**
+ * Backoff for refresh tokens that EVE SSO rejected permanently (400
+ * invalid_grant / 401). Kept in memory, keyed by character_id and a SHA-256
+ * fingerprint of the refresh token the rejection applied to:
+ * - a re-login writes a new refresh_token, the fingerprint no longer matches,
+ *   so the backoff is ignored without any callback-side bookkeeping;
+ * - no schema change or extra write path in SSO callbacks;
+ * - a process restart costs at most one extra SSO call per dead token.
+ * Transient failures (network, 429, 5xx) never create an entry.
+ */
+const REFRESH_BACKOFF_BASE_MS = 5 * 60_000;
+const REFRESH_BACKOFF_MAX_MS = 6 * 60 * 60_000;
+const refreshBackoff = new Map<number, { tokenHash: string; failures: number; until: number }>();
+
+function refreshTokenFingerprint(refreshToken: string): string {
+  return createHash('sha256').update(refreshToken).digest('hex');
+}
+
+function activeRefreshBackoff(characterId: number, refreshToken: string, now = Date.now()): boolean {
+  const entry = refreshBackoff.get(characterId);
+  if (!entry) return false;
+  if (entry.tokenHash !== refreshTokenFingerprint(refreshToken)) {
+    refreshBackoff.delete(characterId);
+    return false;
+  }
+  return entry.until > now;
+}
+
+function recordRefreshRejection(characterId: number, refreshToken: string, now = Date.now()): number {
+  const tokenHash = refreshTokenFingerprint(refreshToken);
+  const previous = refreshBackoff.get(characterId);
+  const failures = previous && previous.tokenHash === tokenHash ? previous.failures + 1 : 1;
+  const delayMs = Math.min(REFRESH_BACKOFF_MAX_MS, REFRESH_BACKOFF_BASE_MS * 2 ** (failures - 1));
+  refreshBackoff.set(characterId, { tokenHash, failures, until: now + delayMs });
+  return delayMs;
+}
+
+export function resetRefreshBackoffForTests(): void {
+  refreshBackoff.clear();
+}
 
 /**
  * Get a valid access token for the linked character.
@@ -66,6 +108,12 @@ export async function getAccessToken(db: Db, ctx: UserContext): Promise<{ token:
 
   if (expiresAt.getTime() - now.getTime() > bufferMs) {
     return { token: accessToken, characterId: account.character_id };
+  }
+
+  // A refresh token SSO already rejected is not retried until the backoff
+  // expires or a re-login stores a different refresh token.
+  if (activeRefreshBackoff(account.character_id, refreshToken)) {
+    return null;
   }
 
   // Refresh the token
@@ -390,9 +438,21 @@ async function refreshAccessToken(
   }
 
   if (!res.ok) {
+    if (res.status === 400 || res.status === 401) {
+      const delayMs = recordRefreshRejection(account.character_id, refreshToken);
+      console.error(
+        '[sso] Token refresh rejected: HTTP %d for character=%d; pausing refresh for %d min or until re-login',
+        res.status,
+        account.character_id,
+        Math.round(delayMs / 60_000),
+      );
+      return null;
+    }
     console.error('[sso] Token refresh failed: HTTP %d for character=%d', res.status, account.character_id);
     return null;
   }
+
+  refreshBackoff.delete(account.character_id);
 
   // getAccessToken's contract is "token or null": a malformed body or a JWT
   // that fails verification must not escape as an exception. Only the error

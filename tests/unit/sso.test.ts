@@ -33,7 +33,7 @@ vi.mock('jose', () => ({
   jwtVerify: jwtVerifyMock,
 }));
 
-import { getLinkedCharacter, getAccessToken, unlinkCharacter } from '../../src/eve/sso.js';
+import { getLinkedCharacter, getAccessToken, unlinkCharacter, resetRefreshBackoffForTests } from '../../src/eve/sso.js';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resetEveSsoMetadataCacheForTests } from '../../src/eve/sso-auth.js';
@@ -54,6 +54,7 @@ beforeEach(() => {
   jwtVerifyMock.mockReset();
   createRemoteJwkSetMock.mockClear();
   resetEveSsoMetadataCacheForTests();
+  resetRefreshBackoffForTests();
 });
 
 afterEach(() => {
@@ -273,6 +274,125 @@ describe('getAccessToken refresh failures', () => {
     expect(logged).not.toContain('bad-jwt');
     expect(logged).not.toContain('new-ref');
     errorSpy.mockRestore();
+  });
+});
+
+describe('getAccessToken dead refresh token backoff', () => {
+  const tokenEndpoint = 'https://login.eveonline.com/v2/oauth/token';
+  let tokenStatus: number;
+  let tokenCalls: number;
+  let sentRefreshTokens: string[];
+
+  function seedExpired(refreshToken = 'ref-token'): void {
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, ?)").run(1, 'pilot');
+    db.prepare(`
+      INSERT INTO eve_accounts (character_id, character_name, access_token, refresh_token, expires_at, scopes_json)
+      VALUES (?, ?, ?, ?, datetime('now', '-100 seconds'), ?)
+    `).run(12345, 'Pilot', 'expired-token', refreshToken, '[]');
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id) VALUES (?, ?)').run(1, 12345);
+  }
+
+  beforeEach(() => {
+    tokenStatus = 400;
+    tokenCalls = 0;
+    sentRefreshTokens = [];
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url !== tokenEndpoint) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            authorization_endpoint: 'https://login.eveonline.com/v2/oauth/authorize',
+            token_endpoint: tokenEndpoint,
+            jwks_uri: 'https://login.eveonline.com/oauth/jwks',
+          }),
+        };
+      }
+      tokenCalls += 1;
+      sentRefreshTokens.push(new URLSearchParams(String(init?.body)).get('refresh_token') ?? '');
+      if (tokenStatus !== 200) {
+        return {
+          ok: false,
+          status: tokenStatus,
+          headers: new Headers(),
+          json: async () => ({ error: 'invalid_grant' }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: 'fresh-access-token', refresh_token: 'fresh-refresh-token', expires_in: 1200 }),
+      };
+    });
+    jwtVerifyMock.mockResolvedValue({
+      payload: { sub: 'CHARACTER:EVE:12345', name: 'Pilot', aud: ['test-client', 'EVE Online'] },
+    });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('stops calling SSO after invalid_grant, escalates the backoff, and never logs the token', async () => {
+    seedExpired();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const ctx = { userId: 0, chatId: 1 };
+
+    await expect(getAccessToken(db, ctx)).resolves.toBeNull();
+    expect(tokenCalls).toBe(1);
+    await expect(getAccessToken(db, ctx)).resolves.toBeNull();
+    await expect(getAccessToken(db, ctx)).resolves.toBeNull();
+    expect(tokenCalls).toBe(1);
+
+    vi.setSystemTime(Date.now() + 5 * 60_000 + 1000);
+    await expect(getAccessToken(db, ctx)).resolves.toBeNull();
+    expect(tokenCalls).toBe(2);
+
+    // Second rejection doubles the pause to 10 minutes.
+    vi.setSystemTime(Date.now() + 6 * 60_000);
+    await expect(getAccessToken(db, ctx)).resolves.toBeNull();
+    expect(tokenCalls).toBe(2);
+    vi.setSystemTime(Date.now() + 5 * 60_000);
+    tokenStatus = 401;
+    await expect(getAccessToken(db, ctx)).resolves.toBeNull();
+    expect(tokenCalls).toBe(3);
+
+    const logged = errorSpy.mock.calls.flat().map(String).join(' ');
+    expect(logged).not.toContain('ref-token');
+    errorSpy.mockRestore();
+  });
+
+  it('clears the backoff when a re-login stores a new refresh token', async () => {
+    seedExpired();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const ctx = { userId: 0, chatId: 1 };
+
+    await expect(getAccessToken(db, ctx)).resolves.toBeNull();
+    await expect(getAccessToken(db, ctx)).resolves.toBeNull();
+    expect(tokenCalls).toBe(1);
+
+    db.prepare('UPDATE eve_accounts SET refresh_token = ? WHERE character_id = ?').run('relogin-ref-token', 12345);
+    tokenStatus = 200;
+    await expect(getAccessToken(db, ctx)).resolves.toEqual({ token: 'fresh-access-token', characterId: 12345 });
+    expect(tokenCalls).toBe(2);
+    expect(sentRefreshTokens.at(-1)).toBe('relogin-ref-token');
+    vi.mocked(console.error).mockRestore();
+  });
+
+  it('does not back off on transient SSO failures', async () => {
+    seedExpired();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const ctx = { userId: 0, chatId: 1 };
+    tokenStatus = 502;
+
+    await expect(getAccessToken(db, ctx)).resolves.toBeNull();
+    const afterFirst = tokenCalls;
+    expect(afterFirst).toBeGreaterThanOrEqual(1);
+    await expect(getAccessToken(db, ctx)).resolves.toBeNull();
+    expect(tokenCalls).toBeGreaterThan(afterFirst);
+    vi.mocked(console.error).mockRestore();
   });
 });
 
