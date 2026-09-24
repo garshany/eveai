@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Security: dependency advisories
+
+- Cleared every production advisory (`npm audit --omit=dev`: 9 → 0), all within the current major versions: `@fastify/static` 10.1.4 (authorization bypass and path traversal on the static route that serves the web client), `fastify` 5.12.5 (schema-validation bypass, `X-Forwarded-*` spoofing under hop-count trust), `find-my-way` (HTTP/2 DoS), `fast-uri` and `ip-address` (SSRF and trust-boundary bypasses), `brace-expansion` (DoS), and the Discord `undici` override moved from the now-vulnerable 6.27.0 to 6.28.1. Dev tooling (`vitest`, `vite`, `eslint`, `@vitejs/plugin-react`) was updated the same way; the full audit is clean.
+
 ### «Периметр» / Perimeter — live threat map with a proactive agent chat
 
 - New full-screen browser section built around a claim the other EVE maps cannot make: the ring index *is* the jump distance. The pilot sits at the centre, systems fall on concentric rings by how many jumps away they are, and the angle comes from real SDE 2D coordinates so the topology still reads geographically. Dotlan and EVEEye plot light years, which is not the number a traveller is deciding on. A second geographic layout is reached by interpolating the same nodes rather than remounting the scene, and the camera follows the pilot, eases across each jump, and auto-zooms with how often jumps arrive.
