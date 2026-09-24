@@ -93,7 +93,13 @@ import {
   refreshUserProfile,
 } from '../eve/user-profile.js';
 import { createRequestId } from './planner.js';
-import { getThreadSummary, runPreTurnCompact, needsMidTurnCompaction, runMidTurnCompact } from './compact.js';
+import {
+  autoCompactLimit,
+  getThreadSummary,
+  runPreTurnCompact,
+  needsMidTurnCompaction,
+  runMidTurnCompact,
+} from './compact.js';
 import { executeEveKillTool } from '../eve-kill/executor.js';
 import {
   INDUSTRY_COST_TOOL_NAME,
@@ -946,6 +952,10 @@ async function runNativeAgentLoop(
   let clientDiscoveredSchemaBytes = 0;
   let consecutiveEmptyClientSearches = 0;
   const clientDiscoveryReplayItems: NativeInputItem[] = [];
+  // Exact model-facing call/output pairs executed in this turn. Persisted audit
+  // rows keep only bounded metadata for programmatic, bounded-facade, and
+  // analytics tools, so mid-turn compaction replays this ledger instead.
+  const turnToolExchanges: TurnToolExchange[] = [];
   const seenProviderCallIds = new Set<string>();
   const turnGoalLedger = createTurnGoalLedger(goal);
   let completionNudges = 0;
@@ -1197,21 +1207,25 @@ async function runNativeAgentLoop(
           developerPrompt = rebuildDeveloperPrompt();
           previousResponseId = null;
           pendingItems = buildSmartContext(db, threadId);
-          // The summary only covers user/assistant history — re-inject the
-          // freshest tool results so this turn's collected data survives.
-          const toolSummary = buildRecentToolSummaryMessage(db, threadId);
-          if (toolSummary) {
-            pendingItems.push(toNativeAssistantMessage(toolSummary));
+          // The summary only covers user/assistant history. Replay this turn's
+          // exact tool outputs (newest first within a bounded budget); the
+          // SQLite audit summary is only a fallback because bounded tools
+          // persist metadata, not data.
+          const replay = buildTurnToolReplayItems(turnToolExchanges, midTurnReplayBudgetChars());
+          if (replay.replayed === 0) {
+            const toolSummary = buildRecentToolSummaryMessage(db, threadId);
+            if (toolSummary) {
+              pendingItems.push(toNativeAssistantMessage(toolSummary));
+            }
           }
           // Client-discovered schemas are declarations, not persisted tool
           // results. Re-link their trusted search calls/outputs after local
           // compaction so the provider and effective registry stay coherent.
           pendingItems.push(...clientDiscoveryReplayItems);
-          pendingItems.push({
-            type: 'message',
-            role: 'user',
-            content: [{ type: 'input_text', text: '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку и восстановленные tool-результаты выше. Если нужные данные уже есть — используй их, не вызывай tools повторно.' }],
-          } as NativeInputItem);
+          pendingItems.push(...replay.items);
+          console.log('[executor] mid-turn compaction replay: exchanges=%d omitted=%d chars=%d',
+            replay.replayed, replay.omitted, replay.chars);
+          pendingItems.push(toNativeMessage(buildMidTurnCompactionNotice(replay.replayed, replay.omitted)));
           if (useServerResponseState) serverRecoveryItems = [...pendingItems];
           // Compaction just reset agent_threads.total_tokens; the pre-compaction
           // peak must not be written back at turn end, or the next turn would
@@ -1710,6 +1724,14 @@ async function runNativeAgentLoop(
         output,
         ...(validated.callers[index] ? { caller: validated.callers[index] } : {}),
       });
+      if (!callRejections[index]) {
+        turnToolExchanges.push({
+          callId: toolCall.callId,
+          name: toolCall.name,
+          argumentsText: toolCall.argumentsText,
+          output,
+        });
+      }
     }
 
     const deterministicAnswer = hasProgrammaticBatch
@@ -3052,6 +3074,73 @@ function buildResponseStateRecoveryContext(
   return replayItems.length > 0 ? [...replayItems] : buildSmartContext(db, threadId);
 }
 
+type TurnToolExchange = {
+  callId: string;
+  name: string;
+  argumentsText: string;
+  output: string;
+};
+
+/**
+ * Character budget for replaying this turn's tool outputs after mid-turn
+ * compaction: at most two full tool outputs, and never more than roughly a
+ * quarter of the auto-compact token limit (~3 chars per token), so the rebuilt
+ * context stays well below the limit that triggered compaction.
+ */
+function midTurnReplayBudgetChars(): number {
+  return Math.max(
+    0,
+    Math.min(config.openai.maxToolOutputChars * 2, Math.floor(autoCompactLimit() * 0.25) * 3),
+  );
+}
+
+/**
+ * Rebuild self-contained function_call/function_call_output pairs for this
+ * turn's executed tools, newest first within `budgetChars`, emitted in
+ * chronological order. Provider-owned fields (item ids, reasoning, program
+ * items, `caller`) are dropped: every replayed call is a plain direct call with
+ * its matching output in the same input. Oldest exchanges are dropped first.
+ */
+function buildTurnToolReplayItems(
+  exchanges: readonly TurnToolExchange[],
+  budgetChars: number,
+): { items: NativeInputItem[]; replayed: number; omitted: number; chars: number } {
+  const selected: TurnToolExchange[] = [];
+  let chars = 0;
+  for (let index = exchanges.length - 1; index >= 0; index -= 1) {
+    const exchange = exchanges[index]!;
+    const size = exchange.output.length + exchange.argumentsText.length + exchange.name.length;
+    if (chars + size > budgetChars) break;
+    chars += size;
+    selected.push(exchange);
+  }
+  selected.reverse();
+  const items: NativeInputItem[] = selected.flatMap((exchange) => [
+    {
+      type: 'function_call',
+      call_id: exchange.callId,
+      name: exchange.name,
+      arguments: exchange.argumentsText,
+    },
+    {
+      type: 'function_call_output',
+      call_id: exchange.callId,
+      output: exchange.output,
+    },
+  ] as NativeInputItem[]);
+  return { items, replayed: selected.length, omitted: exchanges.length - selected.length, chars };
+}
+
+function buildMidTurnCompactionNotice(replayed: number, omitted: number): string {
+  if (replayed === 0) {
+    return '[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку выше. Результаты tools этого хода не сохранились в контексте — при необходимости вызови нужные tools снова.';
+  }
+  const omittedNote = omitted > 0
+    ? ` Самые ранние результаты (${omitted}) не поместились в бюджет — если они нужны, вызови соответствующие tools снова.`
+    : '';
+  return `[system] Контекст был сжат из-за размера. Продолжай выполнение задачи, используя сводку и восстановленные tool-результаты этого хода выше. Если нужные данные уже есть — используй их, не вызывай tools повторно.${omittedNote}`;
+}
+
 function buildRecentToolSummaryMessage(db: Db, threadId: string): string | null {
   const rows = db.prepare(
     "SELECT content FROM messages WHERE thread_id = ? AND role = 'tool' ORDER BY id DESC LIMIT ?",
@@ -3285,6 +3374,8 @@ export const __test__ = {
   buildToolStateRecoveryContext,
   buildResponseStateRecoveryContext,
   buildRecentToolSummaryMessage,
+  buildTurnToolReplayItems,
+  buildMidTurnCompactionNotice,
   executeToolCall,
   deriveLiveContextNeeds,
   resolveSystemLocationContext,

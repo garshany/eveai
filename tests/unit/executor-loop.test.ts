@@ -661,6 +661,81 @@ describe('stateless tool loop context accumulation', () => {
     expect(result.peakInputTokens).toBe(1200);
   });
 
+  it('replays this turn\'s bounded tool outputs verbatim after a mid-turn compaction', async () => {
+    // local_parallel_batch is a bounded public facade (declared on ModelHub):
+    // its audit row keeps only {ok, blocked, schema_valid, output_chars}.
+    process.env.OPENAI_PROVIDER = 'modelhub';
+    vi.resetModules();
+    midTurnCompactLimit.value = 3000;
+    db.prepare('INSERT INTO sde_regions (region_id, name, data_json) VALUES (?, ?, ?)').run(10000002, 'The Forge', '{}');
+    db.prepare('INSERT INTO sde_constellations (constellation_id, name, region_id, data_json) VALUES (?, ?, ?, ?)')
+      .run(20000020, 'Kimotoro', 10000002, '{}');
+    db.prepare('INSERT INTO sde_systems (system_id, name, constellation_id, data_json) VALUES (?, ?, ?, ?), (?, ?, ?, ?)')
+      .run(30000142, 'Jita', 20000020, '{}', 30000144, 'Perimeter', 20000020, '{}');
+    const batchCall = (callId: string, usage = 1000) => ({
+      ...outputResponse([{
+        type: 'function_call',
+        call_id: callId,
+        name: 'local_parallel_batch',
+        arguments: JSON.stringify({ calls: [{
+          id: 'forge_systems',
+          tool: 'count_universe_objects',
+          arguments_json: JSON.stringify({ target_kind: 'region', target_name: 'The Forge', object_kind: 'systems' }),
+        }] }),
+      }], `resp_${callId}`),
+      usage: { input: usage, output: 50, cached: 0, reasoning: 0 },
+    });
+    createNativeResponseMock
+      .mockResolvedValueOnce(batchCall('batch_1'))
+      .mockResolvedValueOnce(batchCall('batch_2', 5000))
+      .mockResolvedValueOnce(textResponse('после сжатия'));
+
+    const result = await runLoop();
+
+    expect(result.text).toBe('после сжатия');
+    expect(runMidTurnCompactMock).toHaveBeenCalledTimes(1);
+    // The persisted audit row carries only bounded metadata, not the data.
+    const audit = db.prepare("SELECT content FROM messages WHERE role = 'tool'").get() as { content: string };
+    expect(JSON.parse(audit.content).result).toMatchObject({ ok: true });
+    expect(audit.content).not.toContain('Jita');
+    const preCompactInput = createNativeResponseMock.mock.calls[1]![0].items as Array<Record<string, unknown>>;
+    const sentOutput = preCompactInput.find((item) =>
+      item.type === 'function_call_output' && item.call_id === 'batch_1');
+    expect(sentOutput).toBeDefined();
+    expect(String(sentOutput!.output)).toContain('"count":2');
+    const postCompactInput = createNativeResponseMock.mock.calls[2]![0].items as Array<Record<string, unknown>>;
+    const replayedCall = postCompactInput.find((item) =>
+      item.type === 'function_call' && item.call_id === 'batch_1');
+    const replayedOutput = postCompactInput.find((item) =>
+      item.type === 'function_call_output' && item.call_id === 'batch_1');
+    expect(replayedCall).toMatchObject({ name: 'local_parallel_batch' });
+    expect(replayedOutput?.output).toBe(sentOutput!.output);
+    expect(postCompactInput.indexOf(replayedCall!)).toBeLessThan(postCompactInput.indexOf(replayedOutput!));
+    // The discarded pre-compaction call was never executed, so it is not replayed.
+    expect(itemTexts(postCompactInput).some((text) => text.includes('batch_2'))).toBe(false);
+    expect(itemTexts(postCompactInput).at(-1)).toContain('не вызывай tools повторно');
+  });
+
+  it('bounds the compaction replay and allows re-calling tools when nothing was replayed', async () => {
+    const { __test__ } = await import('../../src/agent/executor.js');
+    const items = __test__.buildTurnToolReplayItems([], 10_000);
+    expect(items.items).toEqual([]);
+    const exchange = (callId: string, output: string) => ({ callId, name: 'sde_sql', argumentsText: '{}', output });
+    const bounded = __test__.buildTurnToolReplayItems(
+      [exchange('old', 'x'.repeat(500)), exchange('mid', 'y'.repeat(300)), exchange('new', 'z'.repeat(300))],
+      700,
+    );
+    // Newest first within budget, oldest dropped, pairs kept in chronological order.
+    expect(bounded.replayed).toBe(2);
+    expect(bounded.omitted).toBe(1);
+    expect(bounded.items.map((item) => `${item.type}:${(item as { call_id: string }).call_id}`)).toEqual([
+      'function_call:mid', 'function_call_output:mid', 'function_call:new', 'function_call_output:new',
+    ]);
+    expect(bounded.items.some((item) => 'caller' in item)).toBe(false);
+    expect(__test__.buildMidTurnCompactionNotice(0, 0)).not.toContain('не вызывай tools повторно');
+    expect(__test__.buildMidTurnCompactionNotice(2, 1)).toContain('не вызывай tools повторно');
+  });
+
   it('records billed usage for a non-completed response before failing the turn', async () => {
     const { runMigrations } = await import('../../src/db/migrations.js');
     runMigrations(db as never);
