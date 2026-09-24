@@ -61,6 +61,11 @@ function resolveRegion(db: Db, name: string): { regionId: number; regionName: st
   return { regionId: row.region_id, regionName: row.name };
 }
 
+/** Escape LIKE wildcards for use with ESCAPE '\\'. */
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 // ---------------------------------------------------------------------------
 // Format note for output
 // ---------------------------------------------------------------------------
@@ -202,18 +207,20 @@ function searchNotes(
     params.push(tag);
   }
 
-  // Text search (LIKE)
+  // Text search (LIKE). The user's query is a literal substring: escape the
+  // LIKE wildcards (and the escape char itself) so "100%" or "a_b" match only
+  // themselves instead of acting as patterns.
   const query = typeof args.query === 'string' ? args.query.trim() : null;
   if (query) {
-    conditions.push('text LIKE ?');
-    params.push(`%${query}%`);
+    conditions.push("text LIKE ? ESCAPE '\\'");
+    params.push(`%${escapeLikePattern(query)}%`);
   }
 
   const sql = `
     SELECT note_id, system_id, system_name, region_id, region_name, entity_name, tag, text, created_at
     FROM intel_notes
     WHERE ${conditions.join(' AND ')}
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, note_id DESC
     LIMIT ${MAX_RESULTS}
   `;
 
@@ -231,7 +238,7 @@ function listNotes(db: Db, userId: number): unknown {
     SELECT note_id, system_id, system_name, region_id, region_name, entity_name, tag, text, created_at
     FROM intel_notes
     WHERE user_id = ?
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, note_id DESC
     LIMIT ${MAX_RESULTS}
   `).all(userId) as NoteRow[];
 

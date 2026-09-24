@@ -14,6 +14,19 @@
  * (b) take the oldest due pairs up to maxPerTick and refresh them through
  * ensureTypeHistorySynced with bounded concurrency.
  *
+ * Pruning: every seed stamps market_history_sync.last_wanted_at for the pairs
+ * it still wants (watchlist and active-alert pairs on every tick, top-N pairs
+ * whenever the top-types seed runs). A pair nobody wants any more — removed
+ * from every watchlist, its alerts gone, dropped out of the top-N, or only
+ * ever fetched on demand by the web UI — stops being stamped and is deleted
+ * once its stamp is older than historyPruneGraceMs (default 3 days, longer
+ * than the daily top-types interval so a pair briefly slipping out of the
+ * top-N survives). Pairs still referenced by a watchlist or an active alert
+ * are never pruned. Rows from before the column existed (NULL stamp) are
+ * stamped on first sight, so they get the full grace period too. Pruning only
+ * drops the sync schedule: stored market_price_history rows stay, and an
+ * on-demand view of a pruned pair simply re-creates its sync row.
+ *
  * A tick with nothing due is two cheap SELECTs and zero ESI calls. CCP
  * rebuilds the history endpoint once a day at 11:05 UTC, so a steady state
  * has each tracked pair due once a day and the hourly cadence exists to
@@ -49,6 +62,8 @@ const BOOT_TICK_JITTER_MS = 60_000;
 // The top-types seed is a full scan over market_orders; the snapshot data
 // behind it changes daily, so re-running it on every hourly tick is waste.
 const TOP_TYPES_SEED_INTERVAL_MS = 24 * 60 * 60_000;
+// How long an unwanted pair keeps its sync row; see "Pruning" in the header.
+const HISTORY_PRUNE_GRACE_MS = 3 * 24 * 60 * 60_000;
 
 let cronJob: Cron | null = null;
 let bootTimer: NodeJS.Timeout | null = null;
@@ -66,6 +81,8 @@ export type MarketHistoryTickDeps = HistorySyncDeps & {
   majorMinPages: number;
   // Minimum gap between two top-types seeds; the watchlist seed is unaffected.
   topTypesSeedIntervalMs: number;
+  // Unwanted pairs whose last_wanted_at is older than this are pruned.
+  historyPruneGraceMs: number;
 };
 
 function defaultDeps(): MarketHistoryTickDeps {
@@ -76,6 +93,7 @@ function defaultDeps(): MarketHistoryTickDeps {
     defaultRegionId: config.market.defaultRegionId,
     majorMinPages: config.marketSnapshot.majorMinPages,
     topTypesSeedIntervalMs: TOP_TYPES_SEED_INTERVAL_MS,
+    historyPruneGraceMs: HISTORY_PRUNE_GRACE_MS,
   };
 }
 
@@ -149,6 +167,10 @@ async function tickOnce(db: Db, deps: MarketHistoryTickDeps): Promise<void> {
   const now = deps.now ?? new Date();
   const nowIso = now.toISOString();
   const seeded = seedHistorySync(db, deps, now, nowIso);
+  const pruned = pruneUnwantedPairs(db, deps, now, nowIso);
+  if (pruned > 0) {
+    console.log('[market-history] Pruned %d unwanted pair(s)', pruned);
+  }
   const due = selectDuePairs(db, nowIso, deps.maxPerTick);
   if (due.length === 0) {
     if (seeded > 0) {
@@ -181,14 +203,28 @@ async function tickOnce(db: Db, deps: MarketHistoryTickDeps): Promise<void> {
 function seedHistorySync(db: Db, deps: MarketHistoryTickDeps, now: Date, nowIso: string): number {
   // ON CONFLICT DO NOTHING: seeding only ever schedules pairs that are not
   // tracked yet; an existing pair keeps its own next_due_at and error state.
-  // New rows carry next_due_at = now so they sync on this very tick.
+  // New rows carry next_due_at = now so they sync on this very tick, and
+  // last_wanted_at = now for the prune clock.
   const watchlistSeeded = db.prepare(`
-    INSERT INTO market_history_sync (region_id, type_id, next_due_at)
-    SELECT COALESCE(w.region_id, ?), w.type_id, ?
+    INSERT INTO market_history_sync (region_id, type_id, next_due_at, last_wanted_at)
+    SELECT COALESCE(w.region_id, ?), w.type_id, ?, ?
     FROM market_watchlist w
     WHERE true
     ON CONFLICT (region_id, type_id) DO NOTHING
-  `).run(deps.defaultRegionId, nowIso).changes;
+  `).run(deps.defaultRegionId, nowIso, nowIso).changes;
+  // Refresh the prune clock of every pair a user still references (watchlist
+  // or active alert). Both tables are small, per-user lists.
+  db.prepare(`
+    UPDATE market_history_sync AS s SET last_wanted_at = ?
+    WHERE EXISTS (
+        SELECT 1 FROM market_watchlist w
+        WHERE w.type_id = s.type_id AND COALESCE(w.region_id, ?) = s.region_id
+      )
+      OR EXISTS (
+        SELECT 1 FROM market_price_alerts a
+        WHERE a.type_id = s.type_id AND a.region_id = s.region_id AND a.status = 'active'
+      )
+  `).run(nowIso, deps.defaultRegionId);
 
   if (deps.seedTopTypes <= 0) return watchlistSeeded;
   // The top-types half is the expensive query (see the module header): skip
@@ -200,18 +236,56 @@ function seedHistorySync(db: Db, deps: MarketHistoryTickDeps, now: Date, nowIso:
     return watchlistSeeded;
   }
   lastTopTypesSeedAt = nowMs;
-  const topTypesSeeded = db.prepare(`
-    INSERT INTO market_history_sync (region_id, type_id, next_due_at)
-    SELECT o.region_id, o.type_id, ?
+  const topPairs = db.prepare(`
+    SELECT o.region_id, o.type_id
     FROM market_orders o
     JOIN market_snapshot_regions r ON r.region_id = o.region_id
     WHERE r.pages >= ?
     GROUP BY o.region_id, o.type_id
     ORDER BY SUM(o.volume_remain * o.price) DESC
     LIMIT ?
+  `).all(deps.majorMinPages, deps.seedTopTypes) as Array<{ region_id: number; type_id: number }>;
+  // At most seedTopTypes rows: insert new pairs (counted as seeded) and
+  // refresh the prune clock of the ones already tracked.
+  const insertTop = db.prepare(`
+    INSERT INTO market_history_sync (region_id, type_id, next_due_at, last_wanted_at)
+    VALUES (?, ?, ?, ?)
     ON CONFLICT (region_id, type_id) DO NOTHING
-  `).run(nowIso, deps.majorMinPages, deps.seedTopTypes).changes;
+  `);
+  const stampTop = db.prepare(
+    'UPDATE market_history_sync SET last_wanted_at = ? WHERE region_id = ? AND type_id = ?',
+  );
+  let topTypesSeeded = 0;
+  db.transaction(() => {
+    for (const pair of topPairs) {
+      const inserted = insertTop.run(pair.region_id, pair.type_id, nowIso, nowIso).changes;
+      if (inserted > 0) topTypesSeeded += inserted;
+      else stampTop.run(nowIso, pair.region_id, pair.type_id);
+    }
+  })();
   return watchlistSeeded + topTypesSeeded;
+}
+
+/**
+ * Drop sync rows for pairs nobody wants any more (see "Pruning" in the module
+ * header). Returns the number of pruned pairs.
+ */
+function pruneUnwantedPairs(db: Db, deps: MarketHistoryTickDeps, now: Date, nowIso: string): number {
+  // Legacy/on-demand rows without a stamp start their grace period now.
+  db.prepare('UPDATE market_history_sync SET last_wanted_at = ? WHERE last_wanted_at IS NULL').run(nowIso);
+  const cutoffIso = new Date(now.getTime() - deps.historyPruneGraceMs).toISOString();
+  return db.prepare(`
+    DELETE FROM market_history_sync AS s
+    WHERE s.last_wanted_at < ?
+      AND NOT EXISTS (
+        SELECT 1 FROM market_watchlist w
+        WHERE w.type_id = s.type_id AND COALESCE(w.region_id, ?) = s.region_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM market_price_alerts a
+        WHERE a.type_id = s.type_id AND a.region_id = s.region_id AND a.status = 'active'
+      )
+  `).run(cutoffIso, deps.defaultRegionId).changes;
 }
 
 function selectDuePairs(

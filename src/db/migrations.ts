@@ -56,6 +56,14 @@ export function runMigrations(db: Db): void {
     db.exec('DROP INDEX IF EXISTS idx_market_price_history_type_date');
     db.exec('DROP INDEX IF EXISTS idx_market_alerts_active');
     createIndexIfMissing(db, 'idx_market_price_alerts_user_status', 'market_price_alerts', 'user_id, status');
+    // History worker prune clock: pairs no seed wants any more age out.
+    addColumnIfMissing(db, 'market_history_sync', 'last_wanted_at', 'TEXT');
+    // Alert push redelivery: per-event attempts with exponential backoff and
+    // a terminal abandoned_at so undeliverable events stop blocking the queue.
+    addColumnIfMissing(db, 'market_alert_events', 'delivery_attempts', 'INTEGER NOT NULL DEFAULT 0');
+    addColumnIfMissing(db, 'market_alert_events', 'next_attempt_at', 'TEXT');
+    addColumnIfMissing(db, 'market_alert_events', 'abandoned_at', 'TEXT');
+    createIndexIfMissing(db, 'idx_market_alert_events_pending', 'market_alert_events', 'delivered_at, abandoned_at, next_attempt_at');
     ensureUsageTables(db);
     // Вариации карточки предмета фильтруют по group_id: без индекса каждый
     // просмотр вкладки «О предмете» сканировал всю таблицу sde_types (~51k строк).
