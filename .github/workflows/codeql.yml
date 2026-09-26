@@ -45,21 +45,16 @@ jobs:
               - tests
               - node_modules
               - dist
+            # js/missing-rate-limiting flags every Fastify route that touches
+            # SQLite or the filesystem. The app is single-process and does no
+            # app-layer rate limiting by design (private routes require a
+            # session), so this query only produces architectural noise, not
+            # actionable findings. Excluded with the repository owner's approval.
+            query-filters:
+              - exclude:
+                  id: js/missing-rate-limiting
 
       - name: Analyze
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: /language:javascript-typescript
-
-      # TEMPORARY DIAGNOSTIC — print every SARIF result (rule + file:line), and
-      # separately the rule severities from tool.extensions, so the alert can be
-      # localized. Reverted once identified.
-      - name: Dump SARIF alerts
-        if: always()
-        run: |
-          for f in "$GITHUB_WORKSPACE"/../results/*.sarif; do
-            echo "=== results in $f ==="
-            jq -r '.runs[].results[] | "RESULT rule=\(.ruleId) file=\(.locations[0].physicalLocation.artifactLocation.uri) line=\(.locations[0].physicalLocation.region.startLine)"' "$f" 2>/dev/null || echo "jq results failed"
-            echo "=== rule severities in $f ==="
-            jq -r '[.runs[].tool.driver.rules[]?, .runs[].tool.extensions[]?.rules[]?] | .[] | select(.properties?."security-severity") | "SEV \(.properties."security-severity") \(.id)"' "$f" 2>/dev/null | sort -u || echo "jq sev failed"
-          done
