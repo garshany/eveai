@@ -597,6 +597,25 @@ reviewers, to approve every rollout by hand) and add:
 | variable | `PROD_APP_DIR` | optional, default `/srv/eveai` |
 | variable | `PROD_SERVICE` | optional, default `eveai` |
 
+#### Google Cloud VM without a public SSH port (IAP)
+
+If SSH is reachable only through Identity-Aware Proxy, set these environment
+variables as well; the job then signs in with Workload Identity Federation
+(no stored Google key) and tunnels port 22 to `localhost:2222`:
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| variable | `GCP_WIF_PROVIDER` | `projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>` |
+| variable | `GCP_SERVICE_ACCOUNT` | deploy service account email |
+| variable | `GCP_PROJECT` / `GCP_ZONE` / `GCP_VM` | the VM location |
+| variable | `PROD_SSH_PORT` | `2222` |
+| secret | `PROD_SSH_HOST` | `localhost` |
+| secret | `PROD_SSH_KNOWN_HOSTS` | `[localhost]:2222 <VM host key>` |
+
+The service account needs only `roles/iap.tunnelResourceAccessor` and
+`roles/compute.viewer` on the instance; restrict the provider with an attribute
+condition on the repository and the `production` environment.
+
 Then merge to `master` (or run the workflow by hand from the Actions tab). The
 job summary shows the commit and result; `/srv/eveai/.deployed-sha` holds the
 live commit on the host.
