@@ -54,10 +54,11 @@ The right-hand panel is a real conversation thread, not a notification rail. It
 persists across reloads, restarts, and re-login, and it appears in the workspace
 conversation list.
 
-- **The pilot asks.** Every message silently carries the map context — current
-  system and security, hull, bubble radius and its danger summary, the selected
-  system, the active route — so a bare "стоит ли лететь?" is answerable without
-  a clarifying question.
+- **The pilot asks.** The stored message is exactly what was typed. The system
+  selected on the map (or, failing that, the one the map is centred on) goes
+  into the agent's runtime radar block for five minutes, so "а эта система?"
+  resolves without a clarifying question. The active route is read through
+  `map_bubble_intel.active_route`.
 - **The pilot's question sees the radar.** A Perimeter turn carries a radar
   snapshot kept by the live stream — current system, hull, bubble verdict,
   the hottest nearby systems and the latest alarms — read from memory with no
@@ -159,6 +160,10 @@ Shown in the interface, not buried here:
 | `route_risk` | "How do I get there safely" — a danger-weighted route with a per-hop cost breakdown and how many extra jumps safety cost. |
 | `compare_ships` | "Can that X catch my Y" — EHP, align, warp speed, and class from local SDE dogma. |
 | `threat_explain` | "Why is this system red" — the actual killmails and which attackers repeat. |
+| `plan_route` | "Get me from A to B" — secure / shortest / insecure variants against the live kill picture; redraws the map line with the `prefer` variant, takes a per-route `avoid` list, touches autopilot only on request. |
+
+Auto reasoning effort is capped at `medium` in Perimeter turns (an explicitly
+chosen effort is kept): a pilot on a gate needs the answer in seconds.
 
 ## Operator configuration
 

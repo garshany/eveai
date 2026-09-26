@@ -276,9 +276,15 @@ CREATE TABLE IF NOT EXISTS sde_types (
   type_id    INTEGER PRIMARY KEY,
   name       TEXT NOT NULL,
   group_id   INTEGER,
-  data_json  TEXT NOT NULL
+  data_json  TEXT NOT NULL,
+  -- Virtual (computed on read, indexable) market fields: market-tree and
+  -- search queries filter on these through an index instead of parsing the
+  -- JSON of every type row on each request.
+  market_group_id INTEGER GENERATED ALWAYS AS (json_extract(data_json, '$.marketGroupID')) VIRTUAL,
+  published       INTEGER GENERATED ALWAYS AS (json_extract(data_json, '$.published')) VIRTUAL
 );
 CREATE INDEX IF NOT EXISTS idx_sde_types_name ON sde_types(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_sde_types_market_group ON sde_types(published, market_group_id, name COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS sde_groups (
   group_id    INTEGER PRIMARY KEY,

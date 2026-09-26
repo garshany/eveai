@@ -23,6 +23,7 @@ import { ASSETS_SUMMARY_TOOL, isAssetsSummaryTool } from '../eve/assets-summary.
 import { CHARACTER_ORDERS_SUMMARY_TOOL, isCharacterOrdersSummaryTool } from '../eve/orders-summary.js';
 import { MARKET_WIDE_SUMMARY_TOOL, isMarketWideSummaryTool } from '../eve/market-wide-summary.js';
 import { COMMUNITY_TOOLS, isCommunityToolName } from '../community/tools.js';
+import { MARKET_AGENT_TOOLS, isMarketAgentToolName } from '../eve/market-agent-tools.js';
 import { PERIMETER_TOOLS, isPerimeterTool } from '../eve-map/tools.js';
 import {
   DOCTRINE_SUMMARY_TOOL,
@@ -234,9 +235,10 @@ const ALWAYS_ON_FUNCTION_TOOLS: NativeFunctionTool[] = [
         origin: { type: 'string', description: 'Origin system name or ID. Use "current" to use the current location from prompt context.' },
         destination: { type: 'string', description: 'Destination system name or ID' },
         set_autopilot: { type: ['boolean', 'null'], description: 'Set autopilot to the preferred route only when explicitly true (default false)' },
-        prefer: { type: ['string', 'null'], enum: ['secure', 'shortest', 'insecure', 'thera_shortcut', null], description: 'Which route to prefer for autopilot. thera_shortcut sets waypoints for WH shortcut: entry system → exit system → destination (default: secure)' },
+        prefer: { type: ['string', 'null'], enum: ['secure', 'shortest', 'insecure', 'thera_shortcut', null], description: 'Which variant to prefer: it is the one drawn on the pilot\'s map and, when set_autopilot is true, sent to autopilot. thera_shortcut sets waypoints for WH shortcut: entry system → exit system → destination (default: secure)' },
+        avoid: { type: ['array', 'null'], items: { type: 'integer' }, description: 'Extra system IDs to avoid for this route only ("обойди Tama"), on top of the pilot\'s stored avoid list. Resolve names to IDs first.' },
       },
-      required: ['origin', 'destination', 'set_autopilot', 'prefer'],
+      required: ['origin', 'destination', 'set_autopilot', 'prefer', 'avoid'],
       additionalProperties: false,
     },
   },
@@ -611,6 +613,7 @@ export async function buildNativeAgentTools(
     // instead of fanning out across kill search and ESI metrics.
     ...PERIMETER_TOOLS,
     ...COMMUNITY_TOOLS,
+    ...MARKET_AGENT_TOOLS,
     buildEveKillNamespace({ includeWatch: includeFeedNotifications }),
     buildEveKillAnalyticsNamespace(),
     buildEveScoutNamespace(),
@@ -694,6 +697,7 @@ export function isDeferredLookupToolName(name: string): boolean {
 }
 
 export { isCommunityToolName } from '../community/tools.js';
+export { isMarketAgentToolName } from '../eve/market-agent-tools.js';
 export { isPerimeterTool } from '../eve-map/tools.js';
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
@@ -736,7 +740,7 @@ export async function getToolPolicy(
     || isAssetsSummaryTool(name) || isCharacterOrdersSummaryTool(name)
     || isMarketWideSummaryTool(name)
     || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)
-    || isCommunityToolName(name) || isPerimeterTool(name)) {
+    || isCommunityToolName(name) || isPerimeterTool(name) || isMarketAgentToolName(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();

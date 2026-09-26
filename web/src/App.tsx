@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isAmbiguousApiRequestError, webApi } from './api';
 import {
-  mergeRequestSnapshot,
-  mergeStreamDelta,
+  applyThreadDelta,
+  applyThreadSnapshot,
+  isRequestActive,
   preparePendingSubmission,
   submitWithAmbiguousRetry,
+  trackThreadRequest,
+  untrackThreadRequest,
   type PendingSubmission,
+  type RequestsByThread,
   type StreamDeltaFrame,
 } from './agent-request-client';
 import { LoginScreen } from './components/LoginScreen';
@@ -42,6 +46,8 @@ const DOCK_STORAGE_KEY = 'eveai.dock.v1';
 const DOCK_DESKTOP_WIDTH = 1180;
 /** Снапшот рынка обновляется раз в минуту — статус-пилюля не должна врать. */
 const SNAPSHOT_POLL_MS = 60_000;
+/** Живые поля пилота (локация, корабль, кошелёк) в ESI кэшируются 5–120 с. */
+const PROFILE_POLL_MS = 60_000;
 
 function authResultMessage(): string | null {
   const result = new URLSearchParams(window.location.search).get('auth');
@@ -70,7 +76,10 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AppView>('chat');
-  const [activeRequest, setActiveRequest] = useState<WebAgentRequest | null>(null);
+  // Agent turns in flight, one per thread: a reply streaming in one chat
+  // must not lock the sidebar or the other chats. `busy` covers only short
+  // UI actions (sending, switching pilot, logout).
+  const [requests, setRequests] = useState<RequestsByThread>({});
   const [dockOpen, setDockOpen] = useState(initialDockOpen);
   const [dockTab, setDockTab] = useState<DockTab>('market');
   const [dockTrace, setDockTrace] = useState<ActivityStep[] | null>(null);
@@ -82,6 +91,7 @@ export default function App() {
   const pendingSubmissionRef = useRef<PendingSubmission | null>(null);
 
   const session = bootstrap?.session ?? null;
+  const activeRequest = activeId ? requests[activeId] ?? null : null;
 
   const setActiveConversation = useCallback((threadId: string | null) => {
     activeIdRef.current = threadId;
@@ -111,17 +121,14 @@ export default function App() {
     }
   }, [refreshConversationList, setActiveConversation]);
 
-  const recoverActiveRequest = useCallback(async () => {
-    const result = await webApi.getActiveAgentRequest();
-    if (!result.request) return;
-    const generation = ++messageLoadGeneration.current;
-    const messagesResult = await webApi.getMessages(result.request.threadId);
-    if (generation !== messageLoadGeneration.current) return;
-    setActiveConversation(result.request.threadId);
-    setMessages(messagesResult.messages);
-    setActiveRequest(result.request);
-    setBusy(true);
-  }, [setActiveConversation]);
+  // Re-attaches to a reply still running after a reload. It is tracked for its
+  // own thread without jumping there: the pilot stays in the chat they opened.
+  const recoverActiveRequest = useCallback(async (threadId?: string | null) => {
+    const result = await webApi.getActiveAgentRequest(threadId);
+    const request = result.request;
+    if (!request || !isRequestActive(request)) return;
+    setRequests((current) => trackThreadRequest(current, request));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,6 +138,7 @@ export default function App() {
         setBootstrap(payload);
         if (payload.session) {
           await loadConversations();
+          await recoverActiveRequest(activeIdRef.current);
           await recoverActiveRequest();
         }
       })
@@ -167,17 +175,38 @@ export default function App() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [sessionActive]);
 
-  useEffect(() => {
-    if (characterId === null) {
-      setProfile(null);
-      return;
+  // Карточка пилота (сайдбар, шапка, док) живёт на одном снапшоте профиля.
+  // Он перечитывается раз в минуту при видимой вкладке, при возврате на
+  // вкладку и после каждого ответа агента; сбой опроса оставляет последний
+  // удачный снапшот, а не гасит карточку до смены персонажа.
+  const profileCharacterRef = useRef<number | null>(null);
+  const loadProfile = useCallback(async () => {
+    const requestedFor = profileCharacterRef.current;
+    if (requestedFor === null) return;
+    try {
+      const payload = await webApi.getProfile();
+      if (profileCharacterRef.current === requestedFor && payload.profile?.character.id === requestedFor) {
+        setProfile(payload.profile);
+      }
+    } catch {
+      // Keep the last good profile; the next poll retries.
     }
-    let cancelled = false;
-    void webApi.getProfile()
-      .then((payload) => { if (!cancelled) setProfile(payload.profile); })
-      .catch(() => { if (!cancelled) setProfile(null); });
-    return () => { cancelled = true; };
-  }, [characterId]);
+  }, []);
+  useEffect(() => {
+    profileCharacterRef.current = characterId;
+    setProfile(null);
+    if (characterId === null) return;
+    void loadProfile();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void loadProfile();
+    }, PROFILE_POLL_MS);
+    const onVisible = () => { if (document.visibilityState === 'visible') void loadProfile(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [characterId, loadProfile]);
 
   // Пилюля модели перечитывается при каждом возврате в чат: «Настройки» —
   // отдельный экран, и после сохранения шапка иначе показывала бы модель,
@@ -219,99 +248,49 @@ export default function App() {
     localStorage.setItem(DOCK_STORAGE_KEY, 'open');
   }, []);
 
-  const observedRequestId = activeRequest?.requestId ?? null;
-  // A boolean, not the status: queued -> running must not tear down and reopen
-  // the stream (and restart polling) mid-request.
-  const observedRequestActive = activeRequest?.status === 'queued' || activeRequest?.status === 'running';
-  const observedRetryAfterRef = useRef(1_000);
-  observedRetryAfterRef.current = activeRequest?.retryAfterMs ?? 1_000;
+  const onRequestSnapshot = useCallback((request: WebAgentRequest) => {
+    setRequests((current) => applyThreadSnapshot(current, request));
+  }, []);
+  const onRequestDelta = useCallback((threadId: string, frame: StreamDeltaFrame) => {
+    setRequests((current) => applyThreadDelta(current, threadId, frame));
+  }, []);
+  const onRequestPollError = useCallback((message: string) => setError(message), []);
 
+  // A finished turn refreshes its thread (only if it is on screen) and the
+  // list, then stops being tracked. Each request id is finalized once.
+  const finalizingRef = useRef(new Set<string>());
   useEffect(() => {
-    if (!observedRequestId || !observedRequestActive) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    const applySnapshot = (request: WebAgentRequest) => {
-      if (!cancelled) setActiveRequest((current) => mergeRequestSnapshot(current, request));
-    };
-    // Polling is only the fallback: the SSE stream already pushes every
-    // snapshot, so running both doubled the server load for each request.
-    const startPolling = () => {
-      if (cancelled || timer !== null) return;
-      timer = window.setInterval(() => {
-        void webApi.getAgentRequest(observedRequestId)
-          .then(({ request }) => applySnapshot(request))
-          .catch((reason: unknown) => {
-            if (!cancelled) setError(reason instanceof Error ? reason.message : 'Не удалось проверить состояние запроса.');
-          });
-      }, Math.max(500, observedRetryAfterRef.current));
-    };
-    const source = typeof EventSource === 'undefined'
-      ? null
-      : new EventSource(`/api/web/chat/requests/${encodeURIComponent(observedRequestId)}/events`);
-    source?.addEventListener('request', (event) => {
-      if (cancelled || !(event instanceof MessageEvent)) return;
-      try {
-        const payload = JSON.parse(event.data) as { request?: WebAgentRequest };
-        if (payload.request?.requestId === observedRequestId) applySnapshot(payload.request);
-      } catch {
-        // A malformed frame is skipped; the next snapshot carries full state.
-      }
-    });
-    source?.addEventListener('delta', (event) => {
-      if (cancelled || !(event instanceof MessageEvent)) return;
-      try {
-        const frame = JSON.parse(event.data) as StreamDeltaFrame;
-        if (frame.requestId === observedRequestId) {
-          setActiveRequest((current) => mergeStreamDelta(current, frame));
+    for (const request of Object.values(requests)) {
+      if (isRequestActive(request) || finalizingRef.current.has(request.requestId)) continue;
+      finalizingRef.current.add(request.requestId);
+      void (async () => {
+        try {
+          const result = await webApi.getMessages(request.threadId);
+          if (activeIdRef.current === request.threadId) {
+            if (request.status === 'completed') {
+              const lastAssistant = findLastAssistantIndex(result.messages);
+              setMessages(result.messages.map((message, index) => index === lastAssistant
+                ? { ...message, activity: request.activity }
+                : message));
+            } else {
+              setMessages(result.messages);
+            }
+          }
+          await refreshConversationList();
+          // Агент мог сменить корабль/фит или потратить ISK — карточка догоняет.
+          void loadProfile();
+          if (request.status !== 'completed') {
+            setError(request.error ?? 'Не удалось завершить запрос.');
+          }
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : 'Не удалось обновить диалог.');
+        } finally {
+          finalizingRef.current.delete(request.requestId);
+          setRequests((current) => untrackThreadRequest(current, request.threadId, request.requestId));
         }
-      } catch {
-        // A malformed frame is skipped; the next snapshot carries full state.
-      }
-    });
-    source?.addEventListener('error', () => {
-      source.close();
-      startPolling();
-    });
-    if (!source) startPolling();
-    return () => {
-      cancelled = true;
-      source?.close();
-      if (timer !== null) window.clearInterval(timer);
-    };
-  }, [observedRequestId, observedRequestActive]);
-
-  useEffect(() => {
-    if (!activeRequest || activeRequest.status === 'queued' || activeRequest.status === 'running') return;
-    let cancelled = false;
-    void (async () => {
-      const result = await webApi.getMessages(activeRequest.threadId);
-      if (!cancelled && activeIdRef.current === activeRequest.threadId) {
-        if (activeRequest.status === 'completed') {
-          const lastAssistant = findLastAssistantIndex(result.messages);
-          setMessages(result.messages.map((message, index) => index === lastAssistant
-            ? { ...message, activity: activeRequest.activity }
-            : message));
-        } else {
-          setMessages(result.messages);
-        }
-      }
-      await refreshConversationList();
-      if (activeRequest.status !== 'completed' && !cancelled) {
-        setError(activeRequest.error ?? 'Не удалось завершить запрос.');
-      }
-      if (!cancelled) {
-        setBusy(false);
-        setActiveRequest(null);
-      }
-    })().catch((reason: unknown) => {
-      if (!cancelled) {
-        setError(reason instanceof Error ? reason.message : 'Не удалось обновить диалог.');
-        setBusy(false);
-        setActiveRequest(null);
-      }
-    });
-    return () => { cancelled = true; };
-  }, [activeRequest, refreshConversationList]);
+      })();
+    }
+  }, [requests, refreshConversationList, loadProfile]);
 
   const ensureSession = async (turnstileToken?: string): Promise<NonNullable<SessionPayload['session']>> => {
     if (session) return session;
@@ -407,6 +386,7 @@ export default function App() {
       if (generation === messageLoadGeneration.current && activeIdRef.current === threadId) {
         setMessages(result.messages);
       }
+      await recoverActiveRequest(threadId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось загрузить диалог.');
     }
@@ -453,12 +433,15 @@ export default function App() {
       );
       const response = await submitWithAmbiguousRetry(submit);
       pendingSubmissionRef.current = null;
-      setActiveConversation(response.request.threadId);
-      setActiveRequest(response.request);
+      // A new chat gets its id from the server; follow it only if the pilot
+      // is still where they sent from.
+      if (activeIdRef.current === sourceThreadId) setActiveConversation(response.request.threadId);
+      setRequests((current) => trackThreadRequest(current, response.request));
       await refreshConversationList();
     } catch (reason) {
       if (!isAmbiguousApiRequestError(reason)) pendingSubmissionRef.current = null;
       setError(reason instanceof Error ? reason.message : 'Модель не ответила. Попробуйте ещё раз.');
+    } finally {
       setBusy(false);
     }
   };
@@ -467,7 +450,7 @@ export default function App() {
     if (!session || !activeRequest) return;
     try {
       const response = await webApi.cancelAgentRequest(activeRequest.requestId, session.csrfToken);
-      setActiveRequest(response.request);
+      setRequests((current) => applyThreadSnapshot(current, response.request));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось отменить запрос.');
     }
@@ -488,6 +471,7 @@ export default function App() {
       });
       setConversations([]);
       setMessages([]);
+      setRequests({});
       pendingSubmissionRef.current = null;
       messageLoadGeneration.current += 1;
       setActiveConversation(null);
@@ -542,6 +526,15 @@ export default function App() {
 
   return (
     <main className={`chat-app${dockVisible ? ' chat-app--docked' : ''}`}>
+      {Object.values(requests).filter(isRequestActive).map((request) => <RequestObserver
+        key={request.requestId}
+        requestId={request.requestId}
+        threadId={request.threadId}
+        retryAfterMs={request.retryAfterMs ?? 1_000}
+        onSnapshot={onRequestSnapshot}
+        onDelta={onRequestDelta}
+        onPollError={onRequestPollError}
+      />)}
       <Sidebar
         open={sidebarOpen}
         activeView={activeView}
@@ -567,7 +560,7 @@ export default function App() {
         title={activeTitle}
         conversationId={activeId}
         messages={messages}
-        busy={busy}
+        busy={busy || isRequestActive(activeRequest)}
         request={activeRequest}
         error={error}
         modelLabel={modelLabel}
@@ -585,7 +578,7 @@ export default function App() {
       /> : null}
       {activeView === 'market' ? <MarketScreen onMenu={() => setSidebarOpen(true)} csrfToken={session.csrfToken} /> : null}
       {activeView === 'map' ? <MapScreen onMenu={() => setSidebarOpen(true)} csrfToken={session.csrfToken} /> : null}
-      {activeView === 'profile' ? <PilotProfileScreen character={session.character} csrfToken={session.csrfToken} busy={busy} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} onUnlink={unlinkCharacter} /> : null}
+      {activeView === 'profile' ? <PilotProfileScreen character={session.character} csrfToken={session.csrfToken} busy={busy} onProfileLoaded={setProfile} onMenu={() => setSidebarOpen(true)} onConnect={() => void connectEve()} onUnlink={unlinkCharacter} /> : null}
       {activeView === 'settings' ? <SettingsScreen csrfToken={session.csrfToken} onMenu={() => setSidebarOpen(true)} /> : null}
       {activeView === 'examples' ? <ExamplesScreen onMenu={() => setSidebarOpen(true)} onTryInChat={seedComposer} /> : null}
       {activeView === 'support' ? <SupportScreen hasSession onMenu={() => setSidebarOpen(true)} /> : null}
@@ -616,4 +609,72 @@ function findLastAssistantIndex(messages: ChatMessage[]): number {
     if (messages[index]?.role === 'assistant') return index;
   }
   return -1;
+}
+
+type RequestObserverProps = {
+  requestId: string;
+  threadId: string;
+  retryAfterMs: number;
+  onSnapshot: (request: WebAgentRequest) => void;
+  onDelta: (threadId: string, frame: StreamDeltaFrame) => void;
+  onPollError: (message: string) => void;
+};
+
+/**
+ * Follows one in-flight turn: the SSE stream pushes every snapshot and delta;
+ * polling is only the fallback when the stream is unavailable. Rendered once
+ * per active request, so several chats can stream at the same time.
+ */
+function RequestObserver({ requestId, threadId, retryAfterMs, onSnapshot, onDelta, onPollError }: RequestObserverProps) {
+  const retryAfterRef = useRef(retryAfterMs);
+  retryAfterRef.current = retryAfterMs;
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+    const applySnapshot = (request: WebAgentRequest) => {
+      if (!cancelled) onSnapshot(request);
+    };
+    const startPolling = () => {
+      if (cancelled || timer !== null) return;
+      timer = window.setInterval(() => {
+        void webApi.getAgentRequest(requestId)
+          .then(({ request }) => applySnapshot(request))
+          .catch((reason: unknown) => {
+            if (!cancelled) onPollError(reason instanceof Error ? reason.message : 'Не удалось проверить состояние запроса.');
+          });
+      }, Math.max(500, retryAfterRef.current));
+    };
+    const source = typeof EventSource === 'undefined'
+      ? null
+      : new EventSource(`/api/web/chat/requests/${encodeURIComponent(requestId)}/events`);
+    source?.addEventListener('request', (event) => {
+      if (cancelled || !(event instanceof MessageEvent)) return;
+      try {
+        const payload = JSON.parse(event.data) as { request?: WebAgentRequest };
+        if (payload.request?.requestId === requestId) applySnapshot(payload.request);
+      } catch {
+        // A malformed frame is skipped; the next snapshot carries full state.
+      }
+    });
+    source?.addEventListener('delta', (event) => {
+      if (cancelled || !(event instanceof MessageEvent)) return;
+      try {
+        const frame = JSON.parse(event.data) as StreamDeltaFrame;
+        if (frame.requestId === requestId) onDelta(threadId, frame);
+      } catch {
+        // A malformed frame is skipped; the next snapshot carries full state.
+      }
+    });
+    source?.addEventListener('error', () => {
+      source.close();
+      startPolling();
+    });
+    if (!source) startPolling();
+    return () => {
+      cancelled = true;
+      source?.close();
+      if (timer !== null) window.clearInterval(timer);
+    };
+  }, [requestId, threadId, onSnapshot, onDelta, onPollError]);
+  return null;
 }

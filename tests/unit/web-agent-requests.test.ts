@@ -286,7 +286,7 @@ describe('durable web agent request coordinator', () => {
     await coordinator.close();
   });
 
-  it('runs at most one request per browser lane while allowing queued work behind it', async () => {
+  it('runs at most one request per thread while allowing queued work behind it', async () => {
     const releases: Array<() => void> = [];
     let active = 0;
     let peak = 0;
@@ -318,6 +318,35 @@ describe('durable web agent request coordinator', () => {
     releases.shift()?.();
     await waitFor(() => coordinator.readOwned(owner(), 'lane-second')?.status === 'completed');
     expect(peak).toBe(1);
+    await coordinator.close();
+  });
+
+  it('runs replies of different threads in the same browser session in parallel', async () => {
+    db.prepare("INSERT OR IGNORE INTO agent_threads (thread_id, chat_id, user_id) VALUES ('thread-2', -2000000000, 1)").run();
+    const releases: Array<() => void> = [];
+    let active = 0;
+    const coordinator = new WebAgentRequestCoordinator(db, async () => {
+      active += 1;
+      await new Promise<void>((resolve) => releases.push(resolve));
+      active -= 1;
+      return 'done';
+    });
+    const insert = db.prepare(`
+      INSERT INTO web_agent_requests (
+        request_id, user_id, chat_id, thread_id, character_id, character_version,
+        message, message_hash, idempotency_key, status, created_at_ms
+      ) VALUES (?, 1, -2000000000, ?, NULL, 0,
+        ?, ?, ?, 'queued', ?)
+    `);
+    insert.run('thread-a', 'thread-1', 'a', 'a-hash', 'thread_a_key_0001', Date.now());
+    insert.run('thread-b', 'thread-2', 'b', 'b-hash', 'thread_b_key_0001', Date.now() + 1);
+
+    coordinator.start();
+    await waitFor(() => active === 2);
+    expect(coordinator.readOwned(owner(), 'thread-a')?.status).toBe('running');
+    expect(coordinator.readOwned(owner(), 'thread-b')?.status).toBe('running');
+    releases.splice(0).forEach((release) => release());
+    await waitFor(() => coordinator.readOwned(owner(), 'thread-b')?.status === 'completed');
     await coordinator.close();
   });
 

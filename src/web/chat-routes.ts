@@ -291,6 +291,7 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): WebAgentReq
   app.get('/api/web/profile', async (request, reply) => {
     const session = requireSession(db, request, reply);
     if (!session) return;
+    reply.header('Cache-Control', 'no-store');
     const startedAt = Date.now();
     try {
       let result = await loadWebPilotProfile(db, sessionContext(session));

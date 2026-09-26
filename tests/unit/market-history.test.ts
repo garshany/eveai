@@ -331,6 +331,46 @@ describe('getTypeHistory', () => {
     expect(fetchHistory).toHaveBeenCalledTimes(2);
   });
 
+  it('serves stored rows at once when a refresh is due instead of waiting on ESI', async () => {
+    await getTypeHistory(db as Db, FORGE, TRITANIUM, {
+      deps: { fetchHistory: okFetcher([makeEsiRow('2026-07-27', 100)]), now: T0 },
+    });
+    let release = (): void => {};
+    const slowFetch: MarketHistoryFetcher = vi.fn(() => new Promise((resolve) => {
+      release = () => resolve({ ok: true as const, status: 200, data: [makeEsiRow('2026-07-28', 120)], cached: false, headers: {} });
+    }));
+    const later = new Date('2026-07-28T12:00:00.000Z');
+
+    const result = await getTypeHistory(db as Db, FORGE, TRITANIUM, { deps: { fetchHistory: slowFetch, now: later } });
+
+    expect(slowFetch).toHaveBeenCalledTimes(1);
+    expect(result.series.map((point) => point.date)).toEqual(['2026-07-27']);
+    release();
+    await vi.waitFor(() => {
+      const refreshed = db.prepare('SELECT COUNT(*) AS n FROM market_price_history WHERE type_id = ?').get(TRITANIUM) as { n: number };
+      expect(refreshed.n).toBe(2);
+    });
+  });
+
+  it('bounds the first-view wait for a slow ESI backfill', async () => {
+    let release = (): void => {};
+    const hangingFetch: MarketHistoryFetcher = vi.fn(() => new Promise((resolve) => {
+      release = () => resolve({ ok: true as const, status: 200, data: [], cached: false, headers: {} });
+    }));
+    const started = Date.now();
+    const result = await getTypeHistory(db as Db, FORGE, PYERITE, {
+      deps: { fetchHistory: hangingFetch, now: T0 },
+      firstSyncWaitMs: 50,
+    });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(result.series).toEqual([]);
+    // Let the in-flight backfill settle so it does not leak into later tests.
+    release();
+    await vi.waitFor(() => {
+      expect(db.prepare('SELECT 1 FROM market_history_sync WHERE type_id = ?').get(PYERITE)).toBeDefined();
+    });
+  });
+
   it('bounds the returned window with days', async () => {
     const fetchHistory = okFetcher([
       makeEsiRow('2026-07-01', 100),

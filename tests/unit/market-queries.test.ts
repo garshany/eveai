@@ -404,3 +404,17 @@ describe('getMarketGroupTypes', () => {
     expect(getMarketGroupTypes(db as Db, 202, 20)).toEqual([]);
   });
 });
+
+describe('market type queries use the market index, not a JSON scan', () => {
+  it('plans group listing and search through idx_sde_types_market_group', () => {
+    const plans = [
+      "SELECT type_id FROM sde_types WHERE market_group_id = 5 AND published = 1",
+      "SELECT type_id FROM sde_types WHERE published = 1 AND market_group_id IS NOT NULL AND name LIKE '%tri%' COLLATE NOCASE",
+    ].map((sql) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
+      .map((row) => row.detail).join(' | '));
+    for (const plan of plans) {
+      expect(plan).toContain('idx_sde_types_market_group');
+      expect(plan).not.toMatch(/SCAN sde_types(?! USING)/);
+    }
+  });
+});

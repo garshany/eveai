@@ -39,6 +39,38 @@ const MAX_HOT_SYSTEMS = 5;
 
 const snapshots = new Map<number, RadarSnapshot>();
 
+/**
+ * What the pilot had selected on the map when they asked. Kept apart from the
+ * radar snapshot (and its clock) because it comes from the question itself,
+ * not from the live stream; it lets "а эта система?" resolve without a
+ * clarifying question.
+ */
+export type RadarFocus = {
+  systemId: number;
+  name: string | null;
+  security: number | null;
+  atMs: number;
+};
+const focuses = new Map<number, RadarFocus>();
+
+export function recordRadarFocus(
+  characterId: number,
+  focus: { systemId: number; name: string | null; security: number | null },
+  now = Date.now(),
+): void {
+  focuses.set(characterId, { ...focus, atMs: now });
+}
+
+function freshFocus(characterId: number, now: number): RadarFocus | null {
+  const focus = focuses.get(characterId);
+  if (!focus) return null;
+  if (now - focus.atMs > MAX_AGE_MS) {
+    focuses.delete(characterId);
+    return null;
+  }
+  return focus;
+}
+
 function ensure(characterId: number, now: number): RadarSnapshot {
   let snapshot = snapshots.get(characterId);
   if (!snapshot) {
@@ -105,6 +137,7 @@ export function getRadarSnapshot(characterId: number, now = Date.now()): RadarSn
 
 export function resetRadarSnapshotsForTests(): void {
   snapshots.clear();
+  focuses.clear();
 }
 
 /**
@@ -113,7 +146,13 @@ export function resetRadarSnapshotsForTests(): void {
  */
 export function formatRadarSnapshot(characterId: number, now = Date.now()): string | null {
   const snapshot = getRadarSnapshot(characterId, now);
-  if (!snapshot || (!snapshot.location && !snapshot.bubble)) return null;
+  const focus = freshFocus(characterId, now);
+  const focusLine = focus
+    ? `- Selected on the map: ${focus.name ?? 'system'} (system_id=${focus.systemId}${focus.security === null ? '' : `, sec ${focus.security.toFixed(1)}`}).`
+    : null;
+  if (!snapshot || (!snapshot.location && !snapshot.bubble)) {
+    return focusLine ? `Perimeter map:\n${focusLine}` : null;
+  }
   const lines: string[] = [`Perimeter radar (live map open, updated ${Math.round((now - snapshot.updatedAtMs) / 1000)}s ago):`];
   const bubble = snapshot.bubble;
   if (snapshot.location) {
@@ -123,6 +162,7 @@ export function formatRadarSnapshot(characterId: number, now = Date.now()): stri
       : `system_id=${snapshot.location.solarSystemId}`;
     lines.push(`- Pilot: ${system}, ${place}, ${snapshot.location.online ? 'online' : 'offline'}${snapshot.location.shipName || bubble?.pilotShip ? `, hull ${bubble?.pilotShip ?? snapshot.location.shipName}` : ''}.`);
   }
+  if (focusLine) lines.push(focusLine);
   if (bubble) {
     lines.push(`- Bubble ${bubble.radius} jumps around ${bubble.originName ?? bubble.originId}: verdict ${bubble.verdict.band} (${Math.round(bubble.verdict.score * 100)}%)${bubble.worstSystemName ? `, worst ${bubble.worstSystemName}` : ''}.`);
     for (const system of bubble.hot) {

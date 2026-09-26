@@ -3,7 +3,7 @@ import { webApi } from '../../api';
 import { useI18n } from '../../i18n';
 import type { ProfileOrder } from '../../types';
 import { formatIsk, formatQuantity } from '../market/format';
-import { FreshnessBar, formatLocalDateTime, useProfileData, useProfileSync } from './shared';
+import { FreshnessBar, formatLocalDateTime, useProfileData, useAutoSyncWhenStale, useProfileSync } from './shared';
 
 const PAGE_SIZE = 50;
 
@@ -24,6 +24,7 @@ export function OrdersPanel({ csrfToken }: Props) {
   }, []);
   const { data, loading, error, reload } = useProfileData(loader);
   const { syncing, sync } = useProfileSync(csrfToken, ['orders'], reload);
+  useAutoSyncWhenStale(data?.freshness, sync);
 
   const showMore = async () => {
     setLoadingMore(true);

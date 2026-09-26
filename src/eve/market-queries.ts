@@ -102,11 +102,10 @@ export function searchMarketTypes(db: Db, q: string, limit = DEFAULT_SEARCH_LIMI
   if (needle.length === 0 || limit <= 0) return [];
   const escaped = escapeLike(needle);
   return db.prepare(`
-    SELECT type_id, name, group_id,
-      json_extract(data_json, '$.marketGroupID') AS market_group_id
+    SELECT type_id, name, group_id, market_group_id
     FROM sde_types
-    WHERE json_extract(data_json, '$.published') = 1
-      AND json_extract(data_json, '$.marketGroupID') IS NOT NULL
+    WHERE published = 1
+      AND market_group_id IS NOT NULL
       AND name LIKE '%' || ? || '%' COLLATE NOCASE ESCAPE '\\'
     ORDER BY
       CASE
@@ -286,11 +285,10 @@ export function getMarketGroupTree(db: Db, parentGroupId: number | null): Market
 export function getMarketGroupTypes(db: Db, groupId: number, limit: number): MarketGroupTypeRow[] {
   if (limit <= 0) return [];
   return db.prepare(`
-    SELECT type_id, name, group_id,
-      json_extract(data_json, '$.marketGroupID') AS market_group_id
+    SELECT type_id, name, group_id, market_group_id
     FROM sde_types
-    WHERE json_extract(data_json, '$.marketGroupID') = ?
-      AND json_extract(data_json, '$.published') = 1
+    WHERE market_group_id = ?
+      AND published = 1
     ORDER BY name COLLATE NOCASE
     LIMIT ?
   `).all(groupId, limit) as MarketGroupTypeRow[];

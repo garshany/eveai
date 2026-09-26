@@ -1985,7 +1985,10 @@ describe('cooperative turn abort (CLI Ctrl-C)', () => {
       () => 'developer prompt',
       createNativeResponseMock,
       undefined,
-      25,
+      // Long enough for a cold first iteration (tool catalog, prompt) to reach
+      // the provider call even when this test runs alone; the provider never
+      // answers, so the turn still ends on the deadline.
+      250,
     );
     await expect(turn).rejects.toThrow('Agent turn deadline exceeded');
     const assistant = db.prepare(`
@@ -2206,6 +2209,16 @@ describe('tiered reasoning effort', () => {
     expect(__test__.resolveTierReasoningEffort('medium', 'auto')).toBe('medium');
     expect(__test__.resolveTierReasoningEffort('high', 'low')).toBe('low');
     expect(__test__.resolveTierReasoningEffort('low', 'xhigh')).toBe('xhigh');
+  });
+
+  it('caps auto effort at medium for the Perimeter flight assistant only', async () => {
+    const { resolveReasoningEffort, classifyReasoningEffort } = await import('../../src/agent/executor.js');
+    const goal = 'Проложи маршрут до Амарра, там опасно на гейтах? Сравни варианты и объясни риски подробно по каждой системе';
+    expect(['high', 'xhigh', 'max']).toContain(classifyReasoningEffort(goal));
+    expect(resolveReasoningEffort(goal, 'auto', 'perimeter')).toBe('medium');
+    expect(resolveReasoningEffort(goal, 'auto', 'full')).toBe(classifyReasoningEffort(goal));
+    // An explicitly chosen effort is the pilot's call, even in Perimeter.
+    expect(resolveReasoningEffort(goal, 'high', 'perimeter')).toBe('high');
   });
 
   it('uses the base effort on every iteration while both tiers stay auto', async () => {

@@ -104,6 +104,38 @@ export function useProfileSync(csrfToken: string, datasets: ProfileDatasetId[] |
 }
 
 /**
+ * Нужен ли автосинк при открытии вкладки: окно свежести (ESI Expires) вышло
+ * или датасет ещё ни разу не синкался. Ошибка и отсутствие скоупа — нет:
+ * у ошибки свой бэкофф на сервере, без скоупа синк бесполезен.
+ */
+export function needsAutoSync(freshness: ProfileFreshness | ProfileFreshness[] | null | undefined, nowMs = Date.now()): boolean {
+  const entries = !freshness ? [] : Array.isArray(freshness) ? freshness : [freshness];
+  return entries.some((entry) => {
+    if (entry.status === 'no_scope' || entry.status === 'error') return false;
+    if (entry.syncedAt === null) return true;
+    const expires = entry.expiresAt ? parseSqlUtc(entry.expiresAt) : null;
+    return expires !== null && expires.getTime() < nowMs;
+  });
+}
+
+/**
+ * Вкладка с протухшими данными синкается сама один раз при открытии, а не
+ * ждёт ручного «Обновить» — иначе обзор показывал живой кошелёк, а вкладка
+ * «Кошелёк» — вчерашний.
+ */
+export function useAutoSyncWhenStale(
+  freshness: ProfileFreshness | ProfileFreshness[] | null | undefined,
+  sync: () => Promise<void>,
+): void {
+  const attempted = useRef(false);
+  useEffect(() => {
+    if (attempted.current || !needsAutoSync(freshness)) return;
+    attempted.current = true;
+    void sync();
+  }, [freshness, sync]);
+}
+
+/**
  * Отметка свежести + кнопка «Обновить». Несколько freshness (wallet/skills)
  * сводятся в худший статус и самое свежее время синка.
  */

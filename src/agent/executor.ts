@@ -111,6 +111,15 @@ import {
 } from '../community/tools.js';
 import { fetchIndustryCost, fetchZkillStats, fetchAbyssalListings, type ZkillScope } from '../community/clients.js';
 import { parseItemLines, appraiseLocally, fetchJaniceAppraisal } from '../community/appraise.js';
+import {
+  HUB_PRICES_TOOL_NAME,
+  RESOLVE_ITEMS_TOOL_NAME,
+  TRADE_HUBS,
+  hubPrices,
+  resolveItems,
+  type HubId,
+} from '../eve/market-agent-tools.js';
+import { getMarketSnapshotMeta } from '../eve/market-snapshot-loader.js';
 import { validateKillActivitySummaryArgs } from '../eve-kill/activity-summary.js';
 import {
   executeEveScoutTool,
@@ -891,7 +900,7 @@ async function runNativeAgentLoop(
   // mid-turn applies from the next turn, never retroactively. No saved row
   // means the operator config defaults, so existing users are unaffected.
   const modelSettings = resolveModelSettings(db, ctx.userId);
-  const reasoningEffort = resolveReasoningEffort(goal, modelSettings.reasoningEffort);
+  const reasoningEffort = resolveReasoningEffort(goal, modelSettings.reasoningEffort, toolMode ?? 'full');
   const safetyIdentifier = buildSafetyIdentifier(ctx.userId, config.auth.secretKey);
   console.log(
     '[executor] model=%s reasoning effort=%s source=%s mode=%s verbosity=%s for goal="%s"',
@@ -2703,6 +2712,45 @@ async function executeToolCallUnadmitted(
       : { ok: false, error: `industry cost service unavailable: ${result.error}` };
   }
 
+  if (name === RESOLVE_ITEMS_TOOL_NAME) {
+    const names = Array.isArray(args.names)
+      ? args.names.filter((value): value is string => typeof value === 'string' && value.trim().length > 0).slice(0, 30)
+      : [];
+    if (names.length === 0) return { ok: false, error: 'names must be a non-empty array of strings' };
+    const limit = args.limit == null ? 3 : Number(args.limit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5) return { ok: false, error: 'limit must be 1-5 or null' };
+    return { ok: true, source: 'local SDE (tradeable types)', results: resolveItems(db, names, limit) };
+  }
+
+  if (name === HUB_PRICES_TOOL_NAME) {
+    const typeIds = Array.isArray(args.type_ids)
+      ? [...new Set(args.type_ids.filter((value): value is number => Number.isSafeInteger(value) && (value as number) > 0))]
+      : [];
+    if (typeIds.length === 0 || typeIds.length > 50) return { ok: false, error: 'type_ids must hold 1-50 positive integers' };
+    const hubs = Array.isArray(args.hubs)
+      ? args.hubs.filter((value): value is HubId => typeof value === 'string' && value in TRADE_HUBS)
+      : null;
+    const quantity = args.quantity == null ? null : Number(args.quantity);
+    if (quantity !== null && (!Number.isSafeInteger(quantity) || quantity < 1)) {
+      return { ok: false, error: 'quantity must be a positive integer or null' };
+    }
+    const snapshot = getMarketSnapshotMeta(db, {
+      staleMinutes: config.marketSnapshot.staleMinutes,
+      majorMinPages: config.marketSnapshot.majorMinPages,
+      majorIntervalMinutes: config.marketSnapshot.majorIntervalMinutes,
+      minorIntervalMinutes: config.marketSnapshot.minorIntervalMinutes,
+    });
+    if (!snapshot.loaded) return { ok: false, error: 'local market snapshot is not loaded yet; use batch_market_prices' };
+    return {
+      ok: true,
+      source: 'local market snapshot (station orders only)',
+      snapshot_age_minutes: snapshot.age_minutes,
+      snapshot_stale: snapshot.stale,
+      hubs: Object.fromEntries(Object.entries(TRADE_HUBS).map(([id, hub]) => [id, hub.label])),
+      ...hubPrices(db, typeIds, hubs && hubs.length > 0 ? hubs : null, quantity),
+    };
+  }
+
   if (name === APPRAISE_ITEMS_TOOL_NAME) {
     const itemsText = String(args.items_text ?? '');
     if (!itemsText.trim()) return { ok: false, error: 'items_text is empty' };
@@ -3396,13 +3444,22 @@ export function classifyReasoningEffort(goal: string): ApiReasoningEffort {
   return 'medium';
 }
 
+/**
+ * Auto effort for the Perimeter flight assistant is capped at medium: the
+ * pilot is on a gate and a "high" deliberation over "маршрут опасный?" costs
+ * the seconds they are asking to save. An explicitly chosen effort is kept.
+ */
+const PERIMETER_AUTO_EFFORT_ORDER: ApiReasoningEffort[] = ['none', 'low', 'medium'];
+
 export function resolveReasoningEffort(
   goal: string,
   configured: ReasoningEffort,
+  promptMode: PromptMode = 'full',
 ): ApiReasoningEffort {
-  return configured === 'auto'
-    ? classifyReasoningEffort(goal)
-    : configured;
+  if (configured !== 'auto') return configured;
+  const effort = classifyReasoningEffort(goal);
+  if (promptMode === 'perimeter' && !PERIMETER_AUTO_EFFORT_ORDER.includes(effort)) return 'medium';
+  return effort;
 }
 
 /**
