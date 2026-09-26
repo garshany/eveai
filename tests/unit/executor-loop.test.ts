@@ -1985,7 +1985,10 @@ describe('cooperative turn abort (CLI Ctrl-C)', () => {
       () => 'developer prompt',
       createNativeResponseMock,
       undefined,
-      25,
+      // Long enough for a cold first iteration (tool catalog, prompt) to reach
+      // the provider call even when this test runs alone; the provider never
+      // answers, so the turn still ends on the deadline.
+      250,
     );
     await expect(turn).rejects.toThrow('Agent turn deadline exceeded');
     const assistant = db.prepare(`

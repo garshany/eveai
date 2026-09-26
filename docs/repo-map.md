@@ -66,6 +66,7 @@ Use it when you need to find the right file or folder before reading implementat
 - `eve-scout-client.ts`, `eve-scout-executor.ts`, `eve-scout-tools.ts`: fixed public EVE-Scout transport, bounded projections, and deferred tool schemas; see `docs/eve-scout.md`
 - `market-history-summary.ts`: bounded 30/90-day public ESI market aggregation without raw daily rows
 - `market-wide-summary.ts`: whole-New-Eden live order-book sweep for one type across all SDE-derived k-space trade regions, with explicit coverage reporting
+- `market-agent-tools.ts`: agent tools answered locally with no ESI calls — `resolve_items` (EN/RU names, pilot slang, typo-tolerant trigram match over tradeable SDE types) and `hub_prices` (best sell/buy at the five hub stations from the snapshot, spread, order-book fill for N units)
 - `market-queries.ts`: read-only queries over the local `market_orders` snapshot with SDE joins — type search, overview/spread, paged order book, per-region comparison, market-group tree
 - `market-type-info.ts`: full SDE item card for the web market — localized description, traits, grouped dogma attributes with units, required skills, meta-chain variations
 - `market-history.ts`: local daily price history (`market_price_history`) with lazy ESI backfill and trend/volatility aggregates

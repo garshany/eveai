@@ -23,6 +23,7 @@ import { ASSETS_SUMMARY_TOOL, isAssetsSummaryTool } from '../eve/assets-summary.
 import { CHARACTER_ORDERS_SUMMARY_TOOL, isCharacterOrdersSummaryTool } from '../eve/orders-summary.js';
 import { MARKET_WIDE_SUMMARY_TOOL, isMarketWideSummaryTool } from '../eve/market-wide-summary.js';
 import { COMMUNITY_TOOLS, isCommunityToolName } from '../community/tools.js';
+import { MARKET_AGENT_TOOLS, isMarketAgentToolName } from '../eve/market-agent-tools.js';
 import { PERIMETER_TOOLS, isPerimeterTool } from '../eve-map/tools.js';
 import {
   DOCTRINE_SUMMARY_TOOL,
@@ -612,6 +613,7 @@ export async function buildNativeAgentTools(
     // instead of fanning out across kill search and ESI metrics.
     ...PERIMETER_TOOLS,
     ...COMMUNITY_TOOLS,
+    ...MARKET_AGENT_TOOLS,
     buildEveKillNamespace({ includeWatch: includeFeedNotifications }),
     buildEveKillAnalyticsNamespace(),
     buildEveScoutNamespace(),
@@ -695,6 +697,7 @@ export function isDeferredLookupToolName(name: string): boolean {
 }
 
 export { isCommunityToolName } from '../community/tools.js';
+export { isMarketAgentToolName } from '../eve/market-agent-tools.js';
 export { isPerimeterTool } from '../eve-map/tools.js';
 
 export { isEveKillToolName } from '../eve-kill/tools.js';
@@ -737,7 +740,7 @@ export async function getToolPolicy(
     || isAssetsSummaryTool(name) || isCharacterOrdersSummaryTool(name)
     || isMarketWideSummaryTool(name)
     || isOsintInferTool(name) || isAnalyzeScanTool(name) || isAnalyzeLocalTool(name)
-    || isCommunityToolName(name) || isPerimeterTool(name)) {
+    || isCommunityToolName(name) || isPerimeterTool(name) || isMarketAgentToolName(name)) {
     return 'read';
   }
   const catalog = await loadEsiCatalog();
