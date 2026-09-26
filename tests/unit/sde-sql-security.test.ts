@@ -270,3 +270,78 @@ describe('executeSdeSql security boundary', () => {
     });
   });
 });
+
+describe('executeSdeSql production regressions (tool audit)', () => {
+  it('accepts a trailing semicolon followed by comments or non-ASCII whitespace', () => {
+    for (const sql of [
+      "SELECT s.system_id, s.name AS system_name FROM sde_systems s WHERE s.name = 'Jita';",
+      "SELECT s.system_id, s.name AS system_name FROM sde_systems s WHERE s.name = 'Jita'; -- note",
+      "SELECT s.system_id, s.name AS system_name FROM sde_systems s WHERE s.name = 'Jita';;​\n/* end */",
+    ]) {
+      expect(executeSdeSql(db as Db, sql), sql).toEqual({
+        ok: true,
+        rows: [{ system_id: 30000142, system_name: 'Jita' }],
+        count: 1,
+        error: null,
+      });
+    }
+  });
+
+  it('rejects genuine multi-statement SQL with an actionable error', () => {
+    for (const sql of [
+      'SELECT name FROM sde_types; SELECT name FROM sde_groups',
+      'SELECT name FROM sde_types; DELETE FROM sde_types',
+      "SELECT name FROM sde_types WHERE name = 'a;b'; SELECT access_token FROM eve_accounts",
+    ]) {
+      const result = executeSdeSql(db as Db, sql);
+      expect(result.ok, sql).toBe(false);
+      expect(result.error, sql).toMatch(/one SQL statement/);
+    }
+    // A semicolon inside a string literal is not a terminator.
+    expect(executeSdeSql(db as Db, "SELECT name FROM sde_types WHERE name <> 'a;b'")).toMatchObject({ ok: true, count: 1 });
+  });
+
+  it('accepts a VALUES CTE joined to SDE tables', () => {
+    const result = executeSdeSql(
+      db as Db,
+      "WITH wanted(name) AS (VALUES ('Rifter'),('Merlin')) SELECT w.name, t.type_id FROM wanted w LEFT JOIN sde_types t ON t.name = w.name ORDER BY w.name",
+    );
+    expect(result).toEqual({
+      ok: true,
+      rows: [{ name: 'Merlin', type_id: null }, { name: 'Rifter', type_id: 587 }],
+      count: 2,
+      error: null,
+    });
+  });
+
+  it('keeps counting non-constant CTE scans toward the cartesian guard', () => {
+    const result = executeSdeSql(
+      db as Db,
+      'WITH big AS (SELECT name FROM sde_types) SELECT count(*) FROM big b, sde_groups g',
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/cartesian/);
+  });
+
+  it('blocks quoted aliases that impersonate plan rows to read secrets (was a bypass)', () => {
+    for (const sql of [
+      'SELECT "CONSTANT ROW".access_token FROM sde_types t JOIN eve_accounts AS "CONSTANT ROW" ON "CONSTANT ROW".character_id = t.type_id + 89999414',
+      "SELECT 'CONSTANT ROW'.access_token FROM sde_types t JOIN eve_accounts AS 'CONSTANT ROW' ON 'CONSTANT ROW'.character_id = t.type_id + 89999414",
+      'SELECT "sde_groups j".access_token FROM sde_types t JOIN eve_accounts AS "sde_groups j" ON 1 = 1',
+    ]) {
+      const result = executeSdeSql(db as Db, sql);
+      expect(result.ok, sql).toBe(false);
+      expect(JSON.stringify(result), sql).not.toContain('access-token');
+    }
+  });
+
+  it('blocks an alias that shadows an allowed table name (compiled-program check)', () => {
+    const result = executeSdeSql(
+      db as Db,
+      'SELECT sde_types.access_token FROM eve_accounts sde_types JOIN sde_types x ON x.type_id = sde_types.character_id - 89999414',
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('eve_accounts');
+    expect(JSON.stringify(result)).not.toContain('access-token');
+  });
+});

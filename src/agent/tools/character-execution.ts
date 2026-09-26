@@ -1,9 +1,18 @@
 import type { Db } from '../../db/sqlite.js';
 import {
+  collectTableAliasTargets,
   extractCteNames,
+  findConstantCteNames,
+  findDisallowedBtreeAccess,
   findSchemaQualifiedTableReference,
+  findUntrackableTableAlias,
+  isConstantCteReference,
+  isConstantRowsScan,
   normalizeObjectReference,
+  stripStatementTerminator,
   tokenizeSql,
+  type BtreeAccessViolation,
+  type QueryPlanRow,
   type SqlToken,
 } from './sde-execution.js';
 
@@ -43,10 +52,6 @@ type AllowedObjects = {
 };
 
 const ALLOWED_OBJECT_CACHE = new WeakMap<Db, AllowedObjects>();
-
-type QueryPlanRow = {
-  detail: string;
-};
 
 export type CharacterSqlResult = {
   ok: boolean;
@@ -180,15 +185,39 @@ function validateCharacterSqlSources(
     };
   }
 
+  const untrackableAlias = findUntrackableTableAlias(tokens);
+  if (untrackableAlias !== null) {
+    return {
+      ok: false,
+      error: `Table aliases must be plain identifiers (letters, digits, underscore); got ${untrackableAlias}`,
+    };
+  }
+
   const aliasMap = extractCharacterTableAliases(tokens);
+  const aliasTargets = collectTableAliasTargets(tokens);
   const cteNames = extractCteNames(tokens);
 
   let planRows: QueryPlanRow[];
+  let btreeViolation: BtreeAccessViolation | null;
   try {
     planRows = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as QueryPlanRow[];
+    btreeViolation = findDisallowedBtreeAccess(
+      db,
+      sql,
+      (table) => allowed.characterTables.has(table) || allowed.sdeObjects.has(table),
+    );
   } catch (err) {
     return { ok: false, error: `SQL error: ${(err as Error).message}` };
   }
+  if (btreeViolation !== null) {
+    if (btreeViolation.kind === 'write') return { ok: false, error: 'Write operations are not allowed' };
+    if (btreeViolation.kind === 'schema') return { ok: false, error: 'Only main-schema tables are allowed' };
+    return {
+      ok: false,
+      error: `Only character profile (character_*) and SDE (sde_*) tables are allowed (got "${btreeViolation.name}")`,
+    };
+  }
+  const constantCtes = findConstantCteNames(planRows, cteNames);
 
   const referencedCharacterTables = new Set<string>();
   let fullScans = 0;
@@ -199,7 +228,13 @@ function validateCharacterSqlSources(
     // SCAN is bounded by the JSON array, so they count neither as full table
     // scans nor as table references.
     if (/VIRTUAL TABLE/i.test(detail)) continue;
-    if (/^SCAN\b/i.test(detail)) fullScans += 1;
+    // Literal rows (VALUES / constant SELECT) read no table and are bounded by
+    // the SQL text: "SCAN 2 CONSTANT ROWS" is neither a reference nor a scan.
+    if (isConstantRowsScan(detail)) continue;
+    if (/^SCAN\b/i.test(detail)) {
+      const scanned = /^SCAN\s+(\S+)/iu.exec(detail)?.[1];
+      if (scanned === undefined || !isConstantCteReference(scanned, aliasTargets, constantCtes)) fullScans += 1;
+    }
 
     for (const rawReference of extractPlanReferences(detail)) {
       const normalizedReference = normalizeObjectReference(rawReference);
@@ -301,7 +336,9 @@ function dropIsolationViews(db: Db, viewNames: readonly string[]): void {
  * Does not require the isolation views; never executes the query.
  */
 export function analyzeCharacterSqlTables(db: Db, sql: string): CharacterSqlAnalysis {
-  const validation = validateCharacterSqlSources(db, sql.trim(), getAllowedObjects(db));
+  const statement = stripStatementTerminator(sql);
+  if (!statement.ok) return { ok: false, error: statement.error };
+  const validation = validateCharacterSqlSources(db, statement.sql, getAllowedObjects(db));
   if (!validation.ok) return { ok: false, error: validation.error };
   return { ok: true, characterTables: validation.characterTables };
 }
@@ -315,16 +352,20 @@ export function executeCharacterSql(db: Db, sql: string, characterId: number): C
     return { ok: false, rows: [], count: 0, error: 'Invalid character context' };
   }
 
+  const statement = stripStatementTerminator(sql);
+  if (!statement.ok) {
+    return { ok: false, rows: [], count: 0, error: statement.error };
+  }
   const allowed = getAllowedObjects(db);
   const viewNames = createIsolationViews(db, allowed.characterTables, characterId);
   try {
-    const validation = validateCharacterSqlSources(db, sql.trim(), allowed);
+    const validation = validateCharacterSqlSources(db, statement.sql, allowed);
     if (!validation.ok) {
       return { ok: false, rows: [], count: 0, error: validation.error };
     }
 
     const startedAt = Date.now();
-    const stmt = db.prepare(sql.trim());
+    const stmt = db.prepare(statement.sql);
     // Iterate lazily and stop one past the cap (same rationale as sde_sql).
     const rows: unknown[] = [];
     for (const row of stmt.iterate()) {

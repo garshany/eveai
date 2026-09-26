@@ -16,7 +16,7 @@ export function parseKillmailSummary(value: unknown): NormalizedKillmail {
   const row = record(value, 'killmail summary');
   const victim: KillmailEntity = compact({
     characterId: optionalPositiveInt(row.victim_character_id),
-    corporationId: positiveInt(row.victim_corporation_id, 'victim_corporation_id'),
+    corporationId: optionalPositiveInt(row.victim_corporation_id),
     allianceId: optionalPositiveInt(row.victim_alliance_id),
     characterName: optionalString(row.victim_character_name),
     corporationName: optionalString(row.victim_corporation_name),
@@ -126,8 +126,21 @@ export function parseKillmailDetail(value: unknown): NormalizedKillmail {
 
 export function parseKillmailPage(value: unknown): KillmailPage {
   const row = record(value, 'killmail page');
-  const kills = array(row.data, 'data').map(parseKillmailSummary);
+  // Entity kill/loss lists (characters|corporations|alliances/{id}/kills|losses)
+  // return ESI-shaped killmails (nested victim + attackers), while system lists
+  // return flat summaries. Dispatch per row on the nested victim object so each
+  // shape is still validated by its own strict parser.
+  const kills = array(row.data, 'data').map((entry) => (isEsiShapedKillmail(entry)
+    ? parseEsiKillmail(entry)
+    : parseKillmailSummary(entry)));
   return { kills, pagination: parsePagination(row.pagination) };
+}
+
+function isEsiShapedKillmail(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.victim === 'object' && row.victim !== null && !Array.isArray(row.victim)
+    && Array.isArray(row.attackers);
 }
 
 export function parseSearchPage(value: unknown): KillmailPage {
