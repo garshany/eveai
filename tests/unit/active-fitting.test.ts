@@ -21,7 +21,7 @@ vi.mock('../../src/eve/esi-client.js', () => ({
   callEsiOperation: callEsiOperationMock,
 }));
 
-import { resolveActiveFitting } from '../../src/eve/active-fitting.js';
+import { resolveActiveFitting, writeManualFitting } from '../../src/eve/active-fitting.js';
 import { resolveUserProfilePath } from '../../src/eve/user-profile-storage.js';
 
 let db: Database.Database;
@@ -167,5 +167,35 @@ describe('active fitting profile persistence', () => {
     const saved = readFileSync(path, 'utf-8');
     expect(saved).toContain('## Active Fitting');
     expect(saved).toContain('125mm Gatling AutoCannon II');
+  });
+
+  it('writeManualFitting reports a missing profile and persists once it exists (no access() pre-check)', async () => {
+    const characterId = 7003;
+    const ctx = { userId: 1, chatId: 13 };
+    db.prepare("INSERT INTO users (user_id, display_name, active_character_id) VALUES (1, 'Pilot', ?)")
+      .run(characterId);
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username, active_character_id) VALUES (13, 'pilot', ?)")
+      .run(characterId);
+    db.prepare(`
+      INSERT INTO eve_accounts (
+        character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id
+      ) VALUES (?, 'Pilot', 'enc:a', 'enc:r', datetime('now', '+1 hour'), '[]', 1)
+    `).run(characterId);
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (13, ?, 1)')
+      .run(characterId);
+
+    const path = resolveUserProfilePath(ctx, characterId);
+
+    // No USER.md yet → the missing-profile message is returned (the outcome that
+    // the removed access() check used to detect via a check-then-use race).
+    await expect(writeManualFitting(db, ctx, '[Rifter, Manual]'))
+      .resolves.toEqual({ ok: false, error: 'USER.md not found. Refresh profile first.' });
+
+    // Once the profile exists, the manual fit is persisted.
+    writeFileSync(path, '## Wallet\nBalance ISK: 1\n');
+    await expect(writeManualFitting(db, ctx, '[Rifter, Manual]')).resolves.toEqual({ ok: true });
+    const saved = readFileSync(path, 'utf-8');
+    expect(saved).toContain('## Active Fitting');
+    expect(saved).toContain('[Rifter, Manual]');
   });
 });

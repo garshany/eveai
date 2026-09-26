@@ -3,7 +3,7 @@
  * format it for AI context, and persist to USER.md.
  */
 
-import { readFile, access } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from './esi-client.js';
 import type { UserContext } from '../auth/user-resolver.js';
@@ -137,19 +137,21 @@ export async function resolveActiveFitting(
 
 const SECTION_MARKER = '## Active Fitting';
 
+type PersistOutcome = 'written' | 'no-file' | 'skipped';
+
 async function persistActiveFitting(
   db: Db,
   ctx: UserContext,
   fittingText: string,
   authorization: { characterId: number; scopes: string[] },
-): Promise<void> {
-  await withUserProfileAuthorizationLock(authorization.characterId, async () => {
+): Promise<PersistOutcome> {
+  return withUserProfileAuthorizationLock(authorization.characterId, async (): Promise<PersistOutcome> => {
     const current = getLinkedCharacter(db, ctx);
     if (
       !current
       || current.characterId !== authorization.characterId
       || normalizeScopes(current.scopes) !== normalizeScopes(authorization.scopes)
-    ) return;
+    ) return 'skipped';
 
     const path = resolveUserProfilePath(ctx, authorization.characterId);
     // Read directly instead of access()-then-readFile: a check-then-use pair is
@@ -160,7 +162,7 @@ async function persistActiveFitting(
     try {
       content = await readFile(path, 'utf-8');
     } catch {
-      return; // file missing or unreadable — nothing to update
+      return 'no-file'; // file missing or unreadable — nothing to update
     }
 
     // Neutralize any line that would look like a Markdown section heading inside
@@ -192,9 +194,10 @@ async function persistActiveFitting(
 
     // SSO authorization replacement uses the same lock, so the checked scope
     // snapshot remains valid through the atomic write.
-    if (isTurnAborted()) return;
+    if (isTurnAborted()) return 'skipped';
     await writeUserProfileAtomic(path, content);
     console.log('[active-fitting] persisted to USER.md');
+    return 'written';
   });
 }
 
@@ -205,14 +208,14 @@ async function persistActiveFitting(
 export async function writeManualFitting(db: Db, ctx: UserContext, fittingText: string): Promise<{ ok: boolean; error?: string }> {
   const authorization = getLinkedCharacter(db, ctx);
   if (!authorization) return { ok: false, error: 'No character linked.' };
-  const path = resolveUserProfilePath(ctx, authorization.characterId);
-  try {
-    await access(path);
-  } catch {
+
+  // No access() pre-check: that check-then-persist pair is a file race. Let
+  // persistActiveFitting attempt the read itself and report a missing profile,
+  // preserving the "refresh first" message without the race.
+  const outcome = await persistActiveFitting(db, ctx, fittingText.trim(), authorization);
+  if (outcome === 'no-file') {
     return { ok: false, error: 'USER.md not found. Refresh profile first.' };
   }
-
-  await persistActiveFitting(db, ctx, fittingText.trim(), authorization);
   return { ok: true };
 }
 
