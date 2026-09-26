@@ -1,19 +1,16 @@
-/**
- * Чат «Периметра».
- *
- * Это не лента уведомлений, а настоящий тред: агент пишет в него сам, пилот
- * отвечает туда же, история переживает перезагрузку. Проактивные сообщения
- * несут якорь (система, килмейл), поэтому по ним можно кликнуть и увести
- * камеру к тому, о чём речь.
- */
-
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { webApi } from '../../api';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../../i18n';
-import type { PerimeterMessage } from '../../types';
+import type { PerimeterMessage, WebAgentRequest } from '../../types';
+import { isRequestActive } from '../../agent-request-client';
+import { isPinnedToBottom, scrollToBottom } from '../../chat-scroll';
+import { parseSqlUtcDate } from '../../sql-utc';
+import { MarkdownMessage } from '../MarkdownMessage';
+import { RequestObserver } from '../AgentRequestObserver';
 import type { LiveAdvisory } from './use-map-live';
 import { advisoryRuleKey } from './labels';
-import { mergeAdvisoryMessages } from './live-merge';
+import { perimeterElapsedSeconds } from './perimeter-chat-state';
+import { usePerimeterChat } from './use-perimeter-chat';
+import './perimeter-chat.css';
 
 export type MapAskContext = {
   systemId: number | null;
@@ -22,292 +19,149 @@ export type MapAskContext = {
   radius: number | null;
   band: string | null;
 };
-
 type Props = {
   csrfToken: string;
-  /** Живые советы приходят потоком и дописываются к загруженной истории. */
   advisories: LiveAdvisory[];
-  /** Что пилот сейчас видит — уходит вместе с вопросом, без уточнений. */
   context: MapAskContext;
   onFocusSystem: (systemId: number) => void;
 };
-
 export type SeverityFilter = 'all' | 'important' | 'quiet';
-
 const SEVERITY_RANK = { info: 0, warn: 1, danger: 2 } as const;
 
 export function PerimeterChat({ csrfToken, advisories, context, onFocusSystem }: Props) {
-  const { t, locale } = useI18n();
-  const [messages, setMessages] = useState<PerimeterMessage[]>([]);
-  const [draft, setDraft] = useState('');
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { t } = useI18n();
+  const chat = usePerimeterChat(csrfToken, advisories, context);
   const [filter, setFilter] = useState<SeverityFilter>('all');
-  const [resetting, setResetting] = useState(false);
-  /**
-   * Highest message id present when the pilot cleared the panel.
-   *
-   * The live stream keeps handing back the advisories it has already sent, so
-   * without this the warnings the pilot just dismissed would reappear on the
-   * very next tick and the clear button would look broken.
-   */
-  const clearedBeforeIdRef = useRef(0);
-  const [awaiting, setAwaiting] = useState(false);
-  const listRef = useRef<HTMLDivElement | null>(null);
-  const pollRef = useRef<number | null>(null);
+  // MapScreen can supply new callback/context objects on each live map tick.
+  // Keep the expensive transcript independent of those parent renders.
+  const focus = useRef(onFocusSystem);
+  focus.current = onFocusSystem;
+  const focusSystem = useCallback((id: number) => focus.current(id), []);
+  const active = isRequestActive(chat.request);
+  const busy = chat.sending || active;
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const payload = await webApi.map.chat();
-        if (!cancelled) setMessages(payload.messages);
-      } catch {
-        // История — сопровождающий слой: её отсутствие не должно ломать карту.
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  // Поток отдаёт уже сохранённое сообщение, поэтому дедуп идёт по его id и
-  // повторная загрузка истории не задваивает ленту.
-  useEffect(() => {
-    if (advisories.length === 0) return;
-    setMessages((previous) => mergeAdvisoryMessages(
-      previous,
-      advisories.map((entry) => entry.message),
-      clearedBeforeIdRef.current,
-    ));
-  }, [advisories]);
-
-  useEffect(() => {
-    const list = listRef.current;
-    if (list) list.scrollTop = list.scrollHeight;
-  }, [messages.length]);
-
-  // The thread is the source of truth, and the answer may land after the poll
-  // chain for one request has ended — a navigation, a reload, a lost socket.
-  // Production had an answer sitting in the thread thirteen seconds after the
-  // question while the panel still showed nothing. A slow background refresh
-  // costs one small query and makes the panel converge regardless.
-  useEffect(() => {
-    const timer = window.setInterval(() => { void reloadHistory(); }, 20_000);
-    return () => window.clearInterval(timer);
-    // reloadHistory closes over setMessages only, which is stable.
-     
-  }, []);
-
-  useEffect(() => () => {
-    if (pollRef.current !== null) window.clearTimeout(pollRef.current);
-  }, []);
-
-  const reloadHistory = async (): Promise<void> => {
-    try {
-      const payload = await webApi.map.chat();
-      setMessages((previous) => {
-        // Оптимистичные строки живут с отрицательным id и пропадают, только
-        // когда сервер вернул то же сообщение — иначе оно мигало бы.
-        const serverIds = new Set(payload.messages.map((message) => message.id));
-        const pending = previous.filter(
-          (message) => message.id < 0
-            && !payload.messages.some((saved) => saved.role === 'user' && saved.content === message.content),
-        );
-        // A live advisory that landed while this request was in flight is
-        // newer than anything in the snapshot; dropping it here made a fresh
-        // warning blink out until some later advisory re-merged the stream.
-        const newestSaved = payload.messages.reduce((max, message) => Math.max(max, message.id), 0);
-        const liveTail = previous.filter((message) => message.id > newestSaved && !serverIds.has(message.id));
-        return [
-          ...payload.messages.filter((message) => !serverIds.has(-message.id)),
-          ...liveTail,
-          ...pending,
-        ];
-      });
-    } catch {
-      // История обновится на следующем тике.
-    }
-  };
-
-  /**
-   * Ответ приходит через ту же durable-очередь, что и обычный чат: ждём, пока
-   * запрос дойдёт до терминального состояния, и перечитываем тред — сообщение агента к тому
-   * моменту уже сохранено.
-   */
-  const awaitAnswer = (requestId: string, attempt = 0): void => {
-    if (attempt > 240) {
-      setAwaiting(false);
-      return;
-    }
-    pollRef.current = window.setTimeout(() => {
-      void (async () => {
-        try {
-          const payload = await webApi.getAgentRequest(requestId);
-          if (payload.request.status === 'queued' || payload.request.status === 'running') {
-            awaitAnswer(requestId, attempt + 1);
-            return;
-          }
-          if (payload.request.status === 'failed' && payload.request.error) {
-            setError(payload.request.error);
-          }
-          await reloadHistory();
-        } catch {
-          // Разрыв опроса не должен ломать панель: история подтянется позже.
-        } finally {
-          setAwaiting(false);
-        }
-      })();
-    }, attempt === 0 ? 800 : 2000);
-  };
-
-  const visible = useMemo(() => {
-    if (filter === 'all') return messages;
-    const floor = filter === 'important' ? SEVERITY_RANK.warn : SEVERITY_RANK.danger;
-    return messages.filter((message) => {
-      if (!message.meta) return true;
-      return SEVERITY_RANK[message.meta.severity] >= floor;
-    });
-  }, [messages, filter]);
-
-  const send = async (): Promise<void> => {
-    const text = draft.trim();
-    if (!text || sending) return;
-    setSending(true);
-    setError(null);
-    // Оптимистичное сообщение с отрицательным id: он не столкнётся с id из
-    // базы, поэтому дедуп по id остаётся корректным.
-    const optimistic: PerimeterMessage = {
-      id: -Date.now(),
-      role: 'user',
-      content: text,
-      createdAt: new Date().toISOString(),
-      meta: null,
-    };
-    setMessages((previous) => [...previous, optimistic]);
-    setDraft('');
-    try {
-      const accepted = await webApi.map.ask(text, csrfToken, context);
-      setAwaiting(true);
-      awaitAnswer(accepted.request.requestId);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('requestFailed'));
-      setMessages((previous) => previous.filter((message) => message.id !== optimistic.id));
-      setDraft(text);
-    } finally {
-      setSending(false);
-    }
-  };
-
-  return <aside className="perimeter-chat" aria-label={t('perimeterChat')}>
-    <header className="perimeter-chat__head">
-      <span className="perimeter-chat__title">{t('perimeterChat')}</span>
-      <div className="perimeter-chat__filter" role="group" aria-label={t('perimeterFilter')}>
-        {(['all', 'important', 'quiet'] as SeverityFilter[]).map((value) => <button
-          key={value}
-          type="button"
-          className={`perimeter-chip${filter === value ? ' perimeter-chip--active' : ''}`}
-          onClick={() => setFilter(value)}
-        >{t(value === 'all' ? 'perimeterFilterAll' : value === 'important' ? 'perimeterFilterImportant' : 'perimeterFilterQuiet')}</button>)}
+  return <aside className="pchat-panel" aria-label={t('perimeterChat')}>
+    {active && chat.request ? <RequestObserver
+      requestId={chat.request.requestId} threadId={chat.request.threadId}
+      retryAfterMs={chat.request.retryAfterMs}
+      onSnapshot={chat.onSnapshot} onDelta={chat.onDelta} onPollError={chat.onPollError}
+    /> : null}
+    <header className="pchat-header">
+      <div className="pchat-heading">
+        <span className="pchat-title">{t('perimeterChat')}</span>
+        <button className="pchat-button" type="button" disabled={chat.resetting || chat.sending}
+          title={t('perimeterChatResetHint')} onClick={() => void chat.reset()}>
+          {t(chat.resetting ? 'pchatClearing' : 'perimeterChatReset')}
+        </button>
       </div>
-      <button
-        type="button"
-        className="perimeter-chip perimeter-chat__reset"
-        disabled={resetting}
-        title={t('perimeterChatResetHint')}
-        onClick={() => {
-          setResetting(true);
-          setError(null);
-          void webApi.map.resetChat(csrfToken)
-            .then((payload) => {
-              // Everything already on screen belongs to the old thread; the
-              // stream's replay must not drag it back in.
-              clearedBeforeIdRef.current = messages.reduce(
-                (max, message) => Math.max(max, message.id),
-                clearedBeforeIdRef.current,
-              );
-              setMessages(payload.messages);
-            })
-            .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
-            .finally(() => setResetting(false));
-        }}
-      >{t('perimeterChatReset')}</button>
+      <div className="pchat-filters" role="group" aria-label={t('perimeterFilter')}>
+        {(['all', 'important', 'quiet'] as const).map((value) => <button
+          key={value} type="button" className="pchat-button" aria-pressed={filter === value}
+          onClick={() => setFilter(value)}>
+          {t(value === 'all' ? 'perimeterFilterAll' : value === 'important' ? 'perimeterFilterImportant' : 'perimeterFilterQuiet')}
+        </button>)}
+      </div>
     </header>
-
-    <div className="perimeter-chat__list" ref={listRef}>
-      {visible.length === 0
-        ? <p className="perimeter-chat__empty">{t('perimeterChatEmpty')}</p>
-        : visible.map((message) => <ChatRow
-          key={message.id}
-          message={message}
-          locale={locale}
-          onFocusSystem={onFocusSystem}
-        />)}
-    </div>
-
-    {awaiting ? <p className="perimeter-chat__pending">{t('perimeterThinking')}</p> : null}
-    {error ? <p className="perimeter-chat__error" role="alert">{error}</p> : null}
-
-    <form
-      className="perimeter-chat__composer"
-      onSubmit={(event) => { event.preventDefault(); void send(); }}
-    >
-      <textarea
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            void send();
-          }
-        }}
-        placeholder={t('perimeterAskPlaceholder')}
-        rows={2}
-        aria-label={t('message')}
-      />
-      <button type="submit" disabled={sending || draft.trim().length === 0}>
-        {t('send')}
-      </button>
-    </form>
+    <ChatFeed messages={chat.messages} filter={filter} onFocusSystem={focusSystem}
+      streamText={active ? chat.request?.streamText ?? '' : ''} loaded={chat.loaded} />
+    {busy ? <Waiting key={chat.request?.requestId ?? 'submitting'} request={chat.request} /> : null}
+    {chat.notice ? <p className="pchat-notice" role="status">{chat.notice}</p> : null}
+    {chat.error ? <div className="pchat-error" role="alert">{chat.error}
+      <button type="button" className="pchat-button" onClick={chat.refresh}>{t('refresh')}</button>
+    </div> : null}
+    <Composer disabled={busy || chat.resetting || !chat.loaded} onSend={chat.send} />
   </aside>;
 }
 
-function ChatRow({
-  message,
-  locale,
-  onFocusSystem,
-}: {
-  message: PerimeterMessage;
-  locale: 'ru' | 'en';
-  onFocusSystem: (systemId: number) => void;
+const ChatFeed = memo(function ChatFeed({ messages, filter, onFocusSystem, streamText, loaded }: {
+  messages: PerimeterMessage[]; filter: SeverityFilter; onFocusSystem: (id: number) => void;
+  streamText: string; loaded: boolean;
 }) {
   const { t } = useI18n();
-  const meta = message.meta;
-  const severity = meta?.severity ?? 'info';
-  const anchored = meta?.systemId ?? null;
+  const list = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
+  const visible = useMemo(() => messages.filter((message) => !message.meta || filter === 'all'
+    || SEVERITY_RANK[message.meta.severity] >= (filter === 'important' ? 1 : 2)), [messages, filter]);
+  useEffect(() => {
+    // One layout read/write per paint, only while the pilot follows the tail.
+    if (!pinned.current) return;
+    const frame = requestAnimationFrame(() => { if (list.current && pinned.current) scrollToBottom(list.current, 'instant'); });
+    return () => cancelAnimationFrame(frame);
+  }, [visible, streamText]);
+  return <>
+    <div className="pchat-feed" ref={list} role="log" aria-label={t('perimeterChat')}
+      onScroll={() => {
+        if (!list.current) return;
+        pinned.current = isPinnedToBottom(list.current, 48);
+        setShowLatest(!pinned.current);
+      }}>
+      {visible.length === 0 ? <p className="pchat-empty">{t(!loaded ? 'loading' : messages.length ? 'pchatFilteredEmpty' : 'perimeterChatEmpty')}</p> : null}
+      {visible.map((message) => <ChatRow key={message.id} message={message} onFocusSystem={onFocusSystem} />)}
+      {streamText ? <article className="pchat-row pchat-row--answer"><div className="pchat-markdown"><MarkdownMessage content={streamText} /></div></article> : null}
+    </div>
+    {showLatest ? <button className="pchat-latest pchat-button" type="button" onClick={() => {
+      pinned.current = true;
+      setShowLatest(false);
+      if (list.current) scrollToBottom(list.current, 'instant');
+    }}>{t('scrollToLatest')} ↓</button> : null}
+  </>;
+});
 
-  return <article
-    className={`perimeter-msg perimeter-msg--${message.role} perimeter-msg--${severity}`}
-  >
-    {meta ? <header className="perimeter-msg__head">
-      <span className={`perimeter-badge perimeter-badge--${severity}`}>{advisoryRuleKey(meta.rule) ? t(advisoryRuleKey(meta.rule)!) : meta.rule}</span>
-      {meta.repeats > 0 ? <span className="perimeter-msg__repeats">×{meta.repeats + 1}</span> : null}
-    </header> : null}
-    <p className="perimeter-msg__text">{message.content}</p>
-    <footer className="perimeter-msg__foot">
-      <time dateTime={message.createdAt}>
-        {new Date(message.createdAt).toLocaleTimeString(locale === 'ru' ? 'ru-RU' : 'en-GB', {
-          hour: '2-digit', minute: '2-digit',
-        })}
-      </time>
-      {anchored !== null ? <button
-        type="button"
-        className="perimeter-msg__anchor"
-        onClick={() => onFocusSystem(anchored)}
-      >{t('perimeterShowOnMap')}</button> : null}
-      {meta?.killmailId ? <a
-        href={`https://eve-kill.com/kill/${meta.killmailId}`}
-        target="_blank"
-        rel="noreferrer noopener"
-      >{t('perimeterKillmail')}</a> : null}
+const ChatRow = memo(function ChatRow({ message, onFocusSystem }: {
+  message: PerimeterMessage; onFocusSystem: (systemId: number) => void;
+}) {
+  const { t, locale } = useI18n();
+  const meta = message.meta;
+  const kind = meta ? meta.severity : message.role === 'user' ? 'user' : 'answer';
+  const ruleKey = meta ? advisoryRuleKey(meta.rule) : null;
+  const parsed = parseSqlUtcDate(message.createdAt);
+  const date = Number.isFinite(parsed.getTime()) ? parsed : null;
+  return <article className={`pchat-row pchat-row--${kind}`}>
+    <header className="pchat-row-head">
+      <span>{meta ? t(meta.severity === 'danger' ? 'pchatDanger' : meta.severity === 'warn' ? 'pchatWarn' : 'pchatInfo') : t(message.role === 'user' ? 'pchatPilot' : 'perimeterChat')}</span>
+      {meta && ruleKey ? <span>{t(ruleKey)}</span> : null}
+      {meta && meta.repeats > 0 ? <span>×{meta.repeats + 1}</span> : null}
+    </header>
+    <div className="pchat-markdown"><MarkdownMessage content={message.content} /></div>
+    <footer className="pchat-row-foot">
+      {date ? <time dateTime={date.toISOString()}>{date.toLocaleTimeString(locale === 'ru' ? 'ru-RU' : 'en-GB', { hour: '2-digit', minute: '2-digit' })}</time> : null}
+      {meta?.systemId != null ? <button type="button" className="pchat-link" onClick={() => onFocusSystem(meta.systemId!)}>{t('perimeterShowOnMap')}</button> : null}
+      {meta?.killmailId ? <a href={`https://eve-kill.com/kill/${meta.killmailId}`} target="_blank" rel="noreferrer noopener">{t('perimeterKillmail')}</a> : null}
     </footer>
   </article>;
+});
+
+function Waiting({ request }: { request: WebAgentRequest | null }) {
+  const { t } = useI18n();
+  const [now, setNow] = useState(Date.now);
+  const start = useRef(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const elapsed = perimeterElapsedSeconds(request?.createdAt, now, start.current);
+  return <div className="pchat-waiting" role="status">
+    <span className="pchat-pulse" aria-hidden="true" />
+    <span>{t(request?.streamText ? 'pchatWriting' : request?.status === 'queued' ? 'pchatQueued' : 'perimeterThinking')}</span>
+    <time aria-live="off">{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}</time>
+  </div>;
+}
+
+function Composer({ disabled, onSend }: { disabled: boolean; onSend: (text: string) => Promise<boolean> }) {
+  const { t } = useI18n();
+  const [draft, setDraft] = useState('');
+  const submit = async () => {
+    const text = draft.trim();
+    if (!text || disabled) return;
+    setDraft('');
+    if (!await onSend(text)) setDraft((current) => current || text);
+  };
+  return <form className="pchat-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+    <textarea value={draft} onChange={(event) => setDraft(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); }
+      }} placeholder={t('perimeterAskPlaceholder')} rows={2} maxLength={4000} aria-label={t('message')} />
+    <button className="pchat-send" type="submit" disabled={disabled || !draft.trim()} aria-label={t('send')}>↑</button>
+  </form>;
 }

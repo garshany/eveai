@@ -166,11 +166,13 @@ export const webApi = {
     method: 'POST',
     body: JSON.stringify({ message, threadId, idempotencyKey }),
   }, csrfToken),
-  getAgentRequest: (requestId: string) => request<{ request: WebAgentRequest }>(
+  getAgentRequest: (requestId: string, signal?: AbortSignal) => request<{ request: WebAgentRequest }>(
     `/api/web/chat/requests/${encodeURIComponent(requestId)}`,
+    { signal },
   ),
   getActiveAgentRequest: (threadId?: string | null) => request<{ request: WebAgentRequest | null }>(
     `/api/web/chat/requests/active${threadId ? `?threadId=${encodeURIComponent(threadId)}` : ''}`,
+    { signal: AbortSignal.timeout(15_000) },
   ),
   cancelAgentRequest: (requestId: string, csrfToken: string) => request<{ request: WebAgentRequest }>(
     `/api/web/chat/requests/${encodeURIComponent(requestId)}`,
@@ -329,10 +331,10 @@ export const webApi = {
       { method: 'POST' },
       csrfToken,
     ),
-    chat: () => request<{ threadId: string; messages: PerimeterMessage[] }>('/api/web/map/chat'),
+    chat: () => request<{ threadId: string; messages: PerimeterMessage[] }>('/api/web/map/chat', { signal: AbortSignal.timeout(15_000) }),
     resetChat: (csrfToken: string) => request<{ threadId: string; messages: PerimeterMessage[] }>(
       '/api/web/map/chat/reset',
-      { method: 'POST' },
+      { method: 'POST', signal: AbortSignal.timeout(15_000) },
       csrfToken,
     ),
     ask: (
@@ -345,9 +347,10 @@ export const webApi = {
         radius: number | null;
         band: string | null;
       },
+      idempotencyKey?: string,
     ) => request<{ threadId: string; request: WebAgentRequest; pollUrl: string; eventsUrl: string }>(
       '/api/web/map/ask',
-      { method: 'POST', body: JSON.stringify({ message, context }) },
+      { method: 'POST', body: JSON.stringify({ message, context, idempotencyKey }), signal: AbortSignal.timeout(15_000) },
       csrfToken,
     ),
   },
