@@ -284,6 +284,18 @@ describe('computeHistoryStats', () => {
     expect(stats.trend_slope_per_day).toBeNull();
     expect(stats.change_7d_percent).toBeNull();
   });
+
+  it('computes the N-day change from the full series, not the shorter display window', () => {
+    const full = makePoints(120, 100, 1); // 120 daily points, average 100 → 219
+    const windowed = full.slice(-30); // a 30-day display window
+    // The lookback for a 30- or 90-day change falls outside a 30-day window, so
+    // computing it over the window alone always yields null (the bug).
+    expect(computeHistoryStats(windowed).change_30d_percent).toBeNull();
+    // Passing the full series as the change basis recovers both changes.
+    const stats = computeHistoryStats(windowed, full);
+    expect(stats.change_30d_percent).not.toBeNull();
+    expect(stats.change_90d_percent).not.toBeNull();
+  });
 });
 
 describe('getTypeHistory', () => {
@@ -327,6 +339,19 @@ describe('getTypeHistory', () => {
     ]);
     const result = await getTypeHistory(db as Db, FORGE, TRITANIUM, { days: 2, deps: { fetchHistory, now: T0 } });
     expect(result.series.map((point) => point.date)).toEqual(['2026-07-02', '2026-07-03']);
+  });
+
+  it('reports the N-day change in an N-day view by looking past the window', async () => {
+    const rows = Array.from({ length: 120 }, (_, index) =>
+      makeEsiRow(new Date(T0.getTime() - (119 - index) * DAY_MS).toISOString().slice(0, 10), 100 + index));
+    const fetchHistory = okFetcher(rows);
+    const result = await getTypeHistory(db as Db, FORGE, TRITANIUM, { days: 30, deps: { fetchHistory, now: T0 } });
+    // The chart shows only the 30-day window…
+    expect(result.series.length).toBeLessThanOrEqual(30);
+    // …but the 30- and 90-day change badges still render (computed over the
+    // full stored history), instead of always showing "—".
+    expect(result.stats.change_30d_percent).not.toBeNull();
+    expect(result.stats.change_90d_percent).not.toBeNull();
   });
 
   it('bounds the window by calendar days, not by row count, for sparse series', async () => {
