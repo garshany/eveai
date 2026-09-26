@@ -51,19 +51,15 @@ jobs:
         with:
           category: /language:javascript-typescript
 
-      # TEMPORARY DIAGNOSTIC — print HIGH-severity (security-severity >= 7.0)
-      # SARIF results with rule + file:line, resolving severity from the rule
-      # metadata. Reverted once the alert is identified.
-      - name: Dump high SARIF alerts
+      # TEMPORARY DIAGNOSTIC — print every SARIF result (rule + file:line), and
+      # separately the rule severities from tool.extensions, so the alert can be
+      # localized. Reverted once identified.
+      - name: Dump SARIF alerts
         if: always()
         run: |
           for f in "$GITHUB_WORKSPACE"/../results/*.sarif; do
-            echo "=== $f ==="
-            jq -r '
-              .runs[] as $run
-              | (($run.tool.driver.rules // []) | map({key: .id, val: (.properties."security-severity" // "0")}) | from_entries) as $sev
-              | $run.results[]
-              | select((($sev[.ruleId] // "0") | tonumber) >= 7.0)
-              | "HIGH sev=\($sev[.ruleId]) rule=\(.ruleId) file=\(.locations[0].physicalLocation.artifactLocation.uri) line=\(.locations[0].physicalLocation.region.startLine)"
-            ' "$f" 2>/dev/null || echo "jq failed for $f"
+            echo "=== results in $f ==="
+            jq -r '.runs[].results[] | "RESULT rule=\(.ruleId) file=\(.locations[0].physicalLocation.artifactLocation.uri) line=\(.locations[0].physicalLocation.region.startLine)"' "$f" 2>/dev/null || echo "jq results failed"
+            echo "=== rule severities in $f ==="
+            jq -r '[.runs[].tool.driver.rules[]?, .runs[].tool.extensions[]?.rules[]?] | .[] | select(.properties?."security-severity") | "SEV \(.properties."security-severity") \(.id)"' "$f" 2>/dev/null | sort -u || echo "jq sev failed"
           done
