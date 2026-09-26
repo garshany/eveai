@@ -356,6 +356,18 @@ function getAllowedSdeObjects(db: Db): Set<string> {
   return allowed;
 }
 
+/**
+ * Every table/view name in the database, lower-cased (real virtual tables
+ * included). Deliberately uncached: a table created after the first query must
+ * never be mistaken for a table-valued function.
+ */
+function getAllSchemaObjects(db: Db): Set<string> {
+  const rows = db
+    .prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")
+    .all() as { name: string }[];
+  return new Set(rows.map((row) => row.name.toLowerCase()));
+}
+
 function validateSdeReference(reference: string, allowedObjects: Set<string>): { ok: true; objectName: string } | { ok: false; error: string } {
   const normalized = normalizeObjectReference(reference);
   if (normalized === null) {
@@ -403,8 +415,26 @@ function validateSdeSqlSources(db: Db, sql: string): string | null {
   }
 
   const referencedObjects = new Set<string>();
+  const schemaObjects = getAllSchemaObjects(db);
+  // A VIRTUAL TABLE plan row whose name is not a real schema object is a
+  // table-valued function (json_each / json_tree), usually under an alias
+  // the FROM parser cannot see (`json_each(...) j`). It reads no table — any
+  // table inside its arguments appears as its own plan row and is validated —
+  // and its SCAN is bounded by one JSON value, so it is neither a reference
+  // nor a full scan. Real virtual tables (e.g. FTS) resolve to a schema
+  // object and stay fully validated.
+  const isTableValuedFunctionRow = (detail: string): boolean => {
+    if (!/VIRTUAL TABLE/i.test(detail)) return false;
+    return extractPlanReferences(detail).every((rawReference) => {
+      const normalized = normalizeObjectReference(rawReference);
+      if (normalized === null) return false;
+      const resolved = aliasMap.get(normalized) ?? normalized;
+      return !schemaObjects.has(resolved.split('.').at(-1) ?? '');
+    });
+  };
 
   for (const row of planRows) {
+    if (isTableValuedFunctionRow(row.detail)) continue;
     for (const rawReference of extractPlanReferences(row.detail)) {
       const normalizedReference = normalizeObjectReference(rawReference);
       const resolvedReference = aliasMap.get(normalizedReference ?? '') ?? normalizedReference;
@@ -442,7 +472,8 @@ function validateSdeSqlSources(db: Db, sql: string): string | null {
   // more unconstrained SCANs multiply (e.g. sde_types × sde_types ≈ 51k² rows),
   // which pins the single-threaded event loop and freezes both bots. An indexed
   // join shows up as SEARCH (bounded), so only count SCAN rows.
-  const fullScans = planRows.filter((row) => /^SCAN\b/i.test(row.detail.trim())).length;
+  const fullScans = planRows.filter((row) => /^SCAN\b/i.test(row.detail.trim())
+    && !isTableValuedFunctionRow(row.detail)).length;
   if (fullScans >= 2) {
     return 'Query would scan multiple tables in full (possible cartesian product). Add an indexed JOIN condition (e.g. ON a.group_id = b.group_id) or query one table at a time.';
   }
