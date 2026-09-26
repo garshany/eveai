@@ -21,7 +21,12 @@ import { isTurnAborted } from '../agent/activity.js';
 
 interface EsiFittingItem {
   type_id: number;
-  flag: number;
+  /**
+   * ESI fittings return the slot as a string enum ("HiSlot0", "MedSlot2",
+   * "LoSlot4", "RigSlot0", "SubSystemSlot0", "DroneBay", "FighterBay",
+   * "Cargo", …) — NOT the numeric inventory flag id used elsewhere.
+   */
+  flag: string;
   quantity: number;
 }
 
@@ -33,22 +38,19 @@ interface EsiFitting {
   items: EsiFittingItem[];
 }
 
-// EVE inventory slot flag ranges
-const SLOT_RANGES: Array<[string, number, number]> = [
-  ['High', 11, 18],
-  ['Mid', 19, 26],
-  ['Low', 27, 34],
-  ['Rig', 92, 95],
-  ['Subsystem', 125, 130],
-  ['Drone Bay', 87, 87],
-  ['Fighter Bay', 158, 158],
-  ['Cargo', 5, 5],
-];
-
-function slotCategory(flag: number): string {
-  for (const [name, lo, hi] of SLOT_RANGES) {
-    if (flag >= lo && flag <= hi) return name;
-  }
+// Map the ESI fittings `flag` string enum to a slot category. The numbered
+// slot flags ("HiSlot0".."HiSlot7", etc.) share a common prefix, so match on
+// that; the singletons ("DroneBay", "FighterBay", "Cargo") match exactly.
+function slotCategory(flag: string): string {
+  if (flag.startsWith('HiSlot')) return 'High';
+  if (flag.startsWith('MedSlot')) return 'Mid';
+  if (flag.startsWith('LoSlot')) return 'Low';
+  if (flag.startsWith('RigSlot')) return 'Rig';
+  if (flag.startsWith('SubSystemSlot')) return 'Subsystem';
+  if (flag.startsWith('ServiceSlot')) return 'Service';
+  if (flag === 'DroneBay') return 'Drone Bay';
+  if (flag === 'FighterBay') return 'Fighter Bay';
+  if (flag === 'Cargo') return 'Cargo';
   return 'Other';
 }
 
@@ -106,7 +108,7 @@ export async function resolveActiveFitting(
 
     // Format as readable text
     const lines: string[] = [`[${shipTypeName}, ${fit.name}]`];
-    const slotOrder = ['High', 'Mid', 'Low', 'Rig', 'Subsystem', 'Drone Bay', 'Fighter Bay', 'Cargo'];
+    const slotOrder = ['High', 'Mid', 'Low', 'Rig', 'Subsystem', 'Service', 'Drone Bay', 'Fighter Bay', 'Cargo'];
     for (const slot of slotOrder) {
       const modules = slotGroups.get(slot);
       if (modules && modules.length > 0) {
