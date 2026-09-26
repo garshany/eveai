@@ -111,6 +111,10 @@ function seedTypes(): void {
   insertType(TRITANIUM, 'Tritanium', 18, { published: true, marketGroupID: 5 });
   insertType(PYERITE, 'Pyerite', 18, { published: true, marketGroupID: 5 });
   insertType(TRITANIUM_BARS, 'Tritanium Bars', 18, { published: true, marketGroupID: 5 });
+  // The watchlist route now checks the region against the local SDE, like the
+  // history route, so seed the trade regions the tests add pairs in.
+  db.prepare("INSERT OR IGNORE INTO sde_regions (region_id, name, data_json) VALUES (?, 'The Forge', '{}')").run(FORGE);
+  db.prepare("INSERT OR IGNORE INTO sde_regions (region_id, name, data_json) VALUES (?, 'Domain', '{}')").run(DOMAIN);
 }
 
 describe('market routes', () => {
@@ -414,6 +418,20 @@ describe('market watchlist routes', () => {
     });
     expect(unknownType.statusCode).toBe(404);
     expect(unknownType.json()).toEqual({ error: 'Товар не найден в локальной базе.' });
+
+    // A syntactically valid but non-existent region must be rejected: the
+    // history worker would otherwise retry a failing ESI call for it forever,
+    // burning the shared ESI error budget.
+    const unknownRegion = await app.inject({
+      method: 'POST',
+      url: '/api/web/market/watchlist',
+      headers: mutationHeaders(session),
+      payload: { type_id: TRITANIUM, region_id: 99999999 },
+    });
+    expect(unknownRegion.statusCode).toBe(400);
+    expect(unknownRegion.json()).toEqual({ error: 'Неизвестный регион.' });
+    expect(db.prepare('SELECT COUNT(*) AS c FROM market_watchlist WHERE region_id = 99999999').get())
+      .toEqual({ c: 0 });
   });
 
   it('adds, deduplicates, lists and deletes watchlist rows', async () => {
