@@ -3,7 +3,7 @@ import { webApi } from '../../api';
 import { useI18n } from '../../i18n';
 import type { ProfileSkillsResponse } from '../../types';
 import { formatQuantity } from '../market/format';
-import { FreshnessBar, formatLocalDateTime, romanLevel, useProfileData, useProfileSync } from './shared';
+import { FreshnessBar, formatLocalDateTime, romanLevel, useProfileData, useAutoSyncWhenStale, useProfileSync } from './shared';
 
 type Props = { csrfToken: string };
 
@@ -13,6 +13,7 @@ export function SkillsPanel({ csrfToken }: Props) {
   const loader = useCallback(() => webApi.profile.skills(), []);
   const { data, loading, error, reload } = useProfileData<ProfileSkillsResponse>(loader);
   const { syncing, sync } = useProfileSync(csrfToken, ['skills', 'skillqueue'], reload);
+  useAutoSyncWhenStale(data?.freshness, sync);
 
   if (loading && !data) return <div className="panel-loading">{t('loading')}…</div>;
   if (error) return <div className="workspace-error" role="alert">{error}<button type="button" onClick={() => void reload()}>{t('retry')}</button></div>;

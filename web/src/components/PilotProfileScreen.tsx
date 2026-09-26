@@ -11,7 +11,7 @@ import { SkillsPanel } from './profile/SkillsPanel';
 import { WalletPanel } from './profile/WalletPanel';
 import { securityClassName } from '../security';
 
-type Props = { character: Character | null; csrfToken: string; busy: boolean; onMenu: () => void; onConnect: () => void; onUnlink: (characterId: number) => Promise<void> };
+type Props = { character: Character | null; csrfToken: string; busy: boolean; onProfileLoaded?: (profile: PilotProfile) => void; onMenu: () => void; onConnect: () => void; onUnlink: (characterId: number) => Promise<void> };
 
 type ProfileTab = 'overview' | 'assets' | 'orders' | 'wallet' | 'clones' | 'skills' | 'access';
 
@@ -20,7 +20,7 @@ type ProfileTab = 'overview' | 'assets' | 'orders' | 'wallet' | 'clones' | 'skil
  * (/api/web/profile/*). Данные вкладки грузятся лениво при первом открытии;
  * посещённые вкладки остаются смонтированными, чтобы не терять состояние.
  */
-export function PilotProfileScreen({ character, csrfToken, busy, onMenu, onConnect, onUnlink }: Props) {
+export function PilotProfileScreen({ character, csrfToken, busy, onProfileLoaded, onMenu, onConnect, onUnlink }: Props) {
   const { locale, t } = useI18n();
   const [profile, setProfile] = useState<PilotProfile | null>(null);
   const [loading, setLoading] = useState(Boolean(character));
@@ -44,10 +44,15 @@ export function PilotProfileScreen({ character, csrfToken, busy, onMenu, onConne
   const load = useCallback(async () => {
     if (!character) { setProfile(null); setLoading(false); return; }
     setLoading(true); setError(null);
-    try { setProfile((await webApi.getProfile()).profile); }
+    try {
+      const loaded = (await webApi.getProfile()).profile;
+      setProfile(loaded);
+      // Одна правда на всё приложение: «Обновить» здесь освежает и сайдбар/док.
+      if (loaded && loaded.character.id === character.id) onProfileLoaded?.(loaded);
+    }
     catch (reason) { setError(reason instanceof Error ? reason.message : t('requestFailed')); }
     finally { setLoading(false); }
-  }, [character, t]);
+  }, [character, t, onProfileLoaded]);
 
   useEffect(() => { void load(); }, [load]);
 

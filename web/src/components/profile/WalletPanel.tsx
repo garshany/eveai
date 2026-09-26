@@ -3,7 +3,7 @@ import { webApi } from '../../api';
 import { useI18n, type Locale } from '../../i18n';
 import type { ProfileWalletResponse } from '../../types';
 import { formatIsk } from '../market/format';
-import { FreshnessBar, useProfileData, useProfileSync } from './shared';
+import { FreshnessBar, useProfileData, useAutoSyncWhenStale, useProfileSync } from './shared';
 
 type Props = { csrfToken: string };
 
@@ -22,6 +22,7 @@ export function WalletPanel({ csrfToken }: Props) {
   const loader = useCallback(() => webApi.profile.wallet(), []);
   const { data, loading, error, reload } = useProfileData<ProfileWalletResponse>(loader);
   const { syncing, sync } = useProfileSync(csrfToken, ['wallet', 'wallet_journal'], reload);
+  useAutoSyncWhenStale(data?.freshness, sync);
 
   if (loading && !data) return <div className="panel-loading">{t('loading')}…</div>;
   if (error) return <div className="workspace-error" role="alert">{error}<button type="button" onClick={() => void reload()}>{t('retry')}</button></div>;

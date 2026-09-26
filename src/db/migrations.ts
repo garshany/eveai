@@ -22,6 +22,15 @@ export function runMigrations(db: Db): void {
     addColumnIfMissing(db, 'eve_accounts', 'consent_language', 'TEXT');
     addColumnIfMissing(db, 'eve_accounts', 'consented_at', 'TEXT');
     addColumnIfMissing(db, 'eve_accounts', 'owner_hash', 'TEXT');
+    addColumnIfMissing(
+      db, 'sde_types', 'market_group_id',
+      "INTEGER GENERATED ALWAYS AS (json_extract(data_json, '$.marketGroupID')) VIRTUAL",
+    );
+    addColumnIfMissing(
+      db, 'sde_types', 'published',
+      "INTEGER GENERATED ALWAYS AS (json_extract(data_json, '$.published')) VIRTUAL",
+    );
+    createIndexIfMissing(db, 'idx_sde_types_market_group', 'sde_types', 'published, market_group_id, name COLLATE NOCASE');
     addColumnIfMissing(db, 'eve_character_links', 'user_id', 'INTEGER');
     addColumnIfMissing(db, 'agent_threads', 'user_id', 'INTEGER');
     createIndexIfMissing(db, 'idx_agent_threads_user', 'agent_threads', 'user_id');
@@ -180,7 +189,8 @@ function cutoverMarkedLegacyCliIdentity(db: Db): void {
 }
 
 function addColumnIfMissing(db: Db, table: string, column: string, type: string): void {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  // table_xinfo (not table_info) also lists generated columns.
+  const cols = db.prepare(`PRAGMA table_xinfo(${table})`).all() as Array<{ name: string }>;
   const exists = cols.some((c) => c.name === column);
   if (!exists) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);

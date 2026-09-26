@@ -93,7 +93,9 @@ export async function loadWebPilotProfile(
       character: {
         id: initialCharacterId,
         name: boundedString(publicData?.['name']) ?? linked.characterName,
-        portraitUrl: `/api/web/profile/portrait`,
+        // The character id keys the browser cache: one URL for every pilot kept
+        // showing the previous pilot's portrait after a switch (max-age=300).
+        portraitUrl: `/api/web/profile/portrait?c=${initialCharacterId}`,
         title: boundedString(publicData?.['title']),
         birthday: isoString(publicData?.['birthday']),
         securityStatus: finiteNumber(publicData?.['security_status']),

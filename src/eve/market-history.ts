@@ -213,11 +213,24 @@ export async function getTypeHistory(
   db: Db,
   regionId: number,
   typeId: number,
-  opts: { days?: number | null; deps?: HistorySyncDeps } = {},
+  opts: { days?: number | null; deps?: HistorySyncDeps; firstSyncWaitMs?: number } = {},
 ): Promise<TypeHistoryResult> {
   const now = opts.deps?.now ?? new Date();
   if (needsHistorySync(db, regionId, typeId, now)) {
-    await ensureTypeHistorySynced(db, regionId, typeId, opts.deps ?? {});
+    const sync = ensureTypeHistorySynced(db, regionId, typeId, opts.deps ?? {});
+    const hasLocalRows = db.prepare(
+      'SELECT 1 FROM market_price_history WHERE region_id = ? AND type_id = ? LIMIT 1',
+    ).get(regionId, typeId);
+    if (hasLocalRows) {
+      // Serve what is stored now; the refresh lands for the next view. A
+      // live ESI call (retries included) must not hold the chart hostage.
+      void sync.catch(() => {});
+    } else {
+      // First view: wait for the backfill, but only up to a bound — ESI
+      // retries/backoff can take minutes. The sync keeps running (deduped
+      // in-flight) and a reload picks the rows up.
+      await waitAtMost(sync, opts.firstSyncWaitMs ?? FIRST_SYNC_WAIT_MS);
+    }
   }
   // Read the full stored history once. The returned/charted series is windowed
   // to opts.days, but the N-day change fields need to look back N days from the
@@ -239,6 +252,20 @@ export async function getTypeHistory(
       error: sync?.error ?? null,
     },
   };
+}
+
+const FIRST_SYNC_WAIT_MS = 8_000;
+
+async function waitAtMost(promise: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise.then(() => undefined, () => undefined),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 // The sync row alone decides whether to fetch: a pair with next_due_at in

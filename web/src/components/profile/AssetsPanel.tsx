@@ -3,7 +3,7 @@ import { webApi } from '../../api';
 import { useI18n } from '../../i18n';
 import type { ProfileAssetItem, ProfileAssetLocation, ProfilePriceBook } from '../../types';
 import { formatIsk, formatQuantity } from '../market/format';
-import { FreshnessBar, useProfileData, useProfileSync } from './shared';
+import { FreshnessBar, useProfileData, useAutoSyncWhenStale, useProfileSync } from './shared';
 
 // Совпадает с дефолтным limit на сервере (src/web/profile-routes.ts).
 const PAGE_SIZE = 50;
@@ -29,6 +29,7 @@ export function AssetsPanel({ csrfToken }: Props) {
   }, []);
   const { data, loading, error, reload } = useProfileData(loader);
   const { syncing, sync } = useProfileSync(csrfToken, ['assets'], reload);
+  useAutoSyncWhenStale(data?.freshness, sync);
 
   const showMore = async () => {
     setLoadingMore(true);

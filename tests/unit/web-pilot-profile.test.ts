@@ -46,7 +46,7 @@ describe('web pilot profile', () => {
     const result = await loadWebPilotProfile(db, { userId: 1, chatId: -2_000_000_000, notificationCapability: 'web' });
     expect(result.stale).toBe(false);
     expect(result.profile).toMatchObject({
-      character: { id: 9001, name: 'Test Pilot', portraitUrl: '/api/web/profile/portrait' },
+      character: { id: 9001, name: 'Test Pilot', portraitUrl: '/api/web/profile/portrait?c=9001' },
       corporation: { id: 77, name: 'Corp', ticker: 'CRP' },
       alliance: { id: 88, name: 'Alliance', ticker: 'ALLY' },
       online: true,

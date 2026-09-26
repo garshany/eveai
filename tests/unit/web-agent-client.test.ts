@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AmbiguousApiRequestError } from '../../web/src/api.js';
 import {
+  applyThreadDelta,
+  applyThreadSnapshot,
+  isRequestActive,
   mergeRequestSnapshot,
+  trackThreadRequest,
+  untrackThreadRequest,
   mergeStreamDelta,
   preparePendingSubmission,
   submitWithAmbiguousRetry,
@@ -65,6 +70,36 @@ describe('web agent request client lifecycle', () => {
 
     const advancedSnapshot = request({ progressSequence: 5, streamText: 'partial answer fina' });
     expect(mergeRequestSnapshot(streamed, advancedSnapshot)).toBe(advancedSnapshot);
+  });
+});
+
+describe('per-thread request tracking', () => {
+  it('keeps one live turn per thread so another chat stays usable', () => {
+    const a = request({ requestId: 'a', threadId: 'thread-a' });
+    const b = request({ requestId: 'b', threadId: 'thread-b', status: 'queued' });
+    let tracked = trackThreadRequest(trackThreadRequest({}, a), b);
+    expect(Object.keys(tracked).sort()).toEqual(['thread-a', 'thread-b']);
+
+    tracked = applyThreadDelta(tracked, 'thread-a', { requestId: 'a', text: 'partial', sequence: 5 });
+    expect(tracked['thread-a']?.streamText).toBe('partial');
+    expect(tracked['thread-b']).toBe(b);
+
+    // A snapshot for thread B never touches thread A.
+    tracked = applyThreadSnapshot(tracked, request({ requestId: 'b', threadId: 'thread-b', status: 'completed', progressSequence: 9 }));
+    expect(isRequestActive(tracked['thread-b'])).toBe(false);
+    expect(isRequestActive(tracked['thread-a'])).toBe(true);
+  });
+
+  it('ignores stale frames and only untracks the request that finished', () => {
+    const first = request({ requestId: 'old', threadId: 'thread-a', progressSequence: 3 });
+    let tracked = trackThreadRequest({}, first);
+    expect(applyThreadDelta(tracked, 'thread-a', { requestId: 'other', text: 'x', sequence: 9 })).toBe(tracked);
+    expect(applyThreadSnapshot(tracked, request({ requestId: 'old', threadId: 'thread-a', progressSequence: 2 }))).toBe(tracked);
+
+    const newer = request({ requestId: 'new', threadId: 'thread-a' });
+    tracked = trackThreadRequest(tracked, newer);
+    expect(untrackThreadRequest(tracked, 'thread-a', 'old')).toBe(tracked);
+    expect(untrackThreadRequest(tracked, 'thread-a', 'new')).toEqual({});
   });
 });
 

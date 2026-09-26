@@ -323,3 +323,24 @@ describe('runMigrations', () => {
     ).get()).toBeDefined();
   });
 });
+
+describe('sde_types market columns migration', () => {
+  it('adds the generated market columns and index to a legacy sde_types table', () => {
+    const legacyDb = new Database(':memory:');
+    legacyDb.exec(`
+      CREATE TABLE sde_types (type_id INTEGER PRIMARY KEY, name TEXT NOT NULL, group_id INTEGER, data_json TEXT NOT NULL);
+    `);
+    legacyDb.prepare('INSERT INTO sde_types (type_id, name, group_id, data_json) VALUES (?, ?, ?, ?)')
+      .run(34, 'Tritanium', 18, JSON.stringify({ marketGroupID: 1857, published: 1 }));
+
+    expect(() => runMigrations(legacyDb)).not.toThrow();
+    expect(() => runMigrations(legacyDb)).not.toThrow();
+
+    expect(legacyDb.prepare('SELECT market_group_id, published FROM sde_types WHERE type_id = 34').get())
+      .toEqual({ market_group_id: 1857, published: 1 });
+    expect(legacyDb.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_sde_types_market_group'",
+    ).get()).toBeDefined();
+    legacyDb.close();
+  });
+});

@@ -374,6 +374,9 @@ export class WebAgentRequestCoordinator {
     }
   }
 
+  // One running turn per conversation thread: a reply in one chat must not
+  // hold every other chat of the same browser session in the queue. The
+  // per-session admission cap and the global concurrency limit still apply.
   private claimNext(): RequestRow | null {
     const claim = this.db.transaction(() => {
       const candidate = this.db.prepare(`
@@ -383,6 +386,7 @@ export class WebAgentRequestCoordinator {
             SELECT 1 FROM web_agent_requests running
             WHERE running.user_id = queued.user_id
               AND running.chat_id = queued.chat_id
+              AND running.thread_id = queued.thread_id
               AND running.status = 'running'
           )
         ORDER BY created_at_ms ASC

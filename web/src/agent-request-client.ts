@@ -60,3 +60,50 @@ export function mergeRequestSnapshot(
   ) return current;
   return incoming;
 }
+
+/**
+ * Agent turns in flight, one per conversation thread. Every chat keeps its own
+ * live turn, so a reply streaming in one chat never locks the others.
+ */
+export type RequestsByThread = Readonly<Record<string, WebAgentRequest>>;
+
+export function isRequestActive(request: WebAgentRequest | null | undefined): boolean {
+  return request?.status === 'queued' || request?.status === 'running';
+}
+
+/** Tracks a newly submitted or recovered request; a newer one for the thread replaces the old. */
+export function trackThreadRequest(requests: RequestsByThread, request: WebAgentRequest): RequestsByThread {
+  const current = requests[request.threadId];
+  if (current?.requestId === request.requestId) return applyThreadSnapshot(requests, request);
+  return { ...requests, [request.threadId]: request };
+}
+
+export function applyThreadSnapshot(requests: RequestsByThread, incoming: WebAgentRequest): RequestsByThread {
+  const current = requests[incoming.threadId] ?? null;
+  const merged = mergeRequestSnapshot(current, incoming);
+  if (!merged || merged === current) return requests;
+  return { ...requests, [incoming.threadId]: merged };
+}
+
+export function applyThreadDelta(
+  requests: RequestsByThread,
+  threadId: string,
+  frame: StreamDeltaFrame,
+): RequestsByThread {
+  const current = requests[threadId] ?? null;
+  const merged = mergeStreamDelta(current, frame);
+  if (!merged || merged === current) return requests;
+  return { ...requests, [threadId]: merged };
+}
+
+/** Drops a finished request, unless the thread already moved on to a newer one. */
+export function untrackThreadRequest(
+  requests: RequestsByThread,
+  threadId: string,
+  requestId: string,
+): RequestsByThread {
+  if (requests[threadId]?.requestId !== requestId) return requests;
+  const next = { ...requests };
+  delete next[threadId];
+  return next;
+}
