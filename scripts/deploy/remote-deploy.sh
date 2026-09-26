@@ -22,7 +22,9 @@ SHA="${2:?usage: remote-deploy.sh <release.tar.gz> <git-sha>}"
 APP_DIR="${EVEAI_APP_DIR:-/srv/eveai}"
 SERVICE="${EVEAI_SERVICE:-eveai}"
 HEALTH_TIMEOUT="${EVEAI_HEALTH_TIMEOUT_SECONDS:-180}"
-KEEP_BACKUPS="${EVEAI_KEEP_BACKUPS:-10}"
+# Each backup is a full copy of the database (1.2 GB in production on a 30 GB
+# disk), so keep only the last few; older ones belong in off-host backups.
+KEEP_BACKUPS="${EVEAI_KEEP_BACKUPS:-3}"
 KEEP_RELEASES="${EVEAI_KEEP_RELEASES:-3}"
 SYSTEMCTL="${EVEAI_SYSTEMCTL:-sudo -n systemctl}"
 # The rollout lock lives on fd 9; nothing we launch may inherit it, or a
@@ -75,7 +77,12 @@ if [[ -f "$DB_PATH" ]]; then
   (cd "$STAGE" && node -e "
     const Database = require('better-sqlite3');
     const db = new Database(process.argv[1], { readonly: true, fileMustExist: true });
-    db.backup(process.argv[2]).then(() => db.close()).catch((e) => { console.error(e.message); process.exit(1); });
+    // One step inside one read transaction: the default 100-page steps restart
+    // the copy whenever the live service writes, which on a 1.2 GB database
+    // under constant writes took ~25 minutes per rollout. In WAL mode the single
+    // step does not block the service's writers.
+    db.backup(process.argv[2], { progress: ({ totalPages }) => Math.max(totalPages, 1) })
+      .then(() => db.close()).catch((e) => { console.error(e.message); process.exit(1); });
   " "$DB_PATH" "$BACKUP")
   ls -1t "$APP_DIR"/data/backups/*-pre-*.db 2>/dev/null | tail -n +"$((KEEP_BACKUPS + 1))" | xargs -r rm -f
 else
