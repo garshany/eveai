@@ -2208,6 +2208,16 @@ describe('tiered reasoning effort', () => {
     expect(__test__.resolveTierReasoningEffort('low', 'xhigh')).toBe('xhigh');
   });
 
+  it('caps auto effort at medium for the Perimeter flight assistant only', async () => {
+    const { resolveReasoningEffort, classifyReasoningEffort } = await import('../../src/agent/executor.js');
+    const goal = 'Проложи маршрут до Амарра, там опасно на гейтах? Сравни варианты и объясни риски подробно по каждой системе';
+    expect(['high', 'xhigh', 'max']).toContain(classifyReasoningEffort(goal));
+    expect(resolveReasoningEffort(goal, 'auto', 'perimeter')).toBe('medium');
+    expect(resolveReasoningEffort(goal, 'auto', 'full')).toBe(classifyReasoningEffort(goal));
+    // An explicitly chosen effort is the pilot's call, even in Perimeter.
+    expect(resolveReasoningEffort(goal, 'high', 'perimeter')).toBe('high');
+  });
+
   it('uses the base effort on every iteration while both tiers stay auto', async () => {
     createNativeResponseMock
       .mockResolvedValueOnce(toolCallResponse('call_1', 'SELECT type_id FROM sde_types LIMIT 1'))

@@ -51,7 +51,12 @@ import {
   type Advisory,
 } from '../eve-map/advisor.js';
 import { composeSituationAssessment } from '../eve-map/advisor-prose.js';
-import { recordRadarAdvisory, recordRadarBubble, recordRadarLocation } from '../eve-map/radar-snapshot.js';
+import {
+  recordRadarAdvisory,
+  recordRadarBubble,
+  recordRadarFocus,
+  recordRadarLocation,
+} from '../eve-map/radar-snapshot.js';
 import { recordModelUsageSafe } from '../usage/tracker.js';
 import {
   appendAdvisory,
@@ -111,6 +116,31 @@ type AskBody = {
   /** What the pilot is looking at, so a bare "стоит ли лететь?" is answerable. */
   context?: unknown;
 };
+
+/**
+ * The system the pilot had selected (or, failing that, is centred on) when they
+ * asked. Only a known SDE system id is accepted; everything else is ignored.
+ */
+function readAskFocus(
+  db: Db,
+  context: unknown,
+): { systemId: number; name: string | null; security: number | null } | null {
+  if (!context || typeof context !== 'object' || Array.isArray(context)) return null;
+  const record = context as Record<string, unknown>;
+  const candidate = [record.selectedSystemId, record.systemId]
+    .find((value): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0);
+  if (candidate === undefined) return null;
+  const row = db.prepare(`
+    SELECT name, COALESCE(json_extract(data_json, '$.securityStatus'), json_extract(data_json, '$.security')) AS security
+    FROM sde_systems WHERE system_id = ?
+  `).get(candidate) as { name: string | null; security: number | null } | undefined;
+  if (!row) return null;
+  return {
+    systemId: candidate,
+    name: row.name,
+    security: typeof row.security === 'number' ? Math.round(row.security * 10) / 10 : null,
+  };
+}
 
 /**
  * The identity token a long mutation pins itself to. Bumped by every character
@@ -477,6 +507,10 @@ export function registerMapRoutes(
     const threadId = getOrCreatePerimeterThread(
       db, session.chatId, session.userId, linked?.characterId ?? null,
     );
+    // The selected system reaches the agent through the runtime radar block,
+    // never through the stored message (the transcript keeps what was typed).
+    const focus = readAskFocus(db, request.body?.context);
+    if (linked && focus) recordRadarFocus(linked.characterId, focus);
 
     // The map lane enqueues into the same durable queue as chat rather than
     // writing the question and hoping: without this the composer accepts a
@@ -1065,4 +1099,5 @@ function sessionContext(session: WebSession) {
 export const __testables = {
   publishAdvisory, parseRisk, parseAvoid, parseRadius,
   readIdempotencyKey,
+  readAskFocus,
 };

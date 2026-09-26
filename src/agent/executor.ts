@@ -891,7 +891,7 @@ async function runNativeAgentLoop(
   // mid-turn applies from the next turn, never retroactively. No saved row
   // means the operator config defaults, so existing users are unaffected.
   const modelSettings = resolveModelSettings(db, ctx.userId);
-  const reasoningEffort = resolveReasoningEffort(goal, modelSettings.reasoningEffort);
+  const reasoningEffort = resolveReasoningEffort(goal, modelSettings.reasoningEffort, toolMode ?? 'full');
   const safetyIdentifier = buildSafetyIdentifier(ctx.userId, config.auth.secretKey);
   console.log(
     '[executor] model=%s reasoning effort=%s source=%s mode=%s verbosity=%s for goal="%s"',
@@ -3396,13 +3396,22 @@ export function classifyReasoningEffort(goal: string): ApiReasoningEffort {
   return 'medium';
 }
 
+/**
+ * Auto effort for the Perimeter flight assistant is capped at medium: the
+ * pilot is on a gate and a "high" deliberation over "маршрут опасный?" costs
+ * the seconds they are asking to save. An explicitly chosen effort is kept.
+ */
+const PERIMETER_AUTO_EFFORT_ORDER: ApiReasoningEffort[] = ['none', 'low', 'medium'];
+
 export function resolveReasoningEffort(
   goal: string,
   configured: ReasoningEffort,
+  promptMode: PromptMode = 'full',
 ): ApiReasoningEffort {
-  return configured === 'auto'
-    ? classifyReasoningEffort(goal)
-    : configured;
+  if (configured !== 'auto') return configured;
+  const effort = classifyReasoningEffort(goal);
+  if (promptMode === 'perimeter' && !PERIMETER_AUTO_EFFORT_ORDER.includes(effort)) return 'medium';
+  return effort;
 }
 
 /**
