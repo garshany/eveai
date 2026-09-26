@@ -20,16 +20,18 @@ import { parseModelPricingJson } from './usage/pricing.js';
 
 /**
  * Default token tariffs (USD per 1M tokens: input / output / cached /
- * reasoning), from the owner's ModelHub numbers of 2026-07-27. gpt-6-luna
- * carries OpenAI's public list price (in 0.10 / out 0.50 / cached 0.01) until
- * the owner's ModelHub tariff for it is known. Reasoning tokens bill at the
- * plain output rate. MODEL_PRICING_JSON overrides this table wholesale.
+ * reasoning), from ModelHub GET /api/wallet/prices of 2026-09-26
+ * (input_per_mtok / output_per_mtok / cache_read_per_mtok). Reasoning tokens
+ * bill at the plain output rate. MODEL_PRICING_JSON overrides this table
+ * wholesale.
  */
 const DEFAULT_MODEL_PRICING_JSON = JSON.stringify({
-  'gpt-5.6-sol': { input: 0.06825, output: 0.34125, cached: 0.0126, reasoning: 0.34125 },
-  'gpt-5.6-terra': { input: 0.0525, output: 0.2625, cached: 0.0126, reasoning: 0.2625 },
-  'gpt-5.6-luna': { input: 0.042, output: 0.21, cached: 0.0126, reasoning: 0.21 },
-  'gpt-6-luna': { input: 0.1, output: 0.5, cached: 0.01, reasoning: 0.5 },
+  'gpt-6-astra': { input: 0.39675, output: 1.587, cached: 0.039675, reasoning: 1.587 },
+  'gpt-6-sol': { input: 0.13225, output: 0.66125, cached: 0.013225, reasoning: 0.66125 },
+  'gpt-6-luna': { input: 0.072738, output: 0.330625, cached: 0.007274, reasoning: 0.330625 },
+  'gpt-5.6-sol': { input: 0.13225, output: 0.66125, cached: 0.013225, reasoning: 0.66125 },
+  'gpt-5.6-terra': { input: 0.092575, output: 0.462875, cached: 0.009258, reasoning: 0.462875 },
+  'gpt-5.6-luna': { input: 0.072738, output: 0.330625, cached: 0.007274, reasoning: 0.330625 },
 });
 
 // Strict parsing: malformed integers (e.g. "3000.5", "1e3", unsafe ints) fail
@@ -172,7 +174,7 @@ export const config = {
   },
   openai: {
     apiKey: required('OPENAI_API_KEY'),
-    model: optional('OPENAI_MODEL', 'gpt-6-luna'),
+    model: optional('OPENAI_MODEL', 'gpt-6-astra'),
     providerId: openAiProvider.id,
     providerName: openAiProvider.name,
     // Provider IDs map to fixed transports and endpoints. There is deliberately no

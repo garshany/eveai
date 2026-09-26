@@ -36,7 +36,7 @@ TELEGRAM_REQUEST_WINDOW_MS=60000
 TELEGRAM_MAX_REQUESTS_PER_WINDOW=6
 TELEGRAM_MAX_ACTIVE_REQUESTS_GLOBAL=24
 OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-6-luna
+OPENAI_MODEL=gpt-6-astra
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
@@ -108,7 +108,7 @@ transports/endpoints. It does not accept an arbitrary base URL:
 
 ```env
 OPENAI_PROVIDER=openai
-OPENAI_MODEL=gpt-6-luna
+OPENAI_MODEL=gpt-6-astra
 OPENAI_REASONING_EFFORT=auto
 OPENAI_REASONING_MODE=standard
 OPENAI_TEXT_VERBOSITY=low
@@ -140,7 +140,7 @@ remove browser-only durable data and encrypted EVE credentials transactionally;
 identities shared with Telegram, Discord, or CLI keep their canonical account
 and character links.
 
-The default is `gpt-6-luna` (next-generation, fast and cheap). Choose `gpt-5.6-sol` for maximum capability, `gpt-5.6-terra` for a balanced deployment, or `gpt-5.6-luna` for efficient high-volume traffic. The integration uses streaming, function tools, prompt cache keys, and stateless tool-call replay. Stored Responses remain default-off; set `OPENAI_STORE_RESPONSES=true` only when the operator accepts provider retention of chat context and tool data and wants the requests visible at <https://platform.openai.com/logs?api=responses>. The replay path preserves assistant output item fields such as `phase` when passing output items between tool rounds.
+The default is `gpt-6-astra` (GPT-6 flagship). `gpt-6-sol` and `gpt-6-luna` are the cheaper GPT-6 options. Choose `gpt-5.6-sol` for maximum capability, `gpt-5.6-terra` for a balanced deployment, or `gpt-5.6-luna` for efficient high-volume traffic. The integration uses streaming, function tools, prompt cache keys, and stateless tool-call replay. Stored Responses remain default-off; set `OPENAI_STORE_RESPONSES=true` only when the operator accepts provider retention of chat context and tool data and wants the requests visible at <https://platform.openai.com/logs?api=responses>. The replay path preserves assistant output item fields such as `phase` when passing output items between tool rounds.
 
 Keep `OPENAI_RESPONSE_STATE_MODE=stateless` for the default and rollback path.
 To evaluate provider continuation, set both

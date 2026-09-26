@@ -4,7 +4,7 @@ This project uses the OpenAI Responses API for a tool-heavy EVE Online agent loo
 
 ## Default Target
 
-- Model: `gpt-6-luna`
+- Model: `gpt-6-astra`
 - Provider: `openai` (default) or `modelhub`
 - Transport: both providers use streamed HTTP `POST /v1/responses`
 - Base URL: fixed by provider ID (`https://api.openai.com/v1` or
@@ -42,7 +42,9 @@ The self-hosting operator selects one process-wide model:
 
 | Value | Role |
 | --- | --- |
-| `gpt-6-luna` | Default; next-generation efficient model, cheaper per token than GPT-5.6 Sol/Terra at OpenAI list prices |
+| `gpt-6-astra` | Default; GPT-6 flagship (async tools, no `none` effort — clamped to `low`) |
+| `gpt-6-sol` | GPT-6 quality-first model |
+| `gpt-6-luna` | GPT-6 efficient model, cheapest per token |
 | `gpt-5.6-sol` | Strongest capability and quality-first work |
 | `gpt-5.6-terra` | Strong capability with a lower-cost balance |
 | `gpt-5.6-luna` | Efficient, latency-sensitive, high-volume work |
@@ -285,11 +287,25 @@ non-completed envelope is never registered, replayed, budgeted, audited, or
 dispatched as a tool call. Unrecoverable envelopes return only the generic safe
 model-service failure.
 
+## GPT-6 reasoning via `configuration_update`
+
+On `gpt-6-*` models the top-level agent loop keeps the request-level
+`reasoning.effort` fixed at `medium` and applies the per-turn (and optional
+per-iteration tier) effort through one trailing `configuration_update` input
+item. Changing the request-level field invalidates the provider prompt cache
+(ModelHub measurement 2026-09-26: 0 cached tokens vs 8960 with an update
+item). The item is never persisted or replayed, so a request carries at most
+one, at its tail. It is skipped when provider compaction
+(`OPENAI_COMPACT_THRESHOLD>0`) or `truncation` is sent, which OpenAI documents
+as incompatible. Internal calls (compaction, OSINT, advisors) keep the plain
+request-level effort. `gpt-6-astra` does not accept `none`; it is clamped to
+`low`.
+
 ## Relevant Environment
 
 ```env
 OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-6-luna
+OPENAI_MODEL=gpt-6-astra
 OPENAI_RESPONSE_STATE_MODE=stateless
 OPENAI_STORE_RESPONSES=false
 OPENAI_PROGRAMMATIC_TOOL_CALLING=false

@@ -65,17 +65,23 @@ describe('transparency & usage configuration', () => {
   it('ships the owner’s tariffs by default and lets MODEL_PRICING_JSON replace them', async () => {
     delete process.env.MODEL_PRICING_JSON;
     const defaults = (await import('../../src/config.js')).config.usage.pricing;
-    expect(defaults['gpt-5.6-sol']).toEqual({
-      input: 0.06825, output: 0.34125, cached: 0.0126, reasoning: 0.34125,
+    expect(defaults['gpt-6-astra']).toEqual({
+      input: 0.39675, output: 1.587, cached: 0.039675, reasoning: 1.587,
     });
-    expect(defaults['gpt-5.6-terra']).toEqual({
-      input: 0.0525, output: 0.2625, cached: 0.0126, reasoning: 0.2625,
-    });
-    expect(defaults['gpt-5.6-luna']).toEqual({
-      input: 0.042, output: 0.21, cached: 0.0126, reasoning: 0.21,
+    expect(defaults['gpt-6-sol']).toEqual({
+      input: 0.13225, output: 0.66125, cached: 0.013225, reasoning: 0.66125,
     });
     expect(defaults['gpt-6-luna']).toEqual({
-      input: 0.1, output: 0.5, cached: 0.01, reasoning: 0.5,
+      input: 0.072738, output: 0.330625, cached: 0.007274, reasoning: 0.330625,
+    });
+    expect(defaults['gpt-5.6-sol']).toEqual({
+      input: 0.13225, output: 0.66125, cached: 0.013225, reasoning: 0.66125,
+    });
+    expect(defaults['gpt-5.6-terra']).toEqual({
+      input: 0.092575, output: 0.462875, cached: 0.009258, reasoning: 0.462875,
+    });
+    expect(defaults['gpt-5.6-luna']).toEqual({
+      input: 0.072738, output: 0.330625, cached: 0.007274, reasoning: 0.330625,
     });
 
     vi.resetModules();

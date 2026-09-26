@@ -427,7 +427,9 @@ describe('createNativeResponse request body', () => {
           reasoningEffort,
         });
         expect(body?.model).toBe(model);
-        expect(body?.reasoning).toEqual({ effort: reasoningEffort });
+        // GPT-6 Astra rejects `none`; it is clamped to its lowest effort.
+        const expected = model === 'gpt-6-astra' && reasoningEffort === 'none' ? 'low' : reasoningEffort;
+        expect(body?.reasoning).toEqual({ effort: expected });
       }
     }
   });
@@ -987,5 +989,89 @@ describe('stream useful-delta tracking', () => {
 
     expect((thrown as Error).message).toContain('HTTP 502');
     expect(sawUsefulDeltasBeforeError(thrown)).toBe(false);
+  });
+});
+
+describe('GPT-6 reasoning via configuration_update', () => {
+  function captureBodies(): Array<Record<string, unknown>> {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+      return new Response([
+        'event: response.done',
+        'data: {"response":{"id":"resp_cfg","output_text":"ok","output":[]}}',
+        '',
+      ].join('\n'), { status: 200 });
+    }));
+    return bodies;
+  }
+
+  async function send(overrides: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const bodies = captureBodies();
+    const { createNativeResponse, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    await createNativeResponse({
+      instructions: 'test',
+      items: [toNativeMessage('hello')],
+      tools: [],
+      reasoningViaConfigurationUpdate: true,
+      ...overrides,
+    } as Parameters<typeof createNativeResponse>[0]);
+    return bodies[0]!;
+  }
+
+  it('keeps the request effort at the anchor and appends one trailing update on GPT-6', async () => {
+    const body = await send({ model: 'gpt-6-astra', reasoningEffort: 'high' });
+    expect(body.reasoning).toEqual({ effort: 'medium' });
+    const input = body.input as Array<Record<string, unknown>>;
+    expect(input).toHaveLength(2);
+    expect(input[1]).toEqual({ type: 'configuration_update', reasoning: { effort: 'high' } });
+  });
+
+  it('sends no update when the wanted effort already equals the anchor', async () => {
+    const body = await send({ model: 'gpt-6-sol', reasoningEffort: 'medium' });
+    expect(body.reasoning).toEqual({ effort: 'medium' });
+    expect((body.input as unknown[]).length).toBe(1);
+  });
+
+  it('clamps Astra none to low inside the update', async () => {
+    const body = await send({ model: 'gpt-6-astra', reasoningEffort: 'none' });
+    const input = body.input as Array<Record<string, unknown>>;
+    expect(input[input.length - 1]).toEqual({ type: 'configuration_update', reasoning: { effort: 'low' } });
+  });
+
+  it('leaves GPT-5.6 on the plain request-level effort', async () => {
+    const body = await send({ model: 'gpt-5.6-sol', reasoningEffort: 'high' });
+    expect(body.reasoning).toEqual({ effort: 'high' });
+    expect((body.input as Array<{ type: string }>).some((item) => item.type === 'configuration_update')).toBe(false);
+  });
+
+  it('is off without the opt-in flag (internal calls)', async () => {
+    const body = await send({ model: 'gpt-6-astra', reasoningEffort: 'high', reasoningViaConfigurationUpdate: false });
+    expect(body.reasoning).toEqual({ effort: 'high' });
+    expect((body.input as unknown[]).length).toBe(1);
+  });
+
+  it('is skipped with provider compaction or truncation, which OpenAI documents as incompatible', async () => {
+    const compacted = await send({
+      model: 'gpt-6-astra',
+      reasoningEffort: 'high',
+      contextManagement: [{ type: 'compaction', compact_threshold: 1000 }],
+    });
+    expect(compacted.reasoning).toEqual({ effort: 'high' });
+    expect((compacted.input as unknown[]).length).toBe(1);
+
+    vi.resetModules();
+    // The openai provider sends truncation; that alone disables the update.
+    const truncated = await send({ model: 'gpt-6-astra', reasoningEffort: 'high', truncation: 'auto' });
+    expect(truncated.truncation).toBe('auto');
+    expect(truncated.reasoning).toEqual({ effort: 'high' });
+    expect((truncated.input as unknown[]).length).toBe(1);
+  });
+
+  it('never produces two adjacent updates', async () => {
+    const { appendConfigurationUpdate, toNativeMessage } = await import('../../src/agent/native-responses.js');
+    const once = appendConfigurationUpdate([toNativeMessage('hi')], 'high');
+    const twice = appendConfigurationUpdate(once, 'low');
+    expect(twice).toEqual([toNativeMessage('hi'), { type: 'configuration_update', reasoning: { effort: 'low' } }]);
   });
 });

@@ -76,9 +76,9 @@ describe('recordModelUsageSafe', () => {
       cache_write_tokens: 100,
       reasoning_tokens: 60,
       // Literal oracle against the pinned gpt-5.6-terra default tariff
-      // (0.0525/0.2625/0.0126 USD per 1M): re-running the pricing function
+      // (0.092575/0.462875/0.009258 USD per 1M): re-running the pricing function
       // here would make the test unfalsifiable.
-      cost_micros: 404,
+      cost_micros: 707,
     });
     expect(typeof row.created_at_ms).toBe('number');
   });
@@ -136,7 +136,7 @@ describe('executor accounting wiring', () => {
       cache_write_tokens: 0,
       reasoning_tokens: 30,
       // Literal oracle, same tariff as above.
-      cost_micros: 80,
+      cost_micros: 140,
     });
   });
 });

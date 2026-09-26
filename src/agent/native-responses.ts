@@ -1,6 +1,10 @@
 import { config } from '../config.js';
 import {
+  CONFIGURATION_UPDATE_ANCHOR_EFFORT,
+  clampReasoningEffortForModel,
+  supportsConfigurationUpdate,
   toApiReasoningEffort,
+  type ApiReasoningEffort,
   type ReasoningEffort,
   type ReasoningMode,
   type TextVerbosity,
@@ -26,7 +30,14 @@ export type NativeInputItem =
   | NativeProgramOutputItem
   | NativeFunctionCallItem
   | NativeFunctionCallOutputItem
-  | NativeResponseOutputItem;
+  | NativeResponseOutputItem
+  | NativeConfigurationUpdateItem;
+
+/** GPT-6 mid-conversation reasoning change; see supportsConfigurationUpdate. */
+export type NativeConfigurationUpdateItem = {
+  type: 'configuration_update';
+  reasoning: { effort: ApiReasoningEffort };
+};
 
 export type NativeInputMessage = {
   type: 'message';
@@ -193,10 +204,31 @@ export async function createNativeResponse(input: {
    * leave this false so their text never leaks into the CLI answer stream.
    */
   streamToActivity?: boolean;
+  /**
+   * Top-level agent loop only: on GPT-6 models keep the request-level effort
+   * at CONFIGURATION_UPDATE_ANCHOR_EFFORT (stable prompt cache) and apply the
+   * wanted effort through a trailing `configuration_update` input item.
+   * Ignored with provider compaction/truncation, which OpenAI documents as
+   * incompatible with configuration updates.
+   */
+  reasoningViaConfigurationUpdate?: boolean;
   signal?: AbortSignal;
 }): Promise<NativeResponseResult> {
   const baseUrl = normalizeBaseUrl(config.openai.baseUrl);
-  const effectiveEffort = toApiReasoningEffort(input.reasoningEffort ?? config.openai.reasoningEffort);
+  const requestModel = input.model ?? config.openai.model;
+  const effectiveEffort = clampReasoningEffortForModel(
+    requestModel,
+    toApiReasoningEffort(input.reasoningEffort ?? config.openai.reasoningEffort),
+  );
+  const sendsTruncation = Boolean(input.truncation && config.openai.supportsTruncation);
+  const useConfigurationUpdate = input.reasoningViaConfigurationUpdate === true
+    && supportsConfigurationUpdate(requestModel)
+    && !input.contextManagement
+    && !sendsTruncation;
+  const requestEffort = useConfigurationUpdate ? CONFIGURATION_UPDATE_ANCHOR_EFFORT : effectiveEffort;
+  const requestItems = useConfigurationUpdate && effectiveEffort !== CONFIGURATION_UPDATE_ANCHOR_EFFORT
+    ? appendConfigurationUpdate(input.items, effectiveEffort)
+    : input.items;
   const effectiveMode = input.reasoningMode ?? 'standard';
   const maxTokens = input.maxOutputTokens || config.openai.maxOutputTokens || 0;
   const textVerbosity = input.textVerbosity ?? config.openai.textVerbosity;
@@ -208,13 +240,13 @@ export async function createNativeResponse(input: {
   const activitySink = getActivitySink();
   const streamThisCall = input.streamToActivity === true && activitySink !== undefined;
   const wantReasoningSummary = streamThisCall && activitySink.reasoning !== false;
-  const reasoningPayload: Record<string, unknown> = { effort: effectiveEffort };
+  const reasoningPayload: Record<string, unknown> = { effort: requestEffort };
   if (effectiveMode === 'pro') reasoningPayload.mode = 'pro';
   if (wantReasoningSummary) reasoningPayload.summary = 'auto';
   const bodyPayload: Record<string, unknown> = {
-      model: input.model ?? config.openai.model,
+      model: requestModel,
       instructions: input.instructions,
-      input: input.items,
+      input: requestItems,
       previous_response_id: input.previousResponseId ?? undefined,
       prompt_cache_key: input.promptCacheKey ?? undefined,
       tools: input.tools,
@@ -231,13 +263,17 @@ export async function createNativeResponse(input: {
     };
   // Only send optional parameters when explicitly configured.
   if (maxTokens > 0) bodyPayload.max_output_tokens = maxTokens;
-  if (input.truncation && config.openai.supportsTruncation) {
+  if (sendsTruncation) {
     bodyPayload.truncation = input.truncation;
   }
   if (input.contextManagement) {
     bodyPayload.context_management = input.contextManagement;
   }
   const bodyJson = JSON.stringify(bodyPayload);
+  if (useConfigurationUpdate) {
+    console.log('[api] reasoning via configuration_update request_effort=%s effective_effort=%s',
+      requestEffort, effectiveEffort);
+  }
   console.log('[api] POST %s/responses — payload %d chars, %d tools, %d input items, prevId=%s',
     baseUrl, bodyJson.length, input.tools.length, input.items.length,
     input.previousResponseId ?? 'none');
@@ -341,6 +377,22 @@ export async function createNativeResponse(input: {
     status: completedPayload?.status ?? inferTerminalStatus(events),
     sawUsefulDeltas,
   };
+}
+
+/**
+ * Appends one update at the end of the input. The API rejects two adjacent
+ * updates, so a trailing update already present is replaced, never doubled.
+ * The item is not persisted or replayed: each request carries at most one, at
+ * its tail, so the cached prefix of the previous request stays byte-identical.
+ */
+export function appendConfigurationUpdate(
+  items: NativeInputItem[],
+  effort: ApiReasoningEffort,
+): NativeInputItem[] {
+  const update: NativeConfigurationUpdateItem = { type: 'configuration_update', reasoning: { effort } };
+  const last = items[items.length - 1];
+  const base = last?.type === 'configuration_update' ? items.slice(0, -1) : items;
+  return [...base, update];
 }
 
 export function toNativeMessage(text: string): NativeInputMessage {
