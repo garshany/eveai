@@ -109,6 +109,18 @@ describe('map graph', () => {
     expect(rebuilt.reason).toBe('sde_changed');
   });
 
+  it('rebuilds after a reload that appends a newer sde_meta row', () => {
+    // Regression: the reader took an unordered LIMIT 1, so once a second SDE
+    // load appended a newer build row (rather than replacing), the graph kept
+    // reading the oldest build number and never rebuilt against the new data.
+    seed(db);
+    buildMapGraph(db);
+    db.prepare('INSERT INTO sde_meta (build_number, loaded_at) VALUES (?, ?)').run('2', '2026-06-01');
+    const rebuilt = buildMapGraph(db);
+    expect(rebuilt.rebuilt).toBe(true);
+    expect(rebuilt.reason).toBe('sde_changed');
+  });
+
   it('refuses to build a map when no system carries coordinates', () => {
     seed(db, { withGeometry: false });
     // Пустая карта хуже упавшей сборки: все системы оказались бы в одной точке.

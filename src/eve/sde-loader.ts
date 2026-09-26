@@ -564,10 +564,16 @@ async function main() {
     }
   }
 
-  // Update sde_meta
+  // Update sde_meta. build_number is the TEXT primary key, so a date-only id
+  // ("manual-YYYY-MM-DD") would INSERT a new row on each new day (leaving the
+  // old ones) and REPLACE in place on the same day — either way the recorded
+  // build never reliably changes, and the map graph (which rebuilds only when
+  // the build number differs) is never rebuilt after a reload. Keep exactly one
+  // row, keyed by a full-timestamp id so every load is a distinct build.
+  db.prepare('DELETE FROM sde_meta').run();
   db.prepare(
-    `INSERT OR REPLACE INTO sde_meta (build_number, loaded_at) VALUES (?, datetime('now'))`
-  ).run('manual-' + new Date().toISOString().slice(0, 10));
+    `INSERT INTO sde_meta (build_number, loaded_at) VALUES (?, datetime('now'))`
+  ).run('manual-' + new Date().toISOString());
 
   // Fail loudly if a critical table is empty. These power the most common
   // queries (item/price lookups and route planning); a silent partial load
