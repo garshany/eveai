@@ -257,6 +257,7 @@ export function analyzeKillPattern(
   let isNpcOnly = true;
   let latestKillTime = '';
   let earliestKillTime = '';
+  let peakAttackerCount = 0;
 
   for (const kill of kills) {
     // Track attacker characters
@@ -267,6 +268,12 @@ export function analyzeKillPattern(
     // NPC check
     if (kill.is_npc !== true) {
       isNpcOnly = false;
+      // The real fleet size is attacker_count, not the number of distinct
+      // final-blow characters (which is at most one per kill). A 20-pilot
+      // gank fleet that lands three kills would otherwise read as 3 attackers.
+      if (typeof kill.attacker_count === 'number' && kill.attacker_count > peakAttackerCount) {
+        peakAttackerCount = kill.attacker_count;
+      }
     }
 
     // Victim ship group classification
@@ -291,8 +298,23 @@ export function analyzeKillPattern(
     timeWindowMinutes = Math.max(0, Math.round((latest - earliest) / 60_000));
   }
 
-  // Estimate gank DPS from unique attacker count
-  const estimatedGankDps = uniqueAttackers.size * AVG_GANK_DPS;
+  // Count the kills clustered within ACTIVE_FLEET_WINDOW_MIN of the most recent
+  // one. Judging "active fleet" by the full earliest→latest span lets a single
+  // old kill widen the window past the threshold and hide a burst of three
+  // kills in the last few minutes; the recent cluster is what actually matters.
+  let recentKillCount = 0;
+  if (latestKillTime) {
+    const latest = new Date(latestKillTime).getTime();
+    const clusterFloor = latest - ACTIVE_FLEET_WINDOW_MIN * 60_000;
+    for (const kill of kills) {
+      const t = kill.killmail_time ? new Date(kill.killmail_time).getTime() : Number.NaN;
+      if (Number.isFinite(t) && t >= clusterFloor) recentKillCount += 1;
+    }
+  }
+
+  // Estimate gank DPS from the real fleet size, falling back to the distinct
+  // final-blow count when attacker_count is unavailable.
+  const estimatedGankDps = Math.max(uniqueAttackers.size, peakAttackerCount) * AVG_GANK_DPS;
 
   return {
     systemId,
@@ -306,6 +328,8 @@ export function analyzeKillPattern(
     estimatedGankDps,
     isNpcOnly,
     latestKillTime,
+    peakAttackerCount,
+    recentKillCount,
   };
 }
 
@@ -343,9 +367,15 @@ export function scoreThreat(
     return { level: 'LOW', reason: 'Только NPC убийства, игроки не замечены' };
   }
 
-  // Check if gank fleet is active (3+ kills within ACTIVE_FLEET_WINDOW_MIN)
-  const isActiveFleet = pattern.uniqueAttackers.size >= 3
-    && pattern.timeWindowMinutes <= ACTIVE_FLEET_WINDOW_MIN
+  // Fleet size is the peak attacker_count (real headcount), not the distinct
+  // final-blow count which is at most one per kill.
+  const fleetSize = Math.max(pattern.uniqueAttackers.size, pattern.peakAttackerCount ?? 0);
+  // Active gank fleet: 3+ kills clustered within ACTIVE_FLEET_WINDOW_MIN (the
+  // recent cluster, so an older stray kill can't widen the span and mask it)
+  // by a fleet of 3+. Recency vs "now" is enforced by isRecent below.
+  const recentCluster = pattern.recentKillCount ?? pattern.killCount;
+  const isActiveFleet = fleetSize >= 3
+    && recentCluster >= 3
     && pattern.killCount >= 3;
 
   // Check if kills are recent (within 15 minutes of now)
@@ -369,7 +399,7 @@ export function scoreThreat(
   if (isActiveFleet && isRecent && ship.isHighValueTarget && ship.ehp < ehpVsConcordFast) {
     return {
       level: 'CRITICAL',
-      reason: `Активный ганк-флот (${pattern.uniqueAttackers.size} пилотов, `
+      reason: `Активный ганк-флот (${fleetSize} пилотов, `
         + `${pattern.killCount} убийств за ${pattern.timeWindowMinutes} мин). `
         + `Ваш ${ship.shipName} (${ship.ehp} EHP) не переживёт ${pattern.estimatedGankDps} DPS`,
     };
@@ -379,7 +409,7 @@ export function scoreThreat(
   if (isActiveFleet && isRecent && (matchesUserType || ship.ehp < ehpVsConcordSlow)) {
     return {
       level: 'HIGH',
-      reason: `Ганк-флот активен (${pattern.uniqueAttackers.size} атакующих). `
+      reason: `Ганк-флот активен (${fleetSize} атакующих). `
         + (matchesUserType
           ? `Убивают ${haulersKilled > 0 ? 'хаулеров' : 'шахтёров'} — ваш тип корабля в зоне риска`
           : `Ваш EHP (${ship.ehp}) ниже порога выживания`),
