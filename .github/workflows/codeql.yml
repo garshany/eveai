@@ -50,3 +50,14 @@ jobs:
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: /language:javascript-typescript
+
+      # TEMPORARY DIAGNOSTIC — print each SARIF result's rule/severity/location
+      # to the job log so the alert can be localized without the Security tab.
+      # Revert once the alert is identified.
+      - name: Dump SARIF alerts
+        if: always()
+        run: |
+          for f in "$GITHUB_WORKSPACE"/../results/*.sarif; do
+            echo "=== $f ==="
+            jq -r '.runs[].results[] | "SEV=\(.properties?."security-severity" // .rule.properties?."security-severity" // "?") LEVEL=\(.level // "?") RULE=\(.ruleId) FILE=\(.locations[0].physicalLocation.artifactLocation.uri) LINE=\(.locations[0].physicalLocation.region.startLine) MSG=\(.message.text)"' "$f" 2>/dev/null || echo "jq failed for $f"
+          done
