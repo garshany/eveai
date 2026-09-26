@@ -125,12 +125,15 @@ function longestQuietRun(hist: Record<number, number>, maxKills: number): {
   };
 }
 
-function estimateTimezone(sleepWindow: {
+export function estimateTimezone(sleepWindow: {
   start_hour: number;
   duration_hours: number;
 }): { name: string; utc_offset: number } {
   const midpoint = (sleepWindow.start_hour + sleepWindow.duration_hours / 2) % 24;
-  let offset = (midpoint - 3.5 + 24) % 24;
+  // People sleep centred on ~03:30 local, so local(3.5) = utc(midpoint) + offset,
+  // hence offset = 3.5 - midpoint. Computing midpoint - 3.5 negates the sign and
+  // produces a mirror-image timezone (e.g. an RU pilot reported as US East).
+  let offset = (3.5 - midpoint + 24) % 24;
   if (offset > 12) offset -= 24;
   offset = Math.round(offset);
 
