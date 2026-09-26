@@ -219,13 +219,19 @@ export async function getTypeHistory(
   if (needsHistorySync(db, regionId, typeId, now)) {
     await ensureTypeHistorySynced(db, regionId, typeId, opts.deps ?? {});
   }
-  const series = readHistorySeries(db, regionId, typeId, opts.days ?? null);
+  // Read the full stored history once. The returned/charted series is windowed
+  // to opts.days, but the N-day change fields need to look back N days from the
+  // latest day — which is outside an N-day window — so they are computed over
+  // the full series. Without this, change_30d/90d are always null in a 30/90-day
+  // view and never render in the UI.
+  const fullSeries = readHistorySeries(db, regionId, typeId, null);
+  const series = windowSeries(fullSeries, opts.days ?? null);
   const sync = readSyncRow(db, regionId, typeId);
   return {
     region_id: regionId,
     type_id: typeId,
     series,
-    stats: computeHistoryStats(series),
+    stats: computeHistoryStats(series, fullSeries),
     freshness: {
       last_synced_at: sync?.last_synced_at ?? null,
       next_due_at: sync?.next_due_at ?? null,
@@ -252,7 +258,17 @@ function readHistorySeries(db: Db, regionId: number, typeId: number, days: numbe
     WHERE region_id = ? AND type_id = ?
     ORDER BY date ASC
   `).all(regionId, typeId) as HistoryPoint[];
-  return days !== null && days > 0 ? rows.slice(-days) : rows;
+  return windowSeries(rows, days);
+}
+
+function windowSeries(rows: HistoryPoint[], days: number | null): HistoryPoint[] {
+  if (days === null || days <= 0 || rows.length === 0) return rows;
+  // Calendar window anchored at the latest stored day. ESI omits no-trade
+  // days, so slicing the last N ROWS would stretch an illiquid item's
+  // "30 days" across months and skew every windowed stat.
+  const cutoff = new Date(dateToUtcMs(rows[rows.length - 1].date) - (days - 1) * DAY_MS)
+    .toISOString().slice(0, 10);
+  return rows.filter((row) => row.date >= cutoff);
 }
 
 function readSyncRow(db: Db, regionId: number, typeId: number): SyncRow | undefined {
@@ -322,7 +338,7 @@ function parseHistoryRows(value: unknown): HistoryPoint[] {
  * field is null when the series is too short to support it, so callers can
  * render "недостаточно данных" instead of a bogus zero.
  */
-export function computeHistoryStats(points: HistoryPoint[]): HistoryStats {
+export function computeHistoryStats(points: HistoryPoint[], changeBasis: HistoryPoint[] = points): HistoryStats {
   if (points.length === 0) {
     return {
       mean_average: null,
@@ -377,9 +393,11 @@ export function computeHistoryStats(points: HistoryPoint[]): HistoryStats {
     mean_average: round(mean),
     median_average: round(median),
     daily_log_return_stddev_percent: volatility,
-    change_7d_percent: changeOverDays(points, 7),
-    change_30d_percent: changeOverDays(points, 30),
-    change_90d_percent: changeOverDays(points, 90),
+    // Computed over the full history: an N-day change looks back N days from
+    // the latest day, which lies outside an N-day display window.
+    change_7d_percent: changeOverDays(changeBasis, 7),
+    change_30d_percent: changeOverDays(changeBasis, 30),
+    change_90d_percent: changeOverDays(changeBasis, 90),
     mean_daily_volume: round(points.reduce((sum, point) => sum + point.volume, 0) / points.length),
     trend_slope_per_day: slope,
   };

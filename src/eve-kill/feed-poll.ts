@@ -7,9 +7,23 @@ const FEED_KEY = 'global';
 const DEFAULT_LIMIT = 100;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_BACKOFF_MAX_MS = 30_000;
+/**
+ * Pages fetched ahead of a held cursor, per poll, for non-blocking observers.
+ * Bounded so an outage on the watch path costs at most this many extra
+ * requests per (backed-off) poll.
+ */
+const MAX_OBSERVE_AHEAD_PAGES = 10;
 
 export type FeedNotificationSender = (chatId: number, text: string) => Promise<void>;
 export type FeedEventListener = (event: FeedEvent) => void | Promise<void>;
+/**
+ * A non-blocking observer never holds the durable cursor: it is called before
+ * the blocking listeners and watch delivery, is never awaited, and its
+ * failures are logged and dropped. Delivery is at-least-once (a restart
+ * replays from the durable cursor), so observers must be idempotent.
+ */
+export type FeedEventObserver = (event: FeedEvent) => void;
+export type FeedSubscribeOptions = { mode?: 'blocking' | 'observer' };
 
 export type FeedPollOptions = {
   limit?: number;
@@ -33,6 +47,13 @@ type FeedStateRow = { last_sequence_id: number };
 type WatchRow = { id: number; chat_id: number; topic: string; label: string };
 
 const listeners = new Set<FeedEventListener>();
+const observers = new Set<FeedEventObserver>();
+/**
+ * Highest sequence already handed to observers. In memory only: after a
+ * restart observers resume from the durable cursor, which is at-least-once.
+ */
+let observedThrough: number | null = null;
+let lastObservedAt: string | null = null;
 let running: { stopped: boolean; wake: AbortController; done: Promise<void> } | null = null;
 let lastPollAt: string | null = null;
 let lastSuccessAt: string | null = null;
@@ -43,14 +64,42 @@ export function getEveKillFeedRuntimeStatus(): {
   lastPollAt: string | null;
   lastSuccessAt: string | null;
   lastError: string | null;
+  /** Last successful feed fetch whose events reached the non-blocking observers. */
+  lastObservedAt: string | null;
 } {
-  return { running: Boolean(running), lastPollAt, lastSuccessAt, lastError };
+  return { running: Boolean(running), lastPollAt, lastSuccessAt, lastError, lastObservedAt };
 }
 
-/** Registers an in-process consumer before the baseline poll. */
-export function subscribeEveKillFeed(listener: FeedEventListener): () => void {
+/**
+ * Registers an in-process consumer before the baseline poll. The default
+ * `blocking` listener is awaited and a failure holds the durable cursor;
+ * `observer` mode never blocks and keeps receiving new events while a blocking
+ * consumer or a watch delivery is failing (see FeedEventObserver).
+ */
+export function subscribeEveKillFeed(
+  listener: FeedEventListener,
+  options: FeedSubscribeOptions = {},
+): () => void {
+  if (options.mode === 'observer') {
+    const observer: FeedEventObserver = (event) => {
+      const pending = listener(event);
+      if (pending) {
+        pending.catch((error: unknown) => {
+          console.warn('[eve-kill-feed] observer failed: %s', (error as Error)?.message ?? String(error));
+        });
+      }
+    };
+    observers.add(observer);
+    return () => { observers.delete(observer); };
+  }
   listeners.add(listener);
   return () => { listeners.delete(listener); };
+}
+
+/** Test seam: forget the in-memory observer position. */
+export function resetEveKillFeedObserversForTests(): void {
+  observedThrough = null;
+  lastObservedAt = null;
 }
 
 /**
@@ -70,6 +119,7 @@ export async function runFeedPollOnce(
     const bootstrap = await fetchFeedPage(0, limit);
     if (!bootstrap.ok) return bootstrap;
     writeFeedState(db, bootstrap.data.latest);
+    observedThrough = bootstrap.data.latest;
     pruneNotificationDedupIfDue(db);
     return {
       ok: true,
@@ -90,6 +140,13 @@ export async function runFeedPollOnce(
   if (page.data.hasMore && events.length === 0) {
     return { ok: false, error: 'EVE-KILL feed returned hasMore without a newer event' };
   }
+  // Observers see the page before the blocking path, so a Telegram/Discord
+  // outage that holds the cursor below cannot stall them.
+  if (observedThrough === null || observedThrough < state.last_sequence_id
+    || observedThrough > page.data.latest) {
+    observedThrough = state.last_sequence_id;
+  }
+  notifyObservers(events);
   let cursor = state.last_sequence_id;
   let delivered = 0;
 
@@ -133,6 +190,9 @@ export async function runFeedPollOnce(
       writeFeedState(db, event.sequenceId);
       cursor = event.sequenceId;
     } catch {
+      // The durable cursor is held for at-least-once watch delivery; keep the
+      // observers moving past it so the live map does not freeze with it.
+      if (page.data.hasMore) await observeAhead(limit);
       return {
         ok: false,
         error: `EVE-KILL feed processing failed at sequence ${event.sequenceId}`,
@@ -152,6 +212,39 @@ export async function runFeedPollOnce(
   };
 }
 
+function notifyObservers(events: FeedEvent[]): void {
+  lastObservedAt = new Date().toISOString();
+  for (const event of events) {
+    if (observedThrough !== null && event.sequenceId <= observedThrough) continue;
+    for (const observer of observers) {
+      try {
+        observer(event);
+      } catch (error) {
+        console.warn(
+          '[eve-kill-feed] observer failed at sequence %d: %s',
+          event.sequenceId,
+          (error as Error).message,
+        );
+      }
+    }
+    observedThrough = event.sequenceId;
+  }
+}
+
+/** Fetch pages beyond a held durable cursor for observers only. */
+async function observeAhead(limit: number): Promise<void> {
+  if (observers.size === 0) return;
+  for (let pageIndex = 0; pageIndex < MAX_OBSERVE_AHEAD_PAGES; pageIndex += 1) {
+    const after = observedThrough;
+    if (after === null) return;
+    const page = await fetchFeedPage(after, limit);
+    if (!page.ok) return;
+    const events = page.data.events.filter((event) => event.sequenceId > after);
+    notifyObservers(events);
+    if (!page.data.hasMore || events.length === 0) return;
+  }
+}
+
 export function startEveKillFeedPoller(
   db: Db,
   send: FeedNotificationSender,
@@ -160,6 +253,7 @@ export function startEveKillFeedPoller(
   if (running) return;
   const current = { stopped: false, wake: new AbortController(), done: Promise.resolve() };
   running = current;
+  observedThrough = null;
   current.done = feedLoop(db, send, options, current)
     .finally(() => { if (running === current) running = null; });
   void current.done.catch(() => {

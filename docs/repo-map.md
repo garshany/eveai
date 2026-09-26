@@ -69,8 +69,8 @@ Use it when you need to find the right file or folder before reading implementat
 - `market-queries.ts`: read-only queries over the local `market_orders` snapshot with SDE joins — type search, overview/spread, paged order book, per-region comparison, market-group tree
 - `market-type-info.ts`: full SDE item card for the web market — localized description, traits, grouped dogma attributes with units, required skills, meta-chain variations
 - `market-history.ts`: local daily price history (`market_price_history`) with lazy ESI backfill and trend/volatility aggregates
-- `market-history-worker.ts`: hourly cron worker draining due `(region, type)` history pairs (watchlist plus seeded top types)
-- `market-alerts-worker.ts`: 5-minute cron worker firing one-shot price alerts against the local snapshot, with event log and outbound push
+- `market-history-worker.ts`: hourly cron worker draining due `(region, type)` history pairs (watchlist plus seeded top types), pruning pairs no longer wanted after a grace period
+- `market-alerts-worker.ts`: 5-minute cron worker firing one-shot price alerts against the local snapshot, with event log and outbound push (backoff-limited, time-bounded redelivery)
 - `system-metric-snapshot.ts`: same-order projection of fixed public ESI system kill/jump/industry/sovereignty metrics
 - `dynamic-item-summary.ts`: requested dynamic-dogma attributes plus optional local-SDE base/delta evidence without creator/effect leakage
 - `user-profile.ts`: generated user snapshot/profile flow

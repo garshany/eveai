@@ -305,3 +305,71 @@ describe('top-types seed throttle', () => {
     prepareSpy.mockRestore();
   });
 });
+
+describe('sync backlog pruning', () => {
+  const DAY_MS = 24 * 60 * MINUTE_MS;
+  const at = (days: number) => new Date(T0.getTime() + days * DAY_MS);
+
+  function addActiveAlert(userId: number, typeId: number, regionId: number, status = 'active') {
+    db.prepare(`
+      INSERT INTO market_price_alerts (user_id, type_id, region_id, side, comparator, threshold_price, status)
+      VALUES (?, ?, ?, 'sell', 'above', 100, ?)
+    `).run(userId, typeId, regionId, status);
+  }
+
+  it('prunes a pair removed from every watchlist only after the grace period', async () => {
+    addWatchlist(1, TRITANIUM, null);
+    addWatchlist(1, PYERITE, null);
+    const { fetchHistory } = recordingFetcher();
+    await runMarketHistoryTick(db as Db, makeDeps({ fetchHistory, now: at(0) }));
+    expect(syncRow(FORGE, TRITANIUM)).toBeDefined();
+
+    db.prepare('DELETE FROM market_watchlist WHERE type_id = ?').run(TRITANIUM);
+    await runMarketHistoryTick(db as Db, makeDeps({ fetchHistory, now: at(1) }));
+    expect(syncRow(FORGE, TRITANIUM)).toBeDefined(); // still inside the grace period
+
+    await runMarketHistoryTick(db as Db, makeDeps({ fetchHistory, now: at(4) }));
+    expect(syncRow(FORGE, TRITANIUM)).toBeUndefined(); // pruned
+    expect(syncRow(FORGE, PYERITE)).toBeDefined(); // still watched: kept
+  });
+
+  it('prunes yesterday\'s top types that dropped out of the seed, keeping current ones', async () => {
+    db.prepare('INSERT INTO market_snapshot_regions (region_id, pages) VALUES (?, ?)').run(FORGE, 409);
+    insertOrder(FORGE, TRITANIUM, 10, 100);
+    insertOrder(FORGE, PYERITE, 5, 100);
+    const { fetchHistory } = recordingFetcher();
+    await runMarketHistoryTick(db as Db, makeDeps({ fetchHistory, seedTopTypes: 2, now: at(0) }));
+    expect(syncRow(FORGE, PYERITE)).toBeDefined();
+
+    // Pyerite leaves the book: the daily re-seeds only keep Tritanium wanted.
+    db.prepare('DELETE FROM market_orders WHERE type_id = ?').run(PYERITE);
+    for (const day of [1, 2, 3, 4]) {
+      await runMarketHistoryTick(db as Db, makeDeps({ fetchHistory, seedTopTypes: 2, now: at(day) }));
+    }
+    expect(syncRow(FORGE, PYERITE)).toBeUndefined();
+    expect(syncRow(FORGE, TRITANIUM)).toBeDefined();
+  });
+
+  it('never prunes a pair referenced by an active alert, but does once the alert is gone', async () => {
+    addSyncPair(DOMAIN, MEXALLON, at(0).toISOString());
+    addActiveAlert(1, MEXALLON, DOMAIN);
+    addActiveAlert(1, PYERITE, DOMAIN, 'triggered');
+    addSyncPair(DOMAIN, PYERITE, at(0).toISOString());
+    const { fetchHistory } = recordingFetcher();
+    await runMarketHistoryTick(db as Db, makeDeps({ fetchHistory, now: at(0) }));
+    await runMarketHistoryTick(db as Db, makeDeps({ fetchHistory, now: at(10) }));
+    expect(syncRow(DOMAIN, MEXALLON)).toBeDefined();
+    expect(syncRow(DOMAIN, PYERITE)).toBeUndefined(); // triggered alert is not a reference
+  });
+
+  it('gives unstamped legacy/on-demand rows a full grace period before pruning', async () => {
+    addSyncPair(FORGE, MEXALLON, at(100).toISOString()); // last_wanted_at NULL
+    const { fetchHistory } = recordingFetcher();
+    await runMarketHistoryTick(db as Db, makeDeps({ fetchHistory, now: at(0) }));
+    expect(syncRow(FORGE, MEXALLON)).toBeDefined();
+    await runMarketHistoryTick(db as Db, makeDeps({ fetchHistory, now: at(2) }));
+    expect(syncRow(FORGE, MEXALLON)).toBeDefined();
+    await runMarketHistoryTick(db as Db, makeDeps({ fetchHistory, now: at(4) }));
+    expect(syncRow(FORGE, MEXALLON)).toBeUndefined();
+  });
+});

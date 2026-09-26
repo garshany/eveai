@@ -156,7 +156,10 @@ CREATE TABLE IF NOT EXISTS eve_accounts (
   consent_version TEXT,
   consent_language TEXT CHECK (consent_language IS NULL OR consent_language IN ('ru', 'en')),
   consented_at    TEXT,
-  user_id         INTEGER
+  user_id         INTEGER,
+  -- EVE SSO CharacterOwnerHash of the account that authorized these tokens.
+  -- It changes when the character is sold/transferred to another EVE account.
+  owner_hash      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS eve_character_links (
@@ -796,6 +799,9 @@ CREATE TABLE IF NOT EXISTS market_history_sync (
   status         TEXT NOT NULL DEFAULT 'ok'
     CHECK (status IN ('ok', 'error')),
   error          TEXT,
+  -- Last time a seed (watchlist, active alert, top-N) still wanted the pair;
+  -- the history worker prunes rows whose stamp is older than its grace period.
+  last_wanted_at TEXT,
   PRIMARY KEY (region_id, type_id)
 );
 CREATE INDEX IF NOT EXISTS idx_market_history_sync_due
@@ -834,19 +840,27 @@ CREATE INDEX IF NOT EXISTS idx_market_price_alerts_user_status
 
 -- Append-only firing log for market_price_alerts. delivered_at flips when the
 -- outbound lane (Telegram/web) has pushed the notification. Rows stay visible
--- in the UI regardless of delivery.
+-- in the UI regardless of delivery. Failed pushes are retried by the alerts
+-- worker: delivery_attempts counts failed sends, next_attempt_at is the
+-- exponential-backoff gate, abandoned_at marks a terminal give-up (no
+-- outbound lane at all, or the attempt cap reached).
 CREATE TABLE IF NOT EXISTS market_alert_events (
-  event_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-  alert_id     INTEGER NOT NULL,
-  user_id      INTEGER NOT NULL,
-  type_id      INTEGER NOT NULL,
-  price        REAL NOT NULL,
-  threshold    REAL NOT NULL,
-  triggered_at TEXT NOT NULL DEFAULT (datetime('now')),
-  delivered_at TEXT
+  event_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id          INTEGER NOT NULL,
+  user_id           INTEGER NOT NULL,
+  type_id           INTEGER NOT NULL,
+  price             REAL NOT NULL,
+  threshold         REAL NOT NULL,
+  triggered_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  delivered_at      TEXT,
+  delivery_attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at   TEXT,
+  abandoned_at      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_market_alert_events_user
   ON market_alert_events(user_id, triggered_at);
+CREATE INDEX IF NOT EXISTS idx_market_alert_events_pending
+  ON market_alert_events(delivered_at, abandoned_at, next_attempt_at);
 
 -- Perimeter map graph. Both tables are derived from the local SDE and are
 -- rebuilt whenever the SDE build number changes, so they carry no state worth

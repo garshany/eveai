@@ -112,7 +112,11 @@ describe('system_metric_snapshot facade', () => {
           { system_id: 2, ship_kills: 1, npc_kills: 2, pod_kills: 3 },
         ],
       },
-      { metric: 'sovereignty', data: [{ system_id: 2, alliance_id: 3, corporation_id: 4 }] },
+      // A faction_id alongside alliance/corp sovereignty is genuinely
+      // contradictory (faction warfare vs. null-sec sov are mutually exclusive).
+      // alliance_id + corporation_id together is NOT — that is the normal shape
+      // of an alliance-held system (covered by a positive test below).
+      { metric: 'sovereignty', data: [{ system_id: 2, alliance_id: 3, faction_id: 5 }] },
       {
         metric: 'industry',
         data: [{ solar_system_id: 2, cost_indices: [
@@ -132,6 +136,23 @@ describe('system_metric_snapshot facade', () => {
         error: 'CCP ESI returned an invalid system metric response.', status: null, blocked: false,
       });
     }
+  });
+
+  it('resolves an alliance-held system that carries both alliance_id and corporation_id', async () => {
+    // Real /sovereignty/map/ rows for an alliance-sovereign system list both
+    // the alliance and its holding corporation; alliance takes precedence.
+    mocks.callEsiOperation.mockResolvedValue({
+      ok: true, status: 200, cached: false, headers: {},
+      data: [{ system_id: 30004759, alliance_id: 1354830081, corporation_id: 1344654522 }],
+    });
+    const result = await executeSystemMetricSnapshot(db, { metric: 'sovereignty', system_ids: [30004759] });
+    expect(result.ok).toBe(true);
+    expect((result.rows as Array<Record<string, unknown>>)[0]).toMatchObject({
+      system_id: 30004759,
+      found: true,
+      holder_type: 'alliance',
+      holder_id: 1354830081,
+    });
   });
 
   it('rejects upstream bulk arrays larger than 10000 rows', async () => {

@@ -1,6 +1,7 @@
 import type { Db } from '../../db/sqlite.js';
 import {
   extractCteNames,
+  findSchemaQualifiedTableReference,
   normalizeObjectReference,
   tokenizeSql,
   type SqlToken,
@@ -153,32 +154,6 @@ function normalizeIdentifier(value: string): string {
   return value.toLowerCase();
 }
 
-/**
- * Rejects schema-qualified FROM/JOIN references (`main.x`, `temp.x`). After
- * the isolation views exist, an unqualified `character_assets` resolves to
- * the row-scoped TEMP VIEW; a qualified one would bypass it.
- */
-function findSchemaQualifiedReference(tokens: SqlToken[]): string | null {
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (token.upper !== 'FROM' && token.upper !== 'JOIN') continue;
-
-    let cursor = index + 1;
-    if (tokens[cursor]?.value === '(') continue;
-
-    const parts: string[] = [];
-    while (tokens[cursor] && /^[A-Za-z_][A-Za-z0-9_$]*$/u.test(tokens[cursor].value)) {
-      parts.push(tokens[cursor].value);
-      if (tokens[cursor + 1]?.value !== '.') break;
-      cursor += 2;
-    }
-    if (parts.length > 1) {
-      return parts.join('.');
-    }
-  }
-  return null;
-}
-
 function validateCharacterSqlSources(
   db: Db,
   sql: string,
@@ -197,7 +172,7 @@ function validateCharacterSqlSources(
     }
   }
 
-  const qualified = findSchemaQualifiedReference(tokens);
+  const qualified = findSchemaQualifiedTableReference(tokens);
   if (qualified !== null) {
     return {
       ok: false,
@@ -243,7 +218,12 @@ function validateCharacterSqlSources(
       }
       const baseName = parts.at(-1) ?? '';
 
-      if (cteNames.has(baseName) || IGNORED_PLAN_REFERENCES.has(baseName)) {
+      // Only an unqualified plan reference can be a CTE (SQLite disallows a
+      // schema on a CTE name). A schema-qualified reference is a real table —
+      // either the temp-view expansion "main.<character table>" handled below,
+      // or an attempt to reach another table — so it must never be skipped as
+      // a CTE even if its base name collides with a declared CTE name.
+      if (parts.length === 1 && (cteNames.has(baseName) || IGNORED_PLAN_REFERENCES.has(baseName))) {
         continue;
       }
 

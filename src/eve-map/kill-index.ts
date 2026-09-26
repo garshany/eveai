@@ -55,7 +55,15 @@ export type SystemKillRollup = {
   systemId: number;
   kills15m: number;
   kills1h: number;
-  kills24h: number;
+  /**
+   * Kills over the last `killsWindowHours`. That window is 24 h only when the
+   * index actually retains 24 h (MAP_KILL_INDEX_RETENTION_HOURS ≥ 24); with the
+   * default 3 h retention it is 3 h. It used to be labelled `kills24h` while
+   * holding at most the retention window, and gate kills (kept for days) made
+   * it a mix of both.
+   */
+  killsWindow: number;
+  killsWindowHours: number;
   pvpKills1h: number;
   npcKills1h: number;
   valueDestroyed1h: number;
@@ -69,7 +77,13 @@ export type KillIndexListener = (kill: IndexedKill) => void;
 
 const WINDOW_15M_MS = 15 * 60_000;
 const WINDOW_1H_MS = 60 * 60_000;
-const WINDOW_24H_MS = 24 * 60 * 60_000;
+/** The longest "recent kills" window the index can answer honestly. */
+const MAX_KILLS_WINDOW_HOURS = 24;
+
+/** Hours covered by `SystemKillRollup.killsWindow`: min(24, retention). */
+export function killsWindowHours(): number {
+  return Math.max(1, Math.min(MAX_KILLS_WINDOW_HOURS, config.map.killIndexRetentionHours));
+}
 /** SQLite's default parameter ceiling is 999; stay well under it when chunking. */
 const SQL_CHUNK = 400;
 
@@ -133,18 +147,28 @@ export function getKillFeedFreshness(now = Date.now()): KillFeedFreshness {
       error: 'Live kill feed is not running; kill activity is not being updated.',
     };
   }
-  const lastSuccessMs = feed.lastSuccessAt ? Date.parse(feed.lastSuccessAt) : Number.NaN;
+  // The index is a non-blocking observer: it stays live while watch delivery
+  // holds the durable cursor, so its freshness is the last page it was fed,
+  // not the last fully acknowledged poll.
+  const lastFedAt = newestIso(feed.lastObservedAt ?? null, feed.lastSuccessAt);
+  const lastSuccessMs = lastFedAt ? Date.parse(lastFedAt) : Number.NaN;
   if (!Number.isFinite(lastSuccessMs)) {
     return { status: 'cached', retrievedAt: null, error: feed.lastError ?? 'Live kill feed has not answered yet.' };
   }
   if (now - lastSuccessMs > FEED_STALE_AFTER_MS) {
     return {
       status: 'cached',
-      retrievedAt: feed.lastSuccessAt,
+      retrievedAt: lastFedAt,
       error: `Live kill feed is stale${feed.lastError ? `: ${feed.lastError}` : ''}.`,
     };
   }
-  return { status: 'live', retrievedAt: feed.lastSuccessAt, error: null };
+  return { status: 'live', retrievedAt: lastFedAt, error: null };
+}
+
+function newestIso(a: string | null, b: string | null): string | null {
+  if (!a) return b;
+  if (!b) return a;
+  return Date.parse(a) >= Date.parse(b) ? a : b;
 }
 
 /**
@@ -154,16 +178,17 @@ export function getKillFeedFreshness(now = Date.now()): KillFeedFreshness {
 export function startMapKillIndex(db: Db): () => void {
   if (unsubscribeFeed) return stopMapKillIndex;
 
+  // Observer mode: the index is fed every page before (and independently of)
+  // the blocking watch delivery, so a Telegram/Discord outage that holds the
+  // durable feed cursor does not freeze the map. Redelivery after a restart is
+  // absorbed by the killmail_id primary key.
   unsubscribeFeed = subscribeEveKillFeed((event) => {
-    // A feed listener runs inside the poller's cursor advance: throwing here
-    // would stall the cursor for every other consumer, so failures are logged
-    // and dropped rather than propagated.
     try {
       recordKillmail(db, event.killmail);
     } catch (error) {
       console.warn('[map-kill-index] ingest failed: %s', (error as Error).message);
     }
-  });
+  }, { mode: 'observer' });
 
   sweepKillIndex(db);
   sweepTimer = setInterval(() => {
@@ -427,7 +452,8 @@ export function getSystemKillRollups(
   }
   if (systemIds.length === 0) return result;
 
-  const since = now - WINDOW_24H_MS;
+  const windowHours = killsWindowHours();
+  const since = now - windowHours * 3_600_000;
   for (const chunk of chunked(systemIds, SQL_CHUNK)) {
     const placeholders = chunk.map(() => '?').join(',');
     const rows = db.prepare(`
@@ -435,7 +461,7 @@ export function getSystemKillRollups(
         system_id,
         SUM(CASE WHEN killmail_time_ms >= ? THEN 1 ELSE 0 END) AS kills_15m,
         SUM(CASE WHEN killmail_time_ms >= ? THEN 1 ELSE 0 END) AS kills_1h,
-        COUNT(*) AS kills_24h,
+        COUNT(*) AS kills_window,
         SUM(CASE WHEN killmail_time_ms >= ? AND is_npc = 0 THEN 1 ELSE 0 END) AS pvp_1h,
         SUM(CASE WHEN killmail_time_ms >= ? AND is_npc = 1 THEN 1 ELSE 0 END) AS npc_1h,
         SUM(CASE WHEN killmail_time_ms >= ? AND is_solo = 1 THEN 1 ELSE 0 END) AS solo_1h,
@@ -457,7 +483,7 @@ export function getSystemKillRollups(
       system_id: number;
       kills_15m: number;
       kills_1h: number;
-      kills_24h: number;
+      kills_window: number;
       pvp_1h: number;
       npc_1h: number;
       solo_1h: number;
@@ -470,7 +496,8 @@ export function getSystemKillRollups(
         systemId: row.system_id,
         kills15m: row.kills_15m ?? 0,
         kills1h: row.kills_1h ?? 0,
-        kills24h: row.kills_24h ?? 0,
+        killsWindow: row.kills_window ?? 0,
+        killsWindowHours: windowHours,
         pvpKills1h: row.pvp_1h ?? 0,
         npcKills1h: row.npc_1h ?? 0,
         valueDestroyed1h: row.value_1h ?? 0,
@@ -688,12 +715,13 @@ function toIndexedKill(row: KillRow): IndexedKill {
   };
 }
 
-function emptyRollup(systemId: number): SystemKillRollup {
+export function emptyRollup(systemId: number): SystemKillRollup {
   return {
     systemId,
     kills15m: 0,
     kills1h: 0,
-    kills24h: 0,
+    killsWindow: 0,
+    killsWindowHours: killsWindowHours(),
     pvpKills1h: 0,
     npcKills1h: 0,
     valueDestroyed1h: 0,

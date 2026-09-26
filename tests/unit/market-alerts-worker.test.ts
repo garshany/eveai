@@ -7,6 +7,7 @@ import {
   stopMarketAlertsWorker,
   type MarketAlertNotificationSender,
 } from '../../src/eve/market-alerts-worker.js';
+import { registerTelegramOutbound } from '../../src/messaging/outbound.js';
 
 const FORGE = 10000002;
 const DOMAIN = 10000043;
@@ -26,6 +27,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  registerTelegramOutbound(null);
   await stopMarketAlertsWorker();
   db.close();
 });
@@ -383,5 +385,154 @@ describe('undelivered event redelivery', () => {
     const sender = recordingSender();
     await runMarketAlertsTick(db, { sendNotification: sender.sendNotification });
     expect(sender.calls).toHaveLength(0);
+  });
+});
+
+describe('redelivery backoff, terminal events and tick bounds', () => {
+  function seedEvent(userId: number, options: { hoursAgo?: number; attempts?: number } = {}): number {
+    if (!db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(userId)) addUser(userId);
+    const alertId = addAlert(userId, { status: 'triggered' });
+    const result = db.prepare(`
+      INSERT INTO market_alert_events (alert_id, user_id, type_id, price, threshold, triggered_at, delivery_attempts)
+      VALUES (?, ?, ?, 120, 100, datetime('now', ?), ?)
+    `).run(alertId, userId, TRITANIUM, `-${options.hoursAgo ?? 1} hours`, options.attempts ?? 0);
+    return Number(result.lastInsertRowid);
+  }
+
+  function deliveryState(eventId: number) {
+    return db.prepare(`
+      SELECT delivered_at, delivery_attempts, abandoned_at,
+             next_attempt_at, next_attempt_at > datetime('now') AS backing_off
+      FROM market_alert_events WHERE event_id = ?
+    `).get(eventId) as {
+      delivered_at: string | null;
+      delivery_attempts: number;
+      abandoned_at: string | null;
+      next_attempt_at: string | null;
+      backing_off: number | null;
+    };
+  }
+
+  function linkTelegram(userId: number, telegramId: number) {
+    db.prepare(`
+      INSERT INTO telegram_accounts (telegram_user_id, user_id, username, first_name, created_at)
+      VALUES (?, ?, '', '', datetime('now'))
+    `).run(telegramId, userId);
+  }
+
+  it('marks events of users with no outbound lane terminal so they stop starving others', async () => {
+    // Twenty older events whose owners have no lane at all, then one newer
+    // event for a user with a live Telegram lane. Default sender throughout.
+    const deadIds = Array.from({ length: 20 }, (_, i) => seedEvent(100 + i, { hoursAgo: 10 }));
+    addUser(7);
+    linkTelegram(7, 7007);
+    const liveId = seedEvent(7, { hoursAgo: 1 });
+    const sent: number[] = [];
+    registerTelegramOutbound(async (chatId) => { sent.push(chatId); });
+
+    await runMarketAlertsTick(db as Db);
+    await runMarketAlertsTick(db as Db);
+
+    expect(sent).toEqual([7007]);
+    expect(deliveryState(liveId).delivered_at).not.toBeNull();
+    for (const id of deadIds) {
+      expect(deliveryState(id)).toMatchObject({ delivered_at: null, delivery_attempts: 1 });
+      expect(deliveryState(id).abandoned_at).not.toBeNull();
+    }
+  });
+
+  it('keeps a linked user whose platform sender is offline retryable (not terminal)', async () => {
+    addUser(7);
+    linkTelegram(7, 7007);
+    const eventId = seedEvent(7);
+    // No platform sender registered: the lane exists but the push cannot land.
+    await runMarketAlertsTick(db as Db);
+    expect(deliveryState(eventId)).toMatchObject({ delivered_at: null, delivery_attempts: 1, abandoned_at: null });
+    expect(deliveryState(eventId).backing_off).toBe(1);
+  });
+
+  it('backs off a failing event instead of retrying it every tick', async () => {
+    const eventId = seedEvent(7);
+    let calls = 0;
+    const failing: MarketAlertNotificationSender = async () => {
+      calls += 1;
+      throw new Error('platform offline');
+    };
+    await runMarketAlertsTick(db as Db, { sendNotification: failing });
+    expect(calls).toBe(1);
+    expect(deliveryState(eventId)).toMatchObject({ delivery_attempts: 1, abandoned_at: null, backing_off: 1 });
+
+    await runMarketAlertsTick(db as Db, { sendNotification: failing });
+    expect(calls).toBe(1); // still inside the backoff window
+
+    db.prepare("UPDATE market_alert_events SET next_attempt_at = datetime('now', '-1 minute') WHERE event_id = ?").run(eventId);
+    await runMarketAlertsTick(db as Db, { sendNotification: failing });
+    expect(calls).toBe(2);
+    expect(deliveryState(eventId).delivery_attempts).toBe(2);
+    // Exponential: the second backoff is longer than the first (8 vs 4 min).
+    const gap = db.prepare(
+      "SELECT (julianday(next_attempt_at) - julianday('now')) * 24 * 60 AS minutes FROM market_alert_events WHERE event_id = ?",
+    ).get(eventId) as { minutes: number };
+    expect(gap.minutes).toBeGreaterThan(6);
+    // Upper bound with tolerance: the gap is ~8 min, but julianday() difference
+    // arithmetic carries floating-point error (e.g. 8.0000001), so a hard <= 8
+    // flakes. 8.5 still sits well below the next (16 min) backoff step.
+    expect(gap.minutes).toBeLessThanOrEqual(8.5);
+
+    // An event that eventually delivers keeps the normal semantics.
+    db.prepare("UPDATE market_alert_events SET next_attempt_at = datetime('now', '-1 minute') WHERE event_id = ?").run(eventId);
+    const sender = recordingSender();
+    await runMarketAlertsTick(db as Db, { sendNotification: sender.sendNotification });
+    expect(sender.calls).toHaveLength(1);
+    expect(deliveryState(eventId).delivered_at).not.toBeNull();
+  });
+
+  it('abandons an event after the max attempts cap', async () => {
+    const eventId = seedEvent(7, { attempts: 7 });
+    await runMarketAlertsTick(db as Db, {
+      sendNotification: async () => { throw new Error('platform offline'); },
+    });
+    expect(deliveryState(eventId).delivery_attempts).toBe(8);
+    expect(deliveryState(eventId).abandoned_at).not.toBeNull();
+
+    const sender = recordingSender();
+    await runMarketAlertsTick(db as Db, { sendNotification: sender.sendNotification });
+    expect(sender.calls).toHaveLength(0);
+  });
+
+  it('does not let twenty failing older events starve a newer deliverable one', async () => {
+    for (let i = 0; i < 20; i += 1) seedEvent(100 + i, { hoursAgo: 10 });
+    const liveId = seedEvent(7, { hoursAgo: 1 });
+    const sendNotification: MarketAlertNotificationSender = async (userId) => {
+      if (userId !== 7) throw new Error('platform offline');
+    };
+    await runMarketAlertsTick(db as Db, { sendNotification });
+    await runMarketAlertsTick(db as Db, { sendNotification });
+    expect(deliveryState(liveId).delivered_at).not.toBeNull();
+  });
+
+  it('bounds the time one tick spends on redelivery', async () => {
+    for (let i = 0; i < 20; i += 1) seedEvent(100 + i);
+    let calls = 0;
+    const hung: MarketAlertNotificationSender = () => {
+      calls += 1;
+      return new Promise<void>(() => {});
+    };
+    const started = Date.now();
+    await runMarketAlertsTick(db as Db, {
+      sendNotification: hung,
+      sendTimeoutMs: 50,
+      deliveryConcurrency: 2,
+      deliveryBudgetMs: 120,
+    });
+    const elapsed = Date.now() - started;
+    expect(calls).toBeGreaterThan(0);
+    expect(calls).toBeLessThan(20);
+    expect(elapsed).toBeLessThan(600);
+    // Events never attempted this tick stay pending with no attempt recorded.
+    const untouched = db.prepare(
+      'SELECT COUNT(*) AS n FROM market_alert_events WHERE delivery_attempts = 0 AND delivered_at IS NULL',
+    ).get() as { n: number };
+    expect(untouched.n).toBe(20 - calls);
   });
 });

@@ -36,7 +36,7 @@ function system(overrides: Partial<BubbleSystem> & { systemId: number }): Bubble
     whClass: null,
     activity: {
       systemId: overrides.systemId,
-      kills15m: 2, kills1h: 4, kills24h: 9,
+      kills15m: 2, kills1h: 4, killsWindow: 9, killsWindowHours: 3,
       pvpKills1h: 4, npcKills1h: 0, valueDestroyed1h: 5e6, soloKills1h: 1,
       lastKillMinutesAgo: 3, lastKillAtMs: START,
     },

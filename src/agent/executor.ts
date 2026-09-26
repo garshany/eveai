@@ -131,6 +131,7 @@ import type { HeartbeatConfigArgs } from '../scheduled/heartbeat-config.js';
 import { getLinkedCharacter } from '../eve/sso.js';
 import type { UserContext } from '../auth/user-resolver.js';
 import { recordModelUsageSafe } from '../usage/tracker.js';
+import { runWithUsagePayer } from '../usage/payer.js';
 import { resolveModelSettings } from '../user-model-settings.js';
 import { executeOsintInferHome } from '../eve-osint/inference.js';
 import { executeAnalyzeLocal } from '../eve-local/analyzer.js';
@@ -1622,7 +1623,10 @@ async function runNativeAgentLoop(
       }, 100);
       let result: unknown;
       try {
-        result = isReadSubagentBatchTool(toolCall.name)
+        // Ambient payer for model calls made inside tool code (OSINT
+        // inference): bill them to this turn's user/chat lane and thread.
+        result = await runWithUsagePayer({ db, userId: ctx.userId, chatId: ctx.chatId, threadId }, async () => (
+          isReadSubagentBatchTool(toolCall.name)
           ? await executeReadSubagentDelegation(
           db,
           requestId,
@@ -1654,7 +1658,8 @@ async function runNativeAgentLoop(
             signal: toolController.signal,
             identityCurrent: () => isTurnIdentityCurrent(db, ctx, turnContext),
           },
-          );
+          )
+        ));
       } finally {
         clearInterval(toolAbortPoll);
       }

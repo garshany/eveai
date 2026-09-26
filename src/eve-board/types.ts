@@ -82,12 +82,16 @@ export type KillPattern = {
   systemSec: number;
   killCount: number;
   timeWindowMinutes: number;
-  uniqueAttackers: Set<number>;          // attacker char IDs
+  uniqueAttackers: Set<number>;          // final-blow char IDs (distinct)
   attackerShipTypes: Map<number, number>; // ship_type_id → count
   victimShipGroups: string[];            // e.g. ["hauler", "mining barge"]
   estimatedGankDps: number;
   isNpcOnly: boolean;
   latestKillTime: string;
+  /** Largest attacker_count seen on a non-NPC kill — the real fleet size. */
+  peakAttackerCount?: number;
+  /** Kills clustered within ACTIVE_FLEET_WINDOW_MIN of the latest kill. */
+  recentKillCount?: number;
 };
 
 // ---------------------------------------------------------------------------

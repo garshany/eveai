@@ -6,6 +6,8 @@ export interface EveJwtPayload {
   sub: string;
   name: string;
   scp?: string | string[];
+  /** CharacterOwnerHash: changes when the character moves to another EVE account. */
+  owner?: string;
   iss?: string;
   exp?: number;
   aud?: string | string[];

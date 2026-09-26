@@ -20,6 +20,7 @@ import 'dotenv/config';
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 // Deliberately no src/config.js import: setup must work before the operator
 // has filled in the rest of .env (bot tokens, OpenAI key, EVE credentials).
@@ -44,23 +45,37 @@ async function downloadFile(url: string, dest: string): Promise<void> {
   console.log(`[sde-download] Saved to ${dest}`);
 }
 
-async function extractZip(zipPath: string, destDir: string): Promise<void> {
+export type ExtractZipOptions = {
+  // Overridable binaries so tests can simulate a missing unzip.
+  unzipBin?: string;
+  pythonBin?: string;
+};
+
+export async function extractZip(
+  zipPath: string,
+  destDir: string,
+  options: ExtractZipOptions = {},
+): Promise<void> {
   console.log(`[sde-download] Extracting to ${destDir}...`);
+  const unzipBin = options.unzipBin ?? 'unzip';
+  const pythonBin = options.pythonBin ?? 'python3';
 
   // Use node's built-in unzip via child_process since node:zlib doesn't handle zip archives
   const { execFileSync } = await import('node:child_process');
   const EXTRACT_TIMEOUT_MS = 5 * 60_000; // bound extraction so a hung/corrupt archive can't block forever
   try {
-    execFileSync('unzip', ['-o', zipPath, '-d', destDir], { stdio: 'inherit', timeout: EXTRACT_TIMEOUT_MS });
+    execFileSync(unzipBin, ['-o', zipPath, '-d', destDir], { stdio: 'inherit', timeout: EXTRACT_TIMEOUT_MS });
   } catch (err) {
-    // ENOENT means unzip is not installed; any other error means the archive
-    // itself is bad — don't silently fall through to a confusing Python trace.
-    if ((err as NodeJS.ErrnoException).code && (err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw new Error(`unzip failed (archive may be corrupt): ${(err as Error).message}`);
+    // Only ENOENT (unzip not installed) falls back to python3. Anything else —
+    // a non-zero exit (which carries `status`, not `code`), a timeout, a
+    // signal — means the archive itself is bad: don't silently fall through
+    // to a confusing Python trace.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(`unzip failed (archive may be corrupt): ${(err as Error).message}`, { cause: err });
     }
     // Fallback: try with python3 (paths passed via sys.argv, not string interpolation)
     console.log('[sde-download] unzip not found, trying python3...');
-    execFileSync('python3', [
+    execFileSync(pythonBin, [
       '-c',
       'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); z.extractall(sys.argv[2]); print("Extracted",len(z.namelist()),"files")',
       zipPath,
@@ -84,7 +99,16 @@ async function main() {
   console.log('[sde-download] Done. Now run: npm run sde:load');
 }
 
-main().catch((err) => {
-  console.error('[sde-download] Error:', err);
-  process.exit(1);
-});
+// Only run the download when executed directly (npm run sde:download) —
+// importing this module (e.g. for extractZip in tests) must not trigger a
+// network download or a process.exit. Same guard as sde-loader.ts.
+const isMain = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
+
+if (isMain) {
+  main().catch((err) => {
+    console.error('[sde-download] Error:', err);
+    process.exit(1);
+  });
+}

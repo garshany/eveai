@@ -18,6 +18,8 @@ import type {
 } from './types.js';
 import type { GankerIntel } from './monitor.js';
 import { createNativeResponse, toNativeMessage } from '../agent/native-responses.js';
+import { config } from '../config.js';
+import { recordPayerUsage, type UsagePayer } from '../usage/payer.js';
 
 // ---------------------------------------------------------------------------
 // Advisor system prompt
@@ -45,6 +47,8 @@ export async function generateThreatAdvice(
   currentSystem: string,
   jumpsToThreat: number,
   routeDestination: string,
+  /** The route-monitor lane this advice is for; its spend is billed there. */
+  payer: UsagePayer,
 ): Promise<string> {
   const prompt = buildAdvisorPrompt(
     pattern,
@@ -56,16 +60,8 @@ export async function generateThreatAdvice(
   );
 
   try {
-    const response = await withTimeout(
-      createNativeResponse({
-        instructions: ADVISOR_SYSTEM_PROMPT,
-        items: [toNativeMessage(prompt)],
-        tools: [],
-      }),
-      ADVISOR_TIMEOUT_MS,
-    );
-
-    if (response.outputText) {
+    const response = await callAdvisorModel(ADVISOR_SYSTEM_PROMPT, prompt, ADVISOR_TIMEOUT_MS, payer);
+    if (!response.error && response.outputText) {
       return response.outputText;
     }
   } catch (err) {
@@ -141,26 +137,31 @@ function pickRecommendation(
 }
 
 // ---------------------------------------------------------------------------
-// Timeout helper
+// Model call helper
 // ---------------------------------------------------------------------------
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`Advisor LLM call timed out after ${ms}ms`)),
-      ms,
-    );
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
+/**
+ * One advisor model call with a real abort deadline (a Promise.race would let
+ * the request keep running and its billed usage arrive unobserved). Usage is
+ * recorded before the caller inspects the status: failed and incomplete
+ * responses are billed by the provider too.
+ */
+async function callAdvisorModel(
+  instructions: string,
+  prompt: string,
+  timeoutMs: number,
+  payer: UsagePayer,
+): Promise<Awaited<ReturnType<typeof createNativeResponse>>> {
+  const model = config.openai.model;
+  const response = await createNativeResponse({
+    instructions,
+    items: [toNativeMessage(prompt)],
+    tools: [],
+    model,
+    signal: AbortSignal.timeout(timeoutMs),
   });
+  if (response.usage) recordPayerUsage(payer, response.usage, model);
+  return response;
 }
 
 // ===========================================================================
@@ -297,6 +298,8 @@ export async function generateRouteIntelSummary(
     destinationId: number;
     currentSystemId: number;
   },
+  /** The route-monitor lane this digest is for; its spend is billed there. */
+  payer: UsagePayer,
 ): Promise<RouteIntelSummary> {
   if (!shouldUseLlmIntel(digest, pursuit, gankerIntel)) {
     return buildTemplateSummary(digest, pursuit, gankerIntel);
@@ -305,16 +308,8 @@ export async function generateRouteIntelSummary(
   const prompt = buildIntelPrompt(digest, shipAssessment, pursuit, gankerIntel, monitor);
 
   try {
-    const response = await withTimeout(
-      createNativeResponse({
-        instructions: INTEL_SYSTEM_PROMPT,
-        items: [toNativeMessage(prompt)],
-        tools: [],
-      }),
-      INTEL_TIMEOUT_MS,
-    );
-
-    if (response.outputText) {
+    const response = await callAdvisorModel(INTEL_SYSTEM_PROMPT, prompt, INTEL_TIMEOUT_MS, payer);
+    if (!response.error && response.outputText) {
       const parsed = parseIntelResponse(response.outputText, pursuit);
       if (parsed) return parsed;
     }

@@ -127,6 +127,9 @@ const ALERT_COOLDOWN_MS = 5 * 60_000;
 const KILL_WINDOW_MS = 60 * 60_000;
 const PURSUIT_WINDOW_MS = 20 * 60_000;
 
+/** usage_events thread label for route-intel model calls (billed to the monitor's lane). */
+const ROUTE_MONITOR_USAGE_THREAD_ID = 'route-monitor';
+
 export const activeMonitors = new Map<number, MonitorInstance>();
 
 export type RouteMonitorStartOptions = {
@@ -684,16 +687,33 @@ async function checkOwnDeath(instance: MonitorInstance): Promise<void> {
   const latest = recent.data[0]!;
   const lastDeathId = (monitor.stats as RouteStats & { lastDeathId?: number }).lastDeathId;
   if (lastDeathId === latest.killmail_id) return;
-  const detail = await callEsiOperation<{ victim?: { character_id?: number } }>(
+  const detail = await callEsiOperation<{ killmail_time?: string; victim?: { character_id?: number } }>(
     db,
     'get_killmails_killmail_id_killmail_hash',
     { killmail_id: latest.killmail_id, killmail_hash: latest.killmail_hash },
   );
   if (!ensureMonitorCharacterStillActive(instance)) return;
   if (!detail.ok || detail.data.victim?.character_id !== monitor.characterId) return;
+  // Mark this killmail as seen before deciding, so a pre-existing loss is not
+  // re-fetched on every poll.
   (monitor.stats as RouteStats & { lastDeathId?: number }).lastDeathId = latest.killmail_id;
   updateMonitorStats(db, monitor.chatId, monitor.stats);
+  // Only a death at or after the monitor start is a death "on this route".
+  if (!isDeathDuringSession(detail.data.killmail_time, monitor.startedAt)) return;
   stopRouteMonitor(monitor.chatId, 'death');
+}
+
+/**
+ * True only when a loss killmail happened at or after the route session began.
+ * get_characters_character_id_killmails_recent returns losses from the whole
+ * ESI retention window, so the newest loss is frequently one from days before
+ * this monitor started. Without this gate the monitor announces "pilot died"
+ * and stops the moment it starts, on a death that never happened on the route.
+ */
+export function isDeathDuringSession(killmailTime: string | undefined, startedAt: string): boolean {
+  const killTime = killmailTime ? Date.parse(killmailTime) : Number.NaN;
+  const start = Date.parse(startedAt);
+  return Number.isFinite(killTime) && Number.isFinite(start) && killTime >= start;
 }
 
 async function pollJumps(instance: MonitorInstance): Promise<void> {
@@ -785,6 +805,9 @@ async function sendRouteDigest(instance: MonitorInstance): Promise<void> {
       || shouldSendDigestHeartbeat(instance.lastDigestTime, digest, gankers.length);
     if (!shouldSend) return;
 
+    // Billed to the lane's owner; a lane with no resolvable user falls back
+    // to userId 0 (SYSTEM_USAGE_USER_ID) so the spend still lands in usage_events.
+    const payerCtx = getMonitorUserContext(db, monitor.chatId);
     const summary = await generateRouteIntelSummary(
       digest,
       shipAssessment,
@@ -796,6 +819,7 @@ async function sendRouteDigest(instance: MonitorInstance): Promise<void> {
         destinationId: monitor.destinationId,
         currentSystemId: monitor.currentSystemId,
       },
+      { db, userId: payerCtx.userId, chatId: monitor.chatId, threadId: ROUTE_MONITOR_USAGE_THREAD_ID },
     );
     await instance.sender(monitor.chatId, formatIntelMessage(summary, {
       digest,

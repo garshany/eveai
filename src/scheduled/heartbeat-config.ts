@@ -25,6 +25,8 @@ export interface HeartbeatState {
   last_order_ids?: number[];
   last_industry_job_ids?: number[];
   empty_queue_notified?: boolean;
+  /** PI colonies already reported as stale; re-armed once refreshed. */
+  last_pi_stale_planet_ids?: number[];
 }
 
 export interface HeartbeatConfigRow {

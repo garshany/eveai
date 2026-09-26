@@ -201,10 +201,12 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
       if (scopes.some((scope) => !requestedScopeSet.has(scope))) {
         return reply.status(403).send({ error: 'EVE SSO granted an unexpected scope. Please start the login flow again.' });
       }
+      const ownerHash = typeof payload.owner === 'string' && payload.owner ? payload.owner : null;
       const ownerInput = {
         requestedUserId: userId,
         chatId,
         characterId,
+        ownerHash,
         isBrowserFlow: Boolean(appRedirect),
       };
       // Validate browser ownership before any profile is removed. Browser
@@ -233,9 +235,9 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
           db.prepare(`
             INSERT INTO eve_accounts (
               character_id, character_name, access_token, refresh_token, expires_at,
-              scopes_json, consent_version, consent_language, consented_at, user_id
+              scopes_json, consent_version, consent_language, consented_at, user_id, owner_hash
             )
-            VALUES (?, ?, ?, ?, datetime('now', '+' || ? || ' seconds'), ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, datetime('now', '+' || ? || ' seconds'), ?, ?, ?, ?, ?, ?)
             ON CONFLICT(character_id) DO UPDATE SET
               character_name = excluded.character_name,
               access_token = excluded.access_token,
@@ -245,7 +247,8 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
               consent_version = excluded.consent_version,
               consent_language = excluded.consent_language,
               consented_at = excluded.consented_at,
-              user_id = excluded.user_id
+              user_id = excluded.user_id,
+              owner_hash = COALESCE(excluded.owner_hash, eve_accounts.owner_hash)
           `).run(
             characterId,
             payload.name,
@@ -257,6 +260,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
             authRequest.consent_language,
             authRequest.consented_at,
             resolvedUserId,
+            ownerHash,
           );
 
           const persistedContext: UserContext = chatId !== null
@@ -445,6 +449,7 @@ function planBrowserSsoOwner(
     requestedUserId: number;
     chatId: number | null;
     characterId: number;
+    ownerHash: string | null;
     isBrowserFlow: boolean;
   },
 ): BrowserSsoOwnerPlan {
@@ -468,8 +473,29 @@ function planBrowserSsoOwner(
     return { kind: 'keep', userId: input.requestedUserId };
   }
 
+  // The character changed EVE accounts (sold/transferred): the CharacterOwnerHash
+  // differs from the one stored when the previous owner authorized it. The
+  // login proves control by the NEW account holder, so it must never grant the
+  // previous owner's identity. Keep the requester; the callback then moves the
+  // character to them and drops the previous owner's links and private data.
+  // Rows stored before owner hashes were recorded (NULL) cannot be compared and
+  // keep the returning-user merge; they gain a hash on this login.
+  const stored = db.prepare('SELECT owner_hash FROM eve_accounts WHERE character_id = ?')
+    .get(input.characterId) as { owner_hash: string | null } | undefined;
+  if (stored?.owner_hash && input.ownerHash !== stored.owner_hash) {
+    return { kind: 'keep', userId: input.requestedUserId };
+  }
+
+  // Only a fresh browser guest is folded into the existing owner: a web-only
+  // identity whose single live session is this one. An identity bound to
+  // another channel (Telegram/Discord/CLI) or signed in elsewhere is never
+  // merged away; the character is linked to it instead (SSO proved control).
+  if (!isFreshBrowserGuest(db, input.requestedUserId, input.chatId)) {
+    return { kind: 'keep', userId: input.requestedUserId };
+  }
+
   // A browser identity may own several characters: linking a character owned
-  // by someone else always merges the fresh guest into the existing owner.
+  // by someone else merges the fresh guest into the existing owner.
   return {
     kind: 'merge',
     requestedUserId: input.requestedUserId,
@@ -477,6 +503,19 @@ function planBrowserSsoOwner(
     chatId: input.chatId,
     orphanChatIds: listOrphanedWebLaneIds(db, existing.user_id, input.chatId),
   };
+}
+
+function isFreshBrowserGuest(db: Db, userId: number, chatId: number): boolean {
+  const boundElsewhere = db.prepare('SELECT 1 FROM telegram_accounts WHERE user_id = ? LIMIT 1').get(userId)
+    ?? db.prepare('SELECT 1 FROM discord_accounts WHERE user_id = ? LIMIT 1').get(userId)
+    ?? db.prepare('SELECT 1 FROM discord_sessions WHERE user_id = ? LIMIT 1').get(userId)
+    ?? db.prepare('SELECT 1 FROM cli_accounts WHERE user_id = ? LIMIT 1').get(userId)
+    ?? db.prepare(`
+      SELECT 1 FROM web_sessions
+      WHERE user_id = ? AND chat_id != ? AND expires_at > datetime('now')
+      LIMIT 1
+    `).get(userId, chatId);
+  return !boundElsewhere;
 }
 
 function applyBrowserSsoOwnerPlan(db: Db, plan: BrowserSsoOwnerPlan): number {

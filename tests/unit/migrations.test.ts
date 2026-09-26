@@ -279,4 +279,47 @@ describe('runMigrations', () => {
       VALUES (?, ?, ?)
     `).run(-123, 9001, 43)).toThrow();
   });
+
+  it('adds market alert delivery-retry and history prune columns to legacy tables', () => {
+    db.exec('DROP TABLE market_alert_events');
+    db.exec(`
+      CREATE TABLE market_alert_events (
+        event_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        alert_id     INTEGER NOT NULL,
+        user_id      INTEGER NOT NULL,
+        type_id      INTEGER NOT NULL,
+        price        REAL NOT NULL,
+        threshold    REAL NOT NULL,
+        triggered_at TEXT NOT NULL DEFAULT (datetime('now')),
+        delivered_at TEXT
+      )
+    `);
+    db.exec("INSERT INTO market_alert_events (alert_id, user_id, type_id, price, threshold) VALUES (1, 1, 34, 5, 4)");
+    db.exec('DROP TABLE market_history_sync');
+    db.exec(`
+      CREATE TABLE market_history_sync (
+        region_id      INTEGER NOT NULL,
+        type_id        INTEGER NOT NULL,
+        last_synced_at TEXT,
+        next_due_at    TEXT,
+        status         TEXT NOT NULL DEFAULT 'ok',
+        error          TEXT,
+        PRIMARY KEY (region_id, type_id)
+      )
+    `);
+
+    runMigrations(db);
+    runMigrations(db); // idempotent
+
+    const eventCols = (db.prepare('PRAGMA table_info(market_alert_events)').all() as Array<{ name: string }>)
+      .map((col) => col.name);
+    expect(eventCols).toEqual(expect.arrayContaining(['delivery_attempts', 'next_attempt_at', 'abandoned_at']));
+    expect(db.prepare('SELECT delivery_attempts FROM market_alert_events').get()).toEqual({ delivery_attempts: 0 });
+    const syncCols = (db.prepare('PRAGMA table_info(market_history_sync)').all() as Array<{ name: string }>)
+      .map((col) => col.name);
+    expect(syncCols).toContain('last_wanted_at');
+    expect(db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_market_alert_events_pending'",
+    ).get()).toBeDefined();
+  });
 });

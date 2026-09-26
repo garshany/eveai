@@ -774,6 +774,148 @@ describe('auth routes', () => {
     await app.close();
   });
 
+  describe('browser SSO owner resolution (sold characters, non-fresh identities)', () => {
+    const characterId = 95465510;
+    const browserChatId = -2_000_000_000;
+
+    function seedOwnedCharacter(ownerHash: string | null): void {
+      db.prepare("INSERT INTO users (user_id, display_name) VALUES (1, 'Seller'), (2, 'Browser')").run();
+      db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (111, 'seller'), (?, 'web')")
+        .run(browserChatId);
+      db.prepare(`
+        INSERT INTO web_sessions (
+          session_hash, csrf_hash, user_id, chat_id, created_at, last_seen_at, expires_at
+        ) VALUES (?, 'h1:csrf', 2, ?, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
+      `).run(protectOpaqueToken('web-session', 'web_session'), browserChatId);
+      db.prepare(`
+        INSERT INTO eve_accounts (
+          character_id, character_name, access_token, refresh_token, expires_at, scopes_json, user_id, owner_hash
+        ) VALUES (?, 'Traded Pilot', 'enc:old-a', 'enc:old-r', datetime('now', '+1 hour'), '[]', 1, ?)
+      `).run(characterId, ownerHash);
+      db.prepare('INSERT INTO eve_character_links (chat_id, character_id, user_id) VALUES (111, ?, 1)')
+        .run(characterId);
+      db.prepare(`
+        INSERT INTO agent_threads (thread_id, chat_id, user_id) VALUES ('seller-thread', 111, 1)
+      `).run();
+    }
+
+    async function finishBrowserSso(ownerHash: string): Promise<void> {
+      const app = Fastify();
+      await app.register(fastifyCookie);
+      registerAuthRoutes(app, db);
+      const state = createAuthRequestToken(db, 'eve_sso', 2, {
+        chatId: browserChatId,
+        redirectUrl: '/app',
+        ttlSeconds: 600,
+      });
+      consentRequest(state, []);
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          access_token: 'browser-access',
+          refresh_token: 'browser-refresh',
+          expires_in: 1200,
+          token_type: 'Bearer',
+        }),
+      });
+      jwtVerifyMock.mockResolvedValue({
+        payload: {
+          sub: `CHARACTER:EVE:${characterId}`,
+          name: 'Traded Pilot',
+          scp: [],
+          owner: ownerHash,
+          aud: ['test-client', 'EVE Online'],
+        },
+      });
+      const response = await app.inject({
+        method: 'GET',
+        url: `/auth/eve/callback?code=abc&state=${encodeURIComponent(state)}`,
+        headers: { cookie: 'eveai_session=web-session' },
+      });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe('http://localhost:3000/app?auth=connected');
+      await app.close();
+    }
+
+    it('transfers a sold character to the buyer instead of merging the buyer into the seller', async () => {
+      seedOwnedCharacter('seller-hash');
+      const sellerProfile = resolveUserProfilePath({ userId: 1, chatId: 111 }, characterId);
+      writeFileSync(sellerProfile, 'seller private profile');
+
+      await finishBrowserSso('buyer-hash');
+
+      // The buyer keeps their own identity and never gains the seller's.
+      expect(db.prepare('SELECT user_id FROM web_sessions WHERE chat_id = ?').get(browserChatId))
+        .toEqual({ user_id: 2 });
+      expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeDefined();
+      expect(db.prepare("SELECT user_id FROM agent_threads WHERE thread_id = 'seller-thread'").get())
+        .toEqual({ user_id: 1 });
+      // The character now belongs to the buyer, with the new owner hash.
+      expect(db.prepare('SELECT user_id, owner_hash FROM eve_accounts WHERE character_id = ?').get(characterId))
+        .toEqual({ user_id: 2, owner_hash: 'buyer-hash' });
+      expect(db.prepare('SELECT chat_id, user_id FROM eve_character_links WHERE character_id = ?').all(characterId))
+        .toEqual([{ chat_id: browserChatId, user_id: 2 }]);
+      // The seller loses the link and the materialized private profile.
+      expect(existsSync(sellerProfile)).toBe(false);
+    });
+
+    it('still merges a fresh guest into the owner when the owner hash matches', async () => {
+      seedOwnedCharacter('same-hash');
+
+      await finishBrowserSso('same-hash');
+
+      expect(db.prepare('SELECT user_id FROM web_sessions WHERE chat_id = ?').get(browserChatId))
+        .toEqual({ user_id: 1 });
+      expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeUndefined();
+      expect(db.prepare('SELECT user_id, owner_hash FROM eve_accounts WHERE character_id = ?').get(characterId))
+        .toEqual({ user_id: 1, owner_hash: 'same-hash' });
+    });
+
+    it('records the owner hash on a legacy row and keeps the returning-user merge', async () => {
+      seedOwnedCharacter(null);
+
+      await finishBrowserSso('first-seen-hash');
+
+      expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeUndefined();
+      expect(db.prepare('SELECT user_id, owner_hash FROM eve_accounts WHERE character_id = ?').get(characterId))
+        .toEqual({ user_id: 1, owner_hash: 'first-seen-hash' });
+    });
+
+    it('never merges an identity bound to another channel into the character owner', async () => {
+      seedOwnedCharacter('same-hash');
+      db.prepare(`
+        INSERT INTO telegram_accounts (telegram_user_id, user_id, username, first_name)
+        VALUES (222, 2, 'browser-tg', 'Browser')
+      `).run();
+
+      await finishBrowserSso('same-hash');
+
+      expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeDefined();
+      expect(db.prepare('SELECT user_id FROM web_sessions WHERE chat_id = ?').get(browserChatId))
+        .toEqual({ user_id: 2 });
+      expect(db.prepare('SELECT user_id FROM eve_accounts WHERE character_id = ?').get(characterId))
+        .toEqual({ user_id: 2 });
+      expect(db.prepare("SELECT user_id FROM agent_threads WHERE thread_id = 'seller-thread'").get())
+        .toEqual({ user_id: 1 });
+    });
+
+    it('never merges an identity that is signed in on another live browser session', async () => {
+      seedOwnedCharacter('same-hash');
+      db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (-2000000001, 'web')").run();
+      db.prepare(`
+        INSERT INTO web_sessions (
+          session_hash, csrf_hash, user_id, chat_id, created_at, last_seen_at, expires_at
+        ) VALUES (?, 'h2:csrf', 2, -2000000001, datetime('now'), datetime('now'), datetime('now', '+1 hour'))
+      `).run(protectOpaqueToken('other-device', 'web_session'));
+
+      await finishBrowserSso('same-hash');
+
+      expect(db.prepare('SELECT 1 FROM users WHERE user_id = 2').get()).toBeDefined();
+      expect(db.prepare('SELECT user_id FROM eve_accounts WHERE character_id = ?').get(characterId))
+        .toEqual({ user_id: 2 });
+    });
+  });
+
   it('GET /auth/eve/callback does not leak internal error details', async () => {
     const app = Fastify();
     registerAuthRoutes(app, db);

@@ -762,6 +762,50 @@ describe('stateless tool loop context accumulation', () => {
       .toEqual([{ input_tokens: 1200, output_tokens: 80 }]);
   });
 
+  it('bills a model call made inside tool code (OSINT LLM pass) to the turn lane', async () => {
+    const { runMigrations } = await import('../../src/db/migrations.js');
+    runMigrations(db as never);
+    db.prepare("INSERT OR IGNORE INTO users (user_id, display_name) VALUES (1, 'Pilot')").run();
+    // Stub only the killboard evidence gathering; the real OSINT LLM helper
+    // runs and must find the executor's ambient payer.
+    vi.doMock('../../src/eve-osint/inference.js', () => ({
+      executeOsintInferHome: async () => {
+        const { analyzeOsintGraphPatterns } = await import('../../src/eve-osint/llm.js');
+        return { ok: true, llm_pattern_analysis: await analyzeOsintGraphPatterns({ scope: 'character' }) };
+      },
+    }));
+    createNativeResponseMock
+      .mockResolvedValueOnce(outputResponse([{
+        type: 'function_call',
+        call_id: 'osint_1',
+        name: 'osint_infer_home',
+        arguments: JSON.stringify({
+          scope: 'character',
+          id: 90000001,
+          window_days: null,
+          include_member_analysis: null,
+          include_graph: null,
+          include_llm_pattern_analysis: true,
+        }),
+      }]))
+      .mockResolvedValueOnce({
+        ...textResponse('{"intelligence_summary":"ratter"}'),
+        usage: { input: 333, output: 44, cached: 0, reasoning: 0 },
+        status: 'completed',
+      })
+      .mockResolvedValueOnce(textResponse('итог'));
+
+    try {
+      await runLoop();
+    } finally {
+      vi.doUnmock('../../src/eve-osint/inference.js');
+    }
+
+    expect(createNativeResponseMock).toHaveBeenCalledTimes(3);
+    const rows = db.prepare('SELECT user_id, thread_id, channel, input_tokens FROM usage_events ORDER BY event_id').all();
+    expect(rows).toContainEqual({ user_id: 1, thread_id: 't1', channel: 'telegram', input_tokens: 333 });
+  });
+
   it('fails closed when a program reaches a final message below its minimum call shape', async () => {
     process.env.OPENAI_PROGRAMMATIC_TOOL_CALLING = 'true';
     vi.resetModules();

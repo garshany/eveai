@@ -58,6 +58,22 @@ The self-hosting operator selects one process-wide model:
 
 End users can override the process-wide defaults for their own conversations on the web «Settings» screen (`GET`/`PUT`/`DELETE /api/web/settings/model`, session + CSRF; `PUT` requires a linked EVE character). The per-user row in `user_model_settings` (keyed by `user_id`, so it spans the web, Telegram, and Discord lanes) carries one of the selectable model ids (`gpt-6-luna` / `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`), a reasoning effort from the same whitelist as `OPENAI_REASONING_EFFORT`, and a verbosity. Users without a row run on the operator config; changes apply from the next turn. Usage events record the applied model, so the per-model tariffs on the transparency page price each event by the model that actually served it: top-level turns and delegated read-subagent calls inherit the user's model, while internal compaction summaries always run on — and are billed as — the operator-configured model.
 
+### Usage accounting per call site
+
+Every Responses request the app sends is written to `usage_events` with the payer's `user_id`, the channel derived from its chat lane, a thread label, and the model actually sent. Usage is recorded before the response status is inspected, so failed and incomplete responses (which the provider bills) are counted; a request that throws before any usage exists (HTTP error, timeout, abort) has nothing to record. Internal calls use a real `AbortSignal` deadline rather than a `Promise.race`, so a timed-out request is cancelled instead of finishing unobserved.
+
+| Call site | Payer (`user_id` / thread) | Model |
+| --- | --- | --- |
+| Agent turn (`executor.ts`) and read subagents | turn user / chat thread | per-user applied model |
+| Compaction (`compact.ts`) | thread owner / chat thread | operator config model |
+| Web market AI search | web session user / `web-market-ai-search` | config model |
+| Perimeter situation assessment (`eve-map/advisor-prose.ts`) | perimeter thread owner / perimeter thread | config model |
+| OSINT LLM pattern pass (`eve-osint/llm.ts`) | ambient turn payer set by the executor around tool dispatch (`runWithUsagePayer`) / chat thread | config model |
+| Route-monitor intel and threat advice (`eve-board/advisor.ts`) | monitor lane owner / `route-monitor` | config model |
+| Heartbeat summary (`scheduled/heartbeat-worker.ts`) | heartbeat owner on its delivery lane / `heartbeat` | config model |
+
+There is no separate operator ledger. Background work whose lane has no resolvable user is recorded as `user_id = 0` (`SYSTEM_USAGE_USER_ID`), which counts in the public all-users transparency totals but never in a signed-in user's personal spend. The operator-run `npm run smoke` ping runs outside the app with no database and is not recorded. `tests/unit/model-call-sites-guard.test.ts` fails when a new model call site appears in `src/` without being reviewed and added to its allowlist.
+
 ## Response State Modes
 
 `OPENAI_RESPONSE_STATE_MODE=stateless` remains the default and immediate

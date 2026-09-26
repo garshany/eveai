@@ -33,6 +33,11 @@ honest states — never a blank canvas:
   a busy amber one must not look alike.
 - Gate camps get their own ring marker rather than a shade, because a camp is
   the thing that actually kills a traveller.
+- **Whole map (third view).** The cluster atlas is polled every 15 s, and while
+  the live stream is open its kills also flash on the atlas at once (the same
+  flash as the bubble) and are counted into the system's activity until the
+  next poll covers them — each kill once, a PvP kill lifting a calm system to
+  `watch` at least, NPC kills counted as ratting only.
 
 ### The system inspector
 
@@ -60,7 +65,9 @@ conversation list.
 - **The agent speaks first.** On a position change or a new kill inside the
   bubble, deterministic rules fire: pursuit, camp on the next hop, threat-level
   rise, value spike, capability gap, route degraded, security-band change, and
-  all-clear. Each produces a finished, localized sentence. A kill inside the
+  all-clear. Each produces a finished, localized sentence. Threat-level rise is
+  judged per bubble radius: two tabs watching different radii of the same pilot
+  do not flip each other's band. A kill inside the
   bubble is pushed to the map at once and re-judged within about 1.5 s (bursts
   share one rebuild), not at the next 15 s intel tick. Kills that land before
   the first bubble or mid-jump are held and sorted by the next build rather than
@@ -100,6 +107,13 @@ These are product guarantees, not implementation details:
   off, or the session idles.
 - **Live kill data is shared.** One rolling index fed by the feed poller serves
   every viewer, so "kills around me" is a local query, not a per-viewer fan-out.
+- **A bot outage does not freeze the radar.** The index is a non-blocking feed
+  observer: it receives every page before, and independently of, Telegram /
+  Discord watch delivery. When a retryable delivery failure holds the durable
+  cursor, the poller keeps fetching up to ten pages past it per (backed-off)
+  poll for the index only; watches still resume from the held cursor with the
+  documented at-least-once semantics once the platform recovers. Replays are
+  absorbed by the `killmail_id` primary key.
 - Global and per-user session caps refuse politely with a retry hint rather than
   queueing without bound.
 
@@ -118,8 +132,15 @@ Shown in the interface, not buried here:
 - **Killmails arrive with a publisher delay** of seconds to minutes; each event
   shows its age.
 - **A stalled kill feed is not "all clear".** The bubble's `kills` layer is
-  `live` only while the EVE-KILL feed is attached and answered within 90 s;
-  otherwise it is `cached` (stale, with the feed error) or `unavailable`.
+  `live` only while the EVE-KILL feed is attached and fed the index within 90 s;
+  otherwise it is `cached` (stale, with the feed error) or `unavailable`. The
+  whole-map intel (`GET /api/web/map/universe/intel`) carries the same marker as
+  `killFeed`, shown as the `kills` chip on the whole-map view.
+- **The "recent kills" window is the retention window.** A system rollup's
+  `killsWindow` covers `killsWindowHours` = min(24, `MAP_KILL_INDEX_RETENTION_HOURS`)
+  — 3 h by default — and says so; it is never labelled 24 h when the index does
+  not hold 24 h. Long-retained gate kills do not leak into it. The danger
+  score's quiet discount uses that window and names it.
 - **An unknown hull is not a doomed hull.** A ship type without dogma rows in the
   loaded SDE gets no capability assessment instead of "survival: dead".
 - **Position cannot be fresher than five seconds** — that is the ESI cache, and

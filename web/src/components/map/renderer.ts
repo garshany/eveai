@@ -43,7 +43,17 @@ export type RenderInput = {
   reducedMotion: boolean;
 };
 
-const FLASH_MS = 1600;
+export const FLASH_MS = 1600;
+
+/**
+ * How far along a kill flash is, in [0, 1], or null once it has burnt out.
+ * Shared by the bubble renderer and the whole-map canvas so both flash alike.
+ */
+export function flashProgress(flash: KillFlash, now: number, reducedMotion: boolean): number | null {
+  const age = now - flash.startedAt;
+  if (age < 0 || age > FLASH_MS) return null;
+  return reducedMotion ? 0.5 : age / FLASH_MS;
+}
 const LABEL_ZOOM_THRESHOLD = 0.55;
 const RING_COLOR = 'rgba(148, 163, 184, 0.14)';
 
@@ -308,9 +318,8 @@ function drawFlashes(
   for (const flash of input.flashes) {
     const node = byId.get(flash.systemId);
     if (!node) continue;
-    const age = input.now - flash.startedAt;
-    if (age > FLASH_MS) continue;
-    const progress = input.reducedMotion ? 0.5 : age / FLASH_MS;
+    const progress = flashProgress(flash, input.now, input.reducedMotion);
+    if (progress === null) continue;
     const radius = (10 + progress * 34) / input.transform.k;
     ctx.beginPath();
     ctx.strokeStyle = `rgba(248, 113, 113, ${(1 - progress) * 0.9})`;

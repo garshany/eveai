@@ -238,7 +238,17 @@ async function runExpiredWebSessionCleanup(db: Db): Promise<void> {
     ORDER BY expires_at ASC
     LIMIT 20
   `).all() as Array<{ user_id: number; chat_id: number }>;
-  for (const row of expired) await purgeBrowserLane(db, row.chat_id);
+  // Purge each lane independently: one lane that fails to purge (a foreign-key
+  // edge case, a lock, a filesystem error) must not abort the batch and leave
+  // every other expired session — and the awaited startup cleanup — stuck
+  // behind it forever.
+  for (const row of expired) {
+    try {
+      await purgeBrowserLane(db, row.chat_id);
+    } catch (err) {
+      console.error(`[web-session] cleanup failed for lane ${row.chat_id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
@@ -297,11 +307,22 @@ async function purgeBrowserLane(db: Db, chatId: number): Promise<void> {
         db.prepare('DELETE FROM web_sessions WHERE chat_id = ?').run(chatId);
         db.prepare('DELETE FROM telegram_sessions WHERE chat_id = ?').run(chatId);
 
+        // Keep the user row whenever anything still points at it. A shared
+        // identity that was merged across devices (planBrowserSsoOwner) keeps
+        // its threads and requests on OTHER lanes; this lane's own threads and
+        // requests were already deleted above, so a surviving agent_thread /
+        // web_agent_request / discord_session for this user means another lane
+        // still holds its data. Deleting the user here would both orphan that
+        // data and fail the NOT NULL user_id foreign key on web_agent_requests
+        // (crashing logout / the startup cleanup).
         const hasOtherIdentity = Boolean(
           db.prepare('SELECT 1 FROM web_sessions WHERE user_id = ? LIMIT 1').get(userId)
           || db.prepare('SELECT 1 FROM telegram_accounts WHERE user_id = ? LIMIT 1').get(userId)
           || db.prepare('SELECT 1 FROM discord_accounts WHERE user_id = ? LIMIT 1').get(userId)
-          || db.prepare('SELECT 1 FROM cli_accounts WHERE user_id = ? LIMIT 1').get(userId),
+          || db.prepare('SELECT 1 FROM discord_sessions WHERE user_id = ? LIMIT 1').get(userId)
+          || db.prepare('SELECT 1 FROM cli_accounts WHERE user_id = ? LIMIT 1').get(userId)
+          || db.prepare('SELECT 1 FROM agent_threads WHERE user_id = ? LIMIT 1').get(userId)
+          || db.prepare('SELECT 1 FROM web_agent_requests WHERE user_id = ? LIMIT 1').get(userId),
         );
         if (hasOtherIdentity) return false;
 

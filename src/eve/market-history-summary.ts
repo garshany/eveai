@@ -90,10 +90,17 @@ export async function executeMarketHistorySummary(
     if (!response.ok) return esiFailure(response.status);
     const rows = parseHistory(response.data);
     const today = new Date().toISOString().slice(0, 10);
-    const selected = rows
+    const sorted = rows
       .filter((row) => row.date <= today)
-      .sort((left, right) => left.date.localeCompare(right.date))
-      .slice(-args.days);
+      .sort((left, right) => left.date.localeCompare(right.date));
+    // Calendar window anchored at the latest observed day, not the last N
+    // rows: ESI omits no-trade days, so a row-count slice of an illiquid
+    // item would span months while reporting requested_days=30.
+    const lastDate = sorted.at(-1)?.date;
+    const cutoff = lastDate === undefined
+      ? ''
+      : new Date(Date.parse(`${lastDate}T00:00:00.000Z`) - (args.days - 1) * 86_400_000).toISOString().slice(0, 10);
+    const selected = sorted.filter((row) => row.date >= cutoff);
     const summary = summarize(args, selected, response.headers);
     return safeResult(summary, 'CCP ESI returned an invalid market history response.');
   } catch {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { UniverseActivity, UniverseStatic, UniverseWormholeLink } from '../../types';
 import { splitRouteRuns } from './route-view';
+import { flashProgress, type KillFlash } from './renderer';
 import {
   GLYPH_ZOOM_RATIO,
   LABEL_ZOOM_RATIO,
@@ -48,7 +49,11 @@ export type UniverseCanvasProps = {
   selectedSystemId: number | null;
   /** A request to bring one system into view; a new object is a new request. */
   focus?: { systemId: number } | null;
+  /** Live-stream kill flashes, the same ones the bubble canvas draws. */
+  flashes?: KillFlash[];
 };
+
+const NO_FLASHES: KillFlash[] = [];
 
 const BAND_COLOURS: Record<string, string> = {
   calm: '#2f6f52',
@@ -70,6 +75,7 @@ export function UniverseCanvas({
   onSelect,
   selectedSystemId,
   focus = null,
+  flashes = NO_FLASHES,
 }: UniverseCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -129,6 +135,22 @@ export function UniverseCanvas({
     );
     forceRedraw((value) => value + 1);
   }, [focus, indexById, universe]);
+
+  // The atlas redraws only on demand. While a kill flash is burning, ask for a
+  // frame per animation tick; once every flash is out, the loop stops itself.
+  useEffect(() => {
+    if (flashes.length === 0) return;
+    let frame = 0;
+    const tick = (): void => {
+      forceRedraw((value) => value + 1);
+      const now = Date.now();
+      if (flashes.some((flash) => flashProgress(flash, now, false) !== null)) {
+        frame = requestAnimationFrame(tick);
+      }
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [flashes]);
 
   // Pan, zoom and hit testing. Written directly rather than through a zoom
   // library because the transform is also what culling and LOD read.
@@ -378,6 +400,30 @@ export function UniverseCanvas({
         ctx.textAlign = 'left';
         ctx.fillText(universe.names[i]!, sx + radius + 4, sy + 3.5);
       }
+    }
+
+    // --- live kill flashes -------------------------------------------------
+    // Screen-space rings, drawn last so no dot or label covers the news.
+    if (flashes.length > 0) {
+      const now = Date.now();
+      const reducedMotion = typeof window.matchMedia === 'function'
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      ctx.save();
+      ctx.lineWidth = 2;
+      for (const flash of flashes) {
+        const progress = flashProgress(flash, now, reducedMotion);
+        if (progress === null) continue;
+        const index = indexById.get(flash.systemId);
+        if (index === undefined) continue;
+        const sx = screenX(index);
+        const sy = screenY(index);
+        if (!visible(sx, sy)) continue;
+        ctx.beginPath();
+        ctx.strokeStyle = `rgba(248, 113, 113, ${(1 - progress) * 0.9})`;
+        ctx.arc(sx, sy, 6 + progress * 28, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
   });
 

@@ -84,6 +84,7 @@ import {
   collectNewKillmailIds,
   extractKillPosition,
   getActiveMonitor,
+  isDeathDuringSession,
   restoreMonitors,
   shutdownRouteMonitors,
   shouldSendDigestHeartbeat,
@@ -118,6 +119,20 @@ describe('eve-board monitor', () => {
 
     expect([...secondWave]).toEqual([1004]);
     expect([...seen]).toEqual([1001, 1002, 1003, 1004]);
+  });
+
+  it('counts a death as on-route only when it happened at or after the session start', () => {
+    const startedAt = '2026-07-13T12:00:00.000Z';
+    // A loss from before the monitor started (the recent-killmails endpoint
+    // returns the whole retention window) must NOT stop the monitor.
+    expect(isDeathDuringSession('2026-07-10T09:00:00Z', startedAt)).toBe(false);
+    // A death during the session does.
+    expect(isDeathDuringSession('2026-07-13T12:05:00Z', startedAt)).toBe(true);
+    // The boundary counts as on-route.
+    expect(isDeathDuringSession('2026-07-13T12:00:00.000Z', startedAt)).toBe(true);
+    // Missing or unparseable times are never treated as an on-route death.
+    expect(isDeathDuringSession(undefined, startedAt)).toBe(false);
+    expect(isDeathDuringSession('not a date', startedAt)).toBe(false);
   });
 
   it('extracts normalized victim positions for gate attribution', () => {

@@ -37,7 +37,7 @@ export const PERIMETER_TOOLS: NativeFunctionTool[] = [
     name: MAP_BUBBLE_INTEL_TOOL_NAME,
     description:
       'Live Perimeter picture around one system: every system within the jump radius with its danger score and the labelled terms behind it, '
-      + 'live kill counts (15m/1h/24h) from the local kill index, gate camps, sovereignty, wormhole exits, and an overall verdict. '
+      + 'live kill counts (15m/1h) from the local kill index, gate camps, sovereignty, wormhole exits, and an overall verdict. '
       + 'Use this instead of issuing separate kill searches or ESI system-metric calls — it is one prepared payload and it is seconds fresh. '
       + 'The hourly ESI baseline is reported separately and must never be described as live.',
     strict: true,

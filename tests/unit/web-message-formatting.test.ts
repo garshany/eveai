@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { MarkdownMessage, normalizeLegacyFormatting, safeLink } from '../../web/src/components/MarkdownMessage.js';
+import { MarkdownMessage, normalizeLegacyFormatting, parseBlocks, safeLink } from '../../web/src/components/MarkdownMessage.js';
 import { I18nProvider } from '../../web/src/i18n.js';
 
 vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined });
@@ -119,5 +119,31 @@ describe('web message formatting', () => {
     const cells = html.match(/<td/g) ?? [];
     expect(cells).toHaveLength(4);
     expect(html).not.toContain('>3</td>');
+  });
+
+  // Regression: a line that looks like a block start but matches no complete
+  // block rule (an unterminated/malformed fence, or a bare marker) once made
+  // parseBlocks spin forever — the block branches rejected it while the
+  // paragraph collector's guards skipped it, so `index` never advanced and the
+  // tab froze / ran out of memory. Each of these must terminate.
+  it.each([
+    ['unterminated fence with an info string that has no space', '```c#'],
+    ['fence with a space before the language', '``` json\n{"x":1}'],
+    ['four backticks', '````\ncode'],
+    ['bare heading marker with no text', '# '],
+    ['bare heading marker followed by content', '## \nследующая строка'],
+    ['inline triple-fence run mid-line', '```inline``` here'],
+  ])('parseBlocks terminates on %s', (_label, content) => {
+    const blocks = parseBlocks(content);
+    expect(Array.isArray(blocks)).toBe(true);
+    // A handful of lines can only ever yield a handful of blocks; an unbounded
+    // count would mean the progress guard failed.
+    expect(blocks.length).toBeLessThan(10);
+  });
+
+  it('renders a Discord-style inline triple-fence as literal text without hanging', () => {
+    const html = renderToStaticMarkup(MarkdownMessage({ content: '```Jita IV-4```' }));
+    expect(html).toContain('Jita IV-4');
+    expect(html).not.toContain('<figure');
   });
 });

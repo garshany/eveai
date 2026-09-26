@@ -185,13 +185,13 @@ export function scoreSystemDanger(input: DangerInput): DangerScore {
   // Without this, every nullsec system paints red on security class alone and
   // the map becomes useless exactly where it matters most. A system with no
   // observed activity at all keeps only a fraction of its structural risk.
-  if (input.rollup.kills24h === 0 && input.baselineShipKills1h === 0) {
+  if (input.rollup.killsWindow === 0 && input.baselineShipKills1h === 0) {
     const before = score;
     score *= 0.35;
     terms.push({
       key: 'quiet_discount',
       value: score - before,
-      detail: 'nothing observed here in the last 24 hours',
+      detail: `nothing observed here in the last ${input.rollup.killsWindowHours} hour(s)`,
     });
   }
 

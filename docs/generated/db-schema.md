@@ -52,7 +52,9 @@ Generated from `src/db/schema.ts` on 2026-07-27. Runtime migrations in
   accumulated from ESI; rows are never deleted, so the series outlives ESI's own
   ~365-day window
 - `market_history_sync`: per-pair backfill state (`next_due_at`, status, error)
-  driving the market history worker
+  driving the market history worker; `last_wanted_at` is the prune clock —
+  pairs no longer in any watchlist, active alert, or the top-types seed are
+  dropped after a 3-day grace period
 - `market_watchlist`: per-user watched types; `region_id` is always stored as a
   concrete value (writers substitute the user's default region when it is
   omitted) because the primary key treats NULL as distinct and would let
@@ -60,7 +62,9 @@ Generated from `src/db/schema.ts` on 2026-07-27. Runtime migrations in
 - `market_price_alerts`: one-shot price alerts evaluated against the local
   `market_orders` snapshot; firing flips `status` to `triggered`
 - `market_alert_events`: append-only alert firing log; `delivered_at` flips once
-  the outbound lane pushed the notification
+  the outbound lane pushed the notification; failed pushes are retried with
+  exponential backoff (`delivery_attempts`, `next_attempt_at`) and given up
+  (`abandoned_at`) when the user has no outbound lane or after 8 attempts
 
 ## Static Data
 

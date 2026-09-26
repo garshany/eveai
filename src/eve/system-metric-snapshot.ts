@@ -170,21 +170,32 @@ function parseMetricRow(
   }
 
   const systemId = positiveSafeInteger(row.system_id);
-  const holders = [
-    ['alliance', row.alliance_id],
-    ['corporation', row.corporation_id],
-    ['faction', row.faction_id],
-  ] as const;
-  const present = holders.filter(([, id]) => id !== undefined && id !== null);
-  for (const [, id] of present) positiveSafeInteger(id);
-  if (present.length > 1) throw new Error('conflicting sovereignty holders');
+  const allianceId = row.alliance_id ?? null;
+  const corporationId = row.corporation_id ?? null;
+  const factionId = row.faction_id ?? null;
+  for (const id of [allianceId, corporationId, factionId]) {
+    if (id !== null) positiveSafeInteger(id);
+  }
+  // An alliance-sovereign system's /sovereignty/map/ row carries BOTH the
+  // owning alliance and its holding corporation — that is the normal shape, not
+  // a conflict, so alliance simply takes precedence over corporation. Faction
+  // sovereignty (factional warfare) is mutually exclusive with alliance/corp
+  // sov, so a faction_id alongside either is genuinely contradictory.
+  if (factionId !== null && (allianceId !== null || corporationId !== null)) {
+    throw new Error('conflicting sovereignty holders');
+  }
+  const holder: { type: 'alliance' | 'corporation' | 'faction' | 'none'; id: number | null } =
+    allianceId !== null ? { type: 'alliance', id: positiveSafeInteger(allianceId) }
+      : corporationId !== null ? { type: 'corporation', id: positiveSafeInteger(corporationId) }
+        : factionId !== null ? { type: 'faction', id: positiveSafeInteger(factionId) }
+          : { type: 'none', id: null };
   return {
     systemId,
     output: {
       system_id: systemId,
       found: true,
-      holder_type: present[0]?.[0] ?? 'none',
-      holder_id: present.length === 1 ? positiveSafeInteger(present[0]![1]) : null,
+      holder_type: holder.type,
+      holder_id: holder.id,
     },
   };
 }

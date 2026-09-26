@@ -240,6 +240,14 @@ export function registerMarketRoutes(app: FastifyInstance, db: Db): void {
     if (!typeExists) {
       return reply.status(404).send({ error: 'Товар не найден в локальной базе.' });
     }
+    // Validate the region like the history route does: the market-history worker
+    // adds every watchlist pair to its hourly sync schedule and never prunes it,
+    // so a non-existent region would retry a failing ESI call forever, burning
+    // the shared ESI error budget for every user.
+    const regionExists = db.prepare('SELECT 1 FROM sde_regions WHERE region_id = ?').get(regionId);
+    if (!regionExists) {
+      return reply.status(400).send({ error: 'Неизвестный регион.' });
+    }
 
     const existing = readWatchlistItem(db, session.userId, typeId, regionId);
     if (existing) {

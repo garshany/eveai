@@ -14,6 +14,7 @@ import type { GateKill, ThreatKillmail } from '../eve-board/types.js';
 import { findBestTheraShortcut, type TheraShortcut } from './thera-scout.js';
 import { escapeHtml, escapeHtmlAttribute } from './route-formatting.js';
 import { rememberRoute } from '../eve-map/active-route.js';
+import { effectiveAvoidSet } from '../eve-map/avoid.js';
 
 type EsiRouteFlag = 'secure' | 'shortest' | 'insecure';
 type RouteFlag = EsiRouteFlag | 'thera_shortcut';
@@ -149,10 +150,19 @@ export async function planRoute(
     };
   }
 
+  // The pilot's standing avoid list applies to every route this account plans —
+  // the prompt promises it and route_risk / the HTTP planner already honour it.
+  // Merge it with any per-request ids, keep the systems this route must touch
+  // exempt (you can still route *to* a system you once avoided), and cap at
+  // ESI's 100-id limit for the avoid parameter (the stored list allows 200).
+  const avoidExcept = (...keep: number[]): number[] =>
+    [...effectiveAvoidSet(db, ctx.userId, args.avoid ?? [], keep)].slice(0, 100);
+  const routeAvoid = avoidExcept(originInfo.id, destInfo.id);
+
   // 2. Fetch routes (all 3 variants) in parallel
   const flags: EsiRouteFlag[] = ['secure', 'shortest', 'insecure'];
   const routeResults = await Promise.all(
-    flags.map((flag) => fetchRoute(db, originInfo.id, destInfo.id, flag, args.avoid ?? [], ctx)),
+    flags.map((flag) => fetchRoute(db, originInfo.id, destInfo.id, flag, routeAvoid, ctx)),
   );
 
   let theraShortcut: TheraShortcut | null = null;
@@ -176,9 +186,19 @@ export async function planRoute(
   }
   if (args.prefer === 'thera_shortcut' && theraShortcut) {
     const shortcut = theraShortcut;
+    // The shortcut's own entry/exit and hub are waypoints the route must reach,
+    // so exempt them alongside the origin and destination; the rest of the
+    // avoid list still applies to both legs.
+    const theraAvoid = avoidExcept(
+      originInfo.id,
+      destInfo.id,
+      shortcut.entry_system_id,
+      shortcut.exit_system_id,
+      shortcut.hub_system_id,
+    );
     const [entryLeg, exitLeg] = await Promise.all([
-      fetchRoute(db, originInfo.id, shortcut.entry_system_id, 'shortest', [], ctx),
-      fetchRoute(db, shortcut.exit_system_id, destInfo.id, 'shortest', [], ctx),
+      fetchRoute(db, originInfo.id, shortcut.entry_system_id, 'shortest', theraAvoid, ctx),
+      fetchRoute(db, shortcut.exit_system_id, destInfo.id, 'shortest', theraAvoid, ctx),
     ]);
     const entryLegValid = entryLeg?.[0] === originInfo.id
       && entryLeg[entryLeg.length - 1] === shortcut.entry_system_id;

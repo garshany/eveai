@@ -111,6 +111,40 @@ describe('executeSdeSql security boundary', () => {
     expect(result.error).toContain(tableName);
   });
 
+  it('rejects a non-SDE table qualified with main. even when a CTE shares its name', () => {
+    // The CTE named eve_accounts must not cause the real main.eve_accounts read
+    // to be skipped by the validator's CTE allowance.
+    const result = executeSdeSql(
+      db as Db,
+      `WITH eve_accounts AS (SELECT 1 AS x)
+       SELECT x FROM main.eve_accounts WHERE (SELECT 1 FROM sde_types WHERE type_id = 587) IS NOT NULL`,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.rows).toEqual([]);
+  });
+
+  it('rejects a non-SDE table hidden as a comma-joined alias that shadows an SDE name', () => {
+    // `eve_accounts sde_groups` aliases the real eve_accounts table to an
+    // allowed SDE name; the alias must resolve to the real table and be rejected.
+    const result = executeSdeSql(
+      db as Db,
+      'SELECT sde_groups.character_id FROM sde_types t, eve_accounts sde_groups WHERE t.type_id = 587',
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('eve_accounts');
+  });
+
+  it('rejects a schema-qualified non-SDE table as the 2nd entry of a comma FROM list', () => {
+    const result = executeSdeSql(
+      db as Db,
+      'SELECT count(*) AS c FROM sde_types t, main.eve_accounts e WHERE t.type_id = 587',
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
   it('rejects hidden non-SDE reads inside subqueries', () => {
     const result = executeSdeSql(
       db as Db,

@@ -3,7 +3,7 @@
  * format it for AI context, and persist to USER.md.
  */
 
-import { readFile, access } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import type { Db } from '../db/sqlite.js';
 import { callEsiOperation } from './esi-client.js';
 import type { UserContext } from '../auth/user-resolver.js';
@@ -21,7 +21,12 @@ import { isTurnAborted } from '../agent/activity.js';
 
 interface EsiFittingItem {
   type_id: number;
-  flag: number;
+  /**
+   * ESI fittings return the slot as a string enum ("HiSlot0", "MedSlot2",
+   * "LoSlot4", "RigSlot0", "SubSystemSlot0", "DroneBay", "FighterBay",
+   * "Cargo", …) — NOT the numeric inventory flag id used elsewhere.
+   */
+  flag: string;
   quantity: number;
 }
 
@@ -33,22 +38,19 @@ interface EsiFitting {
   items: EsiFittingItem[];
 }
 
-// EVE inventory slot flag ranges
-const SLOT_RANGES: Array<[string, number, number]> = [
-  ['High', 11, 18],
-  ['Mid', 19, 26],
-  ['Low', 27, 34],
-  ['Rig', 92, 95],
-  ['Subsystem', 125, 130],
-  ['Drone Bay', 87, 87],
-  ['Fighter Bay', 158, 158],
-  ['Cargo', 5, 5],
-];
-
-function slotCategory(flag: number): string {
-  for (const [name, lo, hi] of SLOT_RANGES) {
-    if (flag >= lo && flag <= hi) return name;
-  }
+// Map the ESI fittings `flag` string enum to a slot category. The numbered
+// slot flags ("HiSlot0".."HiSlot7", etc.) share a common prefix, so match on
+// that; the singletons ("DroneBay", "FighterBay", "Cargo") match exactly.
+function slotCategory(flag: string): string {
+  if (flag.startsWith('HiSlot')) return 'High';
+  if (flag.startsWith('MedSlot')) return 'Mid';
+  if (flag.startsWith('LoSlot')) return 'Low';
+  if (flag.startsWith('RigSlot')) return 'Rig';
+  if (flag.startsWith('SubSystemSlot')) return 'Subsystem';
+  if (flag.startsWith('ServiceSlot')) return 'Service';
+  if (flag === 'DroneBay') return 'Drone Bay';
+  if (flag === 'FighterBay') return 'Fighter Bay';
+  if (flag === 'Cargo') return 'Cargo';
   return 'Other';
 }
 
@@ -106,7 +108,7 @@ export async function resolveActiveFitting(
 
     // Format as readable text
     const lines: string[] = [`[${shipTypeName}, ${fit.name}]`];
-    const slotOrder = ['High', 'Mid', 'Low', 'Rig', 'Subsystem', 'Drone Bay', 'Fighter Bay', 'Cargo'];
+    const slotOrder = ['High', 'Mid', 'Low', 'Rig', 'Subsystem', 'Service', 'Drone Bay', 'Fighter Bay', 'Cargo'];
     for (const slot of slotOrder) {
       const modules = slotGroups.get(slot);
       if (modules && modules.length > 0) {
@@ -135,28 +137,33 @@ export async function resolveActiveFitting(
 
 const SECTION_MARKER = '## Active Fitting';
 
+type PersistOutcome = 'written' | 'no-file' | 'skipped';
+
 async function persistActiveFitting(
   db: Db,
   ctx: UserContext,
   fittingText: string,
   authorization: { characterId: number; scopes: string[] },
-): Promise<void> {
-  await withUserProfileAuthorizationLock(authorization.characterId, async () => {
+): Promise<PersistOutcome> {
+  return withUserProfileAuthorizationLock(authorization.characterId, async (): Promise<PersistOutcome> => {
     const current = getLinkedCharacter(db, ctx);
     if (
       !current
       || current.characterId !== authorization.characterId
       || normalizeScopes(current.scopes) !== normalizeScopes(authorization.scopes)
-    ) return;
+    ) return 'skipped';
 
     const path = resolveUserProfilePath(ctx, authorization.characterId);
+    // Read directly instead of access()-then-readFile: a check-then-use pair is
+    // a time-of-check/time-of-use race (the file can change in between). A
+    // single read with a catch-all give-up keeps the same "no profile yet →
+    // skip" behaviour without the race.
+    let content: string;
     try {
-      await access(path);
+      content = await readFile(path, 'utf-8');
     } catch {
-      return; // file doesn't exist
+      return 'no-file'; // file missing or unreadable — nothing to update
     }
-
-    let content = await readFile(path, 'utf-8');
 
     // Neutralize any line that would look like a Markdown section heading inside
     // the fenced block — otherwise a fitting line like "## Wallet" corrupts the
@@ -187,9 +194,10 @@ async function persistActiveFitting(
 
     // SSO authorization replacement uses the same lock, so the checked scope
     // snapshot remains valid through the atomic write.
-    if (isTurnAborted()) return;
+    if (isTurnAborted()) return 'skipped';
     await writeUserProfileAtomic(path, content);
     console.log('[active-fitting] persisted to USER.md');
+    return 'written';
   });
 }
 
@@ -200,14 +208,14 @@ async function persistActiveFitting(
 export async function writeManualFitting(db: Db, ctx: UserContext, fittingText: string): Promise<{ ok: boolean; error?: string }> {
   const authorization = getLinkedCharacter(db, ctx);
   if (!authorization) return { ok: false, error: 'No character linked.' };
-  const path = resolveUserProfilePath(ctx, authorization.characterId);
-  try {
-    await access(path);
-  } catch {
+
+  // No access() pre-check: that check-then-persist pair is a file race. Let
+  // persistActiveFitting attempt the read itself and report a missing profile,
+  // preserving the "refresh first" message without the race.
+  const outcome = await persistActiveFitting(db, ctx, fittingText.trim(), authorization);
+  if (outcome === 'no-file') {
     return { ok: false, error: 'USER.md not found. Refresh profile first.' };
   }
-
-  await persistActiveFitting(db, ctx, fittingText.trim(), authorization);
   return { ok: true };
 }
 

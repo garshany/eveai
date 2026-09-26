@@ -87,6 +87,18 @@ function findSleepWindow(hist: Record<number, number>): {
   end_hour: number;
   duration_hours: number;
 } {
+  // Tolerate one stray kill per hour inside the quiet window. A sparse sample
+  // (every hour <= 1) would turn the whole day into "sleep" and pin the
+  // timezone to the fixed midpoint; fall back to strictly empty hours then.
+  const tolerant = longestQuietRun(hist, 1);
+  return tolerant.duration_hours < 24 ? tolerant : longestQuietRun(hist, 0);
+}
+
+function longestQuietRun(hist: Record<number, number>, maxKills: number): {
+  start_hour: number;
+  end_hour: number;
+  duration_hours: number;
+} {
   let bestStart = 0;
   let bestLen = 0;
 
@@ -94,7 +106,7 @@ function findSleepWindow(hist: Record<number, number>): {
     let len = 0;
     for (let offset = 0; offset < 24; offset++) {
       const hour = (start + offset) % 24;
-      if (hist[hour] <= 1) {
+      if (hist[hour] <= maxKills) {
         len += 1;
       } else {
         break;
@@ -113,12 +125,15 @@ function findSleepWindow(hist: Record<number, number>): {
   };
 }
 
-function estimateTimezone(sleepWindow: {
+export function estimateTimezone(sleepWindow: {
   start_hour: number;
   duration_hours: number;
 }): { name: string; utc_offset: number } {
   const midpoint = (sleepWindow.start_hour + sleepWindow.duration_hours / 2) % 24;
-  let offset = (midpoint - 3.5 + 24) % 24;
+  // People sleep centred on ~03:30 local, so local(3.5) = utc(midpoint) + offset,
+  // hence offset = 3.5 - midpoint. Computing midpoint - 3.5 negates the sign and
+  // produces a mirror-image timezone (e.g. an RU pilot reported as US East).
+  let offset = (3.5 - midpoint + 24) % 24;
   if (offset > 12) offset -= 24;
   offset = Math.round(offset);
 

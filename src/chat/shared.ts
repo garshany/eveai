@@ -48,14 +48,18 @@ export function resolveThreadForChat(db: Db, chatId: number, ctx: UserContext): 
   const activeCharacter = getLinkedCharacter(db, ctx);
   const activeCharacterId = activeCharacter?.characterId ?? null;
 
+  // Only ordinary workspace threads (kind = 'chat') are eligible. The live map
+  // owns its own kind = 'perimeter' thread (getOrCreatePerimeterThread); picking
+  // it up here would run the pilot's normal chat in the restricted Perimeter
+  // toolset and interleave live map advisories into the conversation.
   let thread: { thread_id: string } | undefined;
   if (activeCharacterId) {
     thread = db.prepare(
-      'SELECT thread_id FROM agent_threads WHERE chat_id = ? AND character_id = ? ORDER BY created_at DESC LIMIT 1',
+      "SELECT thread_id FROM agent_threads WHERE chat_id = ? AND character_id = ? AND kind = 'chat' ORDER BY created_at DESC LIMIT 1",
     ).get(chatId, activeCharacterId) as { thread_id: string } | undefined;
   } else {
     thread = db.prepare(
-      'SELECT thread_id FROM agent_threads WHERE chat_id = ? AND character_id IS NULL ORDER BY created_at DESC LIMIT 1',
+      "SELECT thread_id FROM agent_threads WHERE chat_id = ? AND character_id IS NULL AND kind = 'chat' ORDER BY created_at DESC LIMIT 1",
     ).get(chatId) as { thread_id: string } | undefined;
   }
 

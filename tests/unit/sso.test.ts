@@ -486,3 +486,107 @@ describe('unlinkCharacter', () => {
     expect(existsSync(userOnlyProfilePath)).toBe(false);
   });
 });
+
+describe('getAccessToken refresh vs concurrent re-login', () => {
+  const metadataResponse = {
+    ok: true,
+    json: async () => ({
+      authorization_endpoint: 'https://login.eveonline.com/v2/oauth/authorize',
+      token_endpoint: 'https://login.eveonline.com/v2/oauth/token',
+      jwks_uri: 'https://login.eveonline.com/oauth/jwks',
+    }),
+  };
+
+  function seedExpired(ownerHash: string | null = null): void {
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, ?)").run(1, 'pilot');
+    db.prepare(`
+      INSERT INTO eve_accounts (
+        character_id, character_name, access_token, refresh_token, expires_at, scopes_json, owner_hash
+      ) VALUES (?, ?, ?, ?, datetime('now', '-100 seconds'), ?, ?)
+    `).run(12345, 'Pilot', 'expired-token', 'ref-token', '[]', ownerHash);
+    db.prepare('INSERT INTO eve_character_links (chat_id, character_id) VALUES (?, ?)').run(1, 12345);
+  }
+
+  it('does not overwrite tokens a re-login stored while the refresh was in flight', async () => {
+    seedExpired();
+    let releaseTokenResponse = (): void => {};
+    const tokenResponseGate = new Promise<void>((resolve) => {
+      releaseTokenResponse = resolve;
+    });
+    let markTokenRequested = (): void => {};
+    const tokenRequested = new Promise<void>((resolve) => {
+      markTokenRequested = resolve;
+    });
+    fetchMock
+      .mockResolvedValueOnce(metadataResponse)
+      .mockImplementationOnce(async () => {
+        markTokenRequested();
+        await tokenResponseGate;
+        return {
+          ok: true,
+          json: async () => ({ access_token: 'stale-access', refresh_token: 'stale-refresh', expires_in: 1200 }),
+        };
+      });
+    jwtVerifyMock.mockResolvedValue({
+      payload: { sub: 'CHARACTER:EVE:12345', name: 'Pilot', aud: ['test-client', 'EVE Online'] },
+    });
+
+    const pending = getAccessToken(db, { userId: 0, chatId: 1 });
+    await tokenRequested;
+    // SSO re-login lands mid-refresh with a newer grant.
+    db.prepare(`
+      UPDATE eve_accounts
+      SET access_token = 'relogin-access', refresh_token = 'relogin-refresh',
+          expires_at = datetime('now', '+1200 seconds')
+      WHERE character_id = 12345
+    `).run();
+    releaseTokenResponse();
+
+    await expect(pending).resolves.toEqual({ token: 'relogin-access', characterId: 12345 });
+    expect(db.prepare('SELECT access_token, refresh_token FROM eve_accounts WHERE character_id = 12345').get())
+      .toEqual({ access_token: 'relogin-access', refresh_token: 'relogin-refresh' });
+  });
+
+  it('rejects a refreshed token whose owner hash no longer matches the stored owner', async () => {
+    seedExpired('seller-owner-hash');
+    fetchMock
+      .mockResolvedValueOnce(metadataResponse)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 'buyer-access', refresh_token: 'buyer-refresh', expires_in: 1200 }),
+      });
+    jwtVerifyMock.mockResolvedValue({
+      payload: {
+        sub: 'CHARACTER:EVE:12345',
+        name: 'Pilot',
+        owner: 'buyer-owner-hash',
+        aud: ['test-client', 'EVE Online'],
+      },
+    });
+
+    await expect(getAccessToken(db, { userId: 0, chatId: 1 })).resolves.toBeNull();
+    expect(db.prepare('SELECT refresh_token FROM eve_accounts WHERE character_id = 12345').get())
+      .toEqual({ refresh_token: 'ref-token' });
+  });
+
+  it('accepts a refreshed token for the same owner hash', async () => {
+    seedExpired('same-owner-hash');
+    fetchMock
+      .mockResolvedValueOnce(metadataResponse)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ access_token: 'fresh-access', refresh_token: 'fresh-refresh', expires_in: 1200 }),
+      });
+    jwtVerifyMock.mockResolvedValue({
+      payload: {
+        sub: 'CHARACTER:EVE:12345',
+        name: 'Pilot',
+        owner: 'same-owner-hash',
+        aud: ['test-client', 'EVE Online'],
+      },
+    });
+
+    await expect(getAccessToken(db, { userId: 0, chatId: 1 }))
+      .resolves.toEqual({ token: 'fresh-access', characterId: 12345 });
+  });
+});
