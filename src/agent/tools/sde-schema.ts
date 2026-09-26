@@ -12,12 +12,12 @@ sde_stargates (stargate_id INT, system_id INT, destination_system_id INT, destin
 sde_blueprints (blueprint_type_id INT, name TEXT, data_json TEXT)
 sde_factions (faction_id INT, name TEXT, data_json TEXT)
 sde_npc_corporations (corporation_id INT, name TEXT, station_id INT, data_json TEXT)
-sde_type_dogma (type_id INT, data_json TEXT) — dogma attributes per type, data_json has {dogmaAttributes: [{attributeID, value}]}
+sde_type_dogma (type_id INT, data_json TEXT) — no name column; data_json {dogmaAttributes:[{attributeID,value}]}
 sde_type_bonus (type_id INT, data_json TEXT)
 sde_type_materials (type_id INT, name TEXT, data_json TEXT)
-sde_dogma_attributes (attribute_id INT, name TEXT, data_json TEXT) — 2825 attr definitions, JOIN with sde_type_dogma to resolve attributeID→name
+sde_dogma_attributes (attribute_id INT, name TEXT, data_json TEXT) — attributeID→name; no unit_id: unit=json_extract(a.data_json,'$.unitID')
 sde_dogma_effects (effect_id INT, name TEXT, data_json TEXT)
-sde_dogma_units (unit_id INT, name TEXT, data_json TEXT)
+sde_dogma_units (unit_id INT, name TEXT, data_json TEXT) — symbol $.displayName.en
 sde_meta_groups (meta_group_id INT, name TEXT, data_json TEXT) — 13 rows: Tech I(1), Tech II(2), Storyline(3), Faction(4), Officer(5), Deadspace(6), Tech III(14), Abyssal(15), Premium(17), Limited Time(19)
 sde_races (race_id INT, name TEXT, data_json TEXT) — Caldari, Minmatar, Gallente, Amarr и др.
 sde_raw_records (dataset_name TEXT, record_id TEXT, name TEXT, data_json TEXT) — raw SDE datasets like mapPlanets

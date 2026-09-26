@@ -33,11 +33,28 @@ const SDE_IGNORED_PLAN_REFERENCES = new Set(['constant']);
 export type SqlToken = {
   value: string;
   upper: string;
+  /**
+   * 'quoted' = a "..." / `...` / [...] identifier; 'string' = a '...' literal
+   * (emitted with an empty value so it never matches a keyword or identifier).
+   * Undefined for bare words, numbers and punctuation.
+   */
+  kind?: 'quoted' | 'string';
 };
 
-type QueryPlanRow = {
+export type QueryPlanRow = {
+  id: number;
+  parent: number;
   detail: string;
 };
+
+const PLAIN_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/u;
+// Plan rows for literal row sources (VALUES lists, constant SELECTs). They read
+// no table, and their row count is bounded by the SQL text itself.
+const CONSTANT_ROWS_SCAN = /^SCAN (?:CONSTANT ROW|\d+ CONSTANT ROWS|\d+-ROW VALUES CLAUSE)$/iu;
+// Characters SQLite does not treat as whitespace but JS/LLM output often
+// carries after a statement (NBSP, zero-width space/joiners, word joiner, BOM).
+const INERT_TAIL_CHAR = /[\s​-‍⁠﻿]/u;
+const MULTI_STATEMENT_ERROR = 'Only one SQL statement per call is allowed. Run separate calls, or combine SELECTs with UNION ALL / a CTE.';
 
 export function tokenizeSql(sql: string): SqlToken[] {
   const tokens: SqlToken[] = [];
@@ -81,6 +98,7 @@ export function tokenizeSql(sql: string): SqlToken[] {
         }
         index += 1;
       }
+      tokens.push({ value: '', upper: '', kind: 'string' });
       continue;
     }
 
@@ -102,7 +120,7 @@ export function tokenizeSql(sql: string): SqlToken[] {
         value += current;
         index += 1;
       }
-      tokens.push({ value, upper: value.toUpperCase() });
+      tokens.push({ value, upper: value.toUpperCase(), kind: 'quoted' });
       continue;
     }
 
@@ -136,7 +154,203 @@ export function tokenizeSql(sql: string): SqlToken[] {
 }
 
 function isSqlIdentifierToken(token: SqlToken | undefined): token is SqlToken {
-  return token !== undefined && /^[A-Za-z_][A-Za-z0-9_$]*$/u.test(token.value);
+  return token !== undefined && PLAIN_IDENTIFIER.test(token.value);
+}
+
+/**
+ * Splits off a statement terminator: returns the SQL before the first
+ * top-level `;` when everything after it is inert (semicolons, whitespace
+ * including Unicode spaces SQLite does not recognise, comments). Any other
+ * trailing content is a second statement and is rejected. The lexer mirrors
+ * SQLite's (quotes with doubled escapes, [..] identifiers, -- and block
+ * comments). Callers validate AND execute the returned string, so a lexer
+ * disagreement cannot smuggle a statement past validation — and better-sqlite3
+ * still refuses multi-statement strings in prepare().
+ */
+export function stripStatementTerminator(sql: string): { ok: true; sql: string } | { ok: false; error: string } {
+  let index = 0;
+  while (index < sql.length) {
+    const char = sql[index];
+    if (char === '-' && sql[index + 1] === '-') {
+      const end = sql.indexOf('\n', index + 2);
+      index = end === -1 ? sql.length : end + 1;
+      continue;
+    }
+    if (char === '/' && sql[index + 1] === '*') {
+      const end = sql.indexOf('*/', index + 2);
+      index = end === -1 ? sql.length : end + 2;
+      continue;
+    }
+    if (char === '\'' || char === '"' || char === '`' || char === '[') {
+      const closing = char === '[' ? ']' : char;
+      index += 1;
+      while (index < sql.length) {
+        if (sql[index] === closing) {
+          if (closing !== ']' && sql[index + 1] === closing) {
+            index += 2;
+            continue;
+          }
+          break;
+        }
+        index += 1;
+      }
+      index += 1;
+      continue;
+    }
+    if (char === ';') break;
+    index += 1;
+  }
+
+  if (index >= sql.length) return { ok: true, sql: sql.trim() };
+  if (!isInertSqlTail(sql.slice(index))) return { ok: false, error: MULTI_STATEMENT_ERROR };
+  return { ok: true, sql: sql.slice(0, index).trim() };
+}
+
+function isInertSqlTail(tail: string): boolean {
+  let index = 0;
+  while (index < tail.length) {
+    const char = tail[index];
+    if (char === ';' || INERT_TAIL_CHAR.test(char)) {
+      index += 1;
+    } else if (char === '-' && tail[index + 1] === '-') {
+      const end = tail.indexOf('\n', index + 2);
+      index = end === -1 ? tail.length : end + 1;
+    } else if (char === '/' && tail[index + 1] === '*') {
+      const end = tail.indexOf('*/', index + 2);
+      index = end === -1 ? tail.length : end + 2;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function isConstantRowsScan(detail: string): boolean {
+  return CONSTANT_ROWS_SCAN.test(detail.trim());
+}
+
+/**
+ * CTE names whose every materialization in the plan (CO-ROUTINE/MATERIALIZE
+ * node) reads only literal rows — e.g. `WITH wanted(name) AS (VALUES ...)`.
+ * Conservative: any table/index/virtual-table scan or nested co-routine below
+ * the node disqualifies the CTE, as does a second non-constant node with the
+ * same name.
+ */
+export function findConstantCteNames(planRows: QueryPlanRow[], cteNames: ReadonlySet<string>): Set<string> {
+  const children = new Map<number, QueryPlanRow[]>();
+  for (const row of planRows) {
+    const list = children.get(row.parent) ?? [];
+    list.push(row);
+    children.set(row.parent, list);
+  }
+  const verdicts = new Map<string, boolean>();
+  for (const row of planRows) {
+    const match = /^(?:CO-ROUTINE|MATERIALIZE)\s+(\S+)$/iu.exec(row.detail.trim());
+    if (match === null) continue;
+    const name = normalizeSqlIdentifier(match[1]);
+    if (!cteNames.has(name)) continue;
+
+    let sawConstantScan = false;
+    let constant = true;
+    const stack = [...(children.get(row.id) ?? [])];
+    while (stack.length > 0 && constant) {
+      const node = stack.pop()!;
+      const detail = node.detail.trim();
+      if (isConstantRowsScan(detail)) {
+        sawConstantScan = true;
+      } else if (/^(?:SCAN|SEARCH|CO-ROUTINE|MATERIALIZE)\b/iu.test(detail)) {
+        constant = false;
+      }
+      stack.push(...(children.get(node.id) ?? []));
+    }
+    verdicts.set(name, (verdicts.get(name) ?? true) && constant && sawConstantScan);
+  }
+  return new Set([...verdicts].filter(([, constant]) => constant).map(([name]) => name));
+}
+
+/**
+ * Every FROM/JOIN name or alias mapped to ALL objects it can denote. Unlike the
+ * last-write-wins alias map, an alias reused across subqueries keeps every
+ * target, so callers can require an unambiguous resolution.
+ */
+export function collectTableAliasTargets(tokens: SqlToken[]): Map<string, Set<string>> {
+  const targets = new Map<string, Set<string>>();
+  const add = (key: string, target: string) => {
+    const set = targets.get(key) ?? new Set<string>();
+    set.add(target);
+    targets.set(key, set);
+  };
+  forEachFromTableReference(tokens, (parts, alias) => {
+    const normalizedObject = normalizeObjectReference(parts.join('.'));
+    if (normalizedObject === null) return;
+    add(normalizedObject, normalizedObject);
+    if (alias !== null) add(normalizeSqlIdentifier(alias), normalizedObject);
+  });
+  return targets;
+}
+
+/**
+ * True when a plan SCAN reference denotes only literal-row CTEs, so the scan is
+ * bounded by the SQL text and must not count toward the cartesian guard.
+ */
+export function isConstantCteReference(
+  rawReference: string,
+  aliasTargets: ReadonlyMap<string, ReadonlySet<string>>,
+  constantCtes: ReadonlySet<string>,
+): boolean {
+  const normalized = normalizeObjectReference(rawReference);
+  if (normalized === null || normalized.includes('.')) return false;
+  const targets = aliasTargets.get(normalized);
+  if (targets === undefined || targets.size === 0) return constantCtes.has(normalized);
+  return [...targets].every((target) => constantCtes.has(target));
+}
+
+/**
+ * Plan-text validation identifies sources by the names the plan prints, and
+ * SQLite prints the ALIAS. A quoted or string-literal alias can impersonate
+ * another plan row ("CONSTANT ROW", "x VIRTUAL TABLE", "sde_types junk"), so
+ * table aliases must be plain identifiers that map back to the SQL text.
+ */
+export function findUntrackableTableAlias(tokens: SqlToken[]): string | null {
+  let found: string | null = null;
+  forEachFromTableReference(tokens, () => {}, (token) => {
+    found ??= token.kind === 'string' ? '\'...\'' : token.value;
+  });
+  return found;
+}
+
+export type BtreeAccessViolation = { kind: 'write' } | { kind: 'schema' } | { kind: 'table'; name: string };
+
+/**
+ * Authoritative source check on the compiled program: every b-tree the
+ * statement opens must be a main-schema table (or one of its indexes) that
+ * `isAllowedTable` accepts. Unlike plan text this cannot be spoofed by aliases
+ * — the root page identifies the table. Views expand to their base tables,
+ * table-valued functions open no b-tree, and writes are refused outright.
+ */
+export function findDisallowedBtreeAccess(
+  db: Db,
+  sql: string,
+  isAllowedTable: (tableName: string) => boolean,
+): BtreeAccessViolation | null {
+  const rootPages = new Map<number, string>();
+  const schemaRows = db
+    .prepare('SELECT rootpage, tbl_name FROM main.sqlite_master WHERE rootpage > 0')
+    .all() as Array<{ rootpage: number; tbl_name: string }>;
+  for (const row of schemaRows) {
+    rootPages.set(row.rootpage, row.tbl_name.toLowerCase());
+  }
+  const program = db.prepare(`EXPLAIN ${sql}`).all() as Array<{ opcode: string; p2: number; p3: number }>;
+  for (const op of program) {
+    if (op.opcode === 'OpenWrite') return { kind: 'write' };
+    if (op.opcode !== 'OpenRead' && op.opcode !== 'ReopenIdx') continue;
+    if (op.p3 !== 0) return { kind: 'schema' };
+    const table = rootPages.get(op.p2);
+    // Unknown root page (sqlite_master itself, or anything unexpected): deny.
+    if (table === undefined) return { kind: 'table', name: `root page ${op.p2}` };
+    if (!isAllowedTable(table)) return { kind: 'table', name: table };
+  }
+  return null;
 }
 
 function normalizeSqlIdentifier(value: string): string {
@@ -238,6 +452,7 @@ export function extractCteNames(tokens: SqlToken[]): Set<string> {
 export function forEachFromTableReference(
   tokens: SqlToken[],
   visit: (parts: string[], alias: string | null) => void,
+  onUntrackableAlias?: (token: SqlToken) => void,
 ): void {
   for (let index = 0; index < tokens.length; index += 1) {
     if (tokens[index].upper !== 'FROM' && tokens[index].upper !== 'JOIN') {
@@ -270,6 +485,11 @@ export function forEachFromTableReference(
 
       if (tokens[cursor]?.upper === 'AS') {
         cursor += 1;
+      }
+      const aliasToken = tokens[cursor];
+      if (aliasToken !== undefined && (aliasToken.kind === 'string'
+        || (aliasToken.kind === 'quoted' && !PLAIN_IDENTIFIER.test(aliasToken.value)))) {
+        onUntrackableAlias?.(aliasToken);
       }
       if (isSqlIdentifierToken(tokens[cursor]) && !SDE_ALIAS_STOP_KEYWORDS.has(tokens[cursor].upper)) {
         if (parts !== null) {
@@ -403,16 +623,30 @@ function validateSdeSqlSources(db: Db, sql: string): string | null {
     }
   }
 
+  const untrackableAlias = findUntrackableTableAlias(tokens);
+  if (untrackableAlias !== null) {
+    return `Table aliases must be plain identifiers (letters, digits, underscore); got ${untrackableAlias}`;
+  }
+
   const allowedObjects = getAllowedSdeObjects(db);
   const aliasMap = extractTableAliases(tokens);
+  const aliasTargets = collectTableAliasTargets(tokens);
   const cteNames = extractCteNames(tokens);
 
   let planRows: QueryPlanRow[];
+  let btreeViolation: BtreeAccessViolation | null;
   try {
     planRows = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as QueryPlanRow[];
+    btreeViolation = findDisallowedBtreeAccess(db, sql, (table) => allowedObjects.has(table));
   } catch (err) {
     return `SQL error: ${(err as Error).message}`;
   }
+  if (btreeViolation !== null) {
+    if (btreeViolation.kind === 'write') return 'Write operations are not allowed';
+    if (btreeViolation.kind === 'schema') return 'Only main SDE tables are allowed';
+    return `Only SDE tables are allowed (got "${btreeViolation.name}")`;
+  }
+  const constantCtes = findConstantCteNames(planRows, cteNames);
 
   const referencedObjects = new Set<string>();
   const schemaObjects = getAllSchemaObjects(db);
@@ -434,7 +668,8 @@ function validateSdeSqlSources(db: Db, sql: string): string | null {
   };
 
   for (const row of planRows) {
-    if (isTableValuedFunctionRow(row.detail)) continue;
+    // Literal rows (VALUES / constant SELECT) name no table: "SCAN 2 CONSTANT ROWS".
+    if (isTableValuedFunctionRow(row.detail) || isConstantRowsScan(row.detail)) continue;
     for (const rawReference of extractPlanReferences(row.detail)) {
       const normalizedReference = normalizeObjectReference(rawReference);
       const resolvedReference = aliasMap.get(normalizedReference ?? '') ?? normalizedReference;
@@ -471,8 +706,15 @@ function validateSdeSqlSources(db: Db, sql: string): string | null {
   // Guard against cartesian products. A full table SCAN visits every row; two or
   // more unconstrained SCANs multiply (e.g. sde_types × sde_types ≈ 51k² rows),
   // which pins the single-threaded event loop and freezes both bots. An indexed
-  // join shows up as SEARCH (bounded), so only count SCAN rows.
-  const fullScans = planRows.filter((row) => /^SCAN\b/i.test(row.detail.trim())
+  // join shows up as SEARCH (bounded), so only count SCAN rows. Literal rows and
+  // scans of literal-only CTEs are bounded by the SQL text, so they do not count.
+  const isUnboundedScanRow = (detail: string): boolean => {
+    const trimmed = detail.trim();
+    if (!/^SCAN\b/i.test(trimmed) || isConstantRowsScan(trimmed)) return false;
+    const reference = /^SCAN\s+(\S+)/iu.exec(trimmed)?.[1];
+    return reference === undefined || !isConstantCteReference(reference, aliasTargets, constantCtes);
+  };
+  const fullScans = planRows.filter((row) => isUnboundedScanRow(row.detail)
     && !isTableValuedFunctionRow(row.detail)).length;
   if (fullScans >= 2) {
     return 'Query would scan multiple tables in full (possible cartesian product). Add an indexed JOIN condition (e.g. ON a.group_id = b.group_id) or query one table at a time.';
@@ -847,7 +1089,11 @@ export function executeUniverseObjectCount(db: Db, args: Record<string, unknown>
 }
 
 export function executeSdeSql(db: Db, sql: string): { ok: boolean; rows: unknown[]; count: number; error: string | null } {
-  const trimmed = sql.trim();
+  const statement = stripStatementTerminator(sql);
+  if (!statement.ok) {
+    return { ok: false, rows: [], count: 0, error: statement.error };
+  }
+  const trimmed = statement.sql;
   const validationError = validateSdeSqlSources(db, trimmed);
   if (validationError !== null) {
     return { ok: false, rows: [], count: 0, error: validationError };

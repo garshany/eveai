@@ -434,6 +434,105 @@ describe('EVE-KILL v1 client limits', () => {
   });
 });
 
+describe('EVE-KILL production regressions (tool audit)', () => {
+  // Shape captured from GET https://api.eve-kill.com/characters/2118404263/losses
+  // (2026-09): entity activity lists return ESI-shaped killmails, not the flat
+  // summaries that system lists return.
+  const liveLossRow = {
+    attackers: [{
+      character_id: 322718659,
+      corporation_id: 98438347,
+      damage_done: 5922,
+      final_blow: true,
+      security_status: 5,
+      ship_type_id: 49711,
+      weapon_type_id: 47918,
+    }],
+    killmail_hash: 'b556a1e0b0b749d7992124ff8439a5f811229316',
+    killmail_id: 115155457,
+    killmail_time: '2024-01-29T12:01:36.000Z',
+    solar_system_id: 31000632,
+    victim: {
+      character_id: 2118404263,
+      corporation_id: 98617260,
+      damage_taken: 5922,
+      items: [{ flag: 14, item_type_id: 8263, quantity_destroyed: 0, quantity_dropped: 1, singleton: 0 }],
+      position: { x: 1, y: 2, z: 3 },
+      ship_type_id: 19744,
+    },
+  };
+
+  it('parses ESI-shaped entity loss lists (was: victim_corporation_id must be a positive integer)', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ data: [liveLossRow], pagination: { cursor: 115155457, hasMore: false } }));
+
+    const result = await listEntityActivity(db, 'character', 2118404263, 'losses', { limit: 100 });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.data.kills).toHaveLength(1);
+    expect(result.data.kills[0]).toMatchObject({
+      killmailId: 115155457,
+      activity: 'losses',
+      sourceShape: 'esi',
+      victim: { characterId: 2118404263, corporationId: 98617260, shipTypeId: 19744 },
+      attackerCount: 1,
+    });
+  });
+
+  it('still validates ids inside ESI-shaped list rows', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({
+      data: [{ ...liveLossRow, victim: { ...liveLossRow.victim, corporation_id: -5 } }],
+      pagination: { cursor: null, hasMore: false },
+    }));
+
+    const result = await listEntityActivity(db, 'character', 2118404263, 'losses', { limit: 100 });
+
+    expect(result).toMatchObject({ ok: false });
+  });
+
+  it('accepts a flat summary row whose victim corporation is absent', () => {
+    const summary = parseKillmailSummary({
+      killmail_id: 7,
+      killmail_time: '2026-07-13T10:00:00Z',
+      solar_system_id: 30000142,
+      victim_corporation_id: null,
+      ship_type_id: 35832,
+    });
+    expect(summary.victim.corporationId).toBeUndefined();
+    expect(() => parseKillmailSummary({
+      killmail_id: 8,
+      killmail_time: '2026-07-13T10:00:00Z',
+      solar_system_id: 30000142,
+      victim_corporation_id: 1.5,
+      ship_type_id: 35832,
+    })).toThrow();
+  });
+
+  it('sends an exact seven-day search as one window (was: trailing from === to window, HTTP 400)', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    fetchMock.mockImplementation(async (_input: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      bodies.push(body);
+      // Mirrors the live API: from must be strictly before to, window <= 7 days.
+      const span = Date.parse(String(body.to)) - Date.parse(String(body.from));
+      if (span <= 0 || span > 7 * 24 * 60 * 60 * 1000) {
+        return new Response(JSON.stringify({ error: 'from must be before to' }), { status: 400 });
+      }
+      return jsonResponse({ data: [], pagination: { hasMore: false, cursor: null } });
+    });
+
+    const result = await searchKillmails(db, {
+      from: '2026-09-19T21:00:00Z',
+      to: '2026-09-26T21:00:00Z',
+      corporation_ids: [98617260],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ from: '2026-09-19T21:00:00.000Z', to: '2026-09-26T21:00:00.000Z' });
+  });
+});
+
 function esiKill(id: number, time: string): Record<string, unknown> {
   return {
     killmail_id: id,

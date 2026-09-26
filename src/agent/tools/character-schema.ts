@@ -6,7 +6,7 @@ character_wallet_journal (journal_id INT, date TEXT, ref_type TEXT, amount REAL,
 character_orders (order_id INT, type_id INT, region_id INT, location_id INT, price REAL, volume_total INT, volume_remain INT, min_volume INT, is_buy_order INT, range TEXT, duration INT, issued TEXT, escrow REAL, data_json TEXT, synced_at TEXT) — open market orders
 character_contracts (contract_id INT, type TEXT, status TEXT, availability TEXT, price REAL, reward REAL, collateral REAL, volume REAL, title TEXT, date_issued TEXT, date_expired TEXT, date_accepted TEXT, date_completed TEXT, issuer_id INT, assignee_id INT, acceptor_id INT, start_location_id INT, end_location_id INT, for_corporation INT, data_json TEXT, synced_at TEXT)
 character_skills (skill_id INT, trained_skill_level INT, active_skill_level INT, skillpoints_in_skill INT, data_json TEXT, synced_at TEXT)
-character_skillqueue (queue_position INT, skill_id INT, finished_level INT, start_date TEXT, finish_date TEXT, level_end_sp INT, data_json TEXT, synced_at TEXT)
+character_skillqueue (queue_position INT, skill_id INT, finished_level INT, start_date TEXT, finish_date TEXT, level_start_sp INT, level_end_sp INT, training_start_sp INT, data_json TEXT, synced_at TEXT)
 character_clones (jump_clone_id INT, location_id INT, location_type TEXT, name TEXT, implants_json TEXT, data_json TEXT, synced_at TEXT)
 character_standings (from_id INT, from_type TEXT, standing REAL, data_json TEXT, synced_at TEXT)
 character_presence (solar_system_id INT, station_id INT, structure_id INT, ship_type_id INT, ship_name TEXT, ship_item_id INT, online INT, last_login TEXT, last_logout TEXT, synced_at TEXT) — single row: location + ship + online

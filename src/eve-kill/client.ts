@@ -613,10 +613,9 @@ function validateSearchRequest(request: KillmailSearchRequest, maxRequests: numb
   if (Object.keys(filters).length > MAX_FILTER_CATEGORIES) {
     return invalid(`search supports at most ${MAX_FILTER_CATEGORIES} filter categories`);
   }
-  // EVE-KILL treats both bounds as inclusive. Account for the inclusive final
-  // millisecond so adjacent windows can be disjoint without exceeding seven
-  // days of represented time.
-  const windowCount = Math.ceil((toMs - fromMs + 1) / MAX_SEARCH_WINDOW_MS);
+  // EVE-KILL accepts to - from <= 7 days and rejects from === to, so a window
+  // plan must never emit a degenerate trailing window. Must match splitWindows.
+  const windowCount = Math.ceil((toMs - fromMs) / MAX_SEARCH_WINDOW_MS);
   if (!Number.isSafeInteger(windowCount) || windowCount * filterCombinations > maxRequests) {
     return invalid('search plan exceeds the bounded request budget');
   }
@@ -628,12 +627,16 @@ function splitWindows(from: string, to: string): Array<{ from: string; to: strin
   const fromMs = Date.parse(from);
   let cursor = fromMs;
   const toMs = Date.parse(to);
-  while (cursor <= toMs) {
-    const end = Math.min(toMs, cursor + MAX_SEARCH_WINDOW_MS - 1);
+  // Bounds are inclusive upstream: non-final windows end 1 ms before the next
+  // one starts so they stay disjoint. The final window takes the whole
+  // remainder (<= 7 days), so an exact 7-day request is a single window and no
+  // window ever has from === to (EVE-KILL answers that with HTTP 400).
+  while (toMs - cursor > MAX_SEARCH_WINDOW_MS) {
+    const end = cursor + MAX_SEARCH_WINDOW_MS - 1;
     windows.push({ from: new Date(cursor).toISOString(), to: new Date(end).toISOString() });
-    if (end === toMs) break;
     cursor = end + 1;
   }
+  windows.push({ from: new Date(cursor).toISOString(), to: new Date(toMs).toISOString() });
   return windows;
 }
 

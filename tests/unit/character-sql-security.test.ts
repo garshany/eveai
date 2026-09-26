@@ -402,3 +402,86 @@ describe('executeCharacterSql time limit', () => {
     }
   });
 });
+
+describe('executeCharacterSql production regressions (tool audit)', () => {
+  function insertSkill(characterId: number, skillId: number, level: number): void {
+    db.prepare(`
+      INSERT INTO character_skills (character_id, skill_id, trained_skill_level, active_skill_level, skillpoints_in_skill, data_json, synced_at)
+      VALUES (?, ?, ?, ?, 0, '{}', datetime('now'))
+    `).run(characterId, skillId, level, level);
+  }
+
+  it('accepts a CTE built from VALUES with a column list (was: got "2")', () => {
+    db.prepare('INSERT INTO sde_types (type_id, name, group_id, data_json) VALUES (?, ?, ?, ?)')
+      .run(20524, 'Amarr Freighter', 257, '{}');
+    db.prepare('INSERT INTO sde_types (type_id, name, group_id, data_json) VALUES (?, ?, ?, ?)')
+      .run(29029, 'Jump Freighters', 257, '{}');
+    insertSkill(OWN_CHARACTER, 20524, 4);
+    insertSkill(OTHER_CHARACTER, 29029, 5);
+
+    const result = executeCharacterSql(
+      db as Db,
+      `WITH wanted(name) AS (VALUES ('Amarr Freighter'),('Jump Freighters'))
+       SELECT w.name, COALESCE(s.trained_skill_level, 0) AS level
+       FROM wanted w
+       LEFT JOIN sde_types t ON t.name = w.name
+       LEFT JOIN character_skills s ON s.skill_id = t.type_id
+       ORDER BY w.name`,
+      OWN_CHARACTER,
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.rows).toEqual([
+      { name: 'Amarr Freighter', level: 4 },
+      // The other character's level 5 stays invisible.
+      { name: 'Jump Freighters', level: 0 },
+    ]);
+  });
+
+  it('accepts a single trailing semicolon, and whitespace SQLite does not recognise', () => {
+    for (const sql of [
+      'SELECT balance FROM character_wallet;',
+      'SELECT balance FROM character_wallet; -- done',
+      'SELECT balance FROM character_wallet;​',
+    ]) {
+      const result = executeCharacterSql(db as Db, sql, OWN_CHARACTER);
+      expect(result, sql).toMatchObject({ ok: true, rows: [{ balance: 100.5 }] });
+      expect(analyzeCharacterSqlTables(db as Db, sql), sql).toEqual({ ok: true, characterTables: ['character_wallet'] });
+    }
+  });
+
+  it('still rejects genuine multi-statement SQL, including semicolons hidden after comments', () => {
+    for (const sql of [
+      'SELECT balance FROM character_wallet; SELECT access_token FROM eve_accounts',
+      'SELECT balance FROM character_wallet; -- x\nDELETE FROM character_wallet',
+      "SELECT balance FROM character_wallet WHERE ';' = ';'; DROP TABLE users",
+    ]) {
+      const result = executeCharacterSql(db as Db, sql, OWN_CHARACTER);
+      expect(result, sql).toMatchObject({ ok: false, rows: [] });
+      expect(result.error, sql).toMatch(/one SQL statement/);
+    }
+    expect(db.prepare('SELECT COUNT(*) AS n FROM character_wallet').get()).toEqual({ n: 2 });
+  });
+
+  it('blocks quoted aliases that impersonate literal plan rows to read other tables', () => {
+    for (const sql of [
+      'SELECT "CONSTANT ROW".refresh_token FROM character_wallet w JOIN eve_accounts AS "CONSTANT ROW" ON "CONSTANT ROW".character_id = w.character_id + 111',
+      "SELECT 'CONSTANT ROW'.refresh_token FROM character_wallet w JOIN eve_accounts AS 'CONSTANT ROW' ON 'CONSTANT ROW'.character_id = w.character_id + 111",
+      'SELECT "x VIRTUAL TABLE".refresh_token FROM character_wallet w JOIN eve_accounts AS "x VIRTUAL TABLE" ON 1 = 1',
+    ]) {
+      const result = executeCharacterSql(db as Db, sql, OWN_CHARACTER);
+      expect(result, sql).toMatchObject({ ok: false, rows: [] });
+      expect(JSON.stringify(result), sql).not.toContain('secret-refresh');
+    }
+  });
+
+  it('rejects reads of non-allowed tables at the compiled-program level', () => {
+    const result = executeCharacterSql(
+      db as Db,
+      'SELECT w.balance, (SELECT access_token FROM eve_accounts LIMIT 1) AS t FROM character_wallet w',
+      OWN_CHARACTER,
+    );
+    expect(result).toMatchObject({ ok: false, rows: [] });
+    expect(result.error).toContain('eve_accounts');
+  });
+});
