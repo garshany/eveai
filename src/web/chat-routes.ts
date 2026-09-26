@@ -655,6 +655,7 @@ function findEmptyConversation(db: Db, session: WebSession): string | null {
     FROM agent_threads t
     WHERE t.chat_id = ?
       AND t.user_id = ?
+      AND t.kind = 'chat'
       AND ((t.character_id IS NULL AND ? IS NULL) OR t.character_id = ?)
       AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.thread_id = t.thread_id)
     ORDER BY t.created_at DESC, t.rowid DESC

@@ -8,6 +8,7 @@ import {
   hasInFlightRequestForActor,
   rememberInFlightRequest,
   resetChatRequestGuardForTests,
+  resolveThreadForChat,
 } from '../../src/chat/shared.js';
 
 let db: Database.Database;
@@ -51,5 +52,24 @@ describe('clearChatConversation', () => {
     // The persistent kill watch must survive — it is not conversation state.
     const watches = db.prepare("SELECT topic FROM kill_watches WHERE chat_id = 42").all() as Array<{ topic: string }>;
     expect(watches.map((w) => w.topic)).toEqual(['system.30000142']);
+  });
+});
+
+describe('resolveThreadForChat kind isolation', () => {
+  it('never resolves the live-map perimeter thread as the ordinary chat thread', () => {
+    const chatId = -2_000_000_123;
+    db.prepare("INSERT INTO telegram_sessions (chat_id, username) VALUES (?, 'web')").run(chatId);
+    // A live-map perimeter thread exists for this chat (guest, character_id NULL).
+    db.prepare(
+      "INSERT INTO agent_threads (thread_id, chat_id, character_id, user_id, kind) VALUES ('perimeter-1', ?, NULL, NULL, 'perimeter')",
+    ).run(chatId);
+
+    const threadId = resolveThreadForChat(db, chatId, { userId: 1, chatId });
+
+    // The perimeter thread must not be reused (it would run normal chat in the
+    // restricted Perimeter toolset); a fresh kind='chat' thread is created.
+    expect(threadId).not.toBe('perimeter-1');
+    const row = db.prepare('SELECT kind FROM agent_threads WHERE thread_id = ?').get(threadId) as { kind: string };
+    expect(row.kind).toBe('chat');
   });
 });
