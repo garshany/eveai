@@ -218,6 +218,8 @@ describe('settings routes: state', () => {
     expect(payload.defaults.model).toBe(config.openai.model);
     expect(payload.options.models.map((entry: { id: string }) => entry.id)).toEqual([
       'gpt-6-luna',
+      'gpt-6-sol',
+      'gpt-6-astra',
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
