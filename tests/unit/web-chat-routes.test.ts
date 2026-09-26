@@ -348,6 +348,31 @@ describe('web chat routes', () => {
     expect(replay.body).not.toContain('event: request');
   });
 
+  it('never writes a chat message into the pilot\'s Perimeter thread (lane isolation)', async () => {
+    const session = await createBrowserSession();
+    // The map's own thread, as getOrCreatePerimeterThread stores it.
+    const perimeterThreadId = '11111111-2222-4333-8444-555555555555';
+    db.prepare(`
+      INSERT INTO agent_threads (thread_id, chat_id, character_id, user_id, kind)
+      VALUES (?, ?, NULL, ?, 'perimeter')
+    `).run(perimeterThreadId, session.chatId, session.userId);
+
+    const answer = await app.inject({
+      method: 'POST',
+      url: '/api/web/chat',
+      headers: mutationHeaders(session),
+      payload: { message: 'Построй безопасный маршрут', threadId: perimeterThreadId },
+    });
+    expect(answer.statusCode).toBe(409);
+    expect(answer.json()).toMatchObject({ code: 'perimeter_thread' });
+    const written = db.prepare('SELECT COUNT(*) AS n FROM messages WHERE thread_id = ?')
+      .get(perimeterThreadId) as { n: number };
+    expect(written.n).toBe(0);
+    const queued = db.prepare('SELECT COUNT(*) AS n FROM web_agent_requests WHERE thread_id = ?')
+      .get(perimeterThreadId) as { n: number } | undefined;
+    expect(queued?.n ?? 0).toBe(0);
+  });
+
   it('does not allow one browser session to read another session conversation', async () => {
     const owner = await createBrowserSession();
     const intruder = await createBrowserSession();

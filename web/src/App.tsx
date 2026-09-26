@@ -1,3 +1,4 @@
+import { RequestObserver } from './components/AgentRequestObserver';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isAmbiguousApiRequestError, webApi } from './api';
 import {
@@ -107,9 +108,12 @@ export default function App() {
   const loadConversations = useCallback(async (preferredId?: string | null) => {
     const generation = ++messageLoadGeneration.current;
     const items = await refreshConversationList();
-    const nextId = preferredId && items.some((item) => item.id === preferredId)
+    // Тред Периметра принадлежит карте и её лоцману: основной чат никогда не
+    // открывает его сам, иначе вопросы из чата уходили в ленту лоцмана.
+    const chatItems = items.filter((item) => item.kind !== 'perimeter');
+    const nextId = preferredId && chatItems.some((item) => item.id === preferredId)
       ? preferredId
-      : items[0]?.id ?? null;
+      : chatItems[0]?.id ?? null;
     setActiveConversation(nextId);
     if (nextId) {
       const result = await webApi.getMessages(nextId);
@@ -550,7 +554,16 @@ export default function App() {
         onClose={() => setSidebarOpen(false)}
         onView={(view) => { setActiveView(view); setSidebarOpen(false); }}
         onNew={() => { setActiveView('chat'); void createConversation(); }}
-        onSelect={(id) => { setActiveView('chat'); void selectConversation(id); }}
+        onSelect={(id) => {
+          // Тред лоцмана открывается там, где он живёт, — на карте.
+          if (conversations.find((item) => item.id === id)?.kind === 'perimeter') {
+            setActiveView('map');
+            setSidebarOpen(false);
+            return;
+          }
+          setActiveView('chat');
+          void selectConversation(id);
+        }}
         onDelete={deleteConversation}
         onConnect={() => void connectEve()}
         onActivate={(id) => void activateCharacter(id)}
@@ -609,72 +622,4 @@ function findLastAssistantIndex(messages: ChatMessage[]): number {
     if (messages[index]?.role === 'assistant') return index;
   }
   return -1;
-}
-
-type RequestObserverProps = {
-  requestId: string;
-  threadId: string;
-  retryAfterMs: number;
-  onSnapshot: (request: WebAgentRequest) => void;
-  onDelta: (threadId: string, frame: StreamDeltaFrame) => void;
-  onPollError: (message: string) => void;
-};
-
-/**
- * Follows one in-flight turn: the SSE stream pushes every snapshot and delta;
- * polling is only the fallback when the stream is unavailable. Rendered once
- * per active request, so several chats can stream at the same time.
- */
-function RequestObserver({ requestId, threadId, retryAfterMs, onSnapshot, onDelta, onPollError }: RequestObserverProps) {
-  const retryAfterRef = useRef(retryAfterMs);
-  retryAfterRef.current = retryAfterMs;
-  useEffect(() => {
-    let cancelled = false;
-    let timer: number | null = null;
-    const applySnapshot = (request: WebAgentRequest) => {
-      if (!cancelled) onSnapshot(request);
-    };
-    const startPolling = () => {
-      if (cancelled || timer !== null) return;
-      timer = window.setInterval(() => {
-        void webApi.getAgentRequest(requestId)
-          .then(({ request }) => applySnapshot(request))
-          .catch((reason: unknown) => {
-            if (!cancelled) onPollError(reason instanceof Error ? reason.message : 'Не удалось проверить состояние запроса.');
-          });
-      }, Math.max(500, retryAfterRef.current));
-    };
-    const source = typeof EventSource === 'undefined'
-      ? null
-      : new EventSource(`/api/web/chat/requests/${encodeURIComponent(requestId)}/events`);
-    source?.addEventListener('request', (event) => {
-      if (cancelled || !(event instanceof MessageEvent)) return;
-      try {
-        const payload = JSON.parse(event.data) as { request?: WebAgentRequest };
-        if (payload.request?.requestId === requestId) applySnapshot(payload.request);
-      } catch {
-        // A malformed frame is skipped; the next snapshot carries full state.
-      }
-    });
-    source?.addEventListener('delta', (event) => {
-      if (cancelled || !(event instanceof MessageEvent)) return;
-      try {
-        const frame = JSON.parse(event.data) as StreamDeltaFrame;
-        if (frame.requestId === requestId) onDelta(threadId, frame);
-      } catch {
-        // A malformed frame is skipped; the next snapshot carries full state.
-      }
-    });
-    source?.addEventListener('error', () => {
-      source.close();
-      startPolling();
-    });
-    if (!source) startPolling();
-    return () => {
-      cancelled = true;
-      source?.close();
-      if (timer !== null) window.clearInterval(timer);
-    };
-  }, [requestId, threadId, onSnapshot, onDelta, onPollError]);
-  return null;
 }

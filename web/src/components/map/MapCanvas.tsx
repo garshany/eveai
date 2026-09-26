@@ -27,6 +27,8 @@ type Props = {
   layout: Layout;
   pilotSystemId: number | null;
   pilotOnline: boolean;
+  /** Подпись под маркером пилота: «Вы · Gila». */
+  pilotLabel?: string | null;
   selectedSystemId: number | null;
   routeSystemIds: number[];
   flashes: KillFlash[];
@@ -52,6 +54,7 @@ export function MapCanvas({
   layout,
   pilotSystemId,
   pilotOnline,
+  pilotLabel = null,
   selectedSystemId,
   routeSystemIds,
   flashes,
@@ -91,11 +94,11 @@ export function MapCanvas({
 
   // Всё, что цикл отрисовки читает покадрово, живёт в одном ref.
   const sceneRef = useRef({
-    nodes, bubble, layout, pilotSystemId, pilotOnline, selectedSystemId,
+    nodes, bubble, layout, pilotSystemId, pilotOnline, pilotLabel, selectedSystemId,
     hoveredSystemId: hovered, routeSystemIds, flashes,
   });
   sceneRef.current = {
-    nodes, bubble, layout, pilotSystemId, pilotOnline, selectedSystemId,
+    nodes, bubble, layout, pilotSystemId, pilotOnline, pilotLabel, selectedSystemId,
     hoveredSystemId: hovered, routeSystemIds, flashes,
   };
 
@@ -212,6 +215,7 @@ export function MapCanvas({
         transform: transformRef.current,
         pilotSystemId: scene.pilotSystemId,
         pilotOnline: scene.pilotOnline,
+        pilotLabel: scene.pilotLabel,
         selectedSystemId: scene.selectedSystemId,
         hoveredSystemId: scene.hoveredSystemId,
         routeSystemIds: scene.routeSystemIds,

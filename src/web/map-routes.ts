@@ -487,9 +487,15 @@ export function registerMapRoutes(
     // A fresh thread, not a delete: the advisor may be writing into the current
     // one at this exact moment, and the pilot's earlier warnings are evidence
     // worth keeping.
+    const previousThreadId = getOrCreatePerimeterThread(
+      db, session.chatId, session.userId, linked?.characterId ?? null,
+    );
     const threadId = startNewPerimeterThread(
       db, session.chatId, session.userId, linked?.characterId ?? null,
     );
+    // Move every live writer before returning. A detached model assessment
+    // still belongs to the old conversation and is discarded on completion.
+    for (const move of [...(threadMoves.get(previousThreadId) ?? [])]) move(threadId);
     return { threadId, messages: [] };
   });
 
@@ -587,7 +593,7 @@ export function registerMapRoutes(
     // persist the same warning into the same thread three times.
     // The thread lookup runs first: it can throw, and the advisor state below
     // takes a reference that must be released on every exit path.
-    const threadId = getOrCreatePerimeterThread(
+    let threadId = getOrCreatePerimeterThread(
       db, session.chatId, session.userId, linked.characterId,
     );
     const state = getSharedAdvisorState(linked.characterId);
@@ -795,7 +801,7 @@ export function registerMapRoutes(
     }, config.map.intelRefreshSeconds * 1000);
     intelTimer.unref?.();
 
-    const leaveAudience = joinThreadAudience(threadId, stream);
+    const leaveAudience = followThreadAudience(threadId, stream, (next) => { threadId = next; });
 
     stream.onClose(() => {
       leaveAudience();
@@ -852,7 +858,7 @@ function publishAdvisory(
   // is a separate follow-up message (publishSituationAssessment).
   const message = appendAdvisory(db, threadId, advisory, locale, 'rule');
   recordRadarAdvisory(characterId, advisory, message.content);
-  broadcastAdvisory(threadId, stream, { advisory, message, escalated: false });
+  broadcastAdvisory(threadId, stream, { threadId, advisory, message, escalated: false });
 }
 
 function broadcastAdvisory(threadId: string, stream: SseStream, payload: unknown): void {
@@ -897,11 +903,13 @@ async function publishSituationAssessment(db: Db, input: {
         reasoning: usage.reasoning,
       }, config.openai.model),
     });
-    if (!text) return;
+    if (!text || getOrCreatePerimeterThread(
+      db, input.owner.chatId, input.owner.userId, input.characterId,
+    ) !== input.threadId) return;
     const anchor = input.advisories[0]!;
     const message = appendAdvisory(db, input.threadId, anchor, input.locale, 'model', text);
     recordRadarAdvisory(input.characterId, anchor, text);
-    broadcastAdvisory(input.threadId, input.stream, { advisory: anchor, message, escalated: true });
+    broadcastAdvisory(input.threadId, input.stream, { threadId: input.threadId, advisory: anchor, message, escalated: true });
   } catch (error) {
     // The thread may have been reset or the DB closed during shutdown.
     console.warn('[map-advisor] assessment publish failed: %s', error instanceof Error ? error.name : 'unknown');
@@ -910,6 +918,34 @@ async function publishSituationAssessment(db: Db, input: {
 
 /** Open live streams per Perimeter thread, for advisory fan-out. */
 const threadStreams = new Map<string, Set<SseStream>>();
+
+const threadMoves = new Map<string, Set<(threadId: string) => void>>();
+
+function followThreadAudience(initialId: string, stream: SseStream, onMove: (id: string) => void): () => void {
+  let threadId = initialId;
+  let leave = joinThreadAudience(threadId, stream);
+  const register = () => {
+    const moves = threadMoves.get(threadId) ?? new Set();
+    moves.add(move);
+    threadMoves.set(threadId, moves);
+  };
+  const unregister = () => {
+    const moves = threadMoves.get(threadId);
+    moves?.delete(move);
+    if (moves?.size === 0) threadMoves.delete(threadId);
+    leave();
+  };
+  const move = (next: string) => {
+    unregister();
+    threadId = next;
+    onMove(next);
+    leave = joinThreadAudience(next, stream);
+    register();
+    stream.send('chat-reset', { threadId: next });
+  };
+  register();
+  return unregister;
+}
 
 function joinThreadAudience(threadId: string, stream: SseStream): () => void {
   const set = threadStreams.get(threadId) ?? new Set<SseStream>();
@@ -1097,7 +1133,7 @@ function sessionContext(session: WebSession) {
 
 /** Exported for tests that need a synthetic advisory publication. */
 export const __testables = {
-  publishAdvisory, parseRisk, parseAvoid, parseRadius,
+  followThreadAudience, publishSituationAssessment, publishAdvisory, parseRisk, parseAvoid, parseRadius,
   readIdempotencyKey,
   readAskFocus,
 };

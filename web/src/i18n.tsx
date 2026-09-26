@@ -3,6 +3,17 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 export type Locale = 'ru' | 'en';
 
 const RU = {
+  // Лоцман (чат периметра)
+  pchatPilot: 'Пилот', pchatInfo: 'Информация', pchatWarn: 'Предупреждение', pchatDanger: 'Опасность',
+  pchatWriting: 'Лоцман пишет', pchatQueued: 'Лоцман: вопрос в очереди', pchatClearing: 'Очищаем…',
+  pchatCleared: 'Чат очищен. Новые предупреждения появятся здесь.',
+  pchatFilteredEmpty: 'Нет предупреждений выбранной важности.',
+  pchatHistoryError: 'Не удалось загрузить историю. Обновите ленту.',
+  pchatResetError: 'Не удалось подтвердить очистку. Проверяем историю; при необходимости повторите.',
+  pchatConnectionError: 'Связь с лоцманом прервана. Проверяем ответ…',
+  pchatTimeout: 'Лоцман отвечает дольше 8 минут. Ожидание продолжается; можно очистить чат и начать новый разговор.',
+  pchatCancelled: 'Ответ отменён.',
+
   chat: 'Чат', profile: 'Профиль пилота', newChat: 'Новый диалог', conversations: 'Диалоги',
   noConversations: 'Первый диалог появится после вашего вопроса.', closeMenu: 'Закрыть меню', openMenu: 'Открыть меню',
   guest: 'Гостевой режим', connectPilot: 'Подключить персонажа', pilotConnected: 'Персонаж подключён', pilots: 'Капсулёры', active: 'активен', addPilot: 'Добавить капсулёра', logout: 'Выйти',
@@ -114,7 +125,7 @@ const RU = {
   settingsModelTitle: 'Модель',
   settingsModelLuna6: 'Новое поколение Luna: быстрая и дешёвая.',
   settingsModelSol6: 'Новое поколение Sol: максимум качества для сложного анализа.',
-  settingsModelAstra6: 'GPT-6 Astra — флагман поколения GPT-6: async-инструменты, самая дорогая. Модель по умолчанию.',
+  settingsModelAstra6: 'GPT-6 Astra — флагман поколения GPT-6: самая сильная и самая дорогая.',
   settingsModelSol: 'Самая сильная — для сложного анализа. Самая дорогая.',
   settingsModelTerra: 'Баланс качества и стоимости.',
   settingsModelLuna: 'Быстрая и дешёвая — для простых вопросов.',
@@ -157,6 +168,16 @@ const RU = {
   perimeterKeyTraffic: 'размер — трафик за час',
   perimeterKeyCamp: 'кемп на гейте',
   perimeterKeyAvoided: 'в списке «избегать»',
+  // Периметр: живая карта (панель, лента киллов, камера)
+  perimeterViewLabel: 'Вид карты', perimeterLayersLabel: 'Слои',
+  perimeterCentreOnMe: 'На меня', perimeterLegend: 'Легенда',
+  perimeterDataLive: 'Данные в порядке', perimeterDataPartial: 'Из кэша или нет: {count}',
+  perimeterKeyKills: 'искры — килы за час (ромб — групповой)', perimeterKeyFlow: 'бегущие точки — трафик по гейтам',
+  perimeterFeedTitle: 'Кто кого', perimeterFeedWindow: 'за час в периметре',
+  perimeterFeedEmpty: 'За последний час здесь никто не умирал.',
+  perimeterFeedUnknownShip: 'Неизвестный корабль',
+  perimeterFeedSolo: 'соло · {ship}', perimeterFeedGang: 'группа из {count}',
+  perimeterFeedNow: 'только что', perimeterFeedMinutes: '{minutes} мин назад',
 
   dockOpen: 'Открыть дата-док', dockClose: 'Закрыть дата-док', dockOpenMarket: 'Открыть маркет-док ↑',
   dockRegion: 'Регион', dockChangeRegion: 'спросить', dockItem: 'Товар', dockSell: 'Sell', dockDelta: 'Спред',
@@ -215,6 +236,17 @@ const RU = {
 } as const;
 
 const EN: Record<keyof typeof RU, string> = {
+  // Лоцман (чат периметра)
+  pchatPilot: 'Pilot', pchatInfo: 'Information', pchatWarn: 'Warning', pchatDanger: 'Danger',
+  pchatWriting: 'Navigator is writing', pchatQueued: 'Navigator: question queued', pchatClearing: 'Clearing…',
+  pchatCleared: 'Chat cleared. New advisories will appear here.',
+  pchatFilteredEmpty: 'No advisories at this severity.',
+  pchatHistoryError: 'Could not load history. Refresh the feed.',
+  pchatResetError: 'Could not confirm clearing. Checking history; retry if needed.',
+  pchatConnectionError: 'Connection to the navigator interrupted. Checking for the reply…',
+  pchatTimeout: 'The navigator has taken over 8 minutes. Still waiting; you can clear the chat and start a new conversation.',
+  pchatCancelled: 'Reply cancelled.',
+
   chat: 'Chat', profile: 'Pilot profile', newChat: 'New chat', conversations: 'Conversations',
   noConversations: 'Your first conversation appears after a question.', closeMenu: 'Close menu', openMenu: 'Open menu',
   guest: 'Guest mode', connectPilot: 'Connect character', pilotConnected: 'Character connected', pilots: 'Capsuleers', active: 'active', addPilot: 'Add capsuleer', logout: 'Log out',
@@ -326,7 +358,7 @@ const EN: Record<keyof typeof RU, string> = {
   settingsModelTitle: 'Model',
   settingsModelLuna6: 'Next-generation Luna: fast and cheap.',
   settingsModelSol6: 'Next-generation Sol: top quality for complex analysis.',
-  settingsModelAstra6: 'GPT-6 Astra — the GPT-6 flagship with async tools; the most expensive. The default model.',
+  settingsModelAstra6: 'GPT-6 Astra — the GPT-6 flagship: the strongest and the most expensive.',
   settingsModelSol: 'The strongest — for complex analysis. The most expensive.',
   settingsModelTerra: 'A balance of quality and cost.',
   settingsModelLuna: 'Fast and cheap — for simple questions.',
@@ -369,6 +401,16 @@ const EN: Record<keyof typeof RU, string> = {
   perimeterKeyTraffic: 'size — jumps this hour',
   perimeterKeyCamp: 'gate camp',
   perimeterKeyAvoided: 'on the avoid list',
+  // Perimeter: live map (bar, kill feed, camera)
+  perimeterViewLabel: 'Map view', perimeterLayersLabel: 'Layers',
+  perimeterCentreOnMe: 'Centre on me', perimeterLegend: 'Legend',
+  perimeterDataLive: 'Data is current', perimeterDataPartial: 'Cached or missing: {count}',
+  perimeterKeyKills: 'sparks — kills in the last hour (diamond — gang)', perimeterKeyFlow: 'moving dots — gate traffic',
+  perimeterFeedTitle: 'Who killed whom', perimeterFeedWindow: 'last hour in range',
+  perimeterFeedEmpty: 'Nobody died here in the last hour.',
+  perimeterFeedUnknownShip: 'Unknown ship',
+  perimeterFeedSolo: 'solo · {ship}', perimeterFeedGang: 'gang of {count}',
+  perimeterFeedNow: 'just now', perimeterFeedMinutes: '{minutes} min ago',
 
   dockOpen: 'Open the data dock', dockClose: 'Close the data dock', dockOpenMarket: 'Open the market dock ↑',
   dockRegion: 'Region', dockChangeRegion: 'ask', dockItem: 'Item', dockSell: 'Sell', dockDelta: 'Spread',
@@ -417,7 +459,7 @@ const EN: Record<keyof typeof RU, string> = {
   perimeterRouteJumps: 'Route: {jumps} jumps',
   perimeterRouteCoverage: 'Danger data covers {known} of {total} systems; the rest are scored zero, not safe.',
   perimeterChat: 'Pilot', perimeterChatEmpty: 'Nothing to report while the perimeter is quiet. Ask, or wait for the first event.',
-  perimeterAskPlaceholder: 'Ask about the situation…', perimeterThinking: 'The pilot is thinking…',
+  perimeterAskPlaceholder: 'Ask about the situation…', perimeterThinking: 'Navigator is thinking…',
   perimeterFilter: 'Severity filter', perimeterFilterAll: 'All', perimeterFilterImportant: 'Important', perimeterFilterQuiet: 'Danger only',
   perimeterShowOnMap: 'on map', perimeterKillmail: 'killmail',
   perimeterRule_pursuit: 'Pursuit', perimeterRule_camp_next_hop: 'Camp ahead',

@@ -50,7 +50,7 @@ export function getOrCreatePerimeterThread(
     SELECT thread_id FROM agent_threads
     WHERE chat_id = ? AND user_id = ? AND kind = 'perimeter'
       AND (character_id IS ? OR character_id = ?)
-    ORDER BY updated_at DESC
+    ORDER BY rowid DESC
     LIMIT 1
   `).get(chatId, userId, characterId, characterId) as { thread_id: string } | undefined;
   if (existing) return existing.thread_id;
@@ -69,8 +69,8 @@ export function getOrCreatePerimeterThread(
  * Deliberately not a delete. The advisor writes into this thread without being
  * asked, so removing rows would race with it; and the warnings a pilot received
  * during a flight are evidence, not clutter. `getOrCreatePerimeterThread` picks
- * the most recently updated thread, so the new one simply becomes the active
- * one and the old transcript stays reachable.
+ * the most recently created thread (SQLite rowid, independent of late writes).
+ * The new one becomes active and the old transcript stays reachable.
  */
 export function startNewPerimeterThread(
   db: Db,
