@@ -33,7 +33,7 @@ afterEach(() => {
 
 describe('whitelists', () => {
   it('offers exactly Luna 6 plus the three GPT-5.6 models', () => {
-    expect(USER_SELECTABLE_MODELS).toEqual(['gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
+    expect(USER_SELECTABLE_MODELS).toEqual(['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
     expect(isUserSelectableModel('gpt-6-luna')).toBe(true);
     expect(isUserSelectableModel('gpt-5.6-sol')).toBe(true);
     expect(isUserSelectableModel('gpt-5.6-terra')).toBe(true);
