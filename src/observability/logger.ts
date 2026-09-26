@@ -1,12 +1,24 @@
 import { format } from 'node:util';
 
-const SECRET_PATTERNS = [
-  /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu,
-  /\b(sk-[A-Za-z0-9_-]+|eyJ[A-Za-z0-9._~+/=-]+)\b/gu,
-  /\b(access_token|refresh_token|id_token|api_key|apikey|authorization)=([^&\s]+)/giu,
-  // JSON form: "refresh_token":"…" / "access_token": "…"
-  /"(access_token|refresh_token|id_token|api_key|apikey|authorization)"\s*:\s*"([^"]+)"/giu,
-  /\/\/([^:\s/@]+):([^@\s/]+)@/gu,
+type Redactor = (match: string, ...groups: unknown[]) => string;
+
+// Order matters: more specific rules (Authorization header, bot tokens) run
+// before the generic Bearer / opaque-token rules.
+const REDACTIONS: Array<{ pattern: RegExp; replace: Redactor }> = [
+  // Telegram bot token, as it appears in an api.telegram.org request URL
+  // (…/bot<id>:<secret>/sendMessage) or on its own. This is the concrete leak:
+  // a failed send throws an error whose message embeds the full URL.
+  { pattern: /\bbot\d{5,}:[A-Za-z0-9_-]{20,}/giu, replace: () => 'bot[redacted]' },
+  // Discord bot/user token: three base64url segments of characteristic length.
+  { pattern: /\b[A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}\b/gu, replace: () => '[redacted]' },
+  // Authorization header with any scheme (Basic base64, Bearer, Digest).
+  { pattern: /\bAuthorization:\s*(Basic|Bearer|Digest)\s+[A-Za-z0-9._~+/=-]+/giu, replace: (_m, scheme) => `Authorization: ${String(scheme)} [redacted]` },
+  { pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, replace: () => 'Bearer [redacted]' },
+  { pattern: /\b(sk-[A-Za-z0-9_-]+|eyJ[A-Za-z0-9._~+/=-]+)\b/gu, replace: () => '[redacted]' },
+  { pattern: /\b(access_token|refresh_token|id_token|api_key|apikey|authorization|client_secret)=([^&\s]+)/giu, replace: (_m, key) => `${String(key)}=[redacted]` },
+  // JSON form: "refresh_token":"…" / "client_secret": "…"
+  { pattern: /"(access_token|refresh_token|id_token|api_key|apikey|authorization|client_secret)"\s*:\s*"([^"]+)"/giu, replace: (_m, key) => `"${String(key)}":"[redacted]"` },
+  { pattern: /\/\/([^:\s/@]+):([^@\s/]+)@/gu, replace: (_m, user) => `//${String(user)}:[redacted]@` },
 ];
 
 export type LogLevel = 'info' | 'warn' | 'error';
@@ -76,6 +88,22 @@ export function redactLogValue(value: unknown, ancestors: WeakSet<object> = new 
     const redacted = new Error(redactString(value.message));
     redacted.name = value.name;
     redacted.stack = value.stack ? redactString(value.stack) : undefined;
+    // Grammy/fetch errors carry the offending request (URL with the bot token)
+    // on nested fields like `cause` or `error`; redact those too rather than
+    // letting console print the original object.
+    ancestors.add(value);
+    try {
+      const source = value as unknown as Record<string, unknown>;
+      const target = redacted as unknown as Record<string, unknown>;
+      for (const key of Object.keys(source)) {
+        target[key] = redactLogValue(source[key], ancestors);
+      }
+      if (value.cause !== undefined) {
+        target.cause = redactLogValue(value.cause, ancestors);
+      }
+    } finally {
+      ancestors.delete(value);
+    }
     return redacted;
   }
   if (!value || typeof value !== 'object') return value;
@@ -134,19 +162,8 @@ function writeLog(level: LogLevel, scopeTag: string, message: string, args: unkn
 }
 
 function redactString(value: string): string {
-  return SECRET_PATTERNS.reduce(
-    (current, pattern) => current.replace(pattern, (match, first: string | undefined) => {
-      if (match.startsWith('//') && first) {
-        return `//${first}:[redacted]@`;
-      }
-      if (/^Bearer\s/iu.test(match)) {
-        return 'Bearer [redacted]';
-      }
-      if (/=/u.test(match)) {
-        return match.replace(/=([^&\s]+)/u, '=[redacted]');
-      }
-      return '[redacted]';
-    }),
+  return REDACTIONS.reduce(
+    (current, rule) => current.replace(rule.pattern, rule.replace as (substring: string, ...args: unknown[]) => string),
     value,
   );
 }
