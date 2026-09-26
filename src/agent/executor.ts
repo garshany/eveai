@@ -212,6 +212,11 @@ const TOOL_STATE_MISMATCH_FRAGMENT = 'tool_state_mismatch';
 const LEGACY_TOOL_STATE_MISMATCH_FRAGMENT = 'No tool call found for function call output with call_id';
 const RESPONSE_STATE_MISSING_FRAGMENT = 'response_state_missing';
 
+// Per-call cap on concurrent region-order leaves in batch_market_prices; below
+// the shared ESI leaf cap (12) so one batch cannot monopolise it or queue work
+// behind the admission timeout.
+const BATCH_MARKET_CONCURRENCY = 6;
+
 let readToolAdmission: ResponseAdmissionController | null = null;
 let writeToolAdmission: ResponseAdmissionController | null = null;
 let esiLeafAdmission: ResponseAdmissionController | null = null;
@@ -313,9 +318,11 @@ export async function executeBatchMarketPrices(
     global_average_price?: number;
   };
 
-  const results: MarketResult[] = await Promise.all(
-    typeIds.map(async (typeId): Promise<MarketResult> => {
-      const esiResult = await withEsiLeafAdmission(
+  const cancelled = () => guard.signal?.aborted === true || guard.identityCurrent?.() === false;
+  const priceOne = async (typeId: number): Promise<MarketResult> => {
+    let esiResult: Awaited<ReturnType<typeof callEsiOperation<OrderData[]>>>;
+    try {
+      esiResult = await withEsiLeafAdmission(
         () => callEsiOperation<OrderData[]>(
           db,
           'get_markets_region_id_orders',
@@ -325,23 +332,70 @@ export async function executeBatchMarketPrices(
         ),
         guard,
       );
-      if (!esiResult.ok || !Array.isArray(esiResult.data)) {
-        return { type_id: typeId, error: 'Market data unavailable', sell: null, buy: null };
+    } catch (error) {
+      // Turn cancellation must still abort the whole batch; anything else
+      // (admission queue full/timed out, transport throw) only loses this item.
+      if (cancelled()) throw error;
+      return { type_id: typeId, error: `Market data unavailable (${(error as Error).message})`, sell: null, buy: null };
+    }
+    if (!esiResult.ok || !Array.isArray(esiResult.data)) {
+      const status = esiResult.ok ? 'malformed response' : `HTTP ${esiResult.status}`;
+      return { type_id: typeId, error: `Market data unavailable (${status})`, sell: null, buy: null };
+    }
+    const orders = esiResult.data;
+    let minSell: number | null = null;
+    let maxBuy: number | null = null;
+    let sellVolume = 0;
+    let buyVolume = 0;
+    let sellOrders = 0;
+    let buyOrders = 0;
+    // A loop, not Math.min(...spread): a deep order book must not hit the
+    // engine's argument-count limit.
+    for (const order of orders) {
+      if (order.is_buy_order) {
+        buyOrders += 1;
+        buyVolume += order.volume_remain;
+        if (maxBuy === null || order.price > maxBuy) maxBuy = order.price;
+      } else {
+        sellOrders += 1;
+        sellVolume += order.volume_remain;
+        if (minSell === null || order.price < minSell) minSell = order.price;
       }
-      const orders = esiResult.data;
-      const sell = orders.filter((o) => !o.is_buy_order);
-      const buy = orders.filter((o) => o.is_buy_order);
-      const minSell = sell.length > 0 ? Math.min(...sell.map((o) => o.price)) : null;
-      const maxBuy = buy.length > 0 ? Math.max(...buy.map((o) => o.price)) : null;
-      const sellVolume = sell.reduce((s, o) => s + o.volume_remain, 0);
-      const buyVolume = buy.reduce((s, o) => s + o.volume_remain, 0);
-      return {
-        type_id: typeId,
-        sell: minSell != null ? { min_price: minSell, volume: sellVolume, orders: sell.length } : null,
-        buy: maxBuy != null ? { max_price: maxBuy, volume: buyVolume, orders: buy.length } : null,
-      };
-    }),
+    }
+    return {
+      type_id: typeId,
+      sell: minSell != null ? { min_price: minSell, volume: sellVolume, orders: sellOrders } : null,
+      buy: maxBuy != null ? { max_price: maxBuy, volume: buyVolume, orders: buyOrders } : null,
+    };
+  };
+
+  // Bounded per-batch worker pool. Dispatching every id at once parked up to
+  // 30 leaves in the shared ESI admission queue (12 active); slow paginated
+  // region-order pages pushed the tail past the queue timeout, and one
+  // rejected leaf rejected Promise.all — failing the whole batch.
+  const results: MarketResult[] = new Array(typeIds.length);
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (nextIndex < typeIds.length) {
+      if (cancelled()) throw new Error('batch_market_prices cancelled');
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await priceOne(typeIds[index]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(BATCH_MARKET_CONCURRENCY, typeIds.length) }, () => worker()),
   );
+  const failed = results.filter((result) => result.error !== undefined);
+  if (failed.length > 0) {
+    console.warn(
+      '[batch_market] region=%d failed=%d/%d %j',
+      regionId,
+      failed.length,
+      results.length,
+      failed.map((result) => ({ type_id: result.type_id, error: result.error })),
+    );
+  }
 
   // PLEX and a few other items trade on a global cross-region market, so the
   // regional order book is empty and would leave the model with two nulls
@@ -351,11 +405,18 @@ export async function executeBatchMarketPrices(
   const needsGlobal = results.filter((r) => !r.error && r.sell === null && r.buy === null);
   if (needsGlobal.length > 0) {
     type GlobalPrice = { type_id: number; average_price?: number; adjusted_price?: number };
-    const globalResult = await withEsiLeafAdmission(
-      () => callEsiOperation<GlobalPrice[]>(db, 'get_markets_prices', {}, null, guard),
-      guard,
-    );
-    if (globalResult.ok && Array.isArray(globalResult.data)) {
+    let globalResult: Awaited<ReturnType<typeof callEsiOperation<GlobalPrice[]>>> | null = null;
+    try {
+      globalResult = await withEsiLeafAdmission(
+        () => callEsiOperation<GlobalPrice[]>(db, 'get_markets_prices', {}, null, guard),
+        guard,
+      );
+    } catch (error) {
+      if (cancelled()) throw error;
+      // The backfill is best-effort; regional results stand on their own.
+      console.warn('[batch_market] global average backfill failed: %s', (error as Error).message);
+    }
+    if (globalResult?.ok && Array.isArray(globalResult.data)) {
       // Use ONLY average_price (the ESI trade average). adjusted_price is CCP's
       // internal valuation, not a market quote — falling back to it would report a
       // fake price for non-traded/stale items.
@@ -2807,7 +2868,8 @@ async function executeToolCallUnadmitted(
   if (isBatchMarketTool(name)) {
     try {
       return await executeBatchMarketPrices(db, args, ctx, guard);
-    } catch {
+    } catch (error) {
+      console.warn('[batch_market] request failed: %s', (error as Error).message);
       return {
         ok: false,
         source: 'CCP ESI',

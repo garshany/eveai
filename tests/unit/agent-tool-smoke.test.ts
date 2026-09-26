@@ -550,7 +550,7 @@ const FAILURE_CASES: FailureCase[] = [
   ['heartbeat_config', { action: 'set_interval', interval_seconds: 5, check: null }, null, { ok: false }],
   ['intel_note', { action: 'delete', text: null, system: null, region: null, entity_name: null, tag: null, query: null, note_id: 999 }, null, { ok: false }],
   ['set_active_fit', { fitting: 'x' }, 'no-profile', { ok: false, error: 'USER.md not found. Refresh profile first.' }],
-  ['batch_market_prices', { region_id: FORGE, type_ids: [TRITANIUM] }, 'esi.evetech.net', { ok: true, prices: [{ type_id: TRITANIUM, error: 'Market data unavailable' }] }],
+  ['batch_market_prices', { region_id: FORGE, type_ids: [TRITANIUM] }, 'esi.evetech.net', { ok: true, prices: [{ type_id: TRITANIUM, error: 'Market data unavailable (HTTP 503)' }] }],
   ['market_wide_summary', { type_id: TRITANIUM }, 'esi.evetech.net', { ok: false, status: 503 }],
   ['assets_summary', { top: null }, 'esi.evetech.net', { ok: false, status: 503 }],
   ['character_orders_summary', { top: null }, 'esi.evetech.net', { ok: false, status: 503 }],

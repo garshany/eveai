@@ -148,8 +148,8 @@ describe('batch_market_prices global-average fallback', () => {
     });
 
     const running = runBatch(Array.from({ length: 30 }, (_, index) => index + 1));
-    await vi.waitFor(() => expect(callEsiOperationMock).toHaveBeenCalledTimes(12));
-    expect(active).toBe(12);
+    await vi.waitFor(() => expect(callEsiOperationMock).toHaveBeenCalledTimes(6));
+    expect(active).toBe(6);
 
     while (callEsiOperationMock.mock.calls.length < 30) {
       const wave = releases.splice(0);
@@ -160,7 +160,30 @@ describe('batch_market_prices global-average fallback', () => {
 
     const result = await running;
     expect(result).toMatchObject({ ok: true, source: 'CCP ESI' });
-    expect(peak).toBe(12);
+    expect(peak).toBe(6);
+  });
+
+  it('isolates a failing type so the rest of a full batch is still priced (was: Market request failed)', async () => {
+    const typeIds = Array.from({ length: 30 }, (_, index) => 1000 + index);
+    callEsiOperationMock.mockImplementation(async (_db: unknown, operation: string, args: Record<string, unknown>) => {
+      if (operation === 'get_markets_region_id_orders') {
+        // One leaf rejects outright (as an admission timeout / full queue does),
+        // one gets an upstream 404, the rest price normally.
+        if (args.type_id === 1003) throw new Error('ESI leaf admission queue timed out');
+        if (args.type_id === 1007) return { ok: false, status: 404, error: 'Type not found' };
+        return { ok: true, data: [{ price: 10, volume_remain: 1, is_buy_order: false }] };
+      }
+      return { ok: false, status: 500, error: `unexpected op ${operation}` };
+    });
+
+    const result = await runBatch(typeIds);
+
+    expect(result).toMatchObject({ ok: true, source: 'CCP ESI' });
+    const prices = result.prices!;
+    expect(prices.map((price) => price.type_id)).toEqual(typeIds);
+    expect(prices.find((price) => price.type_id === 1003)?.error).toBe('Market data unavailable (ESI leaf admission queue timed out)');
+    expect(prices.find((price) => price.type_id === 1007)?.error).toBe('Market data unavailable (HTTP 404)');
+    expect(prices.filter((price) => price.error === null && price.sell?.min_price === 10)).toHaveLength(28);
   });
 
   it('removes queued leaves and aborts active ESI calls with the root turn signal', async () => {
@@ -183,10 +206,10 @@ describe('batch_market_prices global-average fallback', () => {
     });
 
     const running = runBatch(Array.from({ length: 30 }, (_, index) => index + 1), controller.signal);
-    await vi.waitFor(() => expect(callEsiOperationMock).toHaveBeenCalledTimes(12));
+    await vi.waitFor(() => expect(callEsiOperationMock).toHaveBeenCalledTimes(6));
     controller.abort();
 
     await expect(running).resolves.toMatchObject({ ok: false, source: 'CCP ESI' });
-    expect(callEsiOperationMock).toHaveBeenCalledTimes(12);
+    expect(callEsiOperationMock).toHaveBeenCalledTimes(6);
   });
 });
