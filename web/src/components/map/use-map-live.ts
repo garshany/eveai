@@ -17,6 +17,7 @@ import type { MapBubble, MapKillEvent, MapLocation, PerimeterMessage } from '../
 export type LiveStatus = 'idle' | 'connecting' | 'live' | 'offline' | 'stopped';
 
 export type LiveAdvisory = {
+  threadId?: string;
   advisory: {
     rule: string;
     severity: 'info' | 'warn' | 'danger';
@@ -145,7 +146,15 @@ export function useMapLive(
     on<{ threadId: string; pollSeconds?: number }>('ready', (payload) => {
       retryRef.current.attempts = 0;
       pollSeconds = typeof payload.pollSeconds === 'number' ? payload.pollSeconds : null;
-      setState((previous) => ({ ...previous, status: 'live', threadId: payload.threadId }));
+      setState((previous) => ({
+        ...previous, status: 'live', threadId: payload.threadId,
+        // A reset may have happened while this socket was disconnected.
+        advisories: previous.threadId === payload.threadId ? previous.advisories : [],
+      }));
+    });
+
+    on<{ threadId: string }>('chat-reset', (payload) => {
+      setState((previous) => ({ ...previous, threadId: payload.threadId, advisories: [] }));
     });
 
     // Every successful ESI poll emits a location, and every successful rebuild

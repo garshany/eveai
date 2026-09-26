@@ -3,6 +3,17 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 export type Locale = 'ru' | 'en';
 
 const RU = {
+  // Лоцман (чат периметра)
+  pchatPilot: 'Пилот', pchatInfo: 'Информация', pchatWarn: 'Предупреждение', pchatDanger: 'Опасность',
+  pchatWriting: 'Лоцман пишет', pchatQueued: 'Лоцман: вопрос в очереди', pchatClearing: 'Очищаем…',
+  pchatCleared: 'Чат очищен. Новые предупреждения появятся здесь.',
+  pchatFilteredEmpty: 'Нет предупреждений выбранной важности.',
+  pchatHistoryError: 'Не удалось загрузить историю. Обновите ленту.',
+  pchatResetError: 'Не удалось подтвердить очистку. Проверяем историю; при необходимости повторите.',
+  pchatConnectionError: 'Связь с лоцманом прервана. Проверяем ответ…',
+  pchatTimeout: 'Лоцман отвечает дольше 8 минут. Ожидание продолжается; можно очистить чат и начать новый разговор.',
+  pchatCancelled: 'Ответ отменён.',
+
   chat: 'Чат', profile: 'Профиль пилота', newChat: 'Новый диалог', conversations: 'Диалоги',
   noConversations: 'Первый диалог появится после вашего вопроса.', closeMenu: 'Закрыть меню', openMenu: 'Открыть меню',
   guest: 'Гостевой режим', connectPilot: 'Подключить персонажа', pilotConnected: 'Персонаж подключён', pilots: 'Капсулёры', active: 'активен', addPilot: 'Добавить капсулёра', logout: 'Выйти',
@@ -225,6 +236,17 @@ const RU = {
 } as const;
 
 const EN: Record<keyof typeof RU, string> = {
+  // Лоцман (чат периметра)
+  pchatPilot: 'Pilot', pchatInfo: 'Information', pchatWarn: 'Warning', pchatDanger: 'Danger',
+  pchatWriting: 'Navigator is writing', pchatQueued: 'Navigator: question queued', pchatClearing: 'Clearing…',
+  pchatCleared: 'Chat cleared. New advisories will appear here.',
+  pchatFilteredEmpty: 'No advisories at this severity.',
+  pchatHistoryError: 'Could not load history. Refresh the feed.',
+  pchatResetError: 'Could not confirm clearing. Checking history; retry if needed.',
+  pchatConnectionError: 'Connection to the navigator interrupted. Checking for the reply…',
+  pchatTimeout: 'The navigator has taken over 8 minutes. Still waiting; you can clear the chat and start a new conversation.',
+  pchatCancelled: 'Reply cancelled.',
+
   chat: 'Chat', profile: 'Pilot profile', newChat: 'New chat', conversations: 'Conversations',
   noConversations: 'Your first conversation appears after a question.', closeMenu: 'Close menu', openMenu: 'Open menu',
   guest: 'Guest mode', connectPilot: 'Connect character', pilotConnected: 'Character connected', pilots: 'Capsuleers', active: 'active', addPilot: 'Add capsuleer', logout: 'Log out',
@@ -437,7 +459,7 @@ const EN: Record<keyof typeof RU, string> = {
   perimeterRouteJumps: 'Route: {jumps} jumps',
   perimeterRouteCoverage: 'Danger data covers {known} of {total} systems; the rest are scored zero, not safe.',
   perimeterChat: 'Pilot', perimeterChatEmpty: 'Nothing to report while the perimeter is quiet. Ask, or wait for the first event.',
-  perimeterAskPlaceholder: 'Ask about the situation…', perimeterThinking: 'The pilot is thinking…',
+  perimeterAskPlaceholder: 'Ask about the situation…', perimeterThinking: 'Navigator is thinking…',
   perimeterFilter: 'Severity filter', perimeterFilterAll: 'All', perimeterFilterImportant: 'Important', perimeterFilterQuiet: 'Danger only',
   perimeterShowOnMap: 'on map', perimeterKillmail: 'killmail',
   perimeterRule_pursuit: 'Pursuit', perimeterRule_camp_next_hop: 'Camp ahead',

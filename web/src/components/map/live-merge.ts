@@ -6,6 +6,7 @@
  * ровно один раз. Чистые функции — чтобы это проверялось тестом, а не глазами.
  */
 
+import { PERIMETER_MESSAGE_LIMIT } from './perimeter-chat-state';
 import type { MapKillEvent, PerimeterMessage, UniverseActivity } from '../../types';
 
 /**
@@ -27,7 +28,13 @@ export function mergeAdvisoryMessages(
     known.add(message.id);
     additions.push(message);
   }
-  return additions.length > 0 ? [...previous, ...additions] : previous;
+  if (additions.length === 0) return previous;
+  const next = [...previous.filter((message) => message.id > 0), ...additions]
+    .sort((a, b) => a.id - b.id);
+  next.push(...previous.filter((message) => message.id < 0));
+  const bounded = next.slice(-PERIMETER_MESSAGE_LIMIT);
+  return bounded.length === previous.length && bounded.every((message, i) => message === previous[i])
+    ? previous : bounded;
 }
 
 /**
