@@ -67,7 +67,10 @@
 
 - unlinking a character removes the generated `USER.md` artifact for that user/chat and drops retained encrypted token material when no active links remain; the browser exposes this as `POST /api/web/characters/:characterId/unlink` (204 on success, 404 when the character is not linked to the session user)
 - stale profile artifacts are also deleted when ownership is reassigned away from a previously linked user
-- a browser user may own several EVE characters; linking a character owned by another user merges the browser guest into that existing owner
+- a browser user may own several EVE characters; linking a character owned by another user merges the browser guest into that existing owner only when the guest is fresh (web-only identity, no Telegram/Discord/CLI binding, no other live browser session) and the EVE CharacterOwnerHash matches the one stored for the character; otherwise the character is linked to the requesting identity without a merge
+- a character whose CharacterOwnerHash changed (sold/transferred to another EVE account) is moved to the new owner on SSO: the previous owner's links, private profile rows, and `USER.md` artifacts are removed and the buyer never gains the seller's identity; a token refresh returning a different owner hash is rejected. Accounts stored before owner hashes were recorded gain one on their next SSO login
+- token refresh writes are compare-and-set on the refresh token they started from, so a concurrent SSO re-login is never overwritten by an older grant
+- heartbeat mail findings carry only the number of new mails and the sender names; subjects and bodies are neither fetched nor sent to the model
 - browser logout and session expiry revoke only the browser session token when the
   user owns a linked EVE character; the persistent identity, its conversations,
   characters, market and usage data are retained and reattached on the next SSO
