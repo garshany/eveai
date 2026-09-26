@@ -5312,6 +5312,350 @@ a {
   color: var(--muted);
 }
 
+/* --- Периметр 2: живая карта ---------------------------------------------
+   Карта — главный объект экрана, весь остальной хром тихий: стекло поверх
+   холста, одна строка управления сверху, камера и справка в углу, лента
+   «кто кого» снизу слева. Цвет несёт только смысл: безопасность, угроза,
+   интерактив. */
+
+.pmap-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  min-height: 48px;
+}
+
+.pmap-head h1 {
+  margin: 0;
+  font-family: var(--font-hud);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.02em;
+  color: var(--text-bright);
+}
+
+.pmap-head p {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+
+.perimeter { grid-template-columns: minmax(0, 1fr) 360px; }
+
+.perimeter__stage {
+  background:
+    radial-gradient(ellipse 70% 60% at 50% 50%, rgb(69 211 230 / 0.06), transparent 70%),
+    radial-gradient(circle at 50% 50%, #050b12, #020509 80%);
+}
+
+/* Общий вид стеклянного оверлея. */
+.pmap-bar,
+.pmap-callout,
+.pmap-feed,
+.pmap-control,
+.pmap-pop {
+  border: var(--border-width) solid var(--border);
+  background: rgb(4 9 14 / 0.8);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+
+.pmap-bar {
+  position: absolute;
+  z-index: 2;
+  inset-block-start: var(--space-3);
+  inset-inline-start: var(--space-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: calc(100% - var(--space-3) * 2 - 340px);
+  padding: 6px;
+  border-radius: 12px;
+}
+
+.pmap-seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 9px;
+  background: rgb(255 255 255 / 0.03);
+}
+
+.pmap-seg button {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-hud);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+
+.pmap-seg button:hover { color: var(--text-bright); }
+
+.pmap-seg button[aria-pressed='true'] {
+  background: var(--cyan-fill);
+  color: var(--cyan-bright);
+  box-shadow: inset 0 0 0 1px var(--cyan-line);
+}
+
+.pmap-radius {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--mono-lg);
+  color: var(--text-secondary);
+}
+
+.pmap-radius input { inline-size: 120px; accent-color: var(--cyan); }
+
+.pmap-verdict {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: var(--border-width) solid var(--border);
+  font-family: var(--font-hud);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-bright);
+}
+
+.pmap-verdict small { font-family: var(--font-mono); font-size: var(--mono-md); font-weight: 400; color: var(--muted); }
+.pmap-verdict--calm { border-color: rgb(63 157 107 / 0.5); color: #8fe0b4; }
+.pmap-verdict--watch { border-color: rgb(198 180 71 / 0.5); color: #e6d57a; }
+.pmap-verdict--elevated { border-color: rgb(217 143 61 / 0.55); color: #f1b36c; }
+.pmap-verdict--hostile { border-color: rgb(209 96 61 / 0.6); color: #f39a7d; }
+.pmap-verdict--lethal { border-color: rgb(226 69 60 / 0.7); color: #ff8b80; background: rgb(226 69 60 / 0.12); }
+
+.pmap-callout {
+  position: absolute;
+  z-index: 2;
+  inset-block-start: 64px;
+  inset-inline-start: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 6px 6px 12px;
+  border-color: var(--amber-line);
+  border-radius: 10px;
+  font-size: var(--text-sm);
+  color: var(--amber-bright);
+}
+
+.pmap-callout button,
+.pmap-control {
+  border-radius: 9px;
+  color: var(--text);
+  font-family: var(--font-hud);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+
+.pmap-callout button { padding: 4px 10px; border: var(--border-width) solid var(--amber-line); background: var(--amber-soft); }
+
+/* --- Лента «кто кого» --- */
+
+.pmap-feed {
+  position: absolute;
+  z-index: 1;
+  inset-block-end: var(--space-3);
+  inset-inline-start: var(--space-3);
+  width: 300px;
+  max-height: 42%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.pmap-feed header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 8px 12px 6px;
+  font-family: var(--font-hud);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--text-bright);
+}
+
+.pmap-feed header small { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 400; color: var(--muted); }
+.pmap-feed__empty { margin: 0; padding: 0 12px 12px; font-size: var(--text-sm); color: var(--muted); }
+.pmap-feed ol { list-style: none; margin: 0; padding: 0 4px 4px; overflow-y: auto; }
+
+.pmap-feed__row button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1px var(--space-2);
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.pmap-feed__row button:hover { background: rgb(255 127 110 / 0.07); }
+.pmap-feed__row + .pmap-feed__row { border-block-start: var(--border-width) solid var(--border-soft); }
+
+.pmap-feed__row button { grid-template-areas: 'victim isk' 'where by'; padding: 5px 8px; }
+.pmap-feed__victim { grid-area: victim; font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--text-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pmap-feed__isk { grid-area: isk; font-family: var(--font-mono); font-size: var(--mono-lg); color: var(--isk); text-align: end; }
+.pmap-feed__by { grid-area: by; font-size: var(--text-xs); color: #ffb0a4; text-align: end; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-inline-size: 150px; }
+.pmap-feed__where { grid-area: where; font-size: var(--text-xs); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pmap-feed__where i { font-style: normal; font-weight: var(--weight-medium); }
+
+.pmap-feed__row--fresh .pmap-feed__victim::before {
+  content: '';
+  display: inline-block;
+  inline-size: 7px;
+  block-size: 7px;
+  margin-inline-end: 6px;
+  border-radius: 50%;
+  background: var(--neg);
+  box-shadow: 0 0 8px var(--neg);
+  vertical-align: 1px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pmap-feed__row--fresh .pmap-feed__victim::before { animation: pmap-blink 1.4s ease-in-out infinite; }
+}
+
+@keyframes pmap-blink { 50% { opacity: 0.25; } }
+
+/* --- Камера, легенда, данные --- */
+
+.pmap-controls {
+  position: absolute;
+  z-index: 2;
+  inset-block-end: var(--space-3);
+  inset-inline-start: calc(300px + var(--space-3) * 2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-1);
+}
+
+.pmap-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+}
+
+.pmap-control:hover { border-color: var(--border-strong); color: var(--text-bright); }
+
+.pmap-control[aria-pressed='true'],
+.pmap-control[aria-expanded='true'] {
+  border-color: var(--cyan-line);
+  color: var(--cyan-bright);
+}
+
+.pmap-control svg { inline-size: 16px; block-size: 16px; fill: currentColor; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.pmap-control svg circle[fill='none'] { fill: none; }
+
+.pmap-control--data i {
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  background: var(--pos);
+  box-shadow: 0 0 6px var(--pos);
+}
+
+.pmap-control--stale i { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+
+.pmap-pop {
+  position: absolute;
+  inset-block-end: calc(100% + 6px);
+  inset-inline-start: 0;
+  min-width: 260px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.pmap-pop p { margin: 8px 0 0; font-size: var(--text-xs); color: var(--amber); }
+.pmap-pop .perimeter__legend-keys { margin: 0; font-size: var(--text-sm); opacity: 1; gap: 6px; }
+
+.pmap-fresh { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.pmap-fresh li { display: flex; justify-content: space-between; gap: var(--space-3); }
+.pmap-fresh b { font-family: var(--font-mono); font-size: var(--mono-lg); font-weight: 400; }
+.pmap-fresh--live b { color: var(--pos); }
+.pmap-fresh--hourly b { color: var(--data); }
+.pmap-fresh--cached b,
+.pmap-fresh--stale b { color: var(--amber); }
+.pmap-fresh--unavailable b { color: var(--danger); }
+
+.legend-ember {
+  inline-size: 8px;
+  block-size: 8px;
+  flex: none;
+  transform: rotate(45deg);
+  background: #ff7f6e;
+  box-shadow: 0 0 6px #ff7f6e;
+}
+
+.legend-flow {
+  inline-size: 16px;
+  block-size: 2px;
+  flex: none;
+  background: repeating-linear-gradient(90deg, rgb(170 225 245 / 0.8) 0 2px, transparent 2px 6px);
+}
+
+.legend-dot--sec { background: linear-gradient(90deg, #4a8fff, #7ee25c, #f0902a, #f24b62); }
+
+/* --- Маршрут: полоса прыжков --- */
+
+.pmap-route { inline-size: 320px; border-color: var(--cyan-line); border-radius: 12px; background: rgb(4 9 14 / 0.9); backdrop-filter: var(--glass-blur); }
+.pmap-route__list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 2px; }
+
+.pmap-route__list li {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 64px 36px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 3px 4px;
+  border-radius: 6px;
+  font-size: var(--text-sm);
+}
+
+.pmap-route__list li.pmap-route__hop--hot { background: var(--danger-bg); }
+.pmap-route__sec { font-family: var(--font-mono); font-size: var(--mono-lg); color: var(--sec-color, var(--text)); }
+.pmap-route__name { color: var(--text-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pmap-route__danger { block-size: 4px; border-radius: 2px; background: rgb(255 255 255 / 0.06); overflow: hidden; }
+.pmap-route__danger i { display: block; block-size: 100%; background: linear-gradient(90deg, #c6b447, #ff7f6e); }
+.pmap-route__pct { font-family: var(--font-mono); font-size: var(--mono-md); color: var(--muted); text-align: end; }
+
+@media (max-width: 1100px) {
+  .perimeter { grid-template-columns: minmax(0, 1fr); }
+  .pmap-bar { max-width: calc(100% - var(--space-3) * 2); }
+  .pmap-feed { width: min(300px, calc(100% - var(--space-3) * 2)); max-height: 40%; }
+  .pmap-controls { inset-inline-start: auto; inset-inline-end: var(--space-3); }
+  .pmap-pop { inset-inline-start: auto; inset-inline-end: 0; }
+  .pmap-head p { display: none; }
+}
+
+@media (max-width: 640px) {
+  .pmap-feed { display: none; }
+  .pmap-radius input { inline-size: 80px; }
+}
+
 /* Метка треда «Периметра» в списке диалогов: тред карты — разговор с лётным
    ассистентом, и без отметки он выглядел как ещё один безымянный чат. */
 .conversation-row__badge {

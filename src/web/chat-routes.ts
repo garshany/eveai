@@ -480,6 +480,18 @@ export function registerWebChatRoutes(app: FastifyInstance, db: Db): WebAgentReq
       ? ownedThreadForActiveCharacter(db, session, requestedThreadId)?.thread_id
       : resolveThreadForChat(db, session.chatId, ctx);
     if (!threadId) return reply.status(404).send({ error: 'Диалог не найден для активного персонажа.' });
+    // The Perimeter thread belongs to the map: its agent runs the flight toolset
+    // and its feed carries live advisories. A chat message written into it
+    // surfaced in the pilot's map feed and ran under the wrong prompt, so the
+    // two lanes are kept apart here, whatever thread id the client sends.
+    const threadKind = db.prepare('SELECT kind FROM agent_threads WHERE thread_id = ?')
+      .get(threadId) as { kind: string | null } | undefined;
+    if (threadKind?.kind === 'perimeter') {
+      return reply.status(409).send({
+        error: 'Это тред лоцмана «Периметра» — задайте вопрос на карте или откройте обычный диалог.',
+        code: 'perimeter_thread',
+      });
+    }
 
     const idempotencyKey = typeof request.body?.idempotencyKey === 'string'
       && /^[A-Za-z0-9_-]{16,96}$/.test(request.body.idempotencyKey)

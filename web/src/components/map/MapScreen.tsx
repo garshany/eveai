@@ -73,6 +73,8 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   const [showWormholes, setShowWormholes] = useState(true);
   const [selected, setSelected] = useState<number | null>(null);
   const [follow, setFollow] = useState(true);
+  const [legendOpen, setLegendOpen] = useState(false);
+  const [dataOpen, setDataOpen] = useState(false);
   const [route, setRoute] = useState<MapRouteResponse | null>(null);
   const [avoid, setAvoid] = useState<number[]>([]);
   const [flashes, setFlashes] = useState<KillFlash[]>([]);
@@ -396,6 +398,21 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
     setFocus({ systemId });
   }, []);
 
+  // «На меня»: живой пилот — включаем следование; последняя известная позиция
+  // — просто везём камеру к ней. Раньше центрироваться можно было только при
+  // живом потоке, и без него свой корабль приходилось искать глазами.
+  const centreOnPilot = useCallback((systemId: number | null) => {
+    if (systemId === null) return;
+    setUniverseView(false);
+    if (liveEnabled && live.location?.online) {
+      setFollow(true);
+      setFocus(null);
+    } else {
+      setFollow(false);
+      setFocus({ systemId });
+    }
+  }, [liveEnabled, live.location?.online]);
+
   // The rings and geography chips used to change only the bubble layout, so
   // with the whole map open they lit up and did nothing: the pilot was stuck
   // in the universe view until they found the toggle again. A pending camera
@@ -459,6 +476,18 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
   }
 
   const missingScope = status.character && !status.character.hasLocationScope;
+  // Без живого потока центр пузыря — последняя известная позиция (или Jita
+  // у гостя): камера держится за неё так же, как за живого пилота.
+  const pilotMarkerId = live.location?.solarSystemId ?? (liveEnabled ? null : bubble?.originId ?? null);
+  const pilotLabel = status.character
+    ? [status.character.characterName, bubble?.pilotShip?.shipName].filter(Boolean).join(' · ')
+    : null;
+  const showCentre = pilotMarkerId !== null && status.character !== null;
+  // Почасовой слой (фон ESI, суверенитет) — это его нормальный ритм, а не
+  // сбой: несвежими считаются только кэш и недоступные слои.
+  const staleLayers = freshnessLayers?.filter((layerInfo) => (
+    layerInfo.status === 'cached' || layerInfo.status === 'unavailable'
+  )).length ?? 0;
 
   return <MapShell onMenu={onMenu} title={t('perimeter')}>
     <div className="perimeter">
@@ -484,8 +513,9 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
           ? <MapCanvas
             bubble={bubble}
             layout={layout}
-            pilotSystemId={live.location?.solarSystemId ?? (liveEnabled ? null : bubble.originId)}
+            pilotSystemId={pilotMarkerId}
             pilotOnline={live.location?.online ?? false}
+            pilotLabel={pilotLabel}
             selectedSystemId={selected}
             routeSystemIds={drawnRouteSystemIds}
             flashes={flashes}
@@ -497,63 +527,29 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
           />
           : <p className="perimeter-notice">{t('loading')}</p>}
 
-        <div className="perimeter__hud">
-          <div className="perimeter__hud-row">
+        {/* Верхняя панель: вид, радиус, вердикт. Одна строка вместо коробки
+            с пятью разными элементами, которая закрывала треть карты. */}
+        <div className="pmap-bar">
+          <div className="pmap-seg" role="group" aria-label={t('perimeterViewLabel')}>
             <button
               type="button"
-              className={`perimeter-chip${!universeView && mode === 'ego' ? ' perimeter-chip--active' : ''}`}
+              aria-pressed={!universeView && mode === 'ego'}
               onClick={() => showLayout('ego')}
             >{t('perimeterLayoutEgo')}</button>
             <button
               type="button"
-              className={`perimeter-chip${!universeView && mode === 'geo' ? ' perimeter-chip--active' : ''}`}
+              aria-pressed={!universeView && mode === 'geo'}
               onClick={() => showLayout('geo')}
             >{t('perimeterLayoutGeo')}</button>
             <button
               type="button"
-              className={`perimeter-chip${universeView ? ' perimeter-chip--active' : ''}`}
+              aria-pressed={universeView}
               onClick={() => showUniverse(!universeView)}
             >{t('perimeterLayoutUniverse')}</button>
-            {liveEnabled && !universeView ? <button
-              type="button"
-              className={`perimeter-chip${follow ? ' perimeter-chip--active' : ''}`}
-              onClick={() => setFollow((value) => !value)}
-            >{t('perimeterFollow')}</button> : null}
           </div>
 
-          {universeView ? <div className="perimeter__hud-row">
-            <button
-              type="button"
-              className={`perimeter-chip${showCamps ? ' perimeter-chip--active' : ''}`}
-              onClick={() => setShowCamps((value) => !value)}
-            >{t('perimeterLayerCamps')}</button>
-            <button
-              type="button"
-              className={`perimeter-chip${showTraffic ? ' perimeter-chip--active' : ''}`}
-              onClick={() => setShowTraffic((value) => !value)}
-            >{t('perimeterLayerTraffic')}</button>
-            <button
-              type="button"
-              className={`perimeter-chip${showWormholes ? ' perimeter-chip--active' : ''}`}
-              onClick={() => setShowWormholes((value) => !value)}
-            >{t('perimeterLayerWormholes')}</button>
-          </div> : null}
-
-          {/* Пузырь ограничен радиусом, маршрут — нет. Молча обрезать линию
-              значит показать более короткий маршрут, чем назвал лоцман. */}
-          {!universeView && hiddenJumps > 0 ? <div className="perimeter__hud-row">
-            <span className="perimeter-fresh perimeter-fresh--hourly">
-              {t('perimeterRouteBeyond', { jumps: String(hiddenJumps) })}
-            </span>
-            <button
-              type="button"
-              className="perimeter-chip"
-              onClick={() => showUniverse(true)}
-            >{t('perimeterRouteOpenUniverse')}</button>
-          </div> : null}
-
-          {universeView ? null : <label className="perimeter__radius">
-            {t('perimeterRadius', { jumps: String(radius ?? status.limits.defaultRadius) })}
+          {universeView ? null : <label className="pmap-radius">
+            <span>{t('perimeterRadius', { jumps: String(radius ?? status.limits.defaultRadius) })}</span>
             <input
               type="range"
               min={1}
@@ -563,29 +559,102 @@ export function MapScreen({ csrfToken, onMenu }: Props) {
             />
           </label>}
 
-          <MapLegend bubble={universeView ? null : bubble} universe={universeView ? universeActivity : null} />
+          {universeView ? <div className="pmap-seg" role="group" aria-label={t('perimeterLayersLabel')}>
+            <button type="button" aria-pressed={showCamps} onClick={() => setShowCamps((value) => !value)}>
+              {t('perimeterLayerCamps')}
+            </button>
+            <button type="button" aria-pressed={showTraffic} onClick={() => setShowTraffic((value) => !value)}>
+              {t('perimeterLayerTraffic')}
+            </button>
+            <button type="button" aria-pressed={showWormholes} onClick={() => setShowWormholes((value) => !value)}>
+              {t('perimeterLayerWormholes')}
+            </button>
+          </div> : null}
+
+          {!universeView && bubble ? <span className={`pmap-verdict pmap-verdict--${bubble.verdict.band}`}>
+            {t(bandLabelKey(bubble.verdict.band))}
+            <small>{t('perimeterSystems', { count: String(bubble.systems.length) })}</small>
+          </span> : null}
+          {universeView && universeActivity ? <span className="pmap-verdict">
+            {t('perimeterUniverseTotals', {
+              systems: String(universeActivity.totals.activeSystems),
+              kills: String(universeActivity.totals.kills1h),
+              camps: String(universeActivity.totals.campedSystems),
+            })}
+          </span> : null}
         </div>
 
-        {/* Честность слоёв — часть продукта, а не подпись мелким шрифтом. */}
-        {freshnessLayers ? <div className="perimeter__freshness">
-          {freshnessLayers.map((layerInfo) => <span
-            key={layerInfo.layer}
-            className={`perimeter-fresh perimeter-fresh--${layerInfo.status}`}
-            title={layerInfo.error ?? undefined}
-          >
-            {layerLabelKey(layerInfo.layer) ? t(layerLabelKey(layerInfo.layer)!) : layerInfo.layer}
-            {': '}
-            {t(freshnessKey(layerInfo.status))}
-          </span>)}
-          {/* An EVE-Scout outage renders as an empty layer, which reads as
-              "there are no exits anywhere in New Eden" — a lie people route by. */}
-          {universeView && wormholes?.error ? <span className="perimeter-fresh perimeter-fresh--unavailable">
-            {t('perimeterLayerWormholes')}: {t('perimeterFresh_unavailable')}
-          </span> : null}
-          {bubble?.truncated ? <span className="perimeter-fresh perimeter-fresh--hourly">
-            {t('perimeterTruncated', { shown: String(bubble.radius), asked: String(bubble.requestedRadius) })}
-          </span> : null}
+        {/* Пузырь ограничен радиусом, маршрут — нет. Молча обрезать линию
+            значит показать более короткий маршрут, чем назвал лоцман. */}
+        {!universeView && hiddenJumps > 0 ? <div className="pmap-callout">
+          <span>{t('perimeterRouteBeyond', { jumps: String(hiddenJumps) })}</span>
+          <button type="button" onClick={() => showUniverse(true)}>{t('perimeterRouteOpenUniverse')}</button>
         </div> : null}
+
+        {/* Живая лента: кто кого убил в пузыре за последний час. Клик — к системе. */}
+        {!universeView && bubble ? <KillFeed
+          kills={bubble.recentKills}
+          systems={bubble.systems}
+          onFocus={focusSystem}
+        /> : null}
+
+        {/* Управление камерой и справка — в углу, как в навигаторе. */}
+        <div className="pmap-controls">
+          {showCentre ? <button
+            type="button"
+            className="pmap-control"
+            aria-pressed={liveEnabled && follow && !universeView}
+            onClick={() => centreOnPilot(pilotMarkerId)}
+            title={t('perimeterCentreOnMe')}
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3" /><path d="M10 1v4M10 15v4M1 10h4M15 10h4" /><circle cx="10" cy="10" r="6.5" fill="none" /></svg>
+            <span>{t('perimeterCentreOnMe')}</span>
+          </button> : null}
+          <button
+            type="button"
+            className="pmap-control"
+            aria-expanded={legendOpen}
+            onClick={() => setLegendOpen((value) => !value)}
+          >{t('perimeterLegend')}</button>
+          {freshnessLayers ? <button
+            type="button"
+            className={`pmap-control pmap-control--data${staleLayers > 0 ? ' pmap-control--stale' : ''}`}
+            aria-expanded={dataOpen}
+            onClick={() => setDataOpen((value) => !value)}
+          >
+            <i aria-hidden="true" />
+            {staleLayers > 0
+              ? t('perimeterDataPartial', { count: String(staleLayers) })
+              : t('perimeterDataLive')}
+          </button> : null}
+
+          {legendOpen ? <div className="pmap-pop">
+            <MapLegend universe={universeView} />
+          </div> : null}
+
+          {/* Честность слоёв — часть продукта: свежесть каждого слоя по клику,
+              а несвежий слой подсвечивает саму кнопку. */}
+          {dataOpen && freshnessLayers ? <div className="pmap-pop">
+            <ul className="pmap-fresh">
+              {freshnessLayers.map((layerInfo) => <li
+                key={layerInfo.layer}
+                className={`pmap-fresh--${layerInfo.status}`}
+                title={layerInfo.error ?? undefined}
+              >
+                <span>{layerLabelKey(layerInfo.layer) ? t(layerLabelKey(layerInfo.layer)!) : layerInfo.layer}</span>
+                <b>{t(freshnessKey(layerInfo.status))}</b>
+              </li>)}
+              {/* An EVE-Scout outage renders as an empty layer, which reads as
+                  "there are no exits anywhere in New Eden" — a lie people route by. */}
+              {universeView && wormholes?.error ? <li className="pmap-fresh--unavailable">
+                <span>{t('perimeterLayerWormholes')}</span><b>{t('perimeterFresh_unavailable')}</b>
+              </li> : null}
+            </ul>
+            {bubble?.truncated ? <p>
+              {t('perimeterTruncated', { shown: String(bubble.radius), asked: String(bubble.requestedRadius) })}
+            </p> : null}
+          </div> : null}
+        </div>
 
         {/* One stack, so several notices never land on top of each other. */}
         <div className="perimeter-notices">
@@ -677,16 +746,15 @@ function MapShell({
   const { t } = useI18n();
   // Тот же каркас, что у маркета и профиля, но без workspace-scroll: холст
   // занимает всю высоту сам и прокручивается зумом, а не полосой.
+  // Шапка — одна строка: карта и есть экран, трёхэтажный заголовок над ней
+  // отнимал высоту у того, ради чего сюда пришли.
   return <section className="workspace-screen workspace-screen--map">
-    <header className="workspace-header">
+    <header className="pmap-head">
       <button className="icon-button chat-header__menu" type="button" onClick={onMenu} aria-label={t('openMenu')}>
         <MenuIcon />
       </button>
-      <div>
-        <span className="workspace-kicker">ESI · EVE-KILL · SDE</span>
-        <h1>{title}</h1>
-        <p>{t('perimeterLead')}</p>
-      </div>
+      <h1>{title}</h1>
+      <p>{t('perimeterLead')}</p>
       <LocaleSwitch />
     </header>
     {children}
@@ -699,33 +767,96 @@ function MapShell({
  * visual channel, and there are deliberately few of them — every extra channel
  * is one more thing competing for the same glyph.
  */
-function MapLegend({ bubble, universe }: { bubble: MapBubble | null; universe: UniverseActivity | null }) {
+function MapLegend({ universe }: { universe: boolean }) {
   const { t } = useI18n();
-  return <div className="perimeter__legend">
-    {bubble ? <>
-      <span>{t('perimeterVerdict')}: {t(bandLabelKey(bubble.verdict.band))}</span>
-      <span>{t('perimeterSystems', { count: String(bubble.systems.length) })}</span>
-    </> : null}
-    {universe ? <span>{t('perimeterUniverseTotals', {
-      systems: String(universe.totals.activeSystems),
-      kills: String(universe.totals.kills1h),
-      camps: String(universe.totals.campedSystems),
-    })}</span> : null}
-    <ul className="perimeter__legend-keys">
-      <li><i className="legend-dot legend-dot--sec" />{t('perimeterKeySecurity')}</li>
-      <li><i className="legend-ring" />{t('perimeterKeyThreat')}</li>
-      <li><i className="legend-dot legend-dot--big" />{t('perimeterKeyTraffic')}</li>
-      <li><span className="legend-glyph">☠</span>{t('perimeterKeyCamp')}</li>
-      <li><i className="legend-cross" />{t('perimeterKeyAvoided')}</li>
-      {universe ? <li><i className="legend-dash" />{t('perimeterKeyWormhole')}</li> : null}
-    </ul>
-  </div>;
+  return <ul className="perimeter__legend-keys">
+    <li><i className="legend-dot legend-dot--sec" />{t('perimeterKeySecurity')}</li>
+    <li><i className="legend-ring" />{t('perimeterKeyThreat')}</li>
+    <li><i className="legend-dot legend-dot--big" />{t('perimeterKeyTraffic')}</li>
+    <li><span className="legend-glyph">☠</span>{t('perimeterKeyCamp')}</li>
+    <li><i className="legend-ember" />{t('perimeterKeyKills')}</li>
+    {universe ? null : <li><i className="legend-flow" />{t('perimeterKeyFlow')}</li>}
+    <li><i className="legend-cross" />{t('perimeterKeyAvoided')}</li>
+    {universe ? <li><i className="legend-dash" />{t('perimeterKeyWormhole')}</li> : null}
+  </ul>;
+}
+
+const KILL_FEED_WINDOW_MS = 60 * 60_000;
+const KILL_FEED_ROWS = 4;
+
+/**
+ * Лента киллов пузыря: «кто кого» последнего часа. Это ответ на «чувствую ли я,
+ * что здесь происходит» — карта показывает где, лента показывает кто.
+ */
+function KillFeed({
+  kills,
+  systems,
+  onFocus,
+}: {
+  kills: MapKillEvent[];
+  systems: MapBubble['systems'];
+  onFocus: (systemId: number) => void;
+}) {
+  const { t, locale } = useI18n();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const names = useMemo(() => new Map(systems.map((system) => [system.systemId, system])), [systems]);
+  const rows = useMemo(() => kills
+    .filter((kill) => !kill.isNpc && now - kill.killmailTimeMs <= KILL_FEED_WINDOW_MS)
+    .sort((a, b) => b.killmailTimeMs - a.killmailTimeMs)
+    .slice(0, KILL_FEED_ROWS), [kills, now]);
+
+  return <section className="pmap-feed" aria-label={t('perimeterFeedTitle')}>
+    <header>
+      <span>{t('perimeterFeedTitle')}</span>
+      <small>{t('perimeterFeedWindow')}</small>
+    </header>
+    {rows.length === 0 ? <p className="pmap-feed__empty">{t('perimeterFeedEmpty')}</p> : <ol>
+      {rows.map((kill) => {
+        const system = names.get(kill.systemId);
+        const minutes = Math.max(0, Math.round((now - kill.killmailTimeMs) / 60_000));
+        const fresh = minutes < 5;
+        return <li key={kill.killmailId} className={fresh ? 'pmap-feed__row pmap-feed__row--fresh' : 'pmap-feed__row'}>
+          <button type="button" onClick={() => onFocus(kill.systemId)}>
+            <span className="pmap-feed__victim">{kill.victimShipName ?? t('perimeterFeedUnknownShip')}</span>
+            <span className="pmap-feed__by">
+              {kill.isSolo
+                ? t('perimeterFeedSolo', { ship: kill.finalBlowShipName ?? '?' })
+                : t('perimeterFeedGang', { count: String(kill.attackerCount) })}
+            </span>
+            <span className="pmap-feed__where">
+              <i className={securityClassName(system?.security ?? 0)}>{system?.name ?? kill.systemId}</i>
+              {' · '}
+              {minutes === 0 ? t('perimeterFeedNow') : t('perimeterFeedMinutes', { minutes: String(minutes) })}
+            </span>
+            <span className="pmap-feed__isk">{formatIskShort(kill.totalValue, locale)}</span>
+          </button>
+        </li>;
+      })}
+    </ol>}
+  </section>;
+}
+
+function formatIskShort(value: number, locale: string): string {
+  const units: Array<[number, string, string]> = [
+    [1e12, 'трлн', 'T'], [1e9, 'млрд', 'B'], [1e6, 'млн', 'M'], [1e3, 'тыс', 'K'],
+  ];
+  for (const [size, ru, en] of units) {
+    if (value >= size) {
+      const number = (value / size).toFixed(value / size >= 100 ? 0 : 1);
+      return `${number} ${locale === 'ru' ? ru : en}`;
+    }
+  }
+  return String(Math.round(value));
 }
 
 function RouteRibbon({ route, onClear }: { route: MapRouteResponse; onClear: () => void }) {
   const { t } = useI18n();
   const coverage = route.dangerCoverage;
-  return <div className="perimeter__route">
+  return <div className="perimeter__route pmap-route">
     <div className="perimeter__route-head">
       <strong>{t('perimeterRouteJumps', { jumps: String(route.route.jumps) })}</strong>
       <button type="button" className="perimeter-chip" onClick={onClear}>{t('cancel')}</button>
@@ -738,12 +869,20 @@ function RouteRibbon({ route, onClear }: { route: MapRouteResponse; onClear: () 
         total: String(coverage.totalSystems),
       })}
     </p>
-    <ol className="perimeter__route-list">
-      {route.systems.map((system) => <li key={system.systemId}>
-        <span>{system.name}</span>
-        <span className={securityClassName(system.security)}>{system.security.toFixed(1)}</span>
-        <span>{system.danger === null ? '—' : `${Math.round(system.danger * 100)}%`}</span>
-      </li>)}
+    {/* Полоса прыжков: цвет безопасности слева, полоска опасности справа —
+        самый опасный прыжок видно, не читая цифры. */}
+    <ol className="pmap-route__list">
+      {route.systems.map((system) => {
+        const danger = system.danger === null ? null : Math.round(system.danger * 100);
+        return <li key={system.systemId} className={danger !== null && danger >= 50 ? 'pmap-route__hop--hot' : undefined}>
+          <span className={`pmap-route__sec ${securityClassName(system.security)}`}>{system.security.toFixed(1)}</span>
+          <span className="pmap-route__name">{system.name}</span>
+          <span className="pmap-route__danger" aria-label={danger === null ? '—' : `${danger}%`}>
+            <i style={{ inlineSize: `${danger ?? 0}%` }} />
+          </span>
+          <span className="pmap-route__pct">{danger === null ? '—' : `${danger}%`}</span>
+        </li>;
+      })}
     </ol>
   </div>;
 }
