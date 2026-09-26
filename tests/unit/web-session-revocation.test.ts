@@ -35,7 +35,7 @@ import {
   revokeWebSession,
   WEB_SESSION_COOKIE,
 } from '../../src/web/web-session.js';
-import { getLinkedCharacter, linkCharacterToChat } from '../../src/eve/sso.js';
+import { getLinkedCharacter, linkCharacterToChat, unlinkCharacter } from '../../src/eve/sso.js';
 import { withWebLaneAuthorizationLock } from '../../src/web/web-lane-lock.js';
 
 let db: Database.Database;
@@ -247,5 +247,55 @@ describe('browser session revocation', () => {
       expect(db.prepare(`SELECT 1 FROM ${table} WHERE user_id = ?`).get(userId)).toBeUndefined();
       expect(db.prepare(`SELECT 1 FROM ${table} WHERE user_id = ?`).get(otherUserId)).toBeDefined();
     }
+  });
+});
+
+describe('shared identity across lanes (post-SSO-merge)', () => {
+  // A second device that signed in via SSO onto an existing identity has its
+  // guest user replaced by the shared user_id; its data lives on the first
+  // lane. Purging the second lane must not delete that shared user while the
+  // first lane still holds its threads and requests.
+  function setupSharedIdentity(): { a: ReturnType<typeof createWebSession>; b: ReturnType<typeof createWebSession> } {
+    const a = createWebSession(db);
+    insertEveAccount(7001, a.userId);
+    linkCharacterToChat(db, { userId: a.userId, chatId: a.chatId }, 7001);
+    db.prepare('INSERT INTO agent_threads (thread_id, chat_id, character_id, user_id) VALUES (?, ?, 7001, ?)')
+      .run('thread-a', a.chatId, a.userId);
+    db.prepare(`
+      INSERT INTO web_agent_requests (request_id, user_id, chat_id, thread_id, character_version, message, message_hash, idempotency_key, status, created_at_ms)
+      VALUES ('req-a', ?, ?, 'thread-a', 0, 'm', 'h', 'k', 'completed', ?)
+    `).run(a.userId, a.chatId, Date.now());
+    const b = createWebSession(db);
+    db.prepare('UPDATE web_sessions SET user_id = ? WHERE chat_id = ?').run(a.userId, b.chatId);
+    db.prepare('DELETE FROM users WHERE user_id = ?').run(b.userId);
+    return { a, b };
+  }
+
+  it('does not crash logout when the shared user still owns data on another lane', async () => {
+    const { a, b } = setupSharedIdentity();
+    await revokeWebSession(db, sessionRequest(a.sessionToken));
+    expect(await unlinkCharacter(db, { userId: a.userId, chatId: b.chatId }, 7001)).toBe(true);
+
+    // Before the fix this threw a foreign-key error (web_agent_requests still
+    // references the user), leaving the B session un-revoked.
+    await expect(revokeWebSession(db, sessionRequest(b.sessionToken))).resolves.toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM web_sessions WHERE chat_id = ?').get(b.chatId)).toBeUndefined();
+    // The shared user survives because its thread/request still live on lane A.
+    expect(db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(a.userId)).toBeDefined();
+    expect(db.prepare('SELECT 1 FROM agent_threads WHERE thread_id = ?').get('thread-a')).toBeDefined();
+  });
+
+  it('cleans other expired guests even when a shared-identity lane is in the batch', async () => {
+    const { b } = setupSharedIdentity();
+    db.prepare("UPDATE web_sessions SET expires_at = datetime('now', '-1 minute') WHERE chat_id = ?").run(b.chatId);
+    const guest = createWebSession(db);
+    db.prepare("UPDATE web_sessions SET expires_at = datetime('now', '-1 second') WHERE chat_id = ?").run(guest.chatId);
+
+    await expect(cleanExpiredWebSessions(db, { force: true })).resolves.toBeUndefined();
+
+    // The unrelated expired guest must be cleaned; before the fix a throw on the
+    // shared-identity lane aborted the loop and left it behind.
+    expect(db.prepare('SELECT 1 FROM web_sessions WHERE chat_id = ?').get(guest.chatId)).toBeUndefined();
+    expect(db.prepare('SELECT 1 FROM web_sessions WHERE chat_id = ?').get(b.chatId)).toBeUndefined();
   });
 });
