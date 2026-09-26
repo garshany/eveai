@@ -55,6 +55,19 @@ describe('logger redaction', () => {
     });
   });
 
+  it('drops prototype-mutating keys instead of assigning them dynamically', () => {
+    // JSON.parse is one of the few ways to get an own "__proto__" key; logged
+    // data parsed from an untrusted source could carry one. Copying it with a
+    // dynamic assignment would be a prototype-pollution sink.
+    const malicious = JSON.parse('{"__proto__":{"polluted":"yes"},"note":"keep"}') as Record<string, unknown>;
+    const redacted = redactLogValue(malicious) as Record<string, unknown>;
+
+    expect(redacted.note).toBe('keep');
+    expect((redacted as { polluted?: unknown }).polluted).toBeUndefined();
+    expect(Object.getPrototypeOf(redacted)).toBe(Object.prototype);
+    expect(Object.prototype).not.toHaveProperty('polluted');
+  });
+
   it('survives cyclic objects instead of overflowing the stack', () => {
     const request: Record<string, unknown> = { id: 1, apiKey: 'sk-live' };
     request.self = request;

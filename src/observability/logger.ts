@@ -85,26 +85,24 @@ export function redactLogValue(value: unknown, ancestors: WeakSet<object> = new 
     return redactString(value);
   }
   if (value instanceof Error) {
-    const redacted = new Error(redactString(value.message));
-    redacted.name = value.name;
-    redacted.stack = value.stack ? redactString(value.stack) : undefined;
-    // Grammy/fetch errors carry the offending request (URL with the bot token)
-    // on nested fields like `cause` or `error`; redact those too rather than
-    // letting console print the original object.
+    if (ancestors.has(value)) return '[circular]';
     ancestors.add(value);
     try {
-      const source = value as unknown as Record<string, unknown>;
-      const target = redacted as unknown as Record<string, unknown>;
-      for (const key of Object.keys(source)) {
-        target[key] = redactLogValue(source[key], ancestors);
-      }
+      const redacted = new Error(redactString(value.message));
+      redacted.name = value.name;
+      redacted.stack = value.stack ? redactString(value.stack) : undefined;
+      // Grammy/fetch errors carry the offending request (the URL with the bot
+      // token) on `cause`; redact it explicitly. Only the named `cause` field is
+      // copied — never a dynamic key from the error, which would be a
+      // prototype-pollution sink. Any other nested field still gets scrubbed
+      // when writeLog runs redactString over the whole formatted line.
       if (value.cause !== undefined) {
-        target.cause = redactLogValue(value.cause, ancestors);
+        (redacted as { cause?: unknown }).cause = redactLogValue(value.cause, ancestors);
       }
+      return redacted;
     } finally {
       ancestors.delete(value);
     }
-    return redacted;
   }
   if (!value || typeof value !== 'object') return value;
   // A cyclic structure (request/socket objects, error causes) must not turn a
@@ -118,6 +116,13 @@ export function redactLogValue(value: unknown, ancestors: WeakSet<object> = new 
     }
     const result: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
+      // Never assign a prototype-mutating key onto the result: an object built
+      // from untrusted input could carry an own "__proto__"/"constructor"/
+      // "prototype" key, and copying it dynamically is a prototype-pollution
+      // sink. These keys carry no useful log content, so drop them.
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        continue;
+      }
       if (/token|secret|password|authorization|api[_-]?key/iu.test(key)) {
         result[key] = '[redacted]';
       } else {
