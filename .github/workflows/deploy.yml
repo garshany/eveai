@@ -19,6 +19,8 @@ on:
 
 permissions:
   contents: read
+  # OIDC token for Workload Identity Federation (IAP transport, see below).
+  id-token: write
 
 concurrency:
   # One rollout at a time, and never cancel one halfway.
@@ -37,6 +39,16 @@ jobs:
       PROD_SSH_PORT: ${{ vars.PROD_SSH_PORT || '22' }}
       PROD_APP_DIR: ${{ vars.PROD_APP_DIR || '/srv/eveai' }}
       PROD_SERVICE: ${{ vars.PROD_SERVICE || 'eveai' }}
+      # Optional IAP transport for a VM with no public SSH port: when
+      # GCP_WIF_PROVIDER is set, the job authenticates to Google Cloud via
+      # Workload Identity Federation (no stored key) and reaches port 22 through
+      # an IAP tunnel on localhost:2222. PROD_SSH_HOST is then "localhost" and
+      # PROD_SSH_KNOWN_HOSTS pins "[localhost]:2222" to the VM host key.
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      GCP_PROJECT: ${{ vars.GCP_PROJECT }}
+      GCP_ZONE: ${{ vars.GCP_ZONE }}
+      GCP_VM: ${{ vars.GCP_VM }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -87,6 +99,32 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
+      - name: Authenticate to Google Cloud
+        if: steps.target.outputs.ready == 'true' && env.GCP_WIF_PROVIDER != ''
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        if: steps.target.outputs.ready == 'true' && env.GCP_WIF_PROVIDER != ''
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Open IAP tunnel
+        if: steps.target.outputs.ready == 'true' && env.GCP_WIF_PROVIDER != ''
+        run: |
+          set -euo pipefail
+          nohup gcloud compute start-iap-tunnel "$GCP_VM" 22 --local-host-port=localhost:2222 \
+            --zone="$GCP_ZONE" --project="$GCP_PROJECT" > "$RUNNER_TEMP/iap-tunnel.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/iap-tunnel.pid"
+          for _ in $(seq 1 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/2222) 2>/dev/null; then echo "IAP tunnel up"; exit 0; fi
+            kill -0 "$(cat "$RUNNER_TEMP/iap-tunnel.pid")" 2>/dev/null || break
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/iap-tunnel.log"
+          echo "::error::IAP tunnel did not open"; exit 1
+
       - name: Roll out
         if: steps.target.outputs.ready == 'true'
         run: |
@@ -116,4 +154,6 @@ jobs:
 
       - name: Remove SSH material
         if: always()
-        run: rm -f ~/.ssh/deploy_key
+        run: |
+          rm -f ~/.ssh/deploy_key
+          [ -f "$RUNNER_TEMP/iap-tunnel.pid" ] && kill "$(cat "$RUNNER_TEMP/iap-tunnel.pid")" 2>/dev/null || true
