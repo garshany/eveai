@@ -127,6 +127,56 @@ describe('executeCharacterSql row isolation', () => {
     }
   });
 
+  it('rejects a schema-qualified character table as the 2nd entry of a comma FROM list', () => {
+    // Regression: the schema-qualifier guard once checked only the first table
+    // after FROM, so `main.character_wallet` as the 2nd comma entry slipped
+    // past it and read every character's wallet directly from the base table,
+    // ignoring the per-character isolation view. It must be rejected, and the
+    // other character's balance must never surface.
+    const result = executeCharacterSql(
+      db as Db,
+      `SELECT w.balance
+       FROM character_assets a, main.character_wallet w
+       WHERE w.character_id = ${OTHER_CHARACTER}`,
+      OWN_CHARACTER,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('Schema-qualified');
+    expect(result.rows).toEqual([]);
+  });
+
+  it('rejects a schema-qualified read even when a CTE shares the table name', () => {
+    // A CTE named after a character table must not cause the real
+    // main.character_wallet read (which bypasses the isolation view) to be
+    // treated as the harmless CTE.
+    const result = executeCharacterSql(
+      db as Db,
+      `WITH character_wallet AS (SELECT 1 AS x)
+       SELECT balance FROM main.character_wallet WHERE character_id = ${OTHER_CHARACTER}`,
+      OWN_CHARACTER,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.rows).toEqual([]);
+  });
+
+  it('rejects a sensitive table comma-joined under an allowed character alias', () => {
+    // Aliasing eve_accounts to an allowed character_* name must still resolve
+    // to the real eve_accounts table via the plan alias map and be rejected —
+    // the alias cannot launder a forbidden source into an allowed one.
+    const result = executeCharacterSql(
+      db as Db,
+      `SELECT character_wallet.character_id
+       FROM character_assets a, eve_accounts character_wallet
+       WHERE a.item_id = 1`,
+      OWN_CHARACTER,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('eve_accounts');
+  });
+
   it.each([
     'eve_accounts',
     'intel_notes',

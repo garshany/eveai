@@ -226,50 +226,96 @@ export function extractCteNames(tokens: SqlToken[]): Set<string> {
   return cteNames;
 }
 
-export function extractTableAliases(tokens: SqlToken[]): Map<string, string> {
-  const aliases = new Map<string, string>();
-
+/**
+ * Invokes `visit` for every table reference in each FROM/JOIN clause. Unlike a
+ * "first table after FROM" scan, this walks the whole comma-separated table
+ * list (`FROM a x, b y, c`) and skips parenthesized subquery sources, so no
+ * entry can hide from validation behind a comma. `parts` is the dotted name
+ * (e.g. ['main','eve_accounts']); `alias` is the following alias when present.
+ * Table references inside subqueries are still visited because the outer loop
+ * scans every token and reaches their own FROM/JOIN keywords.
+ */
+export function forEachFromTableReference(
+  tokens: SqlToken[],
+  visit: (parts: string[], alias: string | null) => void,
+): void {
   for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (token.upper !== 'FROM' && token.upper !== 'JOIN') {
+    if (tokens[index].upper !== 'FROM' && tokens[index].upper !== 'JOIN') {
       continue;
     }
 
     let cursor = index + 1;
-    if (tokens[cursor]?.value === '(') {
-      continue;
-    }
+    for (;;) {
+      let parts: string[] | null = null;
 
-    const nameParts: string[] = [];
-    while (isSqlIdentifierToken(tokens[cursor])) {
-      nameParts.push(tokens[cursor].value);
-      if (tokens[cursor + 1]?.value !== '.') {
-        cursor += 1;
-        break;
+      if (tokens[cursor]?.value === '(') {
+        // Subquery / parenthesized source: skip it whole, but still consume a
+        // trailing alias and any following comma so the next table is seen.
+        cursor = skipParenthesizedTokens(tokens, cursor);
+      } else {
+        const nameParts: string[] = [];
+        while (isSqlIdentifierToken(tokens[cursor])) {
+          nameParts.push(tokens[cursor].value);
+          if (tokens[cursor + 1]?.value !== '.') {
+            cursor += 1;
+            break;
+          }
+          cursor += 2;
+        }
+        if (nameParts.length === 0) {
+          break;
+        }
+        parts = nameParts;
       }
-      cursor += 2;
-    }
 
-    if (nameParts.length === 0) {
-      continue;
-    }
+      if (tokens[cursor]?.upper === 'AS') {
+        cursor += 1;
+      }
+      if (isSqlIdentifierToken(tokens[cursor]) && !SDE_ALIAS_STOP_KEYWORDS.has(tokens[cursor].upper)) {
+        if (parts !== null) {
+          visit(parts, tokens[cursor].value);
+        }
+        cursor += 1;
+      } else if (parts !== null) {
+        visit(parts, null);
+      }
 
-    const normalizedObject = normalizeObjectReference(nameParts.join('.'));
-    if (normalizedObject === null) {
-      continue;
-    }
-
-    aliases.set(normalizedObject, normalizedObject);
-
-    if (tokens[cursor]?.upper === 'AS') {
-      cursor += 1;
-    }
-
-    if (isSqlIdentifierToken(tokens[cursor]) && !SDE_ALIAS_STOP_KEYWORDS.has(tokens[cursor].upper)) {
-      aliases.set(normalizeSqlIdentifier(tokens[cursor].value), normalizedObject);
+      if (tokens[cursor]?.value === ',') {
+        cursor += 1;
+        continue;
+      }
+      break;
     }
   }
+}
 
+/**
+ * The first schema-qualified FROM/JOIN table reference (`main.x`, `temp.x`) in
+ * the SQL text, or null. Covers every entry of a comma-separated table list,
+ * so a qualified table cannot slip in as the 2nd+ entry.
+ */
+export function findSchemaQualifiedTableReference(tokens: SqlToken[]): string | null {
+  let found: string | null = null;
+  forEachFromTableReference(tokens, (parts) => {
+    if (found === null && parts.length > 1) {
+      found = parts.join('.');
+    }
+  });
+  return found;
+}
+
+export function extractTableAliases(tokens: SqlToken[]): Map<string, string> {
+  const aliases = new Map<string, string>();
+  forEachFromTableReference(tokens, (parts, alias) => {
+    const normalizedObject = normalizeObjectReference(parts.join('.'));
+    if (normalizedObject === null) {
+      return;
+    }
+    aliases.set(normalizedObject, normalizedObject);
+    if (alias !== null) {
+      aliases.set(normalizeSqlIdentifier(alias), normalizedObject);
+    }
+  });
   return aliases;
 }
 
@@ -367,8 +413,15 @@ function validateSdeSqlSources(db: Db, sql: string): string | null {
         return `Query references an unsupported source: ${rawReference}`;
       }
 
-      const baseName = resolvedReference.split('.').at(-1);
-      if (baseName !== undefined && (cteNames.has(baseName) || SDE_IGNORED_PLAN_REFERENCES.has(baseName))) {
+      const referenceParts = resolvedReference.split('.');
+      const baseName = referenceParts.at(-1);
+      // A CTE (and the "constant" plan token) is always an unqualified name;
+      // SQLite does not allow a schema on a CTE. A schema-qualified reference
+      // (main.x, temp.x) is therefore a real table and must be validated even
+      // when its base name happens to collide with a declared CTE name —
+      // otherwise `WITH sde_x AS (...) SELECT ... FROM main.eve_accounts`
+      // would be skipped and read the real table.
+      if (referenceParts.length === 1 && baseName !== undefined && (cteNames.has(baseName) || SDE_IGNORED_PLAN_REFERENCES.has(baseName))) {
         continue;
       }
 
