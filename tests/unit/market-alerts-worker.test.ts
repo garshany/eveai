@@ -474,7 +474,10 @@ describe('redelivery backoff, terminal events and tick bounds', () => {
       "SELECT (julianday(next_attempt_at) - julianday('now')) * 24 * 60 AS minutes FROM market_alert_events WHERE event_id = ?",
     ).get(eventId) as { minutes: number };
     expect(gap.minutes).toBeGreaterThan(6);
-    expect(gap.minutes).toBeLessThanOrEqual(8);
+    // Upper bound with tolerance: the gap is ~8 min, but julianday() difference
+    // arithmetic carries floating-point error (e.g. 8.0000001), so a hard <= 8
+    // flakes. 8.5 still sits well below the next (16 min) backoff step.
+    expect(gap.minutes).toBeLessThanOrEqual(8.5);
 
     // An event that eventually delivers keeps the normal semantics.
     db.prepare("UPDATE market_alert_events SET next_attempt_at = datetime('now', '-1 minute') WHERE event_id = ?").run(eventId);
