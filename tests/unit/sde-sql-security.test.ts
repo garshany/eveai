@@ -198,4 +198,75 @@ describe('executeSdeSql security boundary', () => {
     expect(result.rows.length).toBeLessThanOrEqual(50);
     expect(result.error).toContain('narrow the query');
   });
+
+  describe('json_each / json_tree table-valued functions', () => {
+    beforeEach(() => {
+      db.prepare('INSERT INTO sde_dogma_attributes (attribute_id, name, data_json) VALUES (?, ?, ?)').run(50, 'cpu', '{}');
+      db.prepare('INSERT INTO sde_dogma_attributes (attribute_id, name, data_json) VALUES (?, ?, ?)').run(30, 'power', '{}');
+      db.prepare('INSERT INTO sde_type_dogma (type_id, data_json) VALUES (?, ?)').run(
+        587,
+        JSON.stringify({ dogmaAttributes: [{ attributeID: 50, value: 130 }, { attributeID: 30, value: 42 }] }),
+      );
+    });
+
+    it('allows the documented dogma lookup with an aliased json_each (production regression 2026-09-26)', () => {
+      // Exact shape from the SDE schema hint; it was rejected with
+      // 'Only SDE tables are allowed (got "j")' and then again by the
+      // cartesian-scan guard, costing the agent several model round trips.
+      const result = executeSdeSql(
+        db as Db,
+        `SELECT t.name, a.name AS attr, json_extract(j.value,'$.value') AS val
+         FROM sde_types t JOIN sde_type_dogma d ON d.type_id=t.type_id,
+              json_each(d.data_json,'$.dogmaAttributes') j
+         JOIN sde_dogma_attributes a ON a.attribute_id=json_extract(j.value,'$.attributeID')
+         WHERE t.name IN ('Rifter') AND a.name IN ('cpu','power')
+         ORDER BY a.name`,
+      );
+      expect(result.error).toBeNull();
+      expect(result.rows).toEqual([
+        { name: 'Rifter', attr: 'cpu', val: 130 },
+        { name: 'Rifter', attr: 'power', val: 42 },
+      ]);
+    });
+
+    it('allows json_each with AS alias and unaliased', () => {
+      const aliased = executeSdeSql(db as Db,
+        "SELECT je.value FROM sde_type_dogma d JOIN json_each(d.data_json,'$.dogmaAttributes') AS je WHERE d.type_id=587");
+      expect(aliased.error).toBeNull();
+      expect(aliased.rows).toHaveLength(2);
+      const bare = executeSdeSql(db as Db,
+        "SELECT json_each.value FROM sde_type_dogma d, json_each(d.data_json,'$.dogmaAttributes') WHERE d.type_id=587");
+      expect(bare.error).toBeNull();
+      expect(bare.rows).toHaveLength(2);
+    });
+
+    it('still rejects a non-SDE table read through a json_each argument subquery', () => {
+      const result = executeSdeSql(db as Db,
+        "SELECT j.value FROM sde_types t, json_each((SELECT json_group_array(access_token) FROM eve_accounts)) j WHERE t.type_id=587");
+      expect(result.ok).toBe(false);
+      expect(result.rows).toEqual([]);
+      expect(JSON.stringify(result)).not.toContain('access-token');
+    });
+
+    it('still rejects a json_each-only query that reads no SDE table', () => {
+      const result = executeSdeSql(db as Db, "SELECT value FROM json_each('[1,2]')");
+      expect(result.ok).toBe(false);
+    });
+
+    it('still rejects a real non-SDE virtual table, even behind an alias', () => {
+      // Warm any per-connection state first: the table appears afterwards.
+      executeSdeSql(db as Db, "SELECT je.value FROM sde_type_dogma d JOIN json_each(d.data_json) AS je WHERE d.type_id=587");
+      db.exec("CREATE VIRTUAL TABLE secret_fts USING fts5(body)");
+      db.prepare('INSERT INTO secret_fts (body) VALUES (?)').run('secret body');
+      for (const sql of [
+        'SELECT body FROM secret_fts',
+        'SELECT s.body FROM sde_types t, secret_fts s WHERE t.type_id=587',
+        'SELECT j.body FROM sde_types t JOIN secret_fts AS j WHERE t.type_id=587',
+      ]) {
+        const result = executeSdeSql(db as Db, sql);
+        expect(result.ok, sql).toBe(false);
+        expect(JSON.stringify(result), sql).not.toContain('secret body');
+      }
+    });
+  });
 });
