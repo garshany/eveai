@@ -1048,6 +1048,8 @@ async function runNativeAgentLoop(
         // Only this top-level loop streams to the CLI activity feed; internal
         // model calls (compaction/OSINT/advisor) must not leak into the answer.
         streamToActivity: true,
+        // GPT-6: keep the cached prefix stable across effort changes.
+        reasoningViaConfigurationUpdate: true,
         signal: modelController.signal,
       });
     } catch (error) {
