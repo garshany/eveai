@@ -21,6 +21,7 @@ export function runMigrations(db: Db): void {
     addColumnIfMissing(db, 'eve_accounts', 'consent_version', 'TEXT');
     addColumnIfMissing(db, 'eve_accounts', 'consent_language', 'TEXT');
     addColumnIfMissing(db, 'eve_accounts', 'consented_at', 'TEXT');
+    addColumnIfMissing(db, 'eve_accounts', 'owner_hash', 'TEXT');
     addColumnIfMissing(db, 'eve_character_links', 'user_id', 'INTEGER');
     addColumnIfMissing(db, 'agent_threads', 'user_id', 'INTEGER');
     createIndexIfMissing(db, 'idx_agent_threads_user', 'agent_threads', 'user_id');

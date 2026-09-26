@@ -156,7 +156,10 @@ CREATE TABLE IF NOT EXISTS eve_accounts (
   consent_version TEXT,
   consent_language TEXT CHECK (consent_language IS NULL OR consent_language IN ('ru', 'en')),
   consented_at    TEXT,
-  user_id         INTEGER
+  user_id         INTEGER,
+  -- EVE SSO CharacterOwnerHash of the account that authorized these tokens.
+  -- It changes when the character is sold/transferred to another EVE account.
+  owner_hash      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS eve_character_links (

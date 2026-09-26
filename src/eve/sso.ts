@@ -26,6 +26,7 @@ interface EveAccount {
   expires_at: string;
   scopes_json: string;
   user_id?: number | null;
+  owner_hash?: string | null;
 }
 
 const refreshInFlight = new Map<number, Promise<{ token: string; characterId: number } | null>>();
@@ -481,18 +482,56 @@ async function refreshAccessToken(
     return null;
   }
 
-  db.prepare(`
+  // A character that moved to another EVE account must not keep serving
+  // tokens under the previous owner's row (the new owner re-links via SSO).
+  if (account.owner_hash && payload.owner !== account.owner_hash) {
+    console.error('[sso] Refresh returned a token for a different owner of character=%d — rejecting',
+      account.character_id);
+    return null;
+  }
+
+  // Compare-and-set on the refresh token this refresh started from: an SSO
+  // re-login (or transfer) that stored new tokens while this request was in
+  // flight must not be overwritten with the older grant.
+  const updated = db.prepare(`
     UPDATE eve_accounts SET
       access_token = ?,
       refresh_token = ?,
       expires_at = datetime('now', '+' || ? || ' seconds')
-    WHERE character_id = ?
+    WHERE character_id = ? AND refresh_token = ?
   `).run(
     encryptStoredSecret(tokens.access_token, 'eve_access_token'),
     encryptStoredSecret(tokens.refresh_token, 'eve_refresh_token'),
     tokens.expires_in,
     account.character_id,
+    account.refresh_token,
   );
+  if (updated.changes === 0) {
+    return currentStoredToken(db, account.character_id, account.user_id ?? null);
+  }
 
   return { token: tokens.access_token, characterId: account.character_id };
+}
+
+/**
+ * The row changed under an in-flight refresh: serve whatever the newer write
+ * stored, if it still belongs to the same user and has not expired.
+ */
+function currentStoredToken(
+  db: Db,
+  characterId: number,
+  userId: number | null,
+): { token: string; characterId: number } | null {
+  const current = db.prepare(`
+    SELECT access_token, user_id,
+      (julianday(expires_at) - julianday('now')) * 86400000 AS remaining_ms
+    FROM eve_accounts WHERE character_id = ?
+  `).get(characterId) as { access_token: string; user_id: number | null; remaining_ms: number } | undefined;
+  if (!current || current.remaining_ms <= 60_000) return null;
+  if (userId !== null && current.user_id !== userId) return null;
+  try {
+    return { token: decryptStoredSecret(current.access_token, 'eve_access_token'), characterId };
+  } catch {
+    return null;
+  }
 }
