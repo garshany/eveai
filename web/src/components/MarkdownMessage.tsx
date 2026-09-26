@@ -127,7 +127,7 @@ async function copyText(value: string): Promise<void> {
   }
 }
 
-function parseBlocks(content: string): Block[] {
+export function parseBlocks(content: string): Block[] {
   const lines = content.replaceAll('\r\n', '\n').split('\n');
   const blocks: Block[] = [];
   let index = 0;
@@ -205,6 +205,17 @@ function parseBlocks(content: string): Block[] {
       && !/^\s*\d+\.\s+/.test(lines[index] ?? '')
       && !isTableStart(lines, index)
     ) {
+      paragraph.push(lines[index] ?? '');
+      index += 1;
+    }
+    if (paragraph.length === 0) {
+      // The line looked like a block start — an unterminated or malformed fence
+      // ("```c#", "``` json", "````"), or a bare marker with no content ("# ",
+      // "## ") — so it matched no complete block rule, yet the paragraph
+      // collector's guards (^``` and ^#{1,4}\s+) also skipped it. Without this
+      // branch `index` would never advance and the render loop would spin
+      // forever, pushing empty paragraphs until the tab runs out of memory.
+      // Emit the line verbatim and force progress.
       paragraph.push(lines[index] ?? '');
       index += 1;
     }
