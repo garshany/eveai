@@ -152,13 +152,16 @@ async function persistActiveFitting(
     ) return;
 
     const path = resolveUserProfilePath(ctx, authorization.characterId);
+    // Read directly instead of access()-then-readFile: a check-then-use pair is
+    // a time-of-check/time-of-use race (the file can change in between). A
+    // single read with a catch-all give-up keeps the same "no profile yet →
+    // skip" behaviour without the race.
+    let content: string;
     try {
-      await access(path);
+      content = await readFile(path, 'utf-8');
     } catch {
-      return; // file doesn't exist
+      return; // file missing or unreadable — nothing to update
     }
-
-    let content = await readFile(path, 'utf-8');
 
     // Neutralize any line that would look like a Markdown section heading inside
     // the fenced block — otherwise a fitting line like "## Wallet" corrupts the
