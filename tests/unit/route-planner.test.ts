@@ -147,6 +147,37 @@ afterEach(() => {
 });
 
 describe('route planner', () => {
+  it('applies the stored avoid list to every route variant, exempting origin and destination', async () => {
+    // Regression: plan_route always passed avoid=[] to ESI, so the pilot's
+    // standing avoid list was silently ignored — the assistant could route
+    // (and set autopilot) straight through a system the pilot had permanently
+    // marked. Midpoint is on the secure route; the origin (Dodixie) and
+    // destination (Jita) are avoided too, but must stay routable.
+    for (const systemId of [30002660, 30002659, 30000142]) {
+      db.prepare('INSERT INTO map_avoid_systems (user_id, system_id, note, created_at_ms) VALUES (1, ?, NULL, ?)')
+        .run(systemId, Date.now());
+    }
+
+    const { planRoute } = await import('../../src/eve/route-planner.js');
+    const result = await planRoute(
+      db,
+      { origin: 'current', destination: 'Jita', prefer: 'secure' },
+      { userId: 1, chatId: 1, notificationCapability: 'web' },
+    );
+
+    expect(result.ok).toBe(true);
+    const routeCalls = callEsiOperationMock.mock.calls.filter(
+      (call) => call[1] === 'get_route_origin_destination',
+    );
+    expect(routeCalls.length).toBeGreaterThanOrEqual(3);
+    for (const call of routeCalls) {
+      const avoid = (call[2] as { avoid?: number[] }).avoid ?? [];
+      expect(avoid).toContain(30002660); // Midpoint stays avoided…
+      expect(avoid).not.toContain(30002659); // …but the origin is exempt…
+      expect(avoid).not.toContain(30000142); // …and so is the destination.
+    }
+  });
+
   it('hands one shared baseline plus captured live events to the started monitor', async () => {
     const sharedBaseline = routeSnapshot([
       snapshotSystem(30002660, 'Midpoint', 0.5, 134200001),
